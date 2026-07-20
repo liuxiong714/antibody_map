@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: antibody-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: antibody_map
+      POSTGRES_USER: antibody
+      POSTGRES_PASSWORD: antibody123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U antibody"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - antibody-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: antibody-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - antibody-net
+
+  minio:
+    image: minio/minio
+    container_name: antibody-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: antibody
+      MINIO_ROOT_PASSWORD: antibody123
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - antibody-net
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+networks:
+  antibody-net:
+    driver: bridge
