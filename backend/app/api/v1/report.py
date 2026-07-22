@@ -1,0 +1,77 @@
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import PlainTextResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_db
+from app.schemas.common import ApiResponse
+from app.services import report_service
+
+router = APIRouter()
+
+
+@router.post("/reports/generate", response_model=ApiResponse)
+async def generate_report(
+    disease: Optional[str] = Query(None, description="疾病 key"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    data_type: Optional[str] = Query(None, description="数据类型"),
+    language: str = Query("zh", description="报告语言：zh | en"),
+    title: Optional[str] = Query(None, description="自定义报告标题"),
+    db: AsyncSession = Depends(get_db),
+):
+    """生成免疫学参考意见报告"""
+    try:
+        data = await report_service.generate_report(
+            db=db,
+            disease=disease,
+            province=province,
+            data_type=data_type,
+            language=language,
+            title=title,
+        )
+        return ApiResponse(message="报告生成成功", data=data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/reports", response_model=ApiResponse)
+async def list_reports(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取报告列表"""
+    data = await report_service.get_reports(db=db, page=page, page_size=page_size)
+    return ApiResponse(message="操作成功", data=data)
+
+
+@router.get("/reports/{report_id}", response_model=ApiResponse)
+async def get_report(
+    report_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取单个报告详情"""
+    data = await report_service.get_report_by_id(db=db, report_id=report_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    return ApiResponse(message="操作成功", data=data)
+
+
+@router.get("/reports/{report_id}/download")
+async def download_report(
+    report_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """下载报告为 Markdown 文件"""
+    data = await report_service.get_report_by_id(db=db, report_id=report_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    filename = f"{data['title']}.md"
+    return PlainTextResponse(
+        content=data["content"],
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )

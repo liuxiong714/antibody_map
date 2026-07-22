@@ -15,6 +15,10 @@ DISEASES = [
     {"key": "polio", "name_cn": "脊灰", "name_en": "Polio", "category": "疫苗可预防", "vaccine": "脊灰疫苗(OPV/IPV)"},
     {"key": "influenza", "name_cn": "流感", "name_en": "Influenza", "category": "呼吸道", "vaccine": "流感疫苗"},
     {"key": "covid19", "name_cn": "新冠", "name_en": "COVID-19", "category": "呼吸道", "vaccine": "新冠疫苗"},
+    {"key": "meningitis", "name_cn": "流脑", "name_en": "Meningococcal Meningitis", "category": "疫苗可预防", "vaccine": "流脑疫苗"},
+    {"key": "varicella", "name_cn": "水痘", "name_en": "Varicella", "category": "疫苗可预防", "vaccine": "水痘疫苗(VZV)"},
+    {"key": "hfmd", "name_cn": "手足口", "name_en": "HFMD", "category": "其他传染病", "vaccine": "EV71灭活疫苗"},
+    {"key": "rotavirus", "name_cn": "轮状病毒", "name_en": "Rotavirus", "category": "疫苗可预防", "vaccine": "轮状病毒疫苗(RV)"},
 ]
 
 # 34 个省级行政区

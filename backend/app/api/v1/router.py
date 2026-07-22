@@ -4,6 +4,9 @@ from app.api.v1.dictionary import router as dictionary_router
 from app.api.v1.extraction import router as extraction_router
 from app.api.v1.literature import router as literature_router
 from app.api.v1.map_data import router as map_router
+from app.api.v1.search import router as search_router
+from app.api.v1.analysis import router as analysis_router
+from app.api.v1.report import router as report_router
 
 router = APIRouter()
 
@@ -12,6 +15,9 @@ router.include_router(dictionary_router, tags=["dictionary"])
 router.include_router(literature_router, tags=["literature"])
 router.include_router(extraction_router, tags=["extraction"])
 router.include_router(map_router, tags=["map"])
+router.include_router(search_router, tags=["search"])
+router.include_router(analysis_router, tags=["analysis"])
+router.include_router(report_router, tags=["report"])
 
 
 @router.get("/health")

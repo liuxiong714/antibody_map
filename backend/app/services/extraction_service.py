@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from typing import Optional
@@ -8,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.literature import Literature
 from app.models.data_point import DataPoint
-from app.tasks.extract_task import process_literature
+from app.tasks.extract_task import _process_literature_async
+from app.models.base import async_session
 
 logger = logging.getLogger("uvicorn")
 
@@ -18,7 +20,7 @@ async def trigger_extraction(
     literature_id: uuid.UUID,
     model: Optional[str] = None,
 ) -> dict:
-    """触发文献 AI 提取任务"""
+    """触发文献 AI 提取任务（后台异步执行）"""
     # 检查文献存在
     result = await db.execute(
         select(Literature).where(Literature.id == literature_id)
@@ -35,14 +37,34 @@ async def trigger_extraction(
     literature.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
-    # 提交 Celery 任务
-    task = process_literature.delay(str(literature_id), model=model)
+    # 后台异步执行提取（不阻塞响应）
+    lit_id_str = str(literature_id)
+    asyncio.create_task(_run_extraction_background(lit_id_str, model))
 
     return {
-        "task_id": task.id,
-        "literature_id": str(literature_id),
-        "status": "queued",
+        "literature_id": lit_id_str,
+        "status": "processing",
     }
+
+
+async def _run_extraction_background(literature_id: str, model: Optional[str] = None):
+    """后台执行提取并处理失败"""
+    try:
+        result = await _process_literature_async(literature_id, model)
+        logger.info(f"文献 {literature_id} 提取完成，数据点: {result['extracted_count']}")
+    except Exception as e:
+        logger.error(f"文献 {literature_id} 提取失败: {e}", exc_info=True)
+        try:
+            async with async_session() as fail_db:
+                from app.models.literature import Literature as Lit
+                r = await fail_db.execute(select(Lit).where(Lit.id == literature_id))
+                lit = r.scalar_one_or_none()
+                if lit:
+                    lit.extraction_status = "failed"
+                    lit.updated_at = datetime.now(timezone.utc)
+                    await fail_db.commit()
+        except Exception as mark_err:
+            logger.error(f"标记失败状态时出错: {mark_err}", exc_info=True)
 
 
 async def get_extraction_status(

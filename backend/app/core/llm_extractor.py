@@ -11,105 +11,121 @@ from app.core.term_normalizer import (
     normalize_disease,
     normalize_method,
     normalize_antibody_type,
+    normalize_province,
+    PROVINCE_NAMES_ZH,
 )
 
 logger = logging.getLogger("uvicorn")
 
 # ==================== Prompt 模板 ====================
 
-PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请从以下文献文本中提取抗体血清学数据，严格按 JSON 格式输出。
+PROVINCE_LIST_TIP = f"""中国省份标准名称列表（必须从这里选择，不要使用简称或拼音）：
+{PROVINCE_NAMES_ZH}"""
 
-提取要求：
-1. 识别文中提到的疾病名称
-2. 提取研究地点（省份、城市）
-3. 提取调查时间（研究起始年、结束年、采样年）
-4. 提取研究对象信息（人群类型、年龄范围）
-5. 提取检测方法、抗体类型
-6. 提取样本量和阳性率（百分比），以及阳性率95%置信区间
-7. 如有抗体几何平均浓度（GMC），也需提取
-8. 提取文献元信息（发表杂志名称、作者姓名、作者单位）
+PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请仔细阅读以下文献文本，提取所有抗体血清学数据点。一篇文献可能包含多个数据点（不同地区、不同人群、不同时间、不同检测指标），请全部提取。
 
-JSON 输出格式：
+{province_list_tip}
+
+## 提取步骤
+1. **定位数据区域**：在文中找到"结果"、"表"、"图"、"阳性率"、"抗体水平"、"GMC"、"GMT"等关键词附近的内容
+2. **逐一提取每个数据点**：如果一个研究包含多个省份、城市、年龄组或检测指标，分别为每个创建独立的数据点
+3. **核对数值**：阳性率通常以百分比给出（如87.3%、87.3％），GMC通常以IU/ml或μg/ml为单位
+
+## JSON 输出格式
 {{
-  "disease_name": "疾病名称",
-  "province": "省份",
-  "city": "城市",
-  "study_start_year": 研究起始年(整数),
-  "study_end_year": 研究结束年(整数),
-  "sample_year": 采样年(整数),
-  "population_type": "人群类型，如：健康人群/儿童/成人/孕妇等",
-  "age_min": 最小年龄(整数),
-  "age_max": 最大年龄(整数),
-  "sample_size": 样本量(整数),
-  "detection_method": "检测方法",
-  "antibody_type": "抗体类型，如：IgG/IgM/IgA/Total Ab",
-  "positivity_rate": 阳性率(小数，如87.3表示87.3%),
-  "positivity_ci_lower": 阳性率95%CI下限(小数),
-  "positivity_ci_upper": 阳性率95%CI上限(小数),
-  "gmc_value": GMC值(小数),
-  "gmc_unit": "GMC单位，如：IU/ml/mIU/ml",
-  "gmc_ci_lower": GMC 95%CI下限(小数),
-  "gmc_ci_upper": GMC 95%CI上限(小数),
-  "journal": "发表杂志名称",
-  "authors": "作者姓名，多个作者用分号分隔",
-  "author_affiliations": "作者单位，如：解放军空军后勤部疾病预防控制中心"
+  "data_points": [
+    {{
+      "disease_name": "从文中提取的疾病名称（中文）",
+      "province": "省份名称（必须从上述标准列表中选）",
+      "city": "城市名称（如：广州市、深圳市）",
+      "study_start_year": 研究起始年,
+      "study_end_year": 研究结束年,
+      "sample_year": 采样年份,
+      "population_type": "人群描述（如：健康儿童、18-45岁成人、孕妇、军人等）",
+      "age_min": 最小年龄（整数），如0,
+      "age_max": 最大年龄（整数），如14,
+      "sample_size": 样本量（整数），如1234,
+      "detection_method": "检测方法（如：ELISA、化学发光法、中和试验等）",
+      "antibody_type": "抗体类型（如：IgG、IgM、Total Ab、中和抗体等）",
+      "positivity_rate": 阳性率数值（去掉%号，如87.3表示87.3%）,
+      "positivity_ci_lower": 阳性率95%置信区间下限,
+      "positivity_ci_upper": 阳性率95%置信区间上限,
+      "gmc_value": 几何平均浓度（GMC）数值,
+      "gmc_unit": "GMC单位（如：IU/ml、mIU/ml、μg/ml）",
+      "gmc_ci_lower": GMC 95%置信区间下限,
+      "gmc_ci_upper": GMC 95%置信区间上限,
+      "journal": "发表杂志名称",
+      "authors": "作者（多个用分号分隔）",
+      "author_affiliations": "作者单位"
+    }}
+  ]
 }}
 
-注意：
-- 如果某个字段无法从文本中提取，请填写 null
-- 百分比值直接写数字，例如 87.3% 写为 87.3
-- 年龄如有"0-6岁"等表述，拆分为 age_min=0, age_max=6
-- 仅输出 JSON，不要包含任何解释性文字
+## 重要规则
+- **省份必须匹配**：从上述标准列表中选取最匹配的省份名称。如文中"鲁"→"山东"，"广东省"→"广东"，"上海"→"上海"
+- **百分比处理**：87.3% → 填87.3（去掉%符号）；如果多个年份/组别有%数据，全部提取为多个数据点
+- **GMC注意**：GMC和阳性率是不同的指标。GMC通常以IU/ml、μg/ml等单位给出。文中同时有阳性率和GMC时，两者都要提取
+- **年龄拆分**："0-14岁儿童" → age_min=0, age_max=14
+- **多省份多城市**：如研究覆盖多个地区，每个地区作为一个独立数据点
+- **无法确定填null**：确实无法从文中确定的字段填null
+- **仅输出JSON**：不要包含任何解释性文字或markdown代码块标记
 
 文献文本：
 {text}"""
 
-PROMPT_EN = """You are a professional epidemiological literature information extraction expert. Extract antibody serological data from the following literature text and output strictly in JSON format.
+PROMPT_EN = """You are a professional epidemiological literature data extraction expert. Carefully read the following literature and extract ALL antibody serological data points. A single paper may contain multiple data points (different regions, populations, time periods, or assay types) — extract ALL of them.
 
-Extraction requirements:
-1. Identify disease name mentioned in the text
-2. Extract study location (province/state, city)
-3. Extract survey time (study start year, end year, sample year)
-4. Extract study subject information (population type, age range)
-5. Extract detection method and antibody type
-6. Extract sample size and positivity rate (percentage), with 95% confidence intervals
-7. Extract antibody geometric mean concentration (GMC) if available
-8. Extract literature metadata (journal name, author names, author affiliations)
+Chinese Province Name Reference List:
+{province_list_en}
 
-JSON output format:
+## Extraction Steps
+1. Find data regions: Look near "Results", tables, "positivity", "antibody level", "GMC", "GMT" keywords
+2. Extract each data point individually: If a study covers multiple provinces, cities, age groups, or assay types, create a separate entry for each
+3. Verify values: Positivity rates are usually percentages (e.g., 87.3%), GMC usually in IU/ml or μg/ml
+
+## JSON Output Format
 {{
-  "disease_name": "disease name",
-  "province": "province/state",
-  "city": "city",
-  "study_start_year": study start year (integer),
-  "study_end_year": study end year (integer),
-  "sample_year": sample year (integer),
-  "population_type": "e.g., healthy population/children/adults/pregnant women",
-  "age_min": minimum age (integer),
-  "age_max": maximum age (integer),
-  "sample_size": sample size (integer),
-  "detection_method": "detection method",
-  "antibody_type": "e.g., IgG/IgM/IgA/Total Ab",
-  "positivity_rate": positivity rate (decimal, e.g., 87.3 means 87.3%),
-  "positivity_ci_lower": positivity rate 95% CI lower (decimal),
-  "positivity_ci_upper": positivity rate 95% CI upper (decimal),
-  "gmc_value": GMC value (decimal),
-  "gmc_unit": "GMC unit, e.g., IU/ml/mIU/ml",
-  "gmc_ci_lower": GMC 95% CI lower (decimal),
-  "gmc_ci_upper": GMC 95% CI upper (decimal),
-  "journal": "journal name",
-  "authors": "author names, separated by semicolons",
-  "author_affiliations": "author affiliations"
+  "data_points": [
+    {{
+      "disease_name": "disease name from text",
+      "province": "province name (from reference list above)",
+      "city": "city name",
+      "study_start_year": study start year (integer),
+      "study_end_year": study end year (integer),
+      "sample_year": sample year (integer),
+      "population_type": "population description (e.g., healthy children, adults 18-45)",
+      "age_min": min age (integer),
+      "age_max": max age (integer),
+      "sample_size": sample size (integer),
+      "detection_method": "e.g., ELISA, CLIA, NT, HAI",
+      "antibody_type": "e.g., IgG, IgM, Total Ab, Neutralizing Ab",
+      "positivity_rate": positivity rate (remove % sign, e.g., 87.3 means 87.3%),
+      "positivity_ci_lower": positivity 95% CI lower bound,
+      "positivity_ci_upper": positivity 95% CI upper bound,
+      "gmc_value": GMC value,
+      "gmc_unit": "GMC unit (IU/ml, mIU/ml, μg/ml)",
+      "gmc_ci_lower": GMC 95% CI lower,
+      "gmc_ci_upper": GMC 95% CI upper,
+      "journal": "journal name",
+      "authors": "authors (semicolon separated)",
+      "author_affiliations": "author affiliations"
+    }}
+  ]
 }}
 
-Notes:
-- If a field cannot be extracted, fill with null
-- Percentage values as direct numbers, e.g., 87.3% → 87.3
-- Age range like "0-6 years" → age_min=0, age_max=6
-- Output ONLY JSON, no explanatory text
+## Important Rules
+- Province names must match the reference list exactly
+- Remove % sign: 87.3% → 87.3
+- GMC and positivity rate are DIFFERENT indicators. Extract both if present
+- "0-14 years" → age_min=0, age_max=14
+- Multiple regions → separate data point for each
+- Fill null if not determinable
+- Output ONLY JSON, no markdown code blocks
 
 Literature text:
 {text}"""
+
+PROVINCE_LIST_EN = "Beijing, Tianjin, Shanghai, Chongqing, Hebei, Shanxi, Inner Mongolia, Liaoning, Jilin, Heilongjiang, Jiangsu, Zhejiang, Anhui, Fujian, Jiangxi, Shandong, Henan, Hubei, Hunan, Guangdong, Guangxi, Hainan, Sichuan, Guizhou, Yunnan, Tibet, Shaanxi, Gansu, Qinghai, Ningxia, Xinjiang, Taiwan, Hong Kong, Macau"
 
 
 class LLMExtractor:
@@ -125,13 +141,25 @@ class LLMExtractor:
     async def _call_llm_api(self, prompt: str) -> str:
         """调用 LLM API 获取响应"""
         try:
-            response = await self.client.chat.completions.create(
+            # 构建请求参数，DeepSeek 支持 response_format
+            kwargs = dict(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
+                max_tokens=8192,
                 timeout=120,
             )
+            # 仅对明确支持 json_object 的模型添加此参数
+            if "deepseek" in self.model.lower() or "gpt-" in self.model.lower():
+                kwargs["response_format"] = {"type": "json_object"}
+            else:
+                # 其他模型（如 qwen）通过 prompt 引导输出 JSON
+                pass
+
+            response = await self.client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content
+            if content:
+                logger.info(f"LLM 返回内容长度: {len(content)}")
             return content or ""
         except Exception as e:
             logger.warning(f"LLM API 调用失败: {e}，尝试 HTTP 兜底...")
@@ -180,57 +208,72 @@ class LLMExtractor:
         logger.error(f"无法解析 LLM 响应为 JSON: {content[:200]}")
         return {}
 
-    def _post_process(self, data: dict) -> dict:
-        """后处理：标准化术语和类型转换"""
-        result = {}
+    def _post_process(self, data: dict) -> list[dict]:
+        """后处理：从数组格式中提取数据点列表，并进行标准化"""
+        # 新格式：data_points 数组
+        points = data.get("data_points", [data] if data else [])
+        if not isinstance(points, list):
+            points = [data]
+        if not points:
+            return []
 
-        # 标准化疾病名称
-        result["disease_name"] = normalize_disease(data.get("disease_name"))
+        results = []
+        for item in points:
+            if not isinstance(item, dict):
+                continue
+            dp = {}
+            # 标准化疾病名称
+            dp["disease_name"] = normalize_disease(item.get("disease_name"))
+            # 标准化检测方法
+            dp["detection_method"] = normalize_method(item.get("detection_method"))
+            # 标准化抗体类型
+            dp["antibody_type"] = normalize_antibody_type(item.get("antibody_type"))
+            # 标准化省份名称
+            dp["province"] = normalize_province(item.get("province"))
 
-        # 标准化检测方法
-        result["detection_method"] = normalize_method(data.get("detection_method"))
+            # 保留其他字符串字段
+            for field in ["city", "population_type", "gmc_unit",
+                           "journal", "authors", "author_affiliations"]:
+                dp[field] = item.get(field)
 
-        # 标准化抗体类型
-        result["antibody_type"] = normalize_antibody_type(data.get("antibody_type"))
+            # 整数字段
+            for field in [
+                "study_start_year", "study_end_year", "sample_year",
+                "age_min", "age_max", "sample_size",
+            ]:
+                val = item.get(field)
+                if val is not None:
+                    try:
+                        dp[field] = int(val)
+                    except (ValueError, TypeError):
+                        dp[field] = None
+                else:
+                    dp[field] = None
 
-        # 保留其他字符串字段
-        for field in ["province", "city", "population_type", "gmc_unit",
-                       "journal", "authors", "author_affiliations"]:
-            result[field] = data.get(field)
+            # 浮点数字段
+            for field in [
+                "positivity_rate", "positivity_ci_lower", "positivity_ci_upper",
+                "gmc_value", "gmc_ci_lower", "gmc_ci_upper",
+            ]:
+                val = item.get(field)
+                if val is not None:
+                    try:
+                        dp[field] = float(val)
+                    except (ValueError, TypeError):
+                        dp[field] = None
+                else:
+                    dp[field] = None
 
-        # 整数字段
-        for field in [
-            "study_start_year", "study_end_year", "sample_year",
-            "age_min", "age_max", "sample_size",
-        ]:
-            val = data.get(field)
-            if val is not None:
-                try:
-                    result[field] = int(val)
-                except (ValueError, TypeError):
-                    result[field] = None
-            else:
-                result[field] = None
+            results.append(dp)
 
-        # 浮点数字段
-        for field in [
-            "positivity_rate", "positivity_ci_lower", "positivity_ci_upper",
-            "gmc_value", "gmc_ci_lower", "gmc_ci_upper",
-        ]:
-            val = data.get(field)
-            if val is not None:
-                try:
-                    result[field] = float(val)
-                except (ValueError, TypeError):
-                    result[field] = None
-            else:
-                result[field] = None
+        return results
 
-        return result
-
-    def _has_key_fields(self, data: dict) -> bool:
+    def _has_key_fields(self, points: list[dict]) -> bool:
         """检查是否包含关键字段"""
-        return data.get("positivity_rate") is not None or data.get("gmc_value") is not None
+        return any(
+            p.get("positivity_rate") is not None or p.get("gmc_value") is not None
+            for p in points
+        )
 
     async def extract(
         self,
@@ -239,35 +282,56 @@ class LLMExtractor:
         title: str = "",
         journal: str = "",
         pub_year: Optional[int] = None,
-    ) -> dict:
-        """从文本中提取结构化数据"""
+    ) -> list[dict]:
+        """从文本中提取结构化数据（返回数据点列表）"""
         prompt_template = PROMPT_ZH if language == "zh" else PROMPT_EN
 
-        # 构造 prompt，加入文献元信息
+        # 构造 prompt，注入省份列表
+        province_tip = PROVINCE_LIST_TIP if language == "zh" else PROVINCE_LIST_EN
+        if language == "zh":
+            province_tip = PROVINCE_LIST_TIP
+        else:
+            province_tip = PROVINCE_LIST_EN
+
+        # 插入省份列表到 prompt
+        if language == "zh":
+            prompt_template_filled = PROMPT_ZH.format(
+                province_list_tip=PROVINCE_LIST_TIP,
+                text="{text}"
+            )
+        else:
+            prompt_template_filled = PROMPT_EN.format(
+                province_list_en=PROVINCE_LIST_EN,
+                text="{text}"
+            )
+
+        # 加入文献元信息
         meta = ""
         if title:
-            meta += f"文献标题：{title}\n"
+            meta += f"文献标题：{title}\n" if language == "zh" else f"Title: {title}\n"
         if journal:
-            meta += f"发表杂志：{journal}\n"
+            meta += f"发表杂志：{journal}\n" if language == "zh" else f"Journal: {journal}\n"
         if pub_year:
-            meta += f"发表年份：{pub_year}\n"
+            meta += f"发表年份：{pub_year}\n" if language == "zh" else f"Publication year: {pub_year}\n"
 
-        prompt = prompt_template.format(text=meta + text)
+        # 使用 replace 避免 PDF 文本中的 {} 被 str.format 误解析
+        prompt = prompt_template_filled.replace("{text}", meta + text)
 
         # 调用 LLM
         content = await self._call_llm_api(prompt)
         data = self._parse_json(content)
-        result = self._post_process(data)
+        points = self._post_process(data)
 
-        # 补充元信息（如果 LLM 未提取到则用传入的覆盖）
-        if title and not result.get("_title"):
-            result["_title"] = title
-        if journal and not result.get("journal"):
-            result["journal"] = journal
-        if pub_year and not result.get("_pub_year"):
-            result["_pub_year"] = pub_year
+        # 补充元信息
+        for p in points:
+            if title and not p.get("_title"):
+                p["_title"] = title
+            if journal and not p.get("journal"):
+                p["journal"] = journal
+            if pub_year and not p.get("_pub_year"):
+                p["_pub_year"] = pub_year
 
-        return result
+        return points
 
     async def extract_with_retry(
         self,
@@ -277,9 +341,9 @@ class LLMExtractor:
         journal: str = "",
         pub_year: Optional[int] = None,
         max_retries: int = 3,
-    ) -> dict:
-        """带重试的提取，如果缺少关键字段则重试"""
-        last_result = {}
+    ) -> list[dict]:
+        """带重试的提取"""
+        last_result: list[dict] = []
         for attempt in range(max_retries):
             try:
                 result = await self.extract(text, language, title, journal, pub_year)

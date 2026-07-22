@@ -18,6 +18,33 @@ def clean_text(text: str) -> str:
     return text
 
 
+
+def focus_relevant_sections(text: str, lang: str = "zh") -> str:
+    """聚焦最相关段落：结果 > 方法 > 摘要 > 全文，减少LLM输入量"""
+    if len(text) <= 5000:
+        return text
+    keywords = {
+        "zh": ["结果", "阳性率", "抗体水平", "血清", "GMC", "方法", "研究对象", "材料与方法", "摘要"],
+        "en": ["results", "positivity", "antibody", "seroprevalence", "GMC", "methods", "materials", "abstract"],
+    }
+    kw = keywords.get(lang, keywords["en"])
+    lines = text.split("\n")
+    scored = []
+    for i, line in enumerate(lines):
+        score = sum(1 for k in kw if k.lower() in line.lower())
+        if i < 20:
+            score += 1
+        scored.append((score, i, line))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    keep_count = min(len(scored), max(80, len(scored) * 2 // 3))
+    # 按原始行号排序保留
+    kept = scored[:keep_count]
+    kept.sort(key=lambda x: x[1])
+    keep_lines = [line for _, _, line in kept]
+    return "\n".join(keep_lines)
+
+
+
 def detect_language(text: str) -> str:
     """检测文本主要语言：zh / en"""
     chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
@@ -27,7 +54,7 @@ def detect_language(text: str) -> str:
     return "en"
 
 
-def truncate(text: str, max_chars: int = 8000) -> str:
+def truncate(text: str, max_chars: int = 12000) -> str:
     """截断文本到 LLM 上下文窗口以内"""
     if len(text) <= max_chars:
         return text
@@ -67,6 +94,7 @@ def preprocess(text: str, file_type: str = "text") -> str:
     """文本预处理主入口"""
     text = clean_text(text)
     lang = detect_language(text)
+    text = focus_relevant_sections(text, lang)
     text = truncate(text)
 
     # 尝试移除参考文献部分，减少噪音

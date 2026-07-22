@@ -1,5 +1,7 @@
 import logging
+import os
 import uuid
+from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -11,6 +13,8 @@ from app.schemas.literature import LiteratureCreate
 from app.core.minio_client import upload_file, delete_file
 
 logger = logging.getLogger("uvicorn")
+
+LOCAL_STORAGE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "pdfs"
 
 
 async def list_literature(
@@ -110,9 +114,19 @@ async def delete_literature(db: AsyncSession, literature_id: uuid.UUID) -> bool:
     if not literature:
         return False
 
-    # 删除 MinIO 中的文件
+    # 删除文件（MinIO 或本地）
     if literature.file_path:
-        delete_file(literature.file_path)
+        # 如果是本地文件路径
+        local_path = Path(literature.file_path)
+        if local_path.exists():
+            try:
+                os.remove(local_path)
+                logger.info(f"Local file deleted: {local_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete local file: {e}")
+        else:
+            # 尝试从 MinIO 删除
+            delete_file(literature.file_path)
 
     await db.delete(literature)
     await db.commit()
@@ -127,10 +141,24 @@ async def upload_literature(
     doi: Optional[str] = None,
     province: Optional[str] = None,
 ) -> Optional[Literature]:
-    # 上传到 MinIO
     ext = filename.rsplit(".", 1)[-1] if "." in filename else "pdf"
+
+    # 1. 始终保存到本地文件系统（确保提取时能找到文件）
+    LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    local_filename = f"{uuid.uuid4()}.{ext}"
+    local_path = LOCAL_STORAGE_DIR / local_filename
+    with open(local_path, "wb") as f:
+        f.write(file_bytes)
+    logger.info(f"PDF saved locally: {local_path}")
+
+    # 2. 尝试上传到 MinIO（仅用于分布式/备份场景，失败不阻塞）
     object_name = f"literature/{uuid.uuid4()}.{ext}"
-    stored_path = upload_file(file_bytes, object_name, content_type="application/pdf")
+    minio_path = upload_file(file_bytes, object_name, content_type="application/pdf")
+    if minio_path is None:
+        logger.warning("MinIO 不可用，仅保存本地副本")
+
+    # 3. 数据库记录使用本地路径（_download_pdf 会优先匹配本地文件）
+    stored_path = str(local_path)
 
     # 创建文献记录
     literature = Literature(

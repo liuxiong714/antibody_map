@@ -4,6 +4,33 @@ from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.data_point import DataPoint
+from app.core.term_normalizer import normalize_province, CHINA_PROVINCE_NAMES
+
+
+def _parse_provinces(raw: Optional[str]) -> list[str]:
+    """从原始省份字符串中解析出标准省份名称列表"""
+    if not raw:
+        return ["unknown"]
+    # 先按分号拆分
+    parts = [p.strip() for p in raw.replace("；", ";").split(";") if p.strip()]
+    result = []
+    for part in parts:
+        # 尝试标准化
+        normalized = normalize_province(part)
+        if normalized and normalized in CHINA_PROVINCE_NAMES:
+            result.append(normalized)
+            continue
+        # 尝试从长文本中提取已知省份名称
+        found = []
+        for province_name in sorted(CHINA_PROVINCE_NAMES, key=len, reverse=True):
+            if province_name in part:
+                found.append(province_name)
+                part = part.replace(province_name, "", 1)
+        if found:
+            result.extend(found)
+        else:
+            result.append(part)  # 无法识别的保留原文
+    return result if result else ["unknown"]
 
 
 async def get_province_data(
@@ -11,11 +38,14 @@ async def get_province_data(
     disease: Optional[str] = None,
     data_type: Optional[str] = None,
     province: Optional[str] = None,
-    age_group: Optional[str] = None,
+    age_min: Optional[int] = None,
+    age_max: Optional[int] = None,
     year_start: Optional[int] = None,
     year_end: Optional[int] = None,
+    gender: Optional[str] = None,
+    occupation: Optional[str] = None,
 ) -> list[dict]:
-    """获取省份聚合数据（仅审核通过的数据点）"""
+    """get province aggregated data (approved only)"""
     base = select(DataPoint).where(DataPoint.review_status == "approved")
 
     if disease:
@@ -24,21 +54,26 @@ async def get_province_data(
         base = base.where(DataPoint.data_type == data_type)
     if province:
         base = base.where(DataPoint.province.ilike(f"%{province}%"))
+    if age_min is not None:
+        base = base.where(DataPoint.age_min >= age_min)
+    if age_max is not None:
+        base = base.where(DataPoint.age_max <= age_max)
     if year_start:
         base = base.where(DataPoint.collection_year >= year_start)
     if year_end:
         base = base.where(DataPoint.collection_year <= year_end)
+    if gender:
+        base = base.where(DataPoint.population.ilike(f"%{gender}%"))
+    if occupation:
+        base = base.where(DataPoint.population.ilike(f"%{occupation}%"))
 
     result = await db.execute(base)
     rows = result.scalars().all()
 
-    # 按省份聚合（province 字段可能包含 ; 分隔的多省，每个省单独计入）
     province_map: dict[str, dict] = {}
 
     for dp in rows:
-        provinces = [p.strip() for p in (dp.province or "").split(";") if p.strip()]
-        if not provinces:
-            provinces = ["未知"]
+        provinces = _parse_provinces(dp.province)
 
         for key in provinces:
             if key not in province_map:
@@ -53,11 +88,11 @@ async def get_province_data(
     result_list = []
     for key, group in province_map.items():
         dps = group["data_points"]
-        sp_dps = [dp for dp in dps if dp.data_type == "seroprevalence" and dp.sample_size]
+        valid_dps = [dp for dp in dps if dp.sample_size and dp.value is not None]
 
-        if sp_dps:
-            weighted_sum = sum(dp.value * dp.sample_size for dp in sp_dps)
-            total_sample = sum(dp.sample_size for dp in sp_dps)
+        if valid_dps:
+            weighted_sum = float(sum(dp.value * dp.sample_size for dp in valid_dps))
+            total_sample = int(sum(dp.sample_size for dp in valid_dps))
             weighted_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
         else:
             total_sample = 0
@@ -81,7 +116,7 @@ async def get_city_data(
     disease: Optional[str] = None,
     data_type: Optional[str] = None,
 ) -> list[dict]:
-    """获取城市级聚合数据"""
+    """get city-level aggregated data"""
     base = (
         select(DataPoint)
         .where(DataPoint.review_status == "approved")
@@ -98,7 +133,7 @@ async def get_city_data(
     city_map: dict[str, dict] = {}
 
     for dp in rows:
-        city = dp.city or "未知"
+        city = dp.city or "unknown"
         if city not in city_map:
             city_map[city] = {"data_points": [], "literature_ids": set()}
 
@@ -108,11 +143,11 @@ async def get_city_data(
     result_list = []
     for city, group in city_map.items():
         dps = group["data_points"]
-        sp_dps = [dp for dp in dps if dp.data_type == "seroprevalence" and dp.sample_size]
+        valid_dps = [dp for dp in dps if dp.sample_size and dp.value is not None]
 
-        if sp_dps:
-            weighted_sum = sum(dp.value * dp.sample_size for dp in sp_dps)
-            total_sample = sum(dp.sample_size for dp in sp_dps)
+        if valid_dps:
+            weighted_sum = float(sum(dp.value * dp.sample_size for dp in valid_dps))
+            total_sample = int(sum(dp.sample_size for dp in valid_dps))
             weighted_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
         else:
             total_sample = 0
@@ -135,7 +170,7 @@ async def get_summary(
     disease: Optional[str] = None,
     data_type: Optional[str] = None,
 ) -> dict:
-    """获取全国汇总统计"""
+    """get national summary"""
     base = select(DataPoint).where(DataPoint.review_status == "approved")
     if disease:
         base = base.where(DataPoint.disease == disease)
@@ -154,7 +189,6 @@ async def get_summary(
             "national_weighted_rate": None,
         }
 
-    # 统计去重的省份和文献
     provinces = set()
     lit_ids = set()
     for dp in rows:
@@ -165,11 +199,10 @@ async def get_summary(
         if dp.literature_id:
             lit_ids.add(str(dp.literature_id))
 
-    # 加权全国阳性率
-    sp_dps = [dp for dp in rows if dp.data_type == "seroprevalence" and dp.sample_size]
-    if sp_dps:
-        weighted_sum = sum(dp.value * dp.sample_size for dp in sp_dps)
-        total_sample = sum(dp.sample_size for dp in sp_dps)
+    valid_dps = [dp for dp in rows if dp.sample_size and dp.value is not None]
+    if valid_dps:
+        weighted_sum = sum(dp.value * dp.sample_size for dp in valid_dps)
+        total_sample = sum(dp.sample_size for dp in valid_dps)
         national_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
     else:
         total_sample = 0
