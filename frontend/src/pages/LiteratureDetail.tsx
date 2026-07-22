@@ -93,33 +93,63 @@ const LiteratureDetail: React.FC = () => {
   };
 
   const columns: ColumnsType<DataPoint> = [
-    { title: '疾病', dataIndex: 'disease', key: 'disease', width: 80 },
+    {
+      title: '疾病', dataIndex: 'disease', key: 'disease', width: 80,
+      sorter: (a, b) => (a.disease || '').localeCompare(b.disease || ''),
+    },
     {
       title: '地区', key: 'region', width: 160,
+      sorter: (a, b) => {
+        const ra = [a.province, a.city].filter(Boolean).join(' ') || '';
+        const rb = [b.province, b.city].filter(Boolean).join(' ') || '';
+        return ra.localeCompare(rb);
+      },
       render: (_: unknown, r: DataPoint) => [r.province, r.city].filter(Boolean).join(' ') || '-',
     },
     {
       title: '年龄段', key: 'age', width: 100,
+      sorter: (a, b) => {
+        const amin = a.age_min ?? Number.MAX_SAFE_INTEGER;
+        const bmin = b.age_min ?? Number.MAX_SAFE_INTEGER;
+        if (amin !== bmin) return amin - bmin;
+        return (a.age_max ?? Number.MAX_SAFE_INTEGER) - (b.age_max ?? Number.MAX_SAFE_INTEGER);
+      },
       render: (_: unknown, r: DataPoint) =>
         r.age_min != null && r.age_max != null ? `${r.age_min}-${r.age_max}岁` : '-',
     },
     {
       title: '数据类型', dataIndex: 'data_type', key: 'dt', width: 100,
+      sorter: (a, b) => (a.data_type || '').localeCompare(b.data_type || ''),
       render: (v: string) => DATA_TYPE_LABEL[v] || v,
     },
     {
       title: '数值', key: 'value', width: 120,
+      sorter: (a, b) => (a.value ?? Number.MAX_SAFE_INTEGER) - (b.value ?? Number.MAX_SAFE_INTEGER),
       render: (_: unknown, r: DataPoint) =>
         r.value != null ? `${r.value} ${r.unit || ''}` : '-',
     },
-    { title: '样本量', dataIndex: 'sample_size', key: 'ss', width: 80 },
-    { title: '采集年份', dataIndex: 'collection_year', key: 'cy', width: 80 },
+    {
+      title: '样本量', dataIndex: 'sample_size', key: 'ss', width: 80,
+      sorter: (a, b) => (a.sample_size ?? Number.MAX_SAFE_INTEGER) - (b.sample_size ?? Number.MAX_SAFE_INTEGER),
+    },
+    {
+      title: '采集年份', dataIndex: 'collection_year', key: 'cy', width: 80,
+      sorter: (a, b) => (a.collection_year ?? Number.MAX_SAFE_INTEGER) - (b.collection_year ?? Number.MAX_SAFE_INTEGER),
+    },
     {
       title: '置信度', dataIndex: 'confidence', key: 'cf', width: 80,
+      sorter: (a, b) => {
+        const order = { high: 3, medium: 2, low: 1 };
+        return (order[a.confidence as keyof typeof order] || 0) - (order[b.confidence as keyof typeof order] || 0);
+      },
       render: (v: string) => <ConfidenceBadge confidence={v} />,
     },
     {
       title: '状态', key: 'status', width: 80,
+      sorter: (a, b) => {
+        const order: Record<string, number> = { approved: 3, pending: 2, rejected: 1 };
+        return (order[a.review_status] || 0) - (order[b.review_status] || 0);
+      },
       render: (_: unknown, r: DataPoint) => (
         <Tag color={r.review_status === 'approved' ? 'green' : r.review_status === 'rejected' ? 'red' : 'default'}>
           {r.review_status === 'approved' ? '已通过' : r.review_status === 'rejected' ? '已驳回' : '待审核'}
@@ -200,6 +230,7 @@ const LiteratureDetail: React.FC = () => {
           rowKey="id"
           dataSource={dataPoints}
           columns={columns}
+          showSorterTooltip={{ title: '点击排序' }}
           scroll={{ x: 1100 }}
           size="middle"
           rowSelection={{
