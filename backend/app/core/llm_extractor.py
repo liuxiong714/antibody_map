@@ -175,7 +175,7 @@ class LLMExtractor:
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=8192,
+                max_tokens=16384,
                 timeout=120,
             )
             # 仅对明确支持 json_object 的模型添加此参数
@@ -208,6 +208,7 @@ class LLMExtractor:
                         "model": self.model,
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": 0.1,
+                        "max_tokens": 16384,
                         "response_format": {"type": "json_object"},
                     },
                 )
@@ -220,21 +221,78 @@ class LLMExtractor:
 
     def _parse_json(self, content: str) -> dict:
         """解析 LLM 返回的 JSON"""
+        if not content:
+            return {}
+
+        content_clean = content.strip()
+        if content_clean.startswith("```json"):
+            content_clean = content_clean[7:]
+        if content_clean.startswith("```"):
+            content_clean = content_clean[3:]
+        if content_clean.endswith("```"):
+            content_clean = content_clean[:-3]
+        content_clean = content_clean.strip()
+
         # 尝试直接解析
         try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            pass
+            return json.loads(content_clean)
+        except json.JSONDecodeError as e:
+            logger.warning(f"直接解析失败: {e}")
 
         # 尝试提取 JSON 块
-        json_match = re.search(r"\{[\s\S]*\}", content)
+        json_match = re.search(r"\{[\s\S]*\}", content_clean)
         if json_match:
+            match_str = json_match.group()
             try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
+                return json.loads(match_str)
+            except json.JSONDecodeError as e:
+                logger.warning(f"提取 JSON 块解析失败: {e}")
 
-        logger.error(f"无法解析 LLM 响应为 JSON: {content[:200]}")
+        # 尝试修复常见的 JSON 格式问题
+        try:
+            fixed = content_clean.replace("'", "\"")
+            return json.loads(fixed)
+        except json.JSONDecodeError as e:
+            logger.warning(f"修复单引号解析失败: {e}")
+
+        # 尝试修复未闭合的 JSON（找到最后一个 }）
+        try:
+            last_brace = content_clean.rfind("}")
+            if last_brace != -1:
+                fixed_json = content_clean[:last_brace + 1]
+                return json.loads(fixed_json)
+        except json.JSONDecodeError as e:
+            logger.warning(f"修复未闭合 JSON 失败: {e}")
+
+        # 尝试使用 json.JSONDecoder 宽松模式
+        try:
+            import json as json_module
+            decoder = json_module.JSONDecoder()
+            result, _ = decoder.raw_decode(content_clean)
+            return result
+        except Exception as e:
+            logger.warning(f"宽松模式解析失败: {e}")
+
+        # 尝试逐字符检查问题
+        try:
+            import json as json_module
+            import traceback
+            for i in range(len(content_clean)):
+                try:
+                    json_module.loads(content_clean[:i+1])
+                except json_module.JSONDecodeError:
+                    continue
+                else:
+                    partial = content_clean[:i+1]
+                    try:
+                        return json_module.loads(partial)
+                    except:
+                        pass
+        except:
+            pass
+
+        logger.error(f"无法解析 LLM 响应为 JSON: {content[:500]}")
+        logger.error(f"响应长度: {len(content)}")
         return {}
 
     def _post_process(self, data: dict) -> list[dict]:

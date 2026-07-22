@@ -218,8 +218,13 @@ async def _process_literature_async(
                 literature.journal = first["journal"]
 
         # 8. 更新 literature 状态
-        literature.extraction_status = "done"
-        literature.extracted_count = len(all_data_points)
+        if len(all_data_points) > 0:
+            literature.extraction_status = "done"
+            literature.extracted_count = len(all_data_points)
+        else:
+            literature.extraction_status = "failed"
+            literature.extracted_count = 0
+            logger.warning(f"文献 {literature_id} 提取结果为空，状态标记为 failed")
 
         await db.commit()
 
