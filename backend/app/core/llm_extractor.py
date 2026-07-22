@@ -131,11 +131,40 @@ PROVINCE_LIST_EN = "Beijing, Tianjin, Shanghai, Chongqing, Hebei, Shanxi, Inner 
 class LLMExtractor:
     """LLM 数据提取引擎"""
 
+    # 模型前缀 → 配置前缀的映射
+    _MODEL_CONFIG_MAP = {
+        "deepseek": "DEEPSEEK",
+        "gpt-": "OPENAI",
+        "o1-": "OPENAI",
+        "o3-": "OPENAI",
+        "qwen": "QWEN",
+    }
+
+    @staticmethod
+    def _resolve_api_config(model: str):
+        """根据模型名解析对应的 API key 和 base_url"""
+        api_key = settings.LLM_API_KEY
+        base_url = settings.LLM_BASE_URL
+
+        model_lower = model.lower()
+        for prefix, config_key in LLMExtractor._MODEL_CONFIG_MAP.items():
+            if model_lower.startswith(prefix):
+                vendor_key = getattr(settings, f"{config_key}_API_KEY", "")
+                vendor_url = getattr(settings, f"{config_key}_BASE_URL", "")
+                if vendor_key:
+                    api_key = vendor_key
+                if vendor_url:
+                    base_url = vendor_url
+                break
+
+        return api_key, base_url
+
     def __init__(self, model: Optional[str] = None):
         self.model = model or settings.LLM_MODEL
+        api_key, base_url = self._resolve_api_config(self.model)
         self.client = AsyncOpenAI(
-            api_key=settings.LLM_API_KEY,
-            base_url=settings.LLM_BASE_URL,
+            api_key=api_key,
+            base_url=base_url,
         )
 
     async def _call_llm_api(self, prompt: str) -> str:
