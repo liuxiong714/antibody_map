@@ -1,8 +1,8 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Card, Row, Col, Statistic, Spin, message, Table, Select, InputNumber, Button } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts';
-import { SearchOutlined } from '@ant-design/icons';
+import { SearchOutlined, ReloadOutlined } from '@ant-design/icons';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import MapSelector from '../components/MapSelector';
@@ -13,7 +13,7 @@ import { SERO_COLOR_STOPS, GMC_COLOR_STOPS, GENDER_OPTIONS, OCCUPATION_OPTIONS, 
 
 const MapOverview: React.FC = () => {
   const { disease, dataType, province, yearStart, yearEnd, ageMin, ageMax, gender, occupation,
-    setDisease, setDataType, setProvince, setYearRange, setAgeRange, setGender, setOccupation } = useFilterStore();
+    setDisease, setDataType, setProvince, setYearRange, setAgeRange, setGender, setOccupation, reset } = useFilterStore();
   const [mapReady, setMapReady] = useState(false);
   const [mapData, setMapData] = useState<MapDataPoint[]>([]);
   const [loading, setLoading] = useState(false);
@@ -166,6 +166,9 @@ const MapOverview: React.FC = () => {
           </Col>
           <Col>
             <Button type="primary" icon={<SearchOutlined />} onClick={fetchData} loading={loading}>查询</Button>
+          </Col>
+          <Col>
+            <Button icon={<ReloadOutlined />} onClick={() => { reset(); fetchData(); }}>重置</Button>
           </Col>
         </Row>
       </Card>

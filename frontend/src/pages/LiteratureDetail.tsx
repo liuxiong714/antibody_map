@@ -25,6 +25,7 @@ const LiteratureDetail: React.FC = () => {
   const [reviewNote, setReviewNote] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [modalAction, setModalAction] = useState<'approved' | 'rejected'>('approved');
+  const [pollingInterval, setPollingInterval] = useState<number | null>(null);
 
   const fetchData = useCallback(async () => {
     if (!id) return;
@@ -50,15 +51,37 @@ const LiteratureDetail: React.FC = () => {
     setExtracting(true);
     try {
       await triggerExtraction(id);
-      message.success('AI 提取任务已提交');
-      setTimeout(() => fetchData(), 2000);
-      setTimeout(() => fetchData(), 5000);
+      message.success('AI 提取任务已提交，正在轮询进度...');
+      const interval = window.setInterval(() => {
+        fetchData().then(() => {
+          if (literature?.extraction_status !== 'processing') {
+            if (pollingInterval) {
+              clearInterval(pollingInterval);
+              setPollingInterval(null);
+            }
+            if (literature?.extraction_status === 'done') {
+              message.success(`提取完成，共提取 ${literature.extracted_count} 个数据点`);
+            } else if (literature?.extraction_status === 'failed') {
+              message.error('提取失败，请重试');
+            }
+          }
+        });
+      }, 3000);
+      setPollingInterval(interval);
     } catch {
       message.error('提取失败');
     } finally {
       setExtracting(false);
     }
   };
+
+  useEffect(() => {
+    return () => {
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+      }
+    };
+  }, [pollingInterval]);
 
   const handleSingleReview = async (dpId: string, status: 'approved' | 'rejected') => {
     if (!id) return;

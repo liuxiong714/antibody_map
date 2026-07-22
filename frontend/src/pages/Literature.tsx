@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Card, Table, Button, Input, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import DiseaseSelector from '../components/DiseaseSelector';
@@ -201,6 +201,7 @@ const LiteraturePage: React.FC = () => {
             allowClear
           />
           <DiseaseSelector value={disease} onChange={setDisease} />
+          <Button icon={<ReloadOutlined />} onClick={() => { setKeyword(''); setDisease(''); setPage(1); }}>重置筛选</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
             上传文献
           </Button>

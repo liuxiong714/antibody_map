@@ -14,6 +14,7 @@ except ImportError:
     HAS_PYMUPDF = False
 
 from app.core.ocr_service import ocr_pdf_pages
+from app.config import settings
 
 logger = logging.getLogger("uvicorn")
 
@@ -47,7 +48,12 @@ def extract_text(file_bytes: bytes) -> str:
         # 如果提取的文本过短（<100 字符），尝试 OCR
         if len(combined_text.strip()) < 100 and page_images_for_ocr:
             logger.info("PyMuPDF 提取文本过短，尝试 OCR 兜底...")
-            ocr_text = ocr_pdf_pages(page_images_for_ocr)
+            ocr_text = ocr_pdf_pages(
+                page_images_for_ocr,
+                fallback_to_baidu=settings.OCR_FALLBACK_TO_BAIDU,
+                baidu_api_key=settings.BAIDU_OCR_API_KEY,
+                baidu_secret_key=settings.BAIDU_OCR_SECRET_KEY,
+            )
             if ocr_text:
                 return ocr_text
 

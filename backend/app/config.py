@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://redis:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
 
+    # OCR
+    BAIDU_OCR_API_KEY: str = ""
+    BAIDU_OCR_SECRET_KEY: str = ""
+    OCR_FALLBACK_TO_BAIDU: bool = False
+
     # App
     SECRET_KEY: str = "change-this-in-production"
     APP_ENV: str = "development"
