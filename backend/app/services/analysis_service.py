@@ -290,7 +290,7 @@ async def get_immune_barrier_assessment(
     if sp_rows:
         total_sample = sum(r.sample_size for r in sp_rows)
         weighted_sum = sum(r.value * r.sample_size for r in sp_rows)
-        weighted_rate = round(weighted_sum / total_sample * 100, 2) if total_sample > 0 else None  # 转为百分比
+        weighted_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
     else:
         total_sample = 0
         weighted_rate = None
@@ -314,7 +314,7 @@ async def get_immune_barrier_assessment(
         if sp_g:
             ys = sum(r.sample_size for r in sp_g)
             yw = sum(r.value * r.sample_size for r in sp_g)
-            y_rate = round(yw / ys * 100, 2) if ys > 0 else None
+            y_rate = round(yw / ys, 2) if ys > 0 else None
         else:
             ys = 0
             y_rate = None
