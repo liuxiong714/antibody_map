@@ -1,7 +1,10 @@
 import uuid
+from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
@@ -95,3 +98,28 @@ async def delete(
     if not success:
         raise HTTPException(status_code=404, detail="文献不存在")
     return ApiResponse(message="删除成功")
+
+
+@router.get("/literatures/{literature_id}/file")
+async def get_pdf_file(
+    literature_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """返回 PDF 文件流供前端预览"""
+    literature = await get_literature(db, literature_id)
+    if not literature:
+        raise HTTPException(status_code=404, detail="文献不存在")
+
+    file_path = Path(literature.file_path) if literature.file_path else None
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="PDF 文件不存在")
+
+    pdf_bytes = file_path.read_bytes()
+    safe_filename = quote(f"{literature.title or literature_id}.pdf")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{safe_filename}",
+        },
+    )

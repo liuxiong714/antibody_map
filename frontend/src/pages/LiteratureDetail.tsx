@@ -1,16 +1,16 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, message, Spin, Row, Col, Popconfirm, Select,
+  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, message, Spin, Select, Row, Col,
 } from 'antd';
-import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
 import {
-  getLiterature, getExtractionResults, updateDataPoints, triggerExtraction,
+  getLiterature, getExtractionResults, updateDataPoints, triggerExtraction, updateLiterature,
 } from '../services/literature';
-import { Literature, DataPoint, ExtractionStatus } from '../types';
+import PdfViewer from '../components/PdfViewer';
 import { DATA_TYPE_LABEL, MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
 import dayjs from 'dayjs';
 
@@ -30,6 +30,65 @@ const LiteratureDetail: React.FC = () => {
   const [extractModel, setExtractModel] = useState<string | undefined>(undefined);
   const [extractApiKey, setExtractApiKey] = useState('');
   const [extractBaseUrl, setExtractBaseUrl] = useState('');
+
+  // 面板大小状态
+  const [topHeightPercent, setTopHeightPercent] = useState(30);
+  const [leftWidthPercent, setLeftWidthPercent] = useState(55);
+  const dragRef = useRef<'vertical' | 'horizontal' | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // 折叠状态
+  const [isTopCollapsed, setIsTopCollapsed] = useState(false);
+  const [isLeftCollapsed, setIsLeftCollapsed] = useState(false);
+  const [isRightCollapsed, setIsRightCollapsed] = useState(false);
+
+  // 编辑状态
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState<Record<string, string | number | null>>({});
+  const [saving, setSaving] = useState(false);
+
+  const handleStartEdit = () => {
+    if (!literature) return;
+    setEditForm({
+      title: literature.title || '',
+      title_en: literature.title_en || '',
+      authors: literature.authors || '',
+      journal: literature.journal || '',
+      pub_year: literature.pub_year ?? null,
+      doi: literature.doi || '',
+      pmid: literature.pmid || '',
+      abstract: literature.abstract || '',
+      region: literature.region || '',
+      province: literature.province || '',
+    });
+    setEditing(true);
+  };
+
+  const handleCancelEdit = () => {
+    setEditing(false);
+    setEditForm({});
+  };
+
+  const handleSaveEdit = async () => {
+    if (!id) return;
+    setSaving(true);
+    try {
+      const updates: Record<string, unknown> = {};
+      Object.entries(editForm).forEach(([k, v]) => {
+        if (v !== '' && v !== null && v !== undefined) {
+          updates[k] = k === 'pub_year' ? (v ? Number(v) : null) : v;
+        }
+      });
+      await updateLiterature(id, updates);
+      message.success('文献信息已更新');
+      setEditing(false);
+      fetchData();
+    } catch {
+      message.error('更新失败');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const fetchData = useCallback(async () => {
     if (!id) return;
@@ -214,78 +273,368 @@ const LiteratureDetail: React.FC = () => {
     },
   ];
 
+  // 拖拽调整面板大小
+  const handleDragStart = useCallback((direction: 'vertical' | 'horizontal') => (e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = direction;
+    document.body.style.cursor = direction === 'vertical' ? 'row-resize' : 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragRef.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+
+      if (dragRef.current === 'vertical') {
+        const ratio = ((e.clientY - rect.top) / rect.height) * 100;
+        setTopHeightPercent(Math.min(65, Math.max(15, ratio)));
+      } else {
+        const ratio = ((e.clientX - rect.left) / rect.width) * 100;
+        setLeftWidthPercent(Math.min(80, Math.max(25, ratio)));
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (dragRef.current) {
+        dragRef.current = null;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
 
   return (
     <>
-      <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/literature')} style={{ marginBottom: 16 }}>
+      <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/literature')} style={{ marginBottom: 12 }}>
         返回列表
       </Button>
 
-      <Card style={{ marginBottom: 16 }}>
-        <Descriptions title={literature?.title || '文献详情'} column={2} size="small">
-          <Descriptions.Item label="作者">{literature?.authors || '-'}</Descriptions.Item>
-          <Descriptions.Item label="期刊">{literature?.journal || '-'}</Descriptions.Item>
-          <Descriptions.Item label="年份">{literature?.pub_year || '-'}</Descriptions.Item>
-          <Descriptions.Item label="DOI">{literature?.doi || '-'}</Descriptions.Item>
-          <Descriptions.Item label="省份">{literature?.province || '-'}</Descriptions.Item>
-          <Descriptions.Item label="提取状态">
-            <StatusBadge status={literature?.extraction_status || 'pending'} />
-          </Descriptions.Item>
-          <Descriptions.Item label="审核进度">
-            {literature?.approved_count || 0} / {literature?.extracted_count || 0} 已通过
-          </Descriptions.Item>
-        </Descriptions>
-        {literature?.abstract && (
-          <p style={{ color: '#666', marginTop: 12 }}>{literature.abstract}</p>
-        )}
-        <Space style={{ marginTop: 12 }}>
-          <Button icon={<ExperimentOutlined />} onClick={handleExtract} loading={extracting}>
-            AI 提取
-          </Button>
-        </Space>
-      </Card>
-
-      <Card
-        title={`数据点（${dataPoints.length}）`}
-        extra={
-          <Space>
-            <Button
-              type="primary"
-              icon={<CheckOutlined />}
-              disabled={selectedRowKeys.length === 0}
-              onClick={() => openBatchModal('approved')}
-            >
-              批量通过
-            </Button>
-            <Button
-              danger
-              icon={<CloseOutlined />}
-              disabled={selectedRowKeys.length === 0}
-              onClick={() => openBatchModal('rejected')}
-            >
-              批量驳回
-            </Button>
-          </Space>
-        }
+      {/* 可拖拽调整的整体容器 */}
+      <div
+        ref={containerRef}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: 'calc(100vh - 90px)',
+          minHeight: 500,
+        }}
       >
-        <Table
-          rowKey="id"
-          dataSource={dataPoints}
-          columns={columns}
-          showSorterTooltip={{ title: '点击排序' }}
-          scroll={{ x: 1100 }}
-          size="middle"
-          rowSelection={{
-            selectedRowKeys,
-            onChange: (keys) => setSelectedRowKeys(keys),
-            getCheckboxProps: (r: DataPoint) => ({
-              disabled: r.review_status !== 'pending',
-            }),
-          }}
-          pagination={false}
-        />
-      </Card>
+        {/* ===== 上方：文献信息卡片 ===== */}
+        {isTopCollapsed ? (
+          /* 折叠态：仅显示标题栏 */
+          <div
+            style={{
+              flexShrink: 0,
+              background: '#fff',
+              border: '1px solid #e8e8e8',
+              borderRadius: 6,
+              padding: '6px 16px',
+              marginBottom: 4,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              cursor: 'pointer',
+            }}
+            onClick={() => setIsTopCollapsed(false)}
+          >
+            <span style={{ fontWeight: 600, fontSize: 14 }}>文献详情</span>
+            <DownOutlined style={{ color: '#888' }} />
+          </div>
+        ) : (
+          <>
+            <div style={{ flex: `0 0 ${topHeightPercent}%`, overflow: 'auto', minHeight: 0, marginBottom: 0, transition: 'flex 0.25s' }}>
+              <Card
+                style={{ height: '100%' }}
+                styles={{ body: { height: '100%', overflow: 'auto' } }}
+                title={
+                  <Space>
+                    <span style={{ cursor: 'pointer' }} onClick={() => setIsTopCollapsed(true)}>
+                      <UpOutlined style={{ marginRight: 4, color: '#888' }} />
+                    </span>
+                    {editing ? '编辑文献信息' : (literature?.title || '文献详情')}
+                  </Space>
+                }
+                extra={
+                  editing ? (
+                    <Space>
+                      <Button size="small" onClick={handleCancelEdit}>取消</Button>
+                      <Button size="small" type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSaveEdit}>保存</Button>
+                    </Space>
+                  ) : (
+                    <Button size="small" icon={<EditOutlined />} onClick={handleStartEdit}>编辑</Button>
+                  )
+                }
+              >
+                {editing ? (
+                  <Row gutter={[16, 12]}>
+                    <Col span={12}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>标题</div>
+                      <Input value={String(editForm.title ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))} />
+                    </Col>
+                    <Col span={12}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>英文标题</div>
+                      <Input value={String(editForm.title_en ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, title_en: e.target.value }))} />
+                    </Col>
+                    <Col span={12}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>作者</div>
+                      <Input value={String(editForm.authors ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, authors: e.target.value }))} />
+                    </Col>
+                    <Col span={12}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>期刊</div>
+                      <Input value={String(editForm.journal ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, journal: e.target.value }))} />
+                    </Col>
+                    <Col span={6}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>年份</div>
+                      <Input value={editForm.pub_year != null ? String(editForm.pub_year) : ''} onChange={(e) => setEditForm((f) => ({ ...f, pub_year: e.target.value }))} />
+                    </Col>
+                    <Col span={6}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>DOI</div>
+                      <Input value={String(editForm.doi ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, doi: e.target.value }))} />
+                    </Col>
+                    <Col span={6}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>PMID</div>
+                      <Input value={String(editForm.pmid ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, pmid: e.target.value }))} />
+                    </Col>
+                    <Col span={6}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>省份</div>
+                      <Input value={String(editForm.province ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, province: e.target.value }))} />
+                    </Col>
+                    <Col span={24}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>摘要</div>
+                      <Input.TextArea rows={3} value={String(editForm.abstract ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, abstract: e.target.value }))} />
+                    </Col>
+                  </Row>
+                ) : (
+                  <>
+                    <Descriptions column={2} size="small">
+                      <Descriptions.Item label="作者">{literature?.authors || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="期刊">{literature?.journal || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="年份">{literature?.pub_year || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="DOI">{literature?.doi || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="省份">{literature?.province || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="提取状态">
+                        <StatusBadge status={literature?.extraction_status || 'pending'} />
+                      </Descriptions.Item>
+                      <Descriptions.Item label="审核进度">
+                        {literature?.approved_count || 0} / {literature?.extracted_count || 0} 已通过
+                      </Descriptions.Item>
+                    </Descriptions>
+                    {literature?.abstract && (
+                      <p style={{ color: '#666', marginTop: 12 }}>{literature.abstract}</p>
+                    )}
+                    <Space style={{ marginTop: 12 }}>
+                      <Button icon={<ExperimentOutlined />} onClick={handleExtract} loading={extracting}>
+                        AI 提取
+                      </Button>
+                    </Space>
+                  </>
+                )}
+              </Card>
+            </div>
+
+            {/* 水平拖拽手柄 */}
+            <div
+              onMouseDown={handleDragStart('vertical')}
+              style={{
+                height: 6,
+                cursor: 'row-resize',
+                background: 'linear-gradient(to bottom, #d9d9d9, #bfbfbf, #d9d9d9)',
+                flexShrink: 0,
+                borderRadius: '0 0 2px 2px',
+                margin: '0 0',
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#1677ff'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'linear-gradient(to bottom, #d9d9d9, #bfbfbf, #d9d9d9)'; }}
+            />
+          </>
+        )}
+
+        {/* ===== 下方：数据点 + PDF 预览 分栏 ===== */}
+        <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+          {/* 左侧：数据点表格 */}
+          {isLeftCollapsed ? (
+            /* 折叠态：左侧竖条，内容向左贴边 */
+            <div
+              style={{
+                flexShrink: 0,
+                width: 32,
+                background: '#fafafa',
+                border: '1px solid #e8e8e8',
+                borderLeft: 'none',
+                borderRadius: '0 6px 6px 0',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                gap: 8,
+              }}
+              onClick={() => setIsLeftCollapsed(false)}
+              title="展开数据点面板"
+            >
+              <RightOutlined style={{ fontSize: 12, color: '#888' }} />
+              <span
+                style={{
+                  writingMode: 'vertical-rl',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: '#666',
+                  letterSpacing: 2,
+                }}
+              >
+                数据点
+              </span>
+            </div>
+          ) : (
+            <>
+              <div style={{ flex: isRightCollapsed ? '1 1 0%' : `0 0 ${leftWidthPercent}%`, minWidth: 0, display: 'flex', flexDirection: 'column', transition: 'flex 0.25s' }}>
+                <Card
+                  title={
+                    <Space>
+                      <MenuFoldOutlined
+                        style={{ cursor: 'pointer', color: '#888' }}
+                        onClick={() => setIsLeftCollapsed(true)}
+                      />
+                      <span>{`数据点（${dataPoints.length}）`}</span>
+                    </Space>
+                  }
+                  extra={
+                    <Space>
+                      <Button
+                        type="primary"
+                        icon={<CheckOutlined />}
+                        disabled={selectedRowKeys.length === 0}
+                        onClick={() => openBatchModal('approved')}
+                      >
+                        批量通过
+                      </Button>
+                      <Button
+                        danger
+                        icon={<CloseOutlined />}
+                        disabled={selectedRowKeys.length === 0}
+                        onClick={() => openBatchModal('rejected')}
+                      >
+                        批量驳回
+                      </Button>
+                    </Space>
+                  }
+                  styles={{ body: { flex: 1, overflow: 'auto', padding: 0 } }}
+                  style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+                >
+                  <Table
+                    rowKey="id"
+                    dataSource={dataPoints}
+                    columns={columns}
+                    showSorterTooltip={{ title: '点击排序' }}
+                    scroll={{ x: 1100 }}
+                    size="middle"
+                    rowSelection={{
+                      selectedRowKeys,
+                      onChange: (keys) => setSelectedRowKeys(keys),
+                      getCheckboxProps: (r: DataPoint) => ({
+                        disabled: r.review_status !== 'pending',
+                      }),
+                    }}
+                    pagination={false}
+                  />
+                </Card>
+              </div>
+
+              {/* 垂直拖拽手柄（仅当右侧未折叠时显示） */}
+              {!isRightCollapsed && (
+                <div
+                  onMouseDown={handleDragStart('horizontal')}
+                  style={{
+                    width: 6,
+                    cursor: 'col-resize',
+                    background: 'linear-gradient(to right, #d9d9d9, #bfbfbf, #d9d9d9)',
+                    flexShrink: 0,
+                    margin: '0 2px',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#1677ff'; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'linear-gradient(to right, #d9d9d9, #bfbfbf, #d9d9d9)'; }}
+                />
+              )}
+            </>
+          )}
+
+          {/* 右侧：PDF 预览 */}
+          {isRightCollapsed ? (
+            /* 折叠态：右侧竖条，内容向右贴边 */
+            <div
+              style={{
+                flexShrink: 0,
+                width: 32,
+                background: '#fafafa',
+                border: '1px solid #e8e8e8',
+                borderRight: 'none',
+                borderRadius: '6px 0 0 6px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                gap: 8,
+              }}
+              onClick={() => setIsRightCollapsed(false)}
+              title="展开文献预览面板"
+            >
+              <LeftOutlined style={{ fontSize: 12, color: '#888' }} />
+              <span
+                style={{
+                  writingMode: 'vertical-rl',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: '#666',
+                  letterSpacing: 2,
+                }}
+              >
+                文献预览
+              </span>
+            </div>
+          ) : (
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', transition: 'flex 0.25s' }}>
+              <Card
+                title={
+                  <Space>
+                    <MenuFoldOutlined
+                      style={{ cursor: 'pointer', color: '#888' }}
+                      onClick={() => setIsRightCollapsed(true)}
+                    />
+                    <span>文献预览</span>
+                  </Space>
+                }
+                styles={{ body: { padding: 8, flex: 1, overflow: 'auto' } }}
+                style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+              >
+                {id ? (
+                  <PdfViewer
+                    literatureId={id}
+                    defaultScale={0.8}
+                    maxHeight="100%"
+                  />
+                ) : (
+                  <div style={{ textAlign: 'center', paddingTop: 100, color: '#999' }}>
+                    无法加载预览
+                  </div>
+                )}
+              </Card>
+            </div>
+          )}
+        </div>
+      </div>
 
       <Modal
         title={modalAction === 'approved' ? '批量审核通过' : '批量驳回'}

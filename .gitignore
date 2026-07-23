@@ -8,3 +8,5 @@ redis_data/
 minio_data/
 backend/data/pdfs/
 debug.log
+frontend/public/cmaps/
+frontend/public/standard_fonts/

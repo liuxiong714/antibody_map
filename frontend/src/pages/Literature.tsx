@@ -2,11 +2,12 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Card, Table, Button, Input, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import DiseaseSelector from '../components/DiseaseSelector';
 import StatusBadge from '../components/StatusBadge';
+import PdfPreviewModal from '../components/PdfPreviewModal';
 import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction } from '../services/literature';
 import { Literature } from '../types';
 import { MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
@@ -32,6 +33,11 @@ const LiteraturePage: React.FC = () => {
   const [extracting, setExtracting] = useState(false);
   const [extractApiKey, setExtractApiKey] = useState('');
   const [extractBaseUrl, setExtractBaseUrl] = useState('');
+
+  // PDF 预览
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLitId, setPreviewLitId] = useState<string | null>(null);
+  const [previewLitTitle, setPreviewLitTitle] = useState('');
 
   const fetchList = useCallback(async () => {
     setLoading(true);
@@ -185,7 +191,7 @@ const LiteraturePage: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 180,
+      width: 230,
       render: (_: unknown, r: Literature) => (
         <Space size="small">
           <Tooltip title="AI 提取">
@@ -195,6 +201,17 @@ const LiteraturePage: React.FC = () => {
               onClick={() => handleExtract(r.id)}
               loading={r.extraction_status === 'processing'}
               disabled={r.extraction_status === 'processing'}
+            />
+          </Tooltip>
+          <Tooltip title="预览">
+            <Button
+              size="small"
+              icon={<EyeOutlined />}
+              onClick={() => {
+                setPreviewLitId(r.id);
+                setPreviewLitTitle(r.title);
+                setPreviewOpen(true);
+              }}
             />
           </Tooltip>
           <Button size="small" onClick={() => navigate(`/literature/${r.id}`)}>详情</Button>
@@ -340,6 +357,13 @@ const LiteraturePage: React.FC = () => {
           );
         })()}
       </Modal>
+
+      <PdfPreviewModal
+        open={previewOpen}
+        literatureId={previewLitId}
+        literatureTitle={previewLitTitle}
+        onClose={() => setPreviewOpen(false)}
+      />
     </>
   );
 };

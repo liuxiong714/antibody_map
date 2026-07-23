@@ -16,6 +16,11 @@ export async function deleteLiterature(id: string) {
   return data;
 }
 
+export async function updateLiterature(id: string, updates: Record<string, unknown>) {
+  const { data } = await api.put<ApiResponse<Literature>>(`/literatures/${id}`, updates);
+  return data;
+}
+
 export async function uploadLiterature(formData: FormData) {
   const { data } = await api.post<ApiResponse<Literature>>('/literatures/upload', formData);
   return data;
