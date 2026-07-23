@@ -19,6 +19,8 @@ async def trigger_extraction(
     db: AsyncSession,
     literature_id: uuid.UUID,
     model: Optional[str] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> dict:
     """触发文献 AI 提取任务（后台异步执行）"""
     # 检查文献存在
@@ -39,7 +41,7 @@ async def trigger_extraction(
 
     # 后台异步执行提取（不阻塞响应）
     lit_id_str = str(literature_id)
-    asyncio.create_task(_run_extraction_background(lit_id_str, model))
+    asyncio.create_task(_run_extraction_background(lit_id_str, model, api_key, base_url))
 
     return {
         "literature_id": lit_id_str,
@@ -47,10 +49,15 @@ async def trigger_extraction(
     }
 
 
-async def _run_extraction_background(literature_id: str, model: Optional[str] = None):
+async def _run_extraction_background(
+    literature_id: str,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+):
     """后台执行提取并处理失败"""
     try:
-        result = await _process_literature_async(literature_id, model)
+        result = await _process_literature_async(literature_id, model, api_key, base_url)
         logger.info(f"文献 {literature_id} 提取完成，数据点: {result['extracted_count']}")
     except Exception as e:
         logger.error(f"文献 {literature_id} 提取失败: {e}", exc_info=True)

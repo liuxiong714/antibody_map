@@ -17,15 +17,23 @@ export async function deleteLiterature(id: string) {
 }
 
 export async function uploadLiterature(formData: FormData) {
-  const { data } = await api.post<ApiResponse<Literature>>('/literatures/upload', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  });
+  const { data } = await api.post<ApiResponse<Literature>>('/literatures/upload', formData);
   return data;
 }
 
-export async function triggerExtraction(literatureId: string, model?: string) {
-  const params = model ? { model } : {};
-  const { data } = await api.post<ApiResponse>(`/literatures/${literatureId}/extraction`, null, { params });
+export interface ExtractionOptions {
+  model: string;
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+export async function triggerExtraction(literatureId: string, options?: ExtractionOptions) {
+  const body = options ? {
+    model: options.model,
+    api_key: options.apiKey,
+    base_url: options.baseUrl,
+  } : {};
+  const { data } = await api.post<ApiResponse>(`/literatures/${literatureId}/extraction`, body);
   return data;
 }
 

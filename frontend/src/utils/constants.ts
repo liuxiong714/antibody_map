@@ -49,14 +49,27 @@ export const EXTRACTION_STATUS_META: Record<string, { color: string; label: stri
   failed: { color: 'red', label: '失败' },
 };
 
-export const MODEL_OPTIONS = [
-  { value: 'deepseek-chat', label: 'DeepSeek Chat（推荐）' },
-  { value: 'gpt-4o-mini', label: 'GPT-4o-mini' },
-  { value: 'gpt-4o', label: 'GPT-4o' },
-  { value: 'deepseek-reasoner', label: 'DeepSeek R1' },
-  { value: 'qwen2.5-7b', label: 'Qwen2.5-7B' },
-  { value: '', label: '默认配置' },
+export interface ModelOption {
+  value: string;
+  label: string;
+  vendor: 'deepseek' | 'openai' | 'qwen' | '';
+}
+
+export const MODEL_OPTIONS: ModelOption[] = [
+  { value: '', label: '默认配置', vendor: '' },
+  { value: 'deepseek-chat', label: 'DeepSeek Chat（推荐）', vendor: 'deepseek' },
+  { value: 'deepseek-reasoner', label: 'DeepSeek R1', vendor: 'deepseek' },
+  { value: 'gpt-4o-mini', label: 'GPT-4o-mini', vendor: 'openai' },
+  { value: 'gpt-4o', label: 'GPT-4o', vendor: 'openai' },
+  { value: 'qwen2.5-7b', label: 'Qwen2.5-7B', vendor: 'qwen' },
 ];
+
+export const VENDOR_INFO: Record<string, { name: string; apiKeyLabel: string; baseUrlLabel: string; defaultBaseUrl: string }> = {
+  deepseek: { name: 'DeepSeek', apiKeyLabel: 'DeepSeek API Key', baseUrlLabel: 'API Base URL', defaultBaseUrl: 'https://api.deepseek.com' },
+  openai: { name: 'OpenAI', apiKeyLabel: 'OpenAI API Key', baseUrlLabel: 'API Base URL', defaultBaseUrl: 'https://api.openai.com/v1' },
+  qwen: { name: 'Qwen', apiKeyLabel: 'Qwen API Key', baseUrlLabel: 'API Base URL', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  '': { name: '', apiKeyLabel: '', baseUrlLabel: '', defaultBaseUrl: '' },
+};
 
 export const SERO_COLOR_STOPS = [
   { min: 0, color: '#f0f9e8' },

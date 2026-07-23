@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,17 +39,26 @@ class BatchReviewRequest(BaseModel):
     note: Optional[str] = None
 
 
+class ExtractionRequest(BaseModel):
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+
+
 # ── 提取相关路由 ────────────────────────────────────────
 
 @router.post("/literatures/{literature_id}/extraction", response_model=ApiResponse)
 async def start_extraction(
     literature_id: uuid.UUID,
-    model: Optional[str] = Query(None, description="AI 模型名称，如 deepseek-chat"),
+    req: ExtractionRequest = None,
     db: AsyncSession = Depends(get_db),
 ):
     """触发文献 AI 数据提取任务"""
     try:
-        result = await trigger_extraction(db, literature_id, model)
+        model = req.model if req else None
+        api_key = req.api_key if req else None
+        base_url = req.base_url if req else None
+        result = await trigger_extraction(db, literature_id, model, api_key, base_url)
         return ApiResponse(message="提取任务已提交", data=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

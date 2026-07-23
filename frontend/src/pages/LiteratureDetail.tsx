@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, message, Spin, Row, Col, Popconfirm,
+  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, message, Spin, Row, Col, Popconfirm, Select,
 } from 'antd';
-import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
@@ -11,7 +11,7 @@ import {
   getLiterature, getExtractionResults, updateDataPoints, triggerExtraction,
 } from '../services/literature';
 import { Literature, DataPoint, ExtractionStatus } from '../types';
-import { DATA_TYPE_LABEL } from '../utils/constants';
+import { DATA_TYPE_LABEL, MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
 import dayjs from 'dayjs';
 
 const LiteratureDetail: React.FC = () => {
@@ -26,6 +26,10 @@ const LiteratureDetail: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalAction, setModalAction] = useState<'approved' | 'rejected'>('approved');
   const [pollingInterval, setPollingInterval] = useState<number | null>(null);
+  const [extractModalOpen, setExtractModalOpen] = useState(false);
+  const [extractModel, setExtractModel] = useState<string | undefined>(undefined);
+  const [extractApiKey, setExtractApiKey] = useState('');
+  const [extractBaseUrl, setExtractBaseUrl] = useState('');
 
   const fetchData = useCallback(async () => {
     if (!id) return;
@@ -46,11 +50,27 @@ const LiteratureDetail: React.FC = () => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const handleExtract = async () => {
+  const handleExtract = () => {
+    setExtractModel(undefined);
+    setExtractApiKey('');
+    setExtractBaseUrl('');
+    setExtractModalOpen(true);
+  };
+
+  const confirmExtract = async () => {
     if (!id) return;
     setExtracting(true);
+    setExtractModalOpen(false);
     try {
-      await triggerExtraction(id);
+      if (extractModel && extractModel !== '') {
+        await triggerExtraction(id, {
+          model: extractModel,
+          apiKey: extractApiKey || undefined,
+          baseUrl: extractBaseUrl || undefined,
+        });
+      } else {
+        await triggerExtraction(id);
+      }
       message.success('AI 提取任务已提交，正在轮询进度...');
       const interval = window.setInterval(() => {
         fetchData().then(() => {
@@ -284,6 +304,50 @@ const LiteratureDetail: React.FC = () => {
           onChange={(e) => setReviewNote(e.target.value)}
           rows={3}
         />
+      </Modal>
+
+      <Modal
+        title={<><RobotOutlined /> 选择提取模型</>}
+        open={extractModalOpen}
+        onCancel={() => setExtractModalOpen(false)}
+        onOk={confirmExtract}
+        confirmLoading={extracting}
+        okText="开始提取"
+        width={520}
+      >
+        <p style={{ marginBottom: 16, color: '#888' }}>选择用于 AI 数据提取的大语言模型。不同模型的提取精度和速度可能有所差异。</p>
+        <Select
+          placeholder="默认模型"
+          allowClear
+          style={{ width: '100%', marginBottom: 16 }}
+          value={extractModel}
+          onChange={(v) => {
+            setExtractModel(v);
+            const vendor = MODEL_OPTIONS.find((o) => o.value === v)?.vendor || '';
+            setExtractBaseUrl(VENDOR_INFO[vendor]?.defaultBaseUrl || '');
+          }}
+          options={MODEL_OPTIONS}
+        />
+        {extractModel && extractModel !== '' && (() => {
+          const vendor = MODEL_OPTIONS.find((o) => o.value === extractModel)?.vendor || '';
+          const info = VENDOR_INFO[vendor];
+          if (!vendor || !info.name) return null;
+          return (
+            <>
+              <Input.Password
+                placeholder={info.apiKeyLabel}
+                value={extractApiKey}
+                onChange={(e) => setExtractApiKey(e.target.value)}
+                style={{ marginBottom: 12 }}
+              />
+              <Input
+                placeholder={info.baseUrlLabel}
+                value={extractBaseUrl}
+                onChange={(e) => setExtractBaseUrl(e.target.value)}
+              />
+            </>
+          );
+        })()}
       </Modal>
     </>
   );

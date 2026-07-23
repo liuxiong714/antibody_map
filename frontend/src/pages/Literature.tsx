@@ -9,7 +9,7 @@ import DiseaseSelector from '../components/DiseaseSelector';
 import StatusBadge from '../components/StatusBadge';
 import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction } from '../services/literature';
 import { Literature } from '../types';
-import { MODEL_OPTIONS } from '../utils/constants';
+import { MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
 import { formatAuthors, truncate } from '../utils/format';
 import dayjs from 'dayjs';
 
@@ -30,6 +30,8 @@ const LiteraturePage: React.FC = () => {
   const [extractModel, setExtractModel] = useState<string | undefined>(undefined);
   const [extractLitId, setExtractLitId] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
+  const [extractApiKey, setExtractApiKey] = useState('');
+  const [extractBaseUrl, setExtractBaseUrl] = useState('');
 
   const fetchList = useCallback(async () => {
     setLoading(true);
@@ -76,11 +78,18 @@ const LiteraturePage: React.FC = () => {
       setUploadOpen(false);
       form.resetFields();
 
-      // Trigger extraction if model selected
-      if (resp.data?.id && values.model !== undefined) {
-        const model = values.model || undefined;
-        await triggerExtraction(resp.data.id, model);
-        message.success(`已使用 ${MODEL_OPTIONS.find((o) => o.value === model)?.label || '默认配置'} 启动 AI 提取`);
+      if (resp.data?.id) {
+        if (values.model !== undefined && values.model !== '') {
+          await triggerExtraction(resp.data.id, {
+            model: values.model,
+            apiKey: values.apiKey || undefined,
+            baseUrl: values.baseUrl || undefined,
+          });
+          message.success(`已使用 ${MODEL_OPTIONS.find((o) => o.value === values.model)?.label || '默认配置'} 启动 AI 提取`);
+        } else {
+          await triggerExtraction(resp.data.id);
+          message.success('已使用默认配置启动 AI 提取');
+        }
       }
       fetchList();
     } catch {
@@ -93,6 +102,8 @@ const LiteraturePage: React.FC = () => {
   const handleExtract = (id: string) => {
     setExtractLitId(id);
     setExtractModel(undefined);
+    setExtractApiKey('');
+    setExtractBaseUrl('');
     setExtractModalOpen(true);
   };
 
@@ -100,7 +111,15 @@ const LiteraturePage: React.FC = () => {
     if (!extractLitId) return;
     setExtracting(true);
     try {
-      await triggerExtraction(extractLitId, extractModel || undefined);
+      if (extractModel && extractModel !== '') {
+        await triggerExtraction(extractLitId, {
+          model: extractModel,
+          apiKey: extractApiKey || undefined,
+          baseUrl: extractBaseUrl || undefined,
+        });
+      } else {
+        await triggerExtraction(extractLitId);
+      }
       message.success(`已使用 ${MODEL_OPTIONS.find((o) => o.value === extractModel)?.label || '默认模型'} 启动 AI 提取`);
       setExtractModalOpen(false);
       fetchList();
@@ -232,7 +251,7 @@ const LiteraturePage: React.FC = () => {
         onCancel={() => { setUploadOpen(false); form.resetFields(); }}
         onOk={handleUpload}
         confirmLoading={uploading}
-        okText="上传并提取"
+        okText="上传"
         width={520}
       >
         <Form form={form} layout="vertical">
@@ -253,6 +272,28 @@ const LiteraturePage: React.FC = () => {
           <Form.Item name="model" label="AI 提取模型">
             <Select placeholder="默认配置" allowClear options={MODEL_OPTIONS} />
           </Form.Item>
+          <Form.Item name="apiKey" label="API Key（选填）" noStyle>
+            {({ getFieldValue }) => {
+              const model = getFieldValue('model');
+              const vendor = MODEL_OPTIONS.find((o) => o.value === model)?.vendor || '';
+              const info = VENDOR_INFO[vendor];
+              if (!vendor || !info.name) return null;
+              return (
+                <Input.Password placeholder={info.apiKeyLabel} style={{ marginBottom: 8 }} />
+              );
+            }}
+          </Form.Item>
+          <Form.Item name="baseUrl" label="API Base URL（选填）" noStyle>
+            {({ getFieldValue }) => {
+              const model = getFieldValue('model');
+              const vendor = MODEL_OPTIONS.find((o) => o.value === model)?.vendor || '';
+              const info = VENDOR_INFO[vendor];
+              if (!vendor || !info.name) return null;
+              return (
+                <Input placeholder={info.baseUrlLabel} defaultValue={info.defaultBaseUrl} />
+              );
+            }}
+          </Form.Item>
         </Form>
       </Modal>
 
@@ -263,17 +304,41 @@ const LiteraturePage: React.FC = () => {
         onOk={confirmExtract}
         confirmLoading={extracting}
         okText="开始提取"
-        width={400}
+        width={520}
       >
         <p style={{ marginBottom: 16, color: '#888' }}>选择用于 AI 数据提取的大语言模型。不同模型的提取精度和速度可能有所差异。</p>
         <Select
           placeholder="默认模型"
           allowClear
-          style={{ width: '100%' }}
+          style={{ width: '100%', marginBottom: 16 }}
           value={extractModel}
-          onChange={setExtractModel}
+          onChange={(v) => {
+            setExtractModel(v);
+            const vendor = MODEL_OPTIONS.find((o) => o.value === v)?.vendor || '';
+            setExtractBaseUrl(VENDOR_INFO[vendor]?.defaultBaseUrl || '');
+          }}
           options={MODEL_OPTIONS}
         />
+        {extractModel && extractModel !== '' && (() => {
+          const vendor = MODEL_OPTIONS.find((o) => o.value === extractModel)?.vendor || '';
+          const info = VENDOR_INFO[vendor];
+          if (!vendor || !info.name) return null;
+          return (
+            <>
+              <Input.Password
+                placeholder={info.apiKeyLabel}
+                value={extractApiKey}
+                onChange={(e) => setExtractApiKey(e.target.value)}
+                style={{ marginBottom: 12 }}
+              />
+              <Input
+                placeholder={info.baseUrlLabel}
+                value={extractBaseUrl}
+                onChange={(e) => setExtractBaseUrl(e.target.value)}
+              />
+            </>
+          );
+        })()}
       </Modal>
     </>
   );

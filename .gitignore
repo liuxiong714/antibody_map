@@ -6,3 +6,5 @@ __pycache__/
 postgres_data/
 redis_data/
 minio_data/
+backend/data/pdfs/
+debug.log

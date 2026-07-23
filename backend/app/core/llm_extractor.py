@@ -159,12 +159,17 @@ class LLMExtractor:
 
         return api_key, base_url
 
-    def __init__(self, model: Optional[str] = None):
+    def __init__(
+        self,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ):
         self.model = model or settings.LLM_MODEL
-        api_key, base_url = self._resolve_api_config(self.model)
+        resolved_key, resolved_url = self._resolve_api_config(self.model)
         self.client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url,
+            api_key=api_key or resolved_key,
+            base_url=base_url or resolved_url,
         )
 
     async def _call_llm_api(self, prompt: str) -> str:

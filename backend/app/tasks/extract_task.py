@@ -143,6 +143,8 @@ def _extract_result_to_datapoints(
 async def _process_literature_async(
     literature_id: str,
     model: Optional[str] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
 ) -> dict:
     """异步文献处理：PDF 解析 → LLM 提取 → 保存数据点"""
     async with async_session() as db:
@@ -184,7 +186,7 @@ async def _process_literature_async(
         logger.info(f"文本预处理完成: {len(clean_text)} 字符")
 
         # 5. LLM 提取（返回数据点列表）
-        extractor = LLMExtractor(model=model)
+        extractor = LLMExtractor(model=model, api_key=api_key, base_url=base_url)
         logger.info(f"开始 LLM 提取: model={model or settings.LLM_MODEL}")
         extract_results = await extractor.extract_with_retry(
             text=clean_text,
@@ -236,10 +238,16 @@ async def _process_literature_async(
 
 
 @celery_app.task(bind=True, max_retries=3)
-def process_literature(self, literature_id: str, model: Optional[str] = None):
+def process_literature(
+    self,
+    literature_id: str,
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+):
     """Celery 任务：文献处理（PDF 解析 + AI 提取）"""
     try:
-        result = asyncio.run(_process_literature_async(literature_id, model))
+        result = asyncio.run(_process_literature_async(literature_id, model, api_key, base_url))
         logger.info(f"文献 {literature_id} 提取完成，数据点: {result['extracted_count']}")
         return result
 
