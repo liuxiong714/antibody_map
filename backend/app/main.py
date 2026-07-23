@@ -1,51 +1,34 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
 
 from app.config import settings
-from app.models.base import engine, Base
+from app.models.base import engine
 from app.api.v1.router import router as api_v1_router
 
 logger = logging.getLogger("uvicorn")
 
 
+def _run_migrations():
+    """同步执行 Alembic 迁移（在子线程中运行以避免事件循环冲突）"""
+    from alembic.config import Config
+    from alembic import command
+    alembic_cfg = Config("alembic.ini")
+    command.upgrade(alembic_cfg, "head")
+    logger.info("Database migrations applied successfully")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时尝试创建数据库表（Docker 环境下生效）
+    # 启动时运行数据库迁移（在独立线程中执行，避免 asyncio.run() 嵌套）
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            # 为已有 report 表添加新列（兼容旧数据库）
-            await conn.execute(text(
-                "ALTER TABLE report ADD COLUMN IF NOT EXISTS report_type VARCHAR(30) DEFAULT 'antibody_analysis'"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE report ADD COLUMN IF NOT EXISTS task_type VARCHAR(100)"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE report ADD COLUMN IF NOT EXISTS task_time VARCHAR(200)"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE report ADD COLUMN IF NOT EXISTS task_location VARCHAR(200)"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE report ADD COLUMN IF NOT EXISTS personnel_count INTEGER"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE report ADD COLUMN IF NOT EXISTS personnel_gender VARCHAR(100)"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE report ADD COLUMN IF NOT EXISTS personnel_age VARCHAR(100)"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE report ADD COLUMN IF NOT EXISTS personnel_vaccination_history TEXT"
-            ))
-        logger.info("Database tables created/updated successfully")
+        await asyncio.to_thread(_run_migrations)
     except Exception as e:
-        logger.warning(f"Database migration issue: {e}")
+        logger.error(f"Database migration failed: {e}")
+        raise
     yield
     await engine.dispose()
 

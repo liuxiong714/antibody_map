@@ -38,6 +38,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const [loading, setLoading] = useState(false);
   const [pageDims, setPageDims] = useState<{ w: number; h: number }[]>([]);
 
+  const mountedRef = useRef(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
   const firstPageWidthRef = useRef<number>(0);
@@ -234,16 +235,20 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       // 延迟设置 observer（等待 React 渲染出占位符）
       setTimeout(() => setupObserver(), 100);
     } catch {
-      message.error('PDF 加载失败，请确认文件是否存在');
+      if (mountedRef.current) {
+        message.error('PDF 加载失败，请确认文件是否存在');
+      }
       setLoading(false);
     }
   }, [literatureId, defaultScale, calcFitWidthScale, setupObserver]);
 
   useEffect(() => {
+    mountedRef.current = true;
     if (literatureId) {
       loadPdf();
     }
     return () => {
+      mountedRef.current = false;
       renderTasksRef.current.forEach((t) => { try { t.cancel(); } catch { /* ignore */ } });
       renderTasksRef.current.clear();
       if (observerRef.current) { observerRef.current.disconnect(); observerRef.current = null; }

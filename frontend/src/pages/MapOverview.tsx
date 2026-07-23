@@ -20,7 +20,7 @@ const MapOverview: React.FC = () => {
 
   // Load GeoJSON — register map synchronously BEFORE triggering render
   useEffect(() => {
-    fetch('https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json')
+    fetch('/china.json')
       .then((r) => r.json())
       .then((data) => {
         echarts.registerMap('china', data);
@@ -44,7 +44,7 @@ const MapOverview: React.FC = () => {
       if (gender) params.gender = gender;
       if (occupation) params.occupation = occupation;
       const resp = await getProvinceData(params);
-      setMapData(resp.data || []);
+      setMapData(Array.isArray(resp) ? resp : []);
     } catch {
       message.error('数据加载失败');
     } finally {

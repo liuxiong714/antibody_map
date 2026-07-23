@@ -81,7 +81,7 @@ const Analysis: React.FC = () => {
       if (sortBy) { params.sort_by = sortBy; params.sort_order = sortOrder || 'desc'; }
 
       const res = await getApprovedDataPoints(params);
-      const data = res.data as { items: DataItem[]; total: number };
+      const data = res as { items: DataItem[]; total: number };
       setApprovedData(data.items || []);
       setApprovedTotal(data.total || 0);
     } catch {

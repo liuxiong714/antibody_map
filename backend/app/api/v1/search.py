@@ -44,7 +44,7 @@ async def search_literatures(
     )
 
 
-@router.post("/search/data-points", response_model=PagedResponse)
+@router.get("/search/data-points", response_model=PagedResponse)
 async def search_data_points(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),

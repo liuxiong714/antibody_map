@@ -4,7 +4,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
@@ -114,12 +114,10 @@ async def get_pdf_file(
     if not file_path or not file_path.exists():
         raise HTTPException(status_code=404, detail="PDF 文件不存在")
 
-    pdf_bytes = file_path.read_bytes()
     safe_filename = quote(f"{literature.title or literature_id}.pdf")
-    return Response(
-        content=pdf_bytes,
+    return FileResponse(
+        path=str(file_path),
         media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"inline; filename*=UTF-8''{safe_filename}",
-        },
+        filename=safe_filename,
+        content_disposition_type="inline",
     )

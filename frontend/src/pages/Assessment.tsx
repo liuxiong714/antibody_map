@@ -32,7 +32,7 @@ const Assessment: React.FC = () => {
       if (yearStart) params.year_start = yearStart;
       if (yearEnd) params.year_end = yearEnd;
       const resp = await getImmuneBarrier(params);
-      setResult(resp.data);
+      setResult(resp);
     } catch {
       message.error('查询失败');
     } finally {
@@ -41,7 +41,7 @@ const Assessment: React.FC = () => {
   };
 
   const cfg = result ? STATUS_CONFIG[result.status] || STATUS_CONFIG.no_data : null;
-  const rate = result?.summary.weighted_positivity_rate;
+  const rate = result?.summary?.weighted_positivity_rate;
   const threshold = result?.who_threshold;
   const progressPercent = (threshold && rate != null) ? Math.min((rate / threshold) * 100, 100) : 0;
 
@@ -85,13 +85,13 @@ const Assessment: React.FC = () => {
           <>
             <Row gutter={16} style={{ marginBottom: 16 }}>
               <Col span={6}>
-                <Card><Statistic title="数据点数" value={result.summary.total_data_points} /></Card>
+                <Card><Statistic title="数据点数" value={result?.summary?.total_data_points ?? 0} /></Card>
               </Col>
               <Col span={6}>
-                <Card><Statistic title="涉及文献数" value={result.summary.total_literatures} /></Card>
+                <Card><Statistic title="涉及文献数" value={result?.summary?.total_literatures ?? 0} /></Card>
               </Col>
               <Col span={6}>
-                <Card><Statistic title="总样本量" value={result.summary.total_samples} formatter={(v) => (v as number).toLocaleString()} /></Card>
+                <Card><Statistic title="总样本量" value={result?.summary?.total_samples ?? 0} formatter={(v) => (v as number).toLocaleString()} /></Card>
               </Col>
               <Col span={6}>
                 <Card>

@@ -1,74 +1,78 @@
 import api from './api';
-import { ApiResponse, ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord } from '../types';
+import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord } from '../types';
+
+// 拦截器已将 ApiResponse.data 提升到 resp.data，此处解包 AxiosResponse
 
 export async function getProvinceData(params: Record<string, unknown>) {
-  const { data } = await api.get<ApiResponse<MapDataPoint[]>>('/map/province-data', { params });
+  const { data } = await api.get<MapDataPoint[]>('/map/province-data', { params });
   return data;
 }
 
 export async function getCityData(params: Record<string, unknown>) {
-  const { data } = await api.get<ApiResponse<MapDataPoint[]>>('/map/city-data', { params });
+  const { data } = await api.get<MapDataPoint[]>('/map/city-data', { params });
   return data;
 }
 
 export async function getSummary(params: Record<string, unknown>) {
-  const { data } = await api.get<ApiResponse>(`/map/summary`, { params });
+  const { data } = await api.get('/map/summary', { params });
   return data;
 }
 
 export async function getTrend(params: Record<string, unknown>) {
-  const { data } = await api.post<ApiResponse>('/analysis/trend', null, { params });
+  const { data } = await api.get('/analysis/trend', { params });
   return data;
 }
 
 export async function getRegionCompare(params: Record<string, unknown>) {
-  const { data } = await api.post<ApiResponse>('/analysis/region-compare', null, { params });
+  const { data } = await api.get('/analysis/region-compare', { params });
   return data;
 }
 
 export async function getAgeStratify(params: Record<string, unknown>) {
-  const { data } = await api.post<ApiResponse>('/analysis/age-stratify', null, { params });
+  const { data } = await api.get('/analysis/age-stratify', { params });
   return data;
 }
 
 export async function getApprovedDataPoints(params: Record<string, unknown>) {
-  const { data } = await api.get<ApiResponse<{ items: Record<string, unknown>[]; total: number }>>('/analysis/approved-data-points', { params });
+  const { data } = await api.get('/analysis/approved-data-points', { params });
   return data;
 }
 
 export async function getImmuneBarrier(params: Record<string, unknown>) {
-  const { data } = await api.post<ApiResponse<ImmuneBarrierData>>('/analysis/immune-barrier', null, { params });
+  const { data } = await api.get<ImmuneBarrierData>('/analysis/immune-barrier', { params });
   return data;
 }
 
 export async function generateReport(params: Record<string, unknown>) {
-  const { data } = await api.post<ApiResponse<ReportData>>('/reports/generate', null, { params });
+  const { data } = await api.post<ReportData>('/reports/generate', null, { params });
   return data;
 }
 
 export async function generateVaccinationStrategy(body: Record<string, unknown>) {
-  const { data } = await api.post<ApiResponse<ReportData>>('/reports/generate-vaccination-strategy', body);
+  const { data } = await api.post<ReportData>('/reports/generate-vaccination-strategy', body);
   return data;
 }
 
 export async function updateReport(id: string, body: { title?: string; content?: string }) {
-  const { data } = await api.put<ApiResponse<ReportRecord>>(`/reports/${id}`, body);
+  const { data } = await api.put<ReportRecord>(`/reports/${id}`, body);
   return data;
 }
 
 export async function deleteReport(id: string) {
-  const { data } = await api.delete<ApiResponse<null>>(`/reports/${id}`);
+  const { data } = await api.delete(`/reports/${id}`);
   return data;
 }
 
 export async function listReports(params: Record<string, unknown>) {
-  const { data } = await api.get<ApiResponse<PagedResponse<ReportRecord>>>('/reports', { params });
+  const { data } = await api.get<PagedResponse<ReportRecord>>('/reports', { params });
   return data;
 }
+
 export async function getReport(id: string) {
-  const { data } = await api.get<ApiResponse<ReportRecord>>('/reports/'+id);
+  const { data } = await api.get<ReportRecord>(`/reports/${id}`);
   return data;
 }
+
 export function getDownloadUrl(id: string) {
-  return '/api/v1/reports/'+id+'/download';
+  return `/api/v1/reports/${id}/download`;
 }

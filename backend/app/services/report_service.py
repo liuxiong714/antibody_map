@@ -293,17 +293,18 @@ async def generate_report(
         db.add(report)
         await db.commit()
     except Exception as e:
-        logger.warning(f"??????????: {e}")
+        logger.error(f"保存抗体分析报告失败: {e}；内容摘要: {content[:300]}")
+        raise RuntimeError(f"报告生成成功但保存失败: {e}") from e
 
     return {
-        "id": str(report.id) if report else None,
+        "id": str(report.id),
         "title": report_title,
         "content": content,
         "report_type": "antibody_analysis",
         "literature_count": len(lit_ids),
         "data_point_count": len(rows),
         "language": language,
-        "generated_at": report.generated_at.isoformat() if report else datetime.now(timezone.utc).isoformat(),
+        "generated_at": report.generated_at.isoformat(),
     }
 
 
@@ -437,10 +438,11 @@ async def generate_vaccination_strategy_report(
         db.add(report)
         await db.commit()
     except Exception as e:
-        logger.warning(f"保存报告失败: {e}")
+        logger.error(f"保存疫苗接种策略报告失败: {e}；内容摘要: {content[:300]}")
+        raise RuntimeError(f"报告生成成功但保存失败: {e}") from e
 
     return {
-        "id": str(report.id) if report else None,
+        "id": str(report.id),
         "title": report_title,
         "content": content,
         "report_type": "vaccination_strategy",
@@ -454,7 +456,7 @@ async def generate_vaccination_strategy_report(
         "data_point_count": len(rows),
         "literature_count": len(set(str(r.literature_id) for r in rows if r.literature_id)),
         "language": "zh",
-        "generated_at": report.generated_at.isoformat() if report else datetime.now(timezone.utc).isoformat(),
+        "generated_at": report.generated_at.isoformat(),
     }
 
 

@@ -146,7 +146,7 @@ const LiteratureDetail: React.FC = () => {
         getExtractionResults(id),
       ]);
       setLiterature(lit);
-      setDataPoints((ext.data as { data_points?: DataPoint[] })?.data_points || []);
+      setDataPoints((ext as { data_points?: DataPoint[] })?.data_points || []);
     } catch {
       message.error('加载文献详情失败');
     } finally {

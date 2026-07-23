@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     )
 
     # LLM — 默认配置（向后兼容）
-    LLM_API_KEY: str = "sk-your-api-key-here"
+    LLM_API_KEY: str = ""  # 必须通过环境变量或 .env 文件配置
     LLM_BASE_URL: str = "https://api.deepseek.com"
     LLM_MODEL: str = "deepseek-chat"
 
@@ -21,21 +21,21 @@ class Settings(BaseSettings):
     QWEN_API_KEY: str = ""
     QWEN_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
-    # Database
-    DATABASE_URL: str = "postgresql+asyncpg://antibody:antibody123@postgres:5432/antibody_map"
+    # Database (默认值适用于 Docker Compose 本地开发环境)
+    DATABASE_URL: str = "postgresql+asyncpg://antibody:antibody123@localhost:5432/antibody_map"
 
     # Redis
-    REDIS_URL: str = "redis://redis:6379/0"
+    REDIS_URL: str = "redis://localhost:6379/0"
 
-    # MinIO
-    MINIO_ENDPOINT: str = "minio:9000"
+    # MinIO (默认值适用于 Docker Compose 本地开发环境)
+    MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "antibody"
     MINIO_SECRET_KEY: str = "antibody123"
     MINIO_BUCKET_LITERATURE: str = "antibody-literature"
 
     # Celery
-    CELERY_BROKER_URL: str = "redis://redis:6379/1"
-    CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
     # OCR
     BAIDU_OCR_API_KEY: str = ""
@@ -43,9 +43,9 @@ class Settings(BaseSettings):
     OCR_FALLBACK_TO_BAIDU: bool = False
 
     # App
-    SECRET_KEY: str = "change-this-in-production"
+    SECRET_KEY: str = ""  # 必须通过环境变量或 .env 文件配置
     APP_ENV: str = "development"
-    APP_DEBUG: bool = True
+    APP_DEBUG: bool = False
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
 

@@ -1,186 +1,12 @@
-import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { Card, Row, Col, Button, Input, Select, Spin, Empty, message, Tag, Divider, Table, Modal, Space, Tooltip, Tabs, InputNumber, Popconfirm } from 'antd';
-import { FileTextOutlined, EyeOutlined, DownloadOutlined, HistoryOutlined, ExperimentOutlined, EditOutlined, SaveOutlined, CloseOutlined, DeleteOutlined, ExclamationCircleOutlined, MenuOutlined } from '@ant-design/icons';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import DiseaseSelector from '../components/DiseaseSelector';
-import ProvinceSelector from '../components/ProvinceSelector';
-import MapSelector from '../components/MapSelector';
-import { generateReport, generateVaccinationStrategy, listReports, getDownloadUrl, updateReport, deleteReport } from '../services/map';
+import React, { useEffect, useState, useCallback } from 'react';
+import { Card, Button, Input, Select, Spin, Empty, message, Tag, Divider, Table, Modal, Space, Tooltip, Tabs, Popconfirm } from 'antd';
+import { FileTextOutlined, EyeOutlined, DownloadOutlined, HistoryOutlined, ExperimentOutlined, EditOutlined, SaveOutlined, CloseOutlined, DeleteOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
+import AntibodyReportForm from '../components/AntibodyReportForm';
+import StrategyReportForm from '../components/StrategyReportForm';
+import ReportContentView from '../components/ReportContentView';
+import { generateReport, generateVaccinationStrategy, listReports, getDownloadUrl, updateReport, deleteReport, getReport } from '../services/map';
 import { ReportData, ReportRecord } from '../types';
 import dayjs from 'dayjs';
-
-// ── 类型 ──
-interface TocItem {
-  id: string;
-  text: string;
-  level: number;
-}
-
-// ── 从 Markdown 解析目录 ──
-function parseToc(markdown: string): TocItem[] {
-  const headingRegex = /^(#{2,3})\s+(.+)$/gm;
-  const items: TocItem[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = headingRegex.exec(markdown)) !== null) {
-    const level = match[1].length;
-    const text = match[2].trim();
-    const id = text.replace(/\s+/g, '-').replace(/[^\w\u4e00-\u9fff-]/g, '');
-    items.push({ id, text, level });
-  }
-  return items;
-}
-
-// ── Markdown 预览样式 ──
-const markdownStyle: React.CSSProperties = {
-  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif',
-  fontSize: 15,
-  lineHeight: 1.8,
-  color: '#333',
-  padding: '24px 32px',
-};
-
-// ── TOC 侧栏宽度 ──
-const TOC_WIDTH = 220;
-
-// ── 报告内容区组件（TOC + 内容） ──
-const ReportContentView: React.FC<{
-  content: string;
-  editable?: boolean;
-  reportId?: string;
-  onSaved?: (newContent: string) => void;
-}> = ({ content, editable = false, reportId, onSaved }) => {
-  const toc = useMemo(() => parseToc(content), [content]);
-  const [editing2, setEditing2] = useState(false);
-  const [editContent, setEditContent] = useState(content);
-  const [saving2, setSaving2] = useState(false);
-
-  // 当外部 content 变化时同步 editContent（如：关闭 Modal 后重新打开另一报告）
-  useEffect(() => {
-    setEditContent(content);
-    setEditing2(false);
-  }, [content]);
-
-  const handleScrollTo = (id: string) => {
-    const el = document.getElementById(id);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
-  const handleSave = async () => {
-    if (!reportId) return;
-    setSaving2(true);
-    try {
-      await updateReport(reportId, { content: editContent });
-      setEditing2(false);
-      message.success('报告已保存');
-      onSaved?.(editContent);
-    } catch {
-      message.error('保存失败');
-    } finally {
-      setSaving2(false);
-    }
-  };
-
-  return (
-    <div style={{ display: 'flex', gap: 0, minHeight: 400 }}>
-      {/* TOC 侧栏 */}
-      <div style={{
-        width: TOC_WIDTH,
-        minWidth: TOC_WIDTH,
-        borderRight: '1px solid #f0f0f0',
-        padding: '12px 0',
-        display: 'flex',
-        flexDirection: 'column',
-      }}>
-        <div style={{ padding: '0 12px 8px', fontWeight: 600, fontSize: 14, color: '#666', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <MenuOutlined /> 目录
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
-          {toc.length === 0 ? (
-            <div style={{ padding: '8px 4px', color: '#999', fontSize: 13 }}>无标题</div>
-          ) : (
-            toc.map((item) => (
-              <div
-                key={item.id}
-                onClick={() => handleScrollTo(item.id)}
-                style={{
-                  padding: '4px 8px',
-                  paddingLeft: (item.level - 1) * 16 + 4,
-                  fontSize: 13,
-                  color: '#1890ff',
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  borderRadius: 4,
-                  transition: 'background 0.2s',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f5ff')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = '')}
-              >
-                {item.text}
-              </div>
-            ))
-          )}
-        </div>
-        {/* Modal 编辑/保存按钮 */}
-        {editable && (
-          <div style={{ padding: '12px', borderTop: '1px solid #f0f0f0' }}>
-            {editing2 ? (
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <Button icon={<SaveOutlined />} type="primary" block onClick={handleSave} loading={saving2}>保存</Button>
-                <Button icon={<CloseOutlined />} block onClick={() => { setEditing2(false); setEditContent(content); }}>取消</Button>
-              </Space>
-            ) : (
-              <Button icon={<EditOutlined />} block onClick={() => { setEditContent(content); setEditing2(true); }}>
-                编辑
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* 内容区 */}
-      <div style={{ flex: 1, overflow: 'auto' }}>
-        {editing2 ? (
-          <Input.TextArea
-            value={editContent}
-            onChange={(e) => setEditContent(e.target.value)}
-            style={{
-              fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-              fontSize: 14,
-              lineHeight: 1.6,
-              border: 'none',
-              resize: 'none',
-              minHeight: 400,
-            }}
-            autoSize={{ minRows: 20 }}
-          />
-        ) : (
-          <div className="markdown-preview" style={markdownStyle}>
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                h2: ({ children, ...props }) => {
-                  const text = String(children);
-                  const id = text.replace(/\s+/g, '-').replace(/[^\w\u4e00-\u9fff-]/g, '');
-                  return <h2 id={id} {...props}>{children}</h2>;
-                },
-                h3: ({ children, ...props }) => {
-                  const text = String(children);
-                  const id = text.replace(/\s+/g, '-').replace(/[^\w\u4e00-\u9fff-]/g, '');
-                  return <h3 id={id} {...props}>{children}</h3>;
-                },
-              }}
-            >
-              {content}
-            </ReactMarkdown>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
 
 const Report: React.FC = () => {
   // ---- 抗体分析报告 state ----
@@ -225,7 +51,7 @@ const Report: React.FC = () => {
     setHistoryLoading(true);
     try {
       const resp = await listReports({ page: 1, page_size: 50 });
-      setReports(resp.data?.items || []);
+      setReports(resp.items || []);
     } catch { message.error('加载报告列表失败'); }
     finally { setHistoryLoading(false); }
   }, []);
@@ -242,7 +68,7 @@ const Report: React.FC = () => {
       if (province) params.province = province;
       if (title) params.title = title;
       const resp = await generateReport(params);
-      setReport(resp.data);
+      setReport(resp);
       message.success('报告生成成功');
       fetchHistory();
     } catch { message.error('报告生成失败'); }
@@ -268,7 +94,7 @@ const Report: React.FC = () => {
       };
       if (strategyTitle) body.title = strategyTitle;
       const resp = await generateVaccinationStrategy(body);
-      setReport(resp.data);
+      setReport(resp);
       message.success('疫苗接种策略报告生成成功');
       fetchHistory();
     } catch { message.error('报告生成失败'); }
@@ -279,10 +105,9 @@ const Report: React.FC = () => {
     if (record.content) {
       setPreviewReport(record);
     } else {
-      const { getReport } = await import('../services/map');
       try {
         const resp = await getReport(record.id);
-        const full = { ...record, content: resp.data?.content };
+        const full = { ...record, content: resp.content };
         setPreviewReport(full);
       } catch { message.error('加载报告内容失败'); }
     }
@@ -315,11 +140,8 @@ const Report: React.FC = () => {
       setEditing(false);
       message.success('报告已保存');
       fetchHistory();
-    } catch {
-      message.error('保存失败');
-    } finally {
-      setSaving(false);
-    }
+    } catch { message.error('保存失败'); }
+    finally { setSaving(false); }
   };
 
   const handleDelete = async (record: ReportRecord) => {
@@ -329,11 +151,8 @@ const Report: React.FC = () => {
       message.success('报告已删除');
       if (report?.id === record.id) setReport(null);
       fetchHistory();
-    } catch {
-      message.error('删除失败');
-    } finally {
-      setDeleting(false);
-    }
+    } catch { message.error('删除失败'); }
+    finally { setDeleting(false); }
   };
 
   const historyColumns = [
@@ -390,78 +209,30 @@ const Report: React.FC = () => {
             key: 'antibody',
             label: <span><ExperimentOutlined /> 抗体分析报告</span>,
             children: (
-              <Card style={{ marginBottom: 16 }}>
-                <Row gutter={[16, 12]} align="middle">
-                  <Col><DiseaseSelector value={disease} onChange={setDisease} /></Col>
-                  <Col><MapSelector value={dataType} onChange={setDataType} /></Col>
-                  <Col><ProvinceSelector value={province} onChange={setProvince} /></Col>
-                  <Col>
-                    <Select value={language} onChange={setLanguage} style={{ width: 120 }}
-                      options={[{ value: 'zh', label: '中文' }, { value: 'en', label: 'English' }]} />
-                  </Col>
-                  <Col><Input placeholder="自定义报告标题（选填）" value={title} onChange={(e) => setTitle(e.target.value)} style={{ width: 260 }} /></Col>
-                  <Col><Button type="primary" icon={<FileTextOutlined />} onClick={handleGenerateAntibody} loading={loading}>生成报告</Button></Col>
-                </Row>
-              </Card>
+              <AntibodyReportForm
+                disease={disease} dataType={dataType} province={province}
+                language={language} title={title} loading={loading}
+                onDiseaseChange={setDisease} onDataTypeChange={setDataType}
+                onProvinceChange={setProvince} onLanguageChange={setLanguage}
+                onTitleChange={setTitle} onGenerate={handleGenerateAntibody}
+              />
             ),
           },
           {
             key: 'strategy',
             label: <span><FileTextOutlined /> 疫苗接种策略报告</span>,
             children: (
-              <Card title="任务信息配置" style={{ marginBottom: 16 }}>
-                <Row gutter={[16, 12]}>
-                  <Col span={8}>
-                    <div style={{ marginBottom: 4, fontWeight: 500 }}>任务类型 <span style={{ color: 'red' }}>*</span></div>
-                    <Select value={taskType || undefined} onChange={setTaskType} placeholder="选择任务类型" style={{ width: '100%' }}
-                      options={[
-                        { value: '维和行动', label: '维和行动' }, { value: '抗震救灾', label: '抗震救灾' },
-                        { value: '抗洪抢险', label: '抗洪抢险' }, { value: '国际救援', label: '国际救援' },
-                        { value: '野外驻训', label: '野外驻训' }, { value: '军事演习', label: '军事演习' },
-                        { value: '海外护航', label: '海外护航' }, { value: '联合国任务', label: '联合国任务' },
-                        { value: '疫情防控', label: '疫情防控' }, { value: '其他', label: '其他' },
-                      ]} />
-                  </Col>
-                  <Col span={8}>
-                    <div style={{ marginBottom: 4, fontWeight: 500 }}>任务时间 <span style={{ color: 'red' }}>*</span></div>
-                    <Input placeholder="如：2026年8-10月" value={taskTime} onChange={(e) => setTaskTime(e.target.value)} />
-                  </Col>
-                  <Col span={8}>
-                    <div style={{ marginBottom: 4, fontWeight: 500 }}>任务地点 <span style={{ color: 'red' }}>*</span></div>
-                    <ProvinceSelector value={taskLocation} onChange={setTaskLocation} />
-                  </Col>
-                </Row>
-                <Divider />
-                <Row gutter={[16, 12]}>
-                  <Col span={6}>
-                    <div style={{ marginBottom: 4, fontWeight: 500 }}>人员人数 <span style={{ color: 'red' }}>*</span></div>
-                    <InputNumber min={1} max={100000} value={personnelCount} onChange={(v) => setPersonnelCount(v)} placeholder="人数" style={{ width: '100%' }} />
-                  </Col>
-                  <Col span={6}>
-                    <div style={{ marginBottom: 4, fontWeight: 500 }}>人员性别分布</div>
-                    <Input placeholder="如：男性80人，女性20人" value={personnelGender} onChange={(e) => setPersonnelGender(e.target.value)} />
-                  </Col>
-                  <Col span={6}>
-                    <div style={{ marginBottom: 4, fontWeight: 500 }}>人员年龄范围</div>
-                    <Input placeholder="如：18-35岁" value={personnelAge} onChange={(e) => setPersonnelAge(e.target.value)} />
-                  </Col>
-                  <Col span={6}>
-                    <div style={{ marginBottom: 4, fontWeight: 500 }}>自定义标题（选填）</div>
-                    <Input placeholder="报告标题" value={strategyTitle} onChange={(e) => setStrategyTitle(e.target.value)} />
-                  </Col>
-                </Row>
-                <Row style={{ marginTop: 12 }}>
-                  <Col span={24}>
-                    <div style={{ marginBottom: 4, fontWeight: 500 }}>人员疫苗接种史</div>
-                    <Input.TextArea rows={3} placeholder="如：已完成基础免疫，近2年未接种流感疫苗，乙肝表面抗体阳性..." value={personnelVaccinationHistory} onChange={(e) => setPersonnelVaccinationHistory(e.target.value)} />
-                  </Col>
-                </Row>
-                <Row style={{ marginTop: 16 }}>
-                  <Col>
-                    <Button type="primary" icon={<FileTextOutlined />} onClick={handleGenerateStrategy} loading={strategyLoading}>生成疫苗接种策略报告</Button>
-                  </Col>
-                </Row>
-              </Card>
+              <StrategyReportForm
+                taskType={taskType} taskTime={taskTime} taskLocation={taskLocation}
+                personnelCount={personnelCount} personnelGender={personnelGender}
+                personnelAge={personnelAge} personnelVaccinationHistory={personnelVaccinationHistory}
+                strategyTitle={strategyTitle} loading={strategyLoading}
+                onTaskTypeChange={setTaskType} onTaskTimeChange={setTaskTime}
+                onTaskLocationChange={setTaskLocation} onPersonnelCountChange={setPersonnelCount}
+                onPersonnelGenderChange={setPersonnelGender} onPersonnelAgeChange={setPersonnelAge}
+                onPersonnelVaccinationHistoryChange={setPersonnelVaccinationHistory}
+                onStrategyTitleChange={setStrategyTitle} onGenerate={handleGenerateStrategy}
+              />
             ),
           },
         ]}

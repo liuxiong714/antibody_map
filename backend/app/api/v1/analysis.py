@@ -10,7 +10,7 @@ from app.services import analysis_service
 router = APIRouter()
 
 
-@router.post("/analysis/trend", response_model=ApiResponse)
+@router.get("/analysis/trend", response_model=ApiResponse)
 async def get_trend(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -35,7 +35,7 @@ async def get_trend(
     return ApiResponse(data=data)
 
 
-@router.post("/analysis/region-compare", response_model=ApiResponse)
+@router.get("/analysis/region-compare", response_model=ApiResponse)
 async def get_region_compare(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -60,7 +60,7 @@ async def get_region_compare(
     return ApiResponse(data=data)
 
 
-@router.post("/analysis/age-stratify", response_model=ApiResponse)
+@router.get("/analysis/age-stratify", response_model=ApiResponse)
 async def get_age_stratify(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -110,7 +110,7 @@ async def get_summary(
     return ApiResponse(data=data)
 
 
-@router.post("/analysis/immune-barrier", response_model=ApiResponse)
+@router.get("/analysis/immune-barrier", response_model=ApiResponse)
 async def get_immune_barrier(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),

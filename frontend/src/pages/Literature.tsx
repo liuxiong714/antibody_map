@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Card, Table, Button, Input, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip,
+  Card, Table, Button, Input, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress,
 } from 'antd';
 import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -23,6 +23,7 @@ const LiteraturePage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0, fileName: '' });
   const [form] = Form.useForm();
   const navigate = useNavigate();
 
@@ -69,40 +70,69 @@ const LiteraturePage: React.FC = () => {
 
   const handleUpload = async () => {
     const values = await form.validateFields();
+    const files: File[] = (values.file || [])
+      .map((f: any) => f.originFileObj)
+      .filter((f: File | undefined): f is File => !!f);
+
+    if (files.length === 0) { message.error('请选择文件'); return; }
+
     setUploading(true);
-    try {
-      const fd = new FormData();
-      const file = values.file?.[0]?.originFileObj;
-      if (!file) { message.error('请选择文件'); return; }
-      fd.append('file', file);
-      if (values.title) fd.append('title', values.title);
-      if (values.doi) fd.append('doi', values.doi);
-      if (values.province) fd.append('province', values.province);
+    setBatchProgress({ current: 0, total: files.length, fileName: '' });
 
-      const resp = await uploadLiterature(fd);
-      message.success('上传成功');
-      setUploadOpen(false);
-      form.resetFields();
+    let successCount = 0;
+    let failCount = 0;
+    const model = values.model;
+    const apiKey = values.apiKey || undefined;
+    const baseUrl = values.baseUrl || undefined;
 
-      if (resp.data?.id) {
-        if (values.model !== undefined && values.model !== '') {
-          await triggerExtraction(resp.data.id, {
-            model: values.model,
-            apiKey: values.apiKey || undefined,
-            baseUrl: values.baseUrl || undefined,
-          });
-          message.success(`已使用 ${MODEL_OPTIONS.find((o) => o.value === values.model)?.label || '默认配置'} 启动 AI 提取`);
-        } else {
-          await triggerExtraction(resp.data.id);
-          message.success('已使用默认配置启动 AI 提取');
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setBatchProgress({ current: i + 1, total: files.length, fileName: file.name });
+
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        // 单文件时使用用户自定义标题，批量时使用文件名
+        if (files.length === 1 && values.title) fd.append('title', values.title);
+        if (files.length === 1 && values.doi) fd.append('doi', values.doi);
+        if (files.length === 1 && values.province) fd.append('province', values.province);
+
+        const resp = await uploadLiterature(fd);
+
+        if (resp?.id) {
+          if (model && model !== '') {
+            await triggerExtraction(resp.id, { model, apiKey, baseUrl });
+          } else {
+            await triggerExtraction(resp.id);
+          }
         }
+        successCount++;
+      } catch {
+        failCount++;
       }
-      fetchList();
-    } catch {
-      message.error('上传失败');
-    } finally {
-      setUploading(false);
     }
+
+    setUploading(false);
+
+    if (files.length === 1) {
+      if (successCount === 1) {
+        message.success('上传成功，已启动 AI 提取');
+      } else {
+        message.error('上传失败');
+      }
+    } else {
+      const msg = `批量上传完成：成功 ${successCount} 个`;
+      if (failCount > 0) {
+        message.warning(`${msg}，失败 ${failCount} 个`);
+      } else {
+        message.success(`${msg}，已全部启动 AI 提取`);
+      }
+    }
+
+    setUploadOpen(false);
+    setBatchProgress({ current: 0, total: 0, fileName: '' });
+    form.resetFields();
+    fetchList();
   };
 
   const handleExtract = (id: string) => {
@@ -265,52 +295,67 @@ const LiteraturePage: React.FC = () => {
       <Modal
         title="上传文献"
         open={uploadOpen}
-        onCancel={() => { setUploadOpen(false); form.resetFields(); }}
+        onCancel={() => { setUploadOpen(false); form.resetFields(); setBatchProgress({ current: 0, total: 0, fileName: '' }); }}
         onOk={handleUpload}
         confirmLoading={uploading}
-        okText="上传"
+        okText={uploading ? `上传中 (${batchProgress.current}/${batchProgress.total})` : '上传'}
+        okButtonProps={{ disabled: uploading }}
         width={520}
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="file" label="PDF 文件" rules={[{ required: true, message: '请选择文件' }]} valuePropName="fileList" getValueFromEvent={(e: any) => e?.fileList}>
-            <Upload beforeUpload={() => false} accept=".pdf" maxCount={1}>
-              <Button icon={<UploadOutlined />}>选择 PDF 文件</Button>
+          <Form.Item name="file" label="PDF 文件（支持多选）" rules={[{ required: true, message: '请选择文件' }]} valuePropName="fileList" getValueFromEvent={(e: any) => e?.fileList}>
+            <Upload beforeUpload={() => false} accept=".pdf" maxCount={20} multiple>
+              <Button icon={<UploadOutlined />}>选择 PDF 文件（可多选）</Button>
             </Upload>
           </Form.Item>
-          <Form.Item name="title" label="标题（选填）">
-            <Input placeholder="文献标题" />
+          <Form.Item name="title" label="标题（选填，批量上传时忽略）">
+            <Input placeholder="文献标题" disabled={uploading} />
           </Form.Item>
-          <Form.Item name="doi" label="DOI（选填）">
-            <Input placeholder="如 10.1038/..." />
+          <Form.Item name="doi" label="DOI（选填，批量上传时忽略）">
+            <Input placeholder="如 10.1038/..." disabled={uploading} />
           </Form.Item>
-          <Form.Item name="province" label="省份（选填）">
-            <Input placeholder="如 北京" />
+          <Form.Item name="province" label="省份（选填，批量上传时忽略）">
+            <Input placeholder="如 北京" disabled={uploading} />
           </Form.Item>
           <Form.Item name="model" label="AI 提取模型">
-            <Select placeholder="默认配置" allowClear options={MODEL_OPTIONS} />
+            <Select placeholder="默认配置" allowClear options={MODEL_OPTIONS} disabled={uploading} />
           </Form.Item>
-          <Form.Item name="apiKey" label="API Key（选填）" noStyle>
+          <Form.Item noStyle dependencies={['model']}>
             {({ getFieldValue }) => {
               const model = getFieldValue('model');
               const vendor = MODEL_OPTIONS.find((o) => o.value === model)?.vendor || '';
               const info = VENDOR_INFO[vendor];
               if (!vendor || !info.name) return null;
               return (
-                <Input.Password placeholder={info.apiKeyLabel} style={{ marginBottom: 8 }} />
+                <Form.Item name="apiKey" label="API Key（选填）">
+                  <Input.Password placeholder={info.apiKeyLabel} disabled={uploading} />
+                </Form.Item>
               );
             }}
           </Form.Item>
-          <Form.Item name="baseUrl" label="API Base URL（选填）" noStyle>
+          <Form.Item noStyle dependencies={['model']}>
             {({ getFieldValue }) => {
               const model = getFieldValue('model');
               const vendor = MODEL_OPTIONS.find((o) => o.value === model)?.vendor || '';
               const info = VENDOR_INFO[vendor];
               if (!vendor || !info.name) return null;
               return (
-                <Input placeholder={info.baseUrlLabel} defaultValue={info.defaultBaseUrl} />
+                <Form.Item name="baseUrl" label="API Base URL（选填）">
+                  <Input placeholder={info.baseUrlLabel} defaultValue={info.defaultBaseUrl} disabled={uploading} />
+                </Form.Item>
               );
             }}
           </Form.Item>
+          {/* 批量上传进度 */}
+          {uploading && batchProgress.total > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <Progress percent={Math.round((batchProgress.current / batchProgress.total) * 100)}
+                format={() => `${batchProgress.current}/${batchProgress.total}`} />
+              <div style={{ fontSize: 12, color: '#888', marginTop: 4, wordBreak: 'break-all' }}>
+                正在处理：{batchProgress.fileName}
+              </div>
+            </div>
+          )}
         </Form>
       </Modal>
 

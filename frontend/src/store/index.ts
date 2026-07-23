@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
 interface FilterState {
   disease: string;
@@ -20,27 +21,32 @@ interface FilterState {
   reset: () => void;
 }
 
-export const useFilterStore = create<FilterState>((set) => ({
-  disease: '',
-  dataType: '',
-  province: '',
-  yearStart: null,
-  yearEnd: null,
-  ageMin: null,
-  ageMax: null,
-  gender: '',
-  occupation: '',
-  setDisease: (disease: string) => set({ disease }),
-  setDataType: (dataType) => set({ dataType }),
-  setProvince: (province) => set({ province }),
-  setYearRange: (yearStart, yearEnd) => set({ yearStart, yearEnd }),
-  setAgeRange: (ageMin, ageMax) => set({ ageMin, ageMax }),
-  setGender: (gender) => set({ gender }),
-  setOccupation: (occupation) => set({ occupation }),
-  reset: () => set({
-    disease: '', dataType: '', province: '',
-    yearStart: null, yearEnd: null,
-    ageMin: null, ageMax: null,
-    gender: '', occupation: '',
-  }),
-}));
+export const useFilterStore = create<FilterState>()(
+  persist(
+    (set) => ({
+      disease: '',
+      dataType: '',
+      province: '',
+      yearStart: null,
+      yearEnd: null,
+      ageMin: null,
+      ageMax: null,
+      gender: '',
+      occupation: '',
+      setDisease: (disease: string) => set({ disease }),
+      setDataType: (dataType) => set({ dataType }),
+      setProvince: (province) => set({ province }),
+      setYearRange: (yearStart, yearEnd) => set({ yearStart, yearEnd }),
+      setAgeRange: (ageMin, ageMax) => set({ ageMin, ageMax }),
+      setGender: (gender) => set({ gender }),
+      setOccupation: (occupation) => set({ occupation }),
+      reset: () => set({
+        disease: '', dataType: '', province: '',
+        yearStart: null, yearEnd: null,
+        ageMin: null, ageMax: null,
+        gender: '', occupation: '',
+      }),
+    }),
+    { name: 'antibody-filter-store' }
+  )
+);
