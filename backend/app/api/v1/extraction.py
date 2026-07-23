@@ -26,8 +26,23 @@ logger = logging.getLogger("uvicorn")
 
 class DataPointReviewItem(BaseModel):
     id: str
-    review_status: str  # "approved" | "rejected"
+    review_status: Optional[str] = None  # "approved" | "rejected" | None (仅编辑时不审核)
     review_note: Optional[str] = None
+    # 以下为可编辑的数据字段
+    disease: Optional[str] = None
+    province: Optional[str] = None
+    city: Optional[str] = None
+    data_type: Optional[str] = None
+    value: Optional[float] = None
+    unit: Optional[str] = None
+    sample_size: Optional[int] = None
+    population: Optional[str] = None
+    age_min: Optional[float] = None
+    age_max: Optional[float] = None
+    collection_year: Optional[int] = None
+    confidence: Optional[str] = None
+    method: Optional[str] = None
+    assay: Optional[str] = None
 
 
 class UpdateDataPointsRequest(BaseModel):
@@ -105,26 +120,44 @@ async def update_data_points(
     req: UpdateDataPointsRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """逐个更新数据点审核状态"""
+    """更新数据点（可编辑任意字段 + 审核状态）"""
     updated = []
+    editable_fields = [
+        "disease", "province", "city", "data_type", "value", "unit",
+        "sample_size", "population", "age_min", "age_max", "collection_year",
+        "confidence", "method", "assay",
+    ]
+
     for item in req.data_points:
-        if item.review_status not in ("approved", "rejected"):
-            raise HTTPException(status_code=400, detail=f"无效的审核状态: {item.review_status}")
+        # 构建要更新的字段
+        values: dict[str, Any] = {}
+
+        # 审核状态
+        if item.review_status:
+            if item.review_status not in ("approved", "rejected"):
+                raise HTTPException(status_code=400, detail=f"无效的审核状态: {item.review_status}")
+            values["review_status"] = item.review_status
+
+        # 可编辑的数据字段（仅更新显式传入的字段，None 值表示清空）
+        explicit = item.model_dump(exclude_unset=True, exclude={"id", "review_status", "review_note"})
+        for field in editable_fields:
+            if field in explicit:
+                values[field] = explicit[field]
+
+        if not values:
+            continue
 
         stmt = (
             update(DataPoint)
             .where(DataPoint.id == uuid.UUID(item.id))
             .where(DataPoint.literature_id == literature_id)
-            .values(review_status=item.review_status)
+            .values(**values)
         )
         await db.execute(stmt)
         updated.append(item.id)
 
-    # 更新文献审核计数
-    await _sync_approved_count(db, literature_id)
     await db.commit()
-
-    return ApiResponse(message="审核状态已更新", data={"updated": updated})
+    return ApiResponse(message="数据点已更新", data={"updated": updated})
 
 
 @router.post("/literatures/{literature_id}/extraction/confirm", response_model=ApiResponse)

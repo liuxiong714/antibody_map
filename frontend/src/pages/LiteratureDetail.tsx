@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, message, Spin, Select, Row, Col,
+  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, message, Spin, Select, Row, Col,
 } from 'antd';
 import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -40,12 +40,17 @@ const LiteratureDetail: React.FC = () => {
   // 折叠状态
   const [isTopCollapsed, setIsTopCollapsed] = useState(false);
   const [isLeftCollapsed, setIsLeftCollapsed] = useState(false);
-  const [isRightCollapsed, setIsRightCollapsed] = useState(false);
+  const [isRightCollapsed, setIsRightCollapsed] = useState(true);
 
   // 编辑状态
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<Record<string, string | number | null>>({});
   const [saving, setSaving] = useState(false);
+
+  // 数据点行内编辑状态
+  const [editingRowId, setEditingRowId] = useState<string | null>(null);
+  const [editRowData, setEditRowData] = useState<Partial<DataPoint> | null>(null);
+  const [editSavingRow, setEditSavingRow] = useState(false);
 
   const handleStartEdit = () => {
     if (!literature) return;
@@ -67,6 +72,48 @@ const LiteratureDetail: React.FC = () => {
   const handleCancelEdit = () => {
     setEditing(false);
     setEditForm({});
+  };
+
+  // 数据点行内编辑
+  const handleStartEditRow = (record: DataPoint) => {
+    setEditingRowId(record.id);
+    setEditRowData({ ...record });
+  };
+
+  const handleCancelEditRow = () => {
+    setEditingRowId(null);
+    setEditRowData(null);
+  };
+
+  const handleSaveEditRow = async () => {
+    if (!id || !editRowData?.id) return;
+    setEditSavingRow(true);
+    try {
+      const payload: Record<string, unknown> = { id: editRowData.id };
+      const fields: (keyof DataPoint)[] = [
+        'disease', 'province', 'city', 'data_type', 'value', 'unit',
+        'sample_size', 'population', 'age_min', 'age_max', 'collection_year',
+        'confidence', 'method', 'assay',
+      ];
+      fields.forEach((f) => {
+        if (editRowData[f] !== undefined) {
+          payload[f] = editRowData[f];
+        }
+      });
+      await updateDataPoints(id, [payload as any]);
+      message.success('数据点已更新');
+      setEditingRowId(null);
+      setEditRowData(null);
+      fetchData();
+    } catch {
+      message.error('更新失败');
+    } finally {
+      setEditSavingRow(false);
+    }
+  };
+
+  const updateEditField = (field: keyof DataPoint, value: unknown) => {
+    setEditRowData((prev) => (prev ? { ...prev, [field]: value } : prev));
   };
 
   const handleSaveEdit = async () => {
@@ -194,10 +241,18 @@ const LiteratureDetail: React.FC = () => {
     setModalOpen(true);
   };
 
+  const isEditing = (record: DataPoint) => editingRowId === record.id;
+
   const columns: ColumnsType<DataPoint> = [
     {
       title: '疾病', dataIndex: 'disease', key: 'disease', width: 80,
       sorter: (a, b) => (a.disease || '').localeCompare(b.disease || ''),
+      render: (v: string, r: DataPoint) =>
+        isEditing(r) ? (
+          <Input size="small" value={editRowData?.disease ?? ''}
+            onChange={(e) => updateEditField('disease', e.target.value || null)}
+            style={{ width: 70 }} />
+        ) : (v || '-'),
     },
     {
       title: '地区', key: 'region', width: 160,
@@ -206,7 +261,17 @@ const LiteratureDetail: React.FC = () => {
         const rb = [b.province, b.city].filter(Boolean).join(' ') || '';
         return ra.localeCompare(rb);
       },
-      render: (_: unknown, r: DataPoint) => [r.province, r.city].filter(Boolean).join(' ') || '-',
+      render: (_: unknown, r: DataPoint) =>
+        isEditing(r) ? (
+          <Space size={4}>
+            <Input size="small" value={editRowData?.province ?? ''}
+              onChange={(e) => updateEditField('province', e.target.value || null)}
+              placeholder="省" style={{ width: 70 }} />
+            <Input size="small" value={editRowData?.city ?? ''}
+              onChange={(e) => updateEditField('city', e.target.value || null)}
+              placeholder="市" style={{ width: 70 }} />
+          </Space>
+        ) : ([r.province, r.city].filter(Boolean).join(' ') || '-'),
     },
     {
       title: '年龄段', key: 'age', width: 100,
@@ -217,26 +282,66 @@ const LiteratureDetail: React.FC = () => {
         return (a.age_max ?? Number.MAX_SAFE_INTEGER) - (b.age_max ?? Number.MAX_SAFE_INTEGER);
       },
       render: (_: unknown, r: DataPoint) =>
-        r.age_min != null && r.age_max != null ? `${r.age_min}-${r.age_max}岁` : '-',
+        isEditing(r) ? (
+          <Space size={4}>
+            <InputNumber size="small" value={editRowData?.age_min ?? undefined}
+              onChange={(v) => updateEditField('age_min', v ?? null)}
+              placeholder="最小" style={{ width: 60 }} min={0} max={150} />
+            <InputNumber size="small" value={editRowData?.age_max ?? undefined}
+              onChange={(v) => updateEditField('age_max', v ?? null)}
+              placeholder="最大" style={{ width: 60 }} min={0} max={150} />
+          </Space>
+        ) : (
+          r.age_min != null && r.age_max != null ? `${r.age_min}-${r.age_max}岁` : '-'
+        ),
     },
     {
       title: '数据类型', dataIndex: 'data_type', key: 'dt', width: 100,
       sorter: (a, b) => (a.data_type || '').localeCompare(b.data_type || ''),
-      render: (v: string) => DATA_TYPE_LABEL[v] || v,
+      render: (v: string, r: DataPoint) =>
+        isEditing(r) ? (
+          <Select size="small" value={editRowData?.data_type ?? undefined}
+            onChange={(val) => updateEditField('data_type', val || null)}
+            style={{ width: 90 }} allowClear
+            options={Object.entries(DATA_TYPE_LABEL).map(([k, label]) => ({ value: k, label }))} />
+        ) : (DATA_TYPE_LABEL[v] || v || '-'),
     },
     {
       title: '数值', key: 'value', width: 120,
       sorter: (a, b) => (a.value ?? Number.MAX_SAFE_INTEGER) - (b.value ?? Number.MAX_SAFE_INTEGER),
       render: (_: unknown, r: DataPoint) =>
-        r.value != null ? `${r.value} ${r.unit || ''}` : '-',
+        isEditing(r) ? (
+          <Space size={4}>
+            <InputNumber size="small" value={editRowData?.value ?? undefined}
+              onChange={(v) => updateEditField('value', v ?? null)}
+              style={{ width: 70 }} step={0.1} />
+            <Input size="small" value={editRowData?.unit ?? ''}
+              onChange={(e) => updateEditField('unit', e.target.value || null)}
+              placeholder="单位" style={{ width: 50 }} />
+          </Space>
+        ) : (
+          r.value != null ? `${r.value} ${r.unit || ''}` : '-'
+        ),
     },
     {
       title: '样本量', dataIndex: 'sample_size', key: 'ss', width: 80,
       sorter: (a, b) => (a.sample_size ?? Number.MAX_SAFE_INTEGER) - (b.sample_size ?? Number.MAX_SAFE_INTEGER),
+      render: (v: number, r: DataPoint) =>
+        isEditing(r) ? (
+          <InputNumber size="small" value={editRowData?.sample_size ?? undefined}
+            onChange={(val) => updateEditField('sample_size', val ?? null)}
+            style={{ width: 70 }} min={0} />
+        ) : (v || '-'),
     },
     {
       title: '采集年份', dataIndex: 'collection_year', key: 'cy', width: 80,
       sorter: (a, b) => (a.collection_year ?? Number.MAX_SAFE_INTEGER) - (b.collection_year ?? Number.MAX_SAFE_INTEGER),
+      render: (v: number, r: DataPoint) =>
+        isEditing(r) ? (
+          <InputNumber size="small" value={editRowData?.collection_year ?? undefined}
+            onChange={(val) => updateEditField('collection_year', val ?? null)}
+            style={{ width: 70 }} min={1900} max={2100} />
+        ) : (v || '-'),
     },
     {
       title: '置信度', dataIndex: 'confidence', key: 'cf', width: 80,
@@ -244,7 +349,17 @@ const LiteratureDetail: React.FC = () => {
         const order = { high: 3, medium: 2, low: 1 };
         return (order[a.confidence as keyof typeof order] || 0) - (order[b.confidence as keyof typeof order] || 0);
       },
-      render: (v: string) => <ConfidenceBadge confidence={v} />,
+      render: (v: string, r: DataPoint) =>
+        isEditing(r) ? (
+          <Select size="small" value={editRowData?.confidence ?? undefined}
+            onChange={(val) => updateEditField('confidence', val || null)}
+            style={{ width: 70 }} allowClear
+            options={[
+              { value: 'high', label: '高' },
+              { value: 'medium', label: '中' },
+              { value: 'low', label: '低' },
+            ]} />
+        ) : (<ConfidenceBadge confidence={v} />),
     },
     {
       title: '状态', key: 'status', width: 80,
@@ -260,16 +375,23 @@ const LiteratureDetail: React.FC = () => {
     },
     {
       title: '操作', key: 'actions', width: 140,
-      render: (_: unknown, r: DataPoint) => (
-        <Space size="small">
-          <Button size="small" type="primary" icon={<CheckOutlined />}
-            disabled={r.review_status === 'approved'}
-            onClick={() => handleSingleReview(r.id, 'approved')} />
-          <Button size="small" danger icon={<CloseOutlined />}
-            disabled={r.review_status === 'rejected'}
-            onClick={() => handleSingleReview(r.id, 'rejected')} />
-        </Space>
-      ),
+      render: (_: unknown, r: DataPoint) =>
+        isEditing(r) ? (
+          <Space size="small">
+            <Button size="small" type="primary" icon={<SaveOutlined />} loading={editSavingRow} onClick={handleSaveEditRow}>保存</Button>
+            <Button size="small" onClick={handleCancelEditRow}>取消</Button>
+          </Space>
+        ) : (
+          <Space size="small">
+            <Button size="small" icon={<EditOutlined />} onClick={() => handleStartEditRow(r)}>编辑</Button>
+            <Button size="small" type="primary" icon={<CheckOutlined />}
+              disabled={r.review_status === 'approved'}
+              onClick={() => handleSingleReview(r.id, 'approved')} />
+            <Button size="small" danger icon={<CloseOutlined />}
+              disabled={r.review_status === 'rejected'}
+              onClick={() => handleSingleReview(r.id, 'rejected')} />
+          </Space>
+        ),
     },
   ];
 
@@ -537,13 +659,13 @@ const LiteratureDetail: React.FC = () => {
                     dataSource={dataPoints}
                     columns={columns}
                     showSorterTooltip={{ title: '点击排序' }}
-                    scroll={{ x: 1100 }}
+                    scroll={{ x: 1400 }}
                     size="middle"
                     rowSelection={{
                       selectedRowKeys,
                       onChange: (keys) => setSelectedRowKeys(keys),
                       getCheckboxProps: (r: DataPoint) => ({
-                        disabled: r.review_status !== 'pending',
+                        disabled: r.review_status !== 'pending' || isEditing(r),
                       }),
                     }}
                     pagination={false}

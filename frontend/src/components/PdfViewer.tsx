@@ -8,8 +8,10 @@ import {
 } from '@ant-design/icons';
 import * as pdfjsLib from 'pdfjs-dist/build/pdf';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-  `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.js',
+  import.meta.url,
+).toString();
 
 const CMAKE_URL = '/cmaps/';
 const STANDARD_FONTS_URL = '/standard_fonts/';
@@ -202,6 +204,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         cMapPacked: true,
         useSystemFonts: true,
         standardFontDataUrl: STANDARD_FONTS_URL,
+        disableRange: true,
+        disableStream: true,
       });
       const pdf = await loadingTask.promise;
       pdfRef.current = pdf;

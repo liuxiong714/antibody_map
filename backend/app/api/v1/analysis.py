@@ -131,3 +131,36 @@ async def get_immune_barrier(
         age_max=age_max,
     )
     return ApiResponse(data=data)
+
+
+@router.get("/analysis/approved-data-points", response_model=ApiResponse)
+async def get_approved_data_points(
+    disease: Optional[str] = Query(None, description="疾病筛选"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    year_start: Optional[int] = Query(None, description="起始年份"),
+    year_end: Optional[int] = Query(None, description="结束年份"),
+    age_min: Optional[int] = Query(None, description="最小年龄"),
+    age_max: Optional[int] = Query(None, description="最大年龄"),
+    data_type: Optional[str] = Query(None, description="数据类型"),
+    offset: int = Query(0, ge=0, description="偏移量"),
+    limit: int = Query(200, ge=1, le=1000, description="每页数量"),
+    sort_by: Optional[str] = Query(None, description="排序字段"),
+    sort_order: Optional[str] = Query("desc", description="排序方向 asc/desc"),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取所有审核通过的数据点（分页），用于数据分析模块"""
+    items, total = await analysis_service.get_approved_data_points(
+        db=db,
+        disease=disease,
+        province=province,
+        year_start=year_start,
+        year_end=year_end,
+        age_min=age_min,
+        age_max=age_max,
+        data_type=data_type,
+        offset=offset,
+        limit=limit,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
+    return ApiResponse(data={"items": items, "total": total})

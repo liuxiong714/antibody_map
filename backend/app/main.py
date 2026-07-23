@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.config import settings
 from app.models.base import engine, Base
@@ -17,9 +18,34 @@ async def lifespan(app: FastAPI):
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables created successfully")
+            # 为已有 report 表添加新列（兼容旧数据库）
+            await conn.execute(text(
+                "ALTER TABLE report ADD COLUMN IF NOT EXISTS report_type VARCHAR(30) DEFAULT 'antibody_analysis'"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE report ADD COLUMN IF NOT EXISTS task_type VARCHAR(100)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE report ADD COLUMN IF NOT EXISTS task_time VARCHAR(200)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE report ADD COLUMN IF NOT EXISTS task_location VARCHAR(200)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE report ADD COLUMN IF NOT EXISTS personnel_count INTEGER"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE report ADD COLUMN IF NOT EXISTS personnel_gender VARCHAR(100)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE report ADD COLUMN IF NOT EXISTS personnel_age VARCHAR(100)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE report ADD COLUMN IF NOT EXISTS personnel_vaccination_history TEXT"
+            ))
+        logger.info("Database tables created/updated successfully")
     except Exception as e:
-        logger.warning(f"Database not available, skipping table creation: {e}")
+        logger.warning(f"Database migration issue: {e}")
     yield
     await engine.dispose()
 

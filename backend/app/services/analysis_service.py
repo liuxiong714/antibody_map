@@ -4,6 +4,7 @@ from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.data_point import DataPoint
+from app.models.literature import Literature
 
 # WHO 免疫屏障阈值（阳性率百分比）
 WHO_THRESHOLDS = {
@@ -355,3 +356,92 @@ async def get_immune_barrier_assessment(
         "status": status,
         "assessment": assessment,
     }
+
+
+async def get_approved_data_points(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+    age_min: Optional[int] = None,
+    age_max: Optional[int] = None,
+    data_type: Optional[str] = None,
+    offset: int = 0,
+    limit: int = 200,
+    sort_by: Optional[str] = None,
+    sort_order: str = "desc",
+) -> tuple[list[dict], int]:
+    """获取所有审核通过的数据点（分页），用于数据分析模块展示"""
+    query = _build_base_query(disease, province, year_start, year_end, age_min, age_max,
+                              data_type, review_status="approved")
+
+    # 获取总数
+    count_query = select(func.count()).select_from(query.subquery())
+    count_result = await db.execute(count_query)
+    total = count_result.scalar() or 0
+
+    # 获取分页数据，关联文献表获取标题
+    query = query.add_columns(Literature.title).outerjoin(
+        Literature, DataPoint.literature_id == Literature.id
+    )
+
+    # 动态排序
+    sort_column_map = {
+        "literature_title": Literature.title,
+        "disease": DataPoint.disease,
+        "province": DataPoint.province,
+        "city": DataPoint.city,
+        "age_group": DataPoint.age_group,
+        "sample_size": DataPoint.sample_size,
+        "data_type": DataPoint.data_type,
+        "value": DataPoint.value,
+        "unit": DataPoint.unit,
+        "collection_year": DataPoint.collection_year,
+        "method": DataPoint.method,
+        "population": DataPoint.population,
+    }
+    if sort_by and sort_by in sort_column_map:
+        col = sort_column_map[sort_by]
+        if sort_order == "asc":
+            query = query.order_by(col.asc().nullslast())
+        else:
+            query = query.order_by(col.desc().nullslast())
+    else:
+        query = query.order_by(DataPoint.collection_year.desc().nullslast(), DataPoint.created_at.desc())
+
+    query = query.offset(offset).limit(limit)
+    result = await db.execute(query)
+    rows = result.all()
+
+    items = []
+    for r in rows:
+        dp = r[0]  # DataPoint 对象
+        literature_title = r[1]  # Literature.title
+        items.append({
+            "id": str(dp.id),
+            "literature_id": str(dp.literature_id) if dp.literature_id else None,
+            "literature_title": literature_title,
+            "disease": dp.disease,
+            "region": dp.region,
+            "province": dp.province,
+            "city": dp.city,
+            "age_group": dp.age_group,
+            "age_min": dp.age_min,
+            "age_max": dp.age_max,
+            "sample_size": dp.sample_size,
+            "data_type": dp.data_type,
+            "value": float(dp.value) if dp.value is not None else None,
+            "unit": dp.unit,
+            "ci_lower": float(dp.ci_lower) if dp.ci_lower is not None else None,
+            "ci_upper": float(dp.ci_upper) if dp.ci_upper is not None else None,
+            "method": dp.method,
+            "assay": dp.assay,
+            "population": dp.population,
+            "collection_year": dp.collection_year,
+            "confidence": dp.confidence,
+            "review_status": dp.review_status,
+            "created_at": dp.created_at.isoformat() if dp.created_at else None,
+        })
+
+    return items, total

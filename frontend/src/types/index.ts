@@ -83,11 +83,20 @@ export interface ExtractionStatus {
 }
 
 export interface ReportData {
+  id?: string;
   title: string;
   content: string;
+  report_type: string;
   literature_count: number;
   data_point_count: number;
   language: string;
+  task_type?: string;
+  task_time?: string;
+  task_location?: string;
+  personnel_count?: number;
+  personnel_gender?: string;
+  personnel_age?: string;
+  personnel_vaccination_history?: string;
   generated_at: string;
 }
 
@@ -95,12 +104,17 @@ export interface ReportData {
 export interface ReportRecord {
   id: string;
   title: string;
+  report_type: string;
   disease: string | null;
   province: string | null;
   data_type: string | null;
   language: string;
   literature_count: number;
   data_point_count: number;
+  task_type?: string;
+  task_time?: string;
+  task_location?: string;
+  personnel_count?: number;
   generated_at: string;
   content?: string;
 }

@@ -47,7 +47,27 @@ export async function getExtractionResults(literatureId: string) {
   return data;
 }
 
-export async function updateDataPoints(literatureId: string, dataPoints: Array<{ id: string; review_status: string }>) {
+export async function updateDataPoints(
+  literatureId: string,
+  dataPoints: Array<{
+    id: string;
+    review_status?: string;
+    disease?: string | null;
+    province?: string | null;
+    city?: string | null;
+    data_type?: string | null;
+    value?: number | null;
+    unit?: string | null;
+    sample_size?: number | null;
+    population?: string | null;
+    age_min?: number | null;
+    age_max?: number | null;
+    collection_year?: number | null;
+    confidence?: string | null;
+    method?: string | null;
+    assay?: string | null;
+  }>,
+) {
   const { data } = await api.put<ApiResponse>(`/literatures/${literatureId}/extraction`, { data_points: dataPoints });
   return data;
 }

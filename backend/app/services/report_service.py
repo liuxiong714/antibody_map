@@ -88,6 +88,42 @@ Please structure the report in Markdown format:
 
 Base your analysis strictly on the provided data. Do not fabricate any data."""
 
+VACCINATION_STRATEGY_PROMPT_ZH = """你是一位流行病学和疫苗学专家。请根据以下任务信息和任务地点传染病流行情况，综合研判并制定参加任务人员的疫苗接种策略。
+
+任务信息：
+- 任务类型：{task_type}
+- 任务时间：{task_time}
+- 任务地点：{task_location}
+- 人员人数：{personnel_count}人
+- 人员性别分布：{personnel_gender}
+- 人员年龄范围：{personnel_age}
+- 人员疫苗接种史：{personnel_vaccination_history}
+
+任务地点传染病流行情况：
+{epidemic_data}
+
+请按以下结构输出疫苗接种策略报告（Markdown 格式）：
+## 1. 任务概况与传染病风险评估
+- 结合任务类型、时间、地点分析可能面临的传染病风险
+- 评估任务地点的传染病流行威胁
+## 2. 任务地点传染病流行现状分析
+- 基于现有流行病学数据分析当地主要传染病的流行水平和免疫屏障状况
+- 识别高风险传染病
+## 3. 人员免疫状态评估
+- 结合人员年龄、性别、疫苗接种史评估群体免疫水平
+- 识别免疫缺口
+## 4. 推荐疫苗接种方案
+- 按优先级排列推荐接种的疫苗种类
+- 说明每项疫苗的推荐理由（结合当地流行情况和人员特点）
+- 给出建议接种率目标
+## 5. 接种时间安排建议
+- 根据任务时间倒推接种窗口
+- 多剂次疫苗的接种排程
+## 6. 其他防护措施建议
+- 除疫苗接种外的健康防护建议
+
+请基于数据给出专业的疫苗接种策略建议，确保建议具有可操作性。不要编造不存在的数据。"""
+
 
 def _calc_weighted_rate(rows: list[DataPoint]) -> tuple[float, int]:
     """计算加权阳性率"""
@@ -246,6 +282,7 @@ async def generate_report(
         report = Report(
             title=report_title,
             content=content,
+            report_type="antibody_analysis",
             disease=disease,
             province=province,
             data_type=data_type,
@@ -262,9 +299,161 @@ async def generate_report(
         "id": str(report.id) if report else None,
         "title": report_title,
         "content": content,
+        "report_type": "antibody_analysis",
         "literature_count": len(lit_ids),
         "data_point_count": len(rows),
         "language": language,
+        "generated_at": report.generated_at.isoformat() if report else datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def generate_vaccination_strategy_report(
+    db: AsyncSession,
+    task_type: str,
+    task_time: str,
+    task_location: str,
+    personnel_count: int,
+    personnel_gender: str = "",
+    personnel_age: str = "",
+    personnel_vaccination_history: str = "",
+    title: Optional[str] = None,
+) -> dict:
+    """生成疫苗接种策略研判报告"""
+    # 1. 查询任务地点的传染病流行数据
+    query = select(DataPoint).where(DataPoint.review_status == "approved")
+    if task_location:
+        query = query.where(DataPoint.province.ilike(f"%{task_location}%"))
+
+    result = await db.execute(query)
+    rows = list(result.scalars().all())
+
+    # 2. 构建疫情数据汇总
+    epidemic_lines = []
+    if rows:
+        lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+        epidemic_lines.append(f"- 数据来源：{len(lit_ids)} 篇文献，{len(rows)} 个数据点")
+
+        # 按疾病汇总
+        disease_map: dict[str, list[DataPoint]] = {}
+        for r in rows:
+            d = r.disease or "未知"
+            if d not in disease_map:
+                disease_map[d] = []
+            disease_map[d].append(r)
+
+        epidemic_lines.append("\n各疾病流行情况：")
+        for disease_key, group in disease_map.items():
+            disease_name = DISEASE_NAMES.get(disease_key, disease_key)
+            wpr, ps = _calc_weighted_rate(group)
+            gmc_rows = [r for r in group if r.data_type == "gmc" and r.value is not None]
+            avg_gmc = round(sum(r.value for r in gmc_rows) / len(gmc_rows), 2) if gmc_rows else None
+            epidemic_lines.append(
+                f"  - {disease_name}：加权阳性率 {wpr}%（样本量 {ps}）"
+                + (f"，GMC {avg_gmc}" if avg_gmc else "")
+                + f"，数据点 {len(group)} 个"
+            )
+
+        # 按年份汇总
+        year_map: dict[int, list[DataPoint]] = {}
+        for r in rows:
+            y = r.collection_year
+            if y is None:
+                continue
+            if y not in year_map:
+                year_map[y] = []
+            year_map[y].append(r)
+
+        if year_map:
+            epidemic_lines.append("\n年份趋势：")
+            for year in sorted(year_map.keys(), reverse=True)[:5]:
+                group = year_map[year]
+                wpr, ps = _calc_weighted_rate(group)
+                epidemic_lines.append(f"  - {year}年：阳性率 {wpr}%，样本量 {ps}，数据点 {len(group)} 个")
+
+        # 按年龄汇总
+        age_map: dict[str, list[DataPoint]] = {}
+        for r in rows:
+            matched = False
+            for label, lo, hi in AGE_GROUPS:
+                if r.age_min is not None and r.age_max is not None:
+                    if r.age_min >= lo and r.age_max <= hi:
+                        if label not in age_map:
+                            age_map[label] = []
+                        age_map[label].append(r)
+                        matched = True
+                        break
+            if not matched:
+                if "其他" not in age_map:
+                    age_map["其他"] = []
+                age_map["其他"].append(r)
+
+        if age_map:
+            epidemic_lines.append("\n年龄分布：")
+            for label in age_map:
+                group = age_map[label]
+                wpr, ps = _calc_weighted_rate(group)
+                epidemic_lines.append(f"  - {label}：阳性率 {wpr}%，样本量 {ps}")
+    else:
+        epidemic_lines.append("暂无该地区的传染病流行病学数据。")
+
+    epidemic_data = "\n".join(epidemic_lines)
+
+    # 3. 报告标题
+    if title:
+        report_title = title
+    else:
+        report_title = f"{task_location}任务人员疫苗接种策略研判报告"
+
+    # 4. 构建 Prompt
+    prompt = VACCINATION_STRATEGY_PROMPT_ZH.format(
+        task_type=task_type,
+        task_time=task_time,
+        task_location=task_location,
+        personnel_count=personnel_count,
+        personnel_gender=personnel_gender or "未提供",
+        personnel_age=personnel_age or "未提供",
+        personnel_vaccination_history=personnel_vaccination_history or "未提供",
+        epidemic_data=epidemic_data,
+    )
+
+    content = await _call_llm(prompt)
+
+    # 5. Save to database
+    try:
+        report = Report(
+            title=report_title,
+            content=content,
+            report_type="vaccination_strategy",
+            task_type=task_type,
+            task_time=task_time,
+            task_location=task_location,
+            personnel_count=personnel_count,
+            personnel_gender=personnel_gender or None,
+            personnel_age=personnel_age or None,
+            personnel_vaccination_history=personnel_vaccination_history or None,
+            data_point_count=len(rows),
+            literature_count=len(set(str(r.literature_id) for r in rows if r.literature_id)),
+        )
+        db.add(report)
+        await db.commit()
+    except Exception as e:
+        logger.warning(f"保存报告失败: {e}")
+
+    return {
+        "id": str(report.id) if report else None,
+        "title": report_title,
+        "content": content,
+        "report_type": "vaccination_strategy",
+        "task_type": task_type,
+        "task_time": task_time,
+        "task_location": task_location,
+        "personnel_count": personnel_count,
+        "personnel_gender": personnel_gender,
+        "personnel_age": personnel_age,
+        "personnel_vaccination_history": personnel_vaccination_history,
+        "data_point_count": len(rows),
+        "literature_count": len(set(str(r.literature_id) for r in rows if r.literature_id)),
+        "language": "zh",
         "generated_at": report.generated_at.isoformat() if report else datetime.now(timezone.utc).isoformat(),
     }
 
@@ -300,12 +489,17 @@ async def get_reports(db: AsyncSession, page: int = 1, page_size: int = 20):
         items.append({
             "id": str(r.id),
             "title": r.title,
+            "report_type": r.report_type,
             "disease": r.disease,
             "province": r.province,
             "data_type": r.data_type,
             "language": r.language,
             "literature_count": r.literature_count,
             "data_point_count": r.data_point_count,
+            "task_type": r.task_type,
+            "task_time": r.task_time,
+            "task_location": r.task_location,
+            "personnel_count": r.personnel_count,
             "generated_at": r.generated_at.isoformat(),
         })
     return {"items": items, "total": total, "page": page, "page_size": page_size}
@@ -322,12 +516,59 @@ async def get_report_by_id(db: AsyncSession, report_id):
         "id": str(r.id),
         "title": r.title,
         "content": r.content,
+        "report_type": r.report_type,
         "disease": r.disease,
         "province": r.province,
         "data_type": r.data_type,
         "language": r.language,
         "literature_count": r.literature_count,
         "data_point_count": r.data_point_count,
+        "task_type": r.task_type,
+        "task_time": r.task_time,
+        "task_location": r.task_location,
+        "personnel_count": r.personnel_count,
+        "personnel_gender": r.personnel_gender,
+        "personnel_age": r.personnel_age,
+        "personnel_vaccination_history": r.personnel_vaccination_history,
         "generated_at": r.generated_at.isoformat(),
     }
+
+
+async def update_report(
+    db: AsyncSession,
+    report_id: str,
+    title: Optional[str] = None,
+    content: Optional[str] = None,
+) -> Optional[dict]:
+    """更新报告标题或内容"""
+    from uuid import UUID
+    from sqlalchemy import update
+    from datetime import datetime, timezone
+
+    uid = UUID(report_id)
+    values = {}
+    if title is not None:
+        values["title"] = title
+    if content is not None:
+        values["content"] = content
+    if not values:
+        return await get_report_by_id(db, report_id)
+
+    values["generated_at"] = datetime.now(timezone.utc)
+    stmt = update(Report).where(Report.id == uid).values(**values)
+    await db.execute(stmt)
+    await db.commit()
+
+    return await get_report_by_id(db, report_id)
+
+
+async def delete_report(db: AsyncSession, report_id: str) -> bool:
+    """删除报告"""
+    from uuid import UUID
+    from sqlalchemy import delete
+
+    uid = UUID(report_id)
+    result = await db.execute(delete(Report).where(Report.id == uid))
+    await db.commit()
+    return result.rowcount > 0
 

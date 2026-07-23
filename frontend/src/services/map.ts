@@ -31,6 +31,11 @@ export async function getAgeStratify(params: Record<string, unknown>) {
   return data;
 }
 
+export async function getApprovedDataPoints(params: Record<string, unknown>) {
+  const { data } = await api.get<ApiResponse<{ items: Record<string, unknown>[]; total: number }>>('/analysis/approved-data-points', { params });
+  return data;
+}
+
 export async function getImmuneBarrier(params: Record<string, unknown>) {
   const { data } = await api.post<ApiResponse<ImmuneBarrierData>>('/analysis/immune-barrier', null, { params });
   return data;
@@ -38,6 +43,21 @@ export async function getImmuneBarrier(params: Record<string, unknown>) {
 
 export async function generateReport(params: Record<string, unknown>) {
   const { data } = await api.post<ApiResponse<ReportData>>('/reports/generate', null, { params });
+  return data;
+}
+
+export async function generateVaccinationStrategy(body: Record<string, unknown>) {
+  const { data } = await api.post<ApiResponse<ReportData>>('/reports/generate-vaccination-strategy', body);
+  return data;
+}
+
+export async function updateReport(id: string, body: { title?: string; content?: string }) {
+  const { data } = await api.put<ApiResponse<ReportRecord>>(`/reports/${id}`, body);
+  return data;
+}
+
+export async function deleteReport(id: string) {
+  const { data } = await api.delete<ApiResponse<null>>(`/reports/${id}`);
   return data;
 }
 
