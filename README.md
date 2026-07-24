@@ -100,51 +100,105 @@ antibody_map01/
 ### 环境要求
 
 - Python 3.10+
-- Node.js 18+
-- Docker & Docker Compose
+- Node.js 18+ (推荐 20+)
+- Docker Desktop (Windows / macOS) 或 Docker & Docker Compose (Linux)
 - Tesseract OCR (可选，用于扫描版 PDF 的文字识别)
 
-### 1. 克隆项目
+### Windows 一键部署（推荐）
+
+#### 1. 安装基础软件
+
+按顺序安装以下软件（全部官网下载，下一步即可）：
+
+| 软件 | 下载地址 | 说明 |
+|------|----------|------|
+| **Git** | https://git-scm.com/download/win | 克隆代码 |
+| **Python 3.10+** | https://www.python.org/downloads/ | 安装时勾选 "Add Python to PATH" |
+| **Node.js 20+** | https://nodejs.org/ | 选 LTS 版本 |
+| **Docker Desktop** | https://www.docker.com/products/docker-desktop/ | 运行 PostgreSQL/Redis/MinIO |
+
+> Docker Desktop 安装完成后需重启电脑，并确保 Docker 处于运行状态（右下角托盘图标）。
+
+#### 2. 克隆项目
+
+打开 PowerShell（或 Git Bash）：
+
+```powershell
+git clone https://github.com/liuxiong714/antibody_map.git
+cd antibody_map
+```
+
+#### 3. 配置环境变量
+
+复制配置模板并编辑：
+
+```powershell
+copy .env.example .env
+notepad .env
+```
+
+**必填项**：`LLM_API_KEY`（你的 LLM API Key，DeepSeek 等）
+
+#### 4. 一键启动
+
+```powershell
+.\start.ps1
+```
+
+脚本会自动完成：检查依赖 → 安装依赖 → 启动 Docker → 启动后端 → 启动前端 → 打开浏览器。
+
+> 如果提示"无法加载文件，因为在此系统上禁止运行脚本"，请先执行：
+> ```powershell
+> Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+> ```
+
+#### 5. 停止服务
+
+按 `Ctrl+C` 即可停止全部服务，或单独执行：
+
+```powershell
+.\stop.ps1
+```
+
+### macOS / Linux 部署
+
+#### 1. 克隆项目
 
 ```bash
 git clone https://github.com/liuxiong714/antibody_map.git
 cd antibody_map
 ```
 
-### 2. 启动基础设施
-
-```bash
-docker compose up -d
-```
-
-### 3. 配置环境变量
+#### 2. 配置环境变量
 
 ```bash
 cp .env.example .env
-# 编辑 .env，至少填写 LLM_API_KEY (DeepSeek API Key)
+# 编辑 .env，至少填写 LLM_API_KEY
 ```
 
-### 4. 启动服务
+#### 3. 一键启动
 
-**一键启动：**
 ```bash
 bash start.sh
 ```
 
-**或手动分步启动：**
+### 手动分步启动（高级用户）
 
 ```bash
-# 后端 (端口 8080)
+# 1. 启动基础设施
+docker compose up -d
+
+# 2. 后端 (端口 8080)
 cd backend
 pip install -r requirements.txt
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8080 --reload
 
-# 前端 (端口 3000)
+# 3. 前端 (端口 3000)
 cd frontend
 npm install
 npm run dev
 
-# Celery Worker (可选，用于异步 AI 提取)
+# 4. Celery Worker (可选，用于异步 AI 提取)
 cd backend
 celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
 ```
@@ -156,6 +210,52 @@ celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
 | 前端页面 | http://localhost:3000 |
 | API 文档 (Swagger) | http://localhost:8080/docs |
 | MinIO 控制台 | http://localhost:9001 |
+
+---
+
+## 数据迁移指南
+
+把数据从旧电脑迁移到新电脑的步骤：
+
+### 旧电脑：导出备份
+
+```powershell
+# Windows
+.\scripts\backup_db.ps1
+
+# macOS/Linux
+docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d antibody_map --no-owner --no-privileges > backups/latest_backup.sql
+```
+
+备份文件存放在 `backups/` 目录，文件名带时间戳，同时生成 `latest_backup.sql`。
+
+> **重要**：PDF 文件如果存在本地 `backend/data/pdfs/` 目录，需手动复制该文件夹到新电脑。如果使用 MinIO 存储，需额外导出 MinIO bucket。
+
+### 新电脑：恢复备份
+
+1. 先按上面的步骤完成项目部署并启动服务（确保 Docker 容器运行）
+2. 把备份文件复制到新电脑的项目目录下
+3. 执行恢复：
+
+```powershell
+# Windows
+.\scripts\restore_db.ps1 -BackupFile backups\latest_backup.sql
+
+# 提示确认时输入 YES
+```
+
+> ⚠️ 恢复会**覆盖**当前数据库所有数据，请谨慎操作。
+
+---
+
+## 项目脚本一览
+
+| 脚本 | 平台 | 作用 |
+|------|------|------|
+| `start.ps1` / `stop.ps1` | Windows | 一键启动/停止所有服务 |
+| `start.sh` / `stop.sh` | macOS/Linux | 一键启动/停止所有服务 |
+| `scripts/backup_db.ps1` | Windows | 导出数据库备份 |
+| `scripts/restore_db.ps1` | Windows | 从备份恢复数据库 |
 
 ## API 接口一览
 
