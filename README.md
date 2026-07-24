@@ -2,6 +2,8 @@
 
 血清抗体流行病学数据可视化与分析平台
 
+![平台预览](docs/screenshots/dashboard.png)
+
 ## 项目简介
 
 抗体地图是一个面向公共卫生和流行病学领域的**血清抗体水平数据管理、可视化与分析平台**。系统支持上传流行病学相关的 PDF 文献，通过 LLM 自动提取结构化的血清抗体数据点，经过人工审核后在交互式中国地图上可视化展示，并支持多维度数据分析和 AI 报告生成。
@@ -303,10 +305,10 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/analysis/trend` | 逐年趋势分析 |
-| POST | `/analysis/region-compare` | 区域对比分析 |
-| POST | `/analysis/age-stratify` | 年龄分层分析 |
-| POST | `/analysis/immune-barrier` | 免疫屏障评估 (含 WHO 阈值) |
+| GET | `/analysis/trend` | 逐年趋势分析 |
+| GET | `/analysis/region-compare` | 区域对比分析 |
+| GET | `/analysis/age-stratify` | 年龄分层分析 |
+| GET | `/analysis/immune-barrier` | 免疫屏障评估 (含 WHO 阈值) |
 | GET | `/analysis/summary` | 汇总统计 |
 | GET | `/analysis/approved-data-points` | 已审核数据点列表 |
 
@@ -315,7 +317,7 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/search/literatures` | 文献高级检索 |
-| POST | `/search/data-points` | 数据点高级检索 |
+| GET | `/search/data-points` | 数据点高级检索 |
 
 ### 报告
 
