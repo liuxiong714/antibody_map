@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Card, Table, Button, Input, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress,
+  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress,
 } from 'antd';
 import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -20,6 +20,12 @@ const LiteraturePage: React.FC = () => {
   const [page, setPage] = useState(1);
   const [keyword, setKeyword] = useState('');
   const [disease, setDisease] = useState('');
+  const [province, setProvince] = useState('');
+  const [yearStart, setYearStart] = useState<number | undefined>();
+  const [yearEnd, setYearEnd] = useState<number | undefined>();
+  const [journal, setJournal] = useState('');
+  const [sortBy, setSortBy] = useState('created');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [loading, setLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -46,6 +52,12 @@ const LiteraturePage: React.FC = () => {
       const params: Record<string, unknown> = { page, page_size: 20 };
       if (keyword) params.keyword = keyword;
       if (disease) params.disease = disease;
+      if (province) params.province = province;
+      if (yearStart) params.year_start = yearStart;
+      if (yearEnd) params.year_end = yearEnd;
+      if (journal) params.journal = journal;
+      if (sortBy) params.sort_by = sortBy;
+      if (sortOrder) params.sort_order = sortOrder;
       const resp = await listLiterature(params);
       setItems(resp.items);
       setTotal(resp.total);
@@ -54,7 +66,7 @@ const LiteraturePage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, keyword, disease]);
+  }, [page, keyword, disease, province, yearStart, yearEnd, journal, sortBy, sortOrder]);
 
   useEffect(() => { fetchList(); }, [fetchList]);
 
@@ -263,11 +275,70 @@ const LiteraturePage: React.FC = () => {
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
             onPressEnter={fetchList}
-            style={{ width: 260 }}
+            style={{ width: 200 }}
             allowClear
           />
           <DiseaseSelector value={disease} onChange={setDisease} />
-          <Button icon={<ReloadOutlined />} onClick={() => { setKeyword(''); setDisease(''); setPage(1); }}>重置筛选</Button>
+          <Input
+            placeholder="省份"
+            value={province}
+            onChange={(e) => setProvince(e.target.value)}
+            onPressEnter={fetchList}
+            style={{ width: 100 }}
+            allowClear
+          />
+          <Input
+            placeholder="期刊"
+            value={journal}
+            onChange={(e) => setJournal(e.target.value)}
+            onPressEnter={fetchList}
+            style={{ width: 150 }}
+            allowClear
+          />
+          <InputNumber
+            placeholder="起始年"
+            value={yearStart}
+            onChange={(v) => setYearStart(v)}
+            style={{ width: 100 }}
+            min={1900}
+            max={2100}
+          />
+          <span style={{ padding: '0 4px' }}>~</span>
+          <InputNumber
+            placeholder="结束年"
+            value={yearEnd}
+            onChange={(v) => setYearEnd(v)}
+            style={{ width: 100 }}
+            min={1900}
+            max={2100}
+          />
+          <Select
+            value={sortBy}
+            onChange={setSortBy}
+            style={{ width: 100 }}
+            options={[
+              { value: 'created', label: '创建时间' },
+              { value: 'title', label: '标题' },
+              { value: 'year', label: '年份' },
+              { value: 'journal', label: '期刊' },
+              { value: 'province', label: '省份' },
+              { value: 'status', label: '状态' },
+            ]}
+          />
+          <Select
+            value={sortOrder}
+            onChange={(v) => setSortOrder(v)}
+            style={{ width: 80 }}
+            options={[
+              { value: 'desc', label: '降序' },
+              { value: 'asc', label: '升序' },
+            ]}
+          />
+          <Button icon={<ReloadOutlined />} onClick={() => {
+            setKeyword(''); setDisease(''); setProvince(''); setYearStart(undefined);
+            setYearEnd(undefined); setJournal(''); setSortBy('created'); setSortOrder('desc'); setPage(1);
+          }}>重置筛选</Button>
+          <Button type="primary" icon={<SearchOutlined />} onClick={fetchList}>查询</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
             上传文献
           </Button>

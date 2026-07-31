@@ -50,14 +50,21 @@ async def upload(
 
 @router.get("/literatures", response_model=PagedResponse)
 async def list_literatures(
-    keyword: Optional[str] = Query(None, description="标题关键词搜索"),
+    keyword: Optional[str] = Query(None, description="标题/作者/期刊关键词搜索"),
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
+    year_start: Optional[int] = Query(None, description="起始年份"),
+    year_end: Optional[int] = Query(None, description="结束年份"),
+    journal: Optional[str] = Query(None, description="期刊名称"),
+    sort_by: Optional[str] = Query(None, description="排序字段: title, authors, journal, year, province, created, status"),
+    sort_order: Optional[str] = Query(None, description="排序方向: asc, desc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    items, total = await list_literature(db, keyword, disease, province, page, page_size)
+    items, total = await list_literature(
+        db, keyword, disease, province, year_start, year_end, journal, sort_by, sort_order, page, page_size
+    )
     return PagedResponse(
         items=[LiteratureResponse.model_validate(item).model_dump() for item in items],
         total=total,

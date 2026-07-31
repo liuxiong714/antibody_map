@@ -22,6 +22,11 @@ async def list_literature(
     keyword: Optional[str] = None,
     disease: Optional[str] = None,
     province: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+    journal: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[Literature], int]:
@@ -30,22 +35,47 @@ async def list_literature(
 
     if keyword:
         like = f"%{keyword}%"
-        query = query.where(Literature.title.ilike(like))
-        count_query = count_query.where(Literature.title.ilike(like))
+        query = query.where(Literature.title.ilike(like) | Literature.authors.ilike(like) | Literature.journal.ilike(like))
+        count_query = count_query.where(Literature.title.ilike(like) | Literature.authors.ilike(like) | Literature.journal.ilike(like))
 
     if province:
         query = query.where(Literature.province == province)
         count_query = count_query.where(Literature.province == province)
 
-    # disease filter uses data_point join — for now do simple filter if needed
-    # Can be extended via a subquery on data_point table
+    if year_start:
+        query = query.where(Literature.pub_year >= year_start)
+        count_query = count_query.where(Literature.pub_year >= year_start)
 
-    # Get total count
+    if year_end:
+        query = query.where(Literature.pub_year <= year_end)
+        count_query = count_query.where(Literature.pub_year <= year_end)
+
+    if journal:
+        query = query.where(Literature.journal.ilike(f"%{journal}%"))
+        count_query = count_query.where(Literature.journal.ilike(f"%{journal}%"))
+
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    # Get paginated results
-    query = query.order_by(Literature.created_at.desc())
+    sort_column = Literature.created_at
+    sort_desc = True
+
+    if sort_by:
+        sort_map = {
+            "title": Literature.title,
+            "authors": Literature.authors,
+            "journal": Literature.journal,
+            "year": Literature.pub_year,
+            "province": Literature.province,
+            "created": Literature.created_at,
+            "status": Literature.extraction_status,
+        }
+        sort_column = sort_map.get(sort_by, Literature.created_at)
+
+    if sort_order:
+        sort_desc = sort_order.lower() == "desc"
+
+    query = query.order_by(sort_column.desc() if sort_desc else sort_column.asc())
     query = query.offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     items = list(result.scalars().all())

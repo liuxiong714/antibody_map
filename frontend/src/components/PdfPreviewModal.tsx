@@ -23,7 +23,7 @@ const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
       footer={null}
       width="90vw"
       style={{ top: 20 }}
-      destroyOnClose
+      destroyOnHidden
       centered={false}
     >
       <PdfViewer
