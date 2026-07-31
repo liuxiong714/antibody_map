@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import DiseaseSelector from '../components/DiseaseSelector';
@@ -18,6 +18,7 @@ const LiteraturePage: React.FC = () => {
   const [items, setItems] = useState<Literature[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [keyword, setKeyword] = useState('');
   const [disease, setDisease] = useState('');
   const [province, setProvince] = useState('');
@@ -26,6 +27,8 @@ const LiteraturePage: React.FC = () => {
   const [journal, setJournal] = useState('');
   const [sortBy, setSortBy] = useState('created');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [reviewStatus, setReviewStatus] = useState<string>('');  // 审核状态筛选
+  const [sortInfo, setSortInfo] = useState<{ field: string | null; order: 'ascend' | 'descend' | null }>({ field: 'created_at', order: 'descend' });
   const [loading, setLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -49,7 +52,7 @@ const LiteraturePage: React.FC = () => {
   const fetchList = useCallback(async () => {
     setLoading(true);
     try {
-      const params: Record<string, unknown> = { page, page_size: 20 };
+      const params: Record<string, unknown> = { page, page_size: pageSize };
       if (keyword) params.keyword = keyword;
       if (disease) params.disease = disease;
       if (province) params.province = province;
@@ -58,6 +61,7 @@ const LiteraturePage: React.FC = () => {
       if (journal) params.journal = journal;
       if (sortBy) params.sort_by = sortBy;
       if (sortOrder) params.sort_order = sortOrder;
+      if (reviewStatus) params.review_status = reviewStatus;
       const resp = await listLiterature(params);
       setItems(resp.items);
       setTotal(resp.total);
@@ -66,7 +70,7 @@ const LiteraturePage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, keyword, disease, province, yearStart, yearEnd, journal, sortBy, sortOrder]);
+  }, [page, pageSize, keyword, disease, province, yearStart, yearEnd, journal, sortBy, sortOrder, reviewStatus]);
 
   useEffect(() => { fetchList(); }, [fetchList]);
 
@@ -178,12 +182,41 @@ const LiteraturePage: React.FC = () => {
     }
   };
 
+  const handleTableChange = (pagination: any, _filters: unknown, sorter: any) => {
+    // 处理分页变更
+    if (pagination.current !== page || pagination.pageSize !== pageSize) {
+      setPage(pagination.current);
+      setPageSize(pagination.pageSize);
+    }
+    // 处理排序变更
+    const s = Array.isArray(sorter) ? sorter[0] : sorter;
+    if (s && s.field) {
+      const fieldMap: Record<string, string> = {
+        title: 'title',
+        authors: 'authors',
+        journal: 'journal',
+        pub_year: 'year',
+        province: 'province',
+        created_at: 'created',
+        extraction_status: 'status',
+      };
+      const backendField = fieldMap[s.field as string] || (s.field as string);
+      const order = s.order as 'ascend' | 'descend' | null;
+      const backendOrder = order === 'ascend' ? 'asc' : 'desc';
+      setSortInfo({ field: order ? (s.field as string) : null, order });
+      setSortBy(order ? backendField : 'created');
+      setSortOrder(backendOrder);
+    }
+  };
+
   const columns: ColumnsType<Literature> = [
     {
       title: '标题',
       dataIndex: 'title',
       key: 'title',
       width: 280,
+      sorter: true,
+      sortOrder: sortInfo.field === 'title' ? sortInfo.order : null,
       render: (t: string, r: Literature) => (
         <a onClick={() => navigate(`/literature/${r.id}`)}>{truncate(t, 40)}</a>
       ),
@@ -193,6 +226,8 @@ const LiteraturePage: React.FC = () => {
       dataIndex: 'authors',
       key: 'authors',
       width: 140,
+      sorter: true,
+      sortOrder: sortInfo.field === 'authors' ? sortInfo.order : null,
       render: (v: string) => formatAuthors(v),
     },
     {
@@ -200,6 +235,8 @@ const LiteraturePage: React.FC = () => {
       dataIndex: 'journal',
       key: 'journal',
       width: 140,
+      sorter: true,
+      sortOrder: sortInfo.field === 'journal' ? sortInfo.order : null,
       render: (v: string) => v || '-',
     },
     {
@@ -207,6 +244,8 @@ const LiteraturePage: React.FC = () => {
       dataIndex: 'pub_year',
       key: 'year',
       width: 70,
+      sorter: true,
+      sortOrder: sortInfo.field === 'pub_year' ? sortInfo.order : null,
       render: (v: number | null) => v || '-',
     },
     {
@@ -214,6 +253,8 @@ const LiteraturePage: React.FC = () => {
       dataIndex: 'province',
       key: 'province',
       width: 80,
+      sorter: true,
+      sortOrder: sortInfo.field === 'province' ? sortInfo.order : null,
       render: (v: string) => v || '-',
     },
     {
@@ -221,19 +262,62 @@ const LiteraturePage: React.FC = () => {
       dataIndex: 'extraction_status',
       key: 'status',
       width: 90,
+      sorter: true,
+      sortOrder: sortInfo.field === 'extraction_status' ? sortInfo.order : null,
       render: (s: string) => <StatusBadge status={s} />,
+    },
+    {
+      title: '审核状态',
+      key: 'review_status',
+      width: 140,
+      render: (_: unknown, r: Literature) => {
+        const total = r.extracted_count || 0;
+        const approved = r.approved_count || 0;
+        if (total === 0) {
+          return <Tag color="default">无数据</Tag>;
+        }
+        const percent = Math.round((approved / total) * 100);
+        if (approved === total) {
+          return (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Tag color="green">已完成</Tag>
+              <span style={{ fontSize: 12 }}>{approved}/{total}</span>
+            </div>
+          );
+        }
+        if (approved === 0) {
+          return (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Tag color="red">未审核</Tag>
+              <span style={{ fontSize: 12 }}>0/{total}</span>
+            </div>
+          );
+        }
+        return (
+          <Tooltip title={`${approved} / ${total} 已审核`}>
+            <Progress
+              percent={percent}
+              size="small"
+              style={{ width: 100 }}
+              strokeColor={percent >= 50 ? '#52c41a' : '#faad14'}
+            />
+          </Tooltip>
+        );
+      },
     },
     {
       title: '创建时间',
       dataIndex: 'created_at',
       key: 'created',
       width: 110,
+      sorter: true,
+      sortOrder: sortInfo.field === 'created_at' ? sortInfo.order : null,
       render: (v: string) => dayjs(v).format('YYYY-MM-DD'),
     },
     {
       title: '操作',
       key: 'actions',
-      width: 230,
+      width: 270,
       render: (_: unknown, r: Literature) => (
         <Space size="small">
           <Tooltip title="AI 提取">
@@ -254,6 +338,13 @@ const LiteraturePage: React.FC = () => {
                 setPreviewLitTitle(r.title);
                 setPreviewOpen(true);
               }}
+            />
+          </Tooltip>
+          <Tooltip title="下载并用本地阅读器打开">
+            <Button
+              size="small"
+              icon={<DownloadOutlined />}
+              onClick={() => window.open(`/api/v1/literatures/${r.id}/download`)}
             />
           </Tooltip>
           <Button size="small" onClick={() => navigate(`/literature/${r.id}`)}>详情</Button>
@@ -298,7 +389,7 @@ const LiteraturePage: React.FC = () => {
           <InputNumber
             placeholder="起始年"
             value={yearStart}
-            onChange={(v) => setYearStart(v)}
+            onChange={(v) => setYearStart(v ?? undefined)}
             style={{ width: 100 }}
             min={1900}
             max={2100}
@@ -307,18 +398,19 @@ const LiteraturePage: React.FC = () => {
           <InputNumber
             placeholder="结束年"
             value={yearEnd}
-            onChange={(v) => setYearEnd(v)}
+            onChange={(v) => setYearEnd(v ?? undefined)}
             style={{ width: 100 }}
             min={1900}
             max={2100}
           />
           <Select
             value={sortBy}
-            onChange={setSortBy}
+            onChange={(v) => { setSortBy(v); const fieldMap: Record<string, string | null> = { created: 'created_at', title: 'title', authors: 'authors', year: 'pub_year', journal: 'journal', province: 'province', status: 'extraction_status' }; setSortInfo({ field: fieldMap[v] || 'created_at', order: sortOrder === 'asc' ? 'ascend' : 'descend' }); }}
             style={{ width: 100 }}
             options={[
               { value: 'created', label: '创建时间' },
               { value: 'title', label: '标题' },
+              { value: 'authors', label: '作者' },
               { value: 'year', label: '年份' },
               { value: 'journal', label: '期刊' },
               { value: 'province', label: '省份' },
@@ -327,16 +419,31 @@ const LiteraturePage: React.FC = () => {
           />
           <Select
             value={sortOrder}
-            onChange={(v) => setSortOrder(v)}
+            onChange={(v) => { setSortOrder(v); setSortInfo((prev) => ({ ...prev, order: v === 'asc' ? 'ascend' : 'descend' })); }}
             style={{ width: 80 }}
             options={[
               { value: 'desc', label: '降序' },
               { value: 'asc', label: '升序' },
             ]}
           />
+          <Select
+            value={reviewStatus}
+            onChange={(v) => setReviewStatus(v || '')}
+            style={{ width: 100 }}
+            placeholder="审核状态"
+            allowClear
+            options={[
+              { value: 'pending', label: '未审核' },
+              { value: 'partial', label: '部分审核' },
+              { value: 'approved', label: '已完成' },
+              { value: 'none', label: '无数据' },
+            ]}
+          />
           <Button icon={<ReloadOutlined />} onClick={() => {
             setKeyword(''); setDisease(''); setProvince(''); setYearStart(undefined);
-            setYearEnd(undefined); setJournal(''); setSortBy('created'); setSortOrder('desc'); setPage(1);
+            setYearEnd(undefined); setJournal(''); setSortBy('created'); setSortOrder('desc');
+            setReviewStatus(''); setPage(1); setPageSize(20);
+            setSortInfo({ field: 'created_at', order: 'descend' });
           }}>重置筛选</Button>
           <Button type="primary" icon={<SearchOutlined />} onClick={fetchList}>查询</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
@@ -351,11 +458,13 @@ const LiteraturePage: React.FC = () => {
           dataSource={items}
           columns={columns}
           loading={loading}
+          onChange={handleTableChange}
           pagination={{
             current: page,
-            total,
-            pageSize: 20,
-            onChange: (p) => setPage(p),
+            total: loading ? items.length : total,
+            pageSize,
+            pageSizeOptions: [10, 20, 50, 100],
+            showSizeChanger: true,
             showTotal: (t) => `共 ${t} 条`,
           }}
           scroll={{ x: 1100 }}
@@ -374,9 +483,9 @@ const LiteraturePage: React.FC = () => {
         width={520}
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="file" label="PDF 文件（支持多选）" rules={[{ required: true, message: '请选择文件' }]} valuePropName="fileList" getValueFromEvent={(e: any) => e?.fileList}>
-            <Upload beforeUpload={() => false} accept=".pdf" maxCount={20} multiple>
-              <Button icon={<UploadOutlined />}>选择 PDF 文件（可多选）</Button>
+          <Form.Item name="file" label="文献文件（支持多选）" rules={[{ required: true, message: '请选择文件' }]} valuePropName="fileList" getValueFromEvent={(e: any) => e?.fileList}>
+            <Upload beforeUpload={() => false} accept=".pdf,.caj,.epub,.docx,.txt,.html,.htm" maxCount={20} multiple>
+              <Button icon={<UploadOutlined />}>选择文献文件（可多选）</Button>
             </Upload>
           </Form.Item>
           <Form.Item name="title" label="标题（选填，批量上传时忽略）">

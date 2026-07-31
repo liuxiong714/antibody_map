@@ -10,3 +10,5 @@ backend/data/pdfs/
 debug.log
 frontend/public/cmaps/
 frontend/public/standard_fonts/
+.trae/
+backend/.pytest_cache/

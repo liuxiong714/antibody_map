@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.core.llm_extractor import LLMExtractor
-from app.core.pdf_parser import extract_text as pdf_extract_text
+from app.core.document_parser import extract_text
 from app.core.text_preprocessor import preprocess
 from app.models.base import async_session
 from app.models.data_point import DataPoint
@@ -45,9 +45,10 @@ def _download_pdf(object_name: str) -> Optional[bytes]:
             logger.error(f"本地存储读取失败: {e}")
 
     # 策略3: 搜索本地存储目录中所有文件（兼容不同 UUID 重命名情况）
+    expected_suffix = Path(object_name).suffix.lower()
     if _LOCAL_STORAGE_DIR.exists():
         for f in _LOCAL_STORAGE_DIR.iterdir():
-            if f.is_file() and f.suffix.lower() == ".pdf":
+            if f.is_file() and (not expected_suffix or f.suffix.lower() == expected_suffix):
                 try:
                     logger.info(f"从本地存储目录找到备选文件: {f}")
                     return f.read_bytes()
@@ -109,6 +110,8 @@ def _extract_result_to_datapoints(
         "assay": extract_result.get("antibody_type"),
         "population": extract_result.get("population_type"),
         "collection_year": extract_result.get("sample_year") or extract_result.get("study_start_year"),
+        "source_page": extract_result.get("source_page"),  # 新增：来源页码
+        "source_context": extract_result.get("source_context"),  # 新增：原文片段
         "review_status": "pending",
         "confidence": "medium",
     }
@@ -157,29 +160,30 @@ async def _process_literature_async(
             raise ValueError(f"文献不存在: {literature_id}")
 
         if not literature.file_path:
-            raise ValueError(f"文献 {literature_id} 无关联 PDF 文件")
+            raise ValueError(f"文献 {literature_id} 无关联文件")
 
         logger.info(
             f"开始处理文献 {literature_id}: title={literature.title}, "
             f"file_path={literature.file_path}, model={model or 'default'}"
         )
 
-        # 2. 下载 PDF 文件
+        # 2. 下载文件
         file_bytes = _download_pdf(literature.file_path)
         if not file_bytes:
             raise RuntimeError(
-                f"PDF 文件下载失败: file_path={literature.file_path}, "
+                f"文件下载失败: file_path={literature.file_path}, "
                 f"请确认文件存在于本地或 MinIO"
             )
-        logger.info(f"PDF 下载成功: {len(file_bytes)} bytes")
+        logger.info(f"文件下载成功: {len(file_bytes)} bytes")
 
-        # 3. 解析 PDF 文本
-        raw_text = pdf_extract_text(file_bytes)
+        # 3. 解析文件文本（按扩展名分发：PDF/CAJ/EPUB/DOCX/TXT/HTML）
+        file_ext = Path(literature.file_path).suffix.lower()
+        raw_text = extract_text(file_bytes, file_ext)
         if not raw_text or not raw_text.strip():
             raise RuntimeError(
-                "PDF 解析后文本为空，可能为扫描件或不支持的格式"
+                "文件解析后文本为空，可能为扫描件或不支持的格式"
             )
-        logger.info(f"PDF 解析成功: {len(raw_text)} 字符")
+        logger.info(f"文件解析成功: {len(raw_text)} 字符")
 
         # 4. 预处理文本
         clean_text = preprocess(raw_text)

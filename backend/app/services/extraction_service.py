@@ -134,6 +134,8 @@ async def get_extraction_results(
             "age_min": dp.age_min,
             "age_max": dp.age_max,
             "collection_year": dp.collection_year,
+            "source_page": dp.source_page,  # 新增：来源页码
+            "source_context": dp.source_context,  # 新增：原文片段
             "confidence": dp.confidence,
             "review_status": dp.review_status,
             "created_at": dp.created_at.isoformat() if dp.created_at else None,

@@ -1,10 +1,22 @@
 import api from './api';
-import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord } from '../types';
+import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData } from '../types';
 
 // 拦截器已将 ApiResponse.data 提升到 resp.data，此处解包 AxiosResponse
 
 export async function getProvinceData(params: Record<string, unknown>) {
   const { data } = await api.get<MapDataPoint[]>('/map/province-data', { params });
+  return data;
+}
+
+export async function getYearlyProvinceData(params: Record<string, unknown>) {
+  const { data } = await api.get<YearlyMapData[]>('/map/yearly-data', { params });
+  return data;
+}
+
+export async function getAvailableYears(disease?: string) {
+  const params: Record<string, unknown> = {};
+  if (disease) params.disease = disease;
+  const { data } = await api.get<number[]>('/map/available-years', { params });
   return data;
 }
 

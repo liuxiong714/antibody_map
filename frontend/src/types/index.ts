@@ -48,6 +48,8 @@ export interface DataPoint {
   collection_year: number | null;
   confidence: string;
   review_status: string;
+  source_context: string | null;
+  source_page: number | null;
   created_at: string;
 }
 
@@ -58,6 +60,11 @@ export interface MapDataPoint {
   study_count: number;
   total_sample: number;
   weighted_positivity: number | null;
+}
+
+export interface YearlyMapData {
+  year: number;
+  data: MapDataPoint[];
 }
 
 export interface ApiResponse<T = unknown> {

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.literature import Literature
 from app.schemas.literature import LiteratureCreate
+from app.core.document_parser import get_mime_type
 from app.core.minio_client import upload_file, delete_file
 
 logger = logging.getLogger("uvicorn")
@@ -27,6 +28,7 @@ async def list_literature(
     journal: Optional[str] = None,
     sort_by: Optional[str] = None,
     sort_order: Optional[str] = None,
+    review_status: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[Literature], int]:
@@ -53,6 +55,25 @@ async def list_literature(
     if journal:
         query = query.where(Literature.journal.ilike(f"%{journal}%"))
         count_query = count_query.where(Literature.journal.ilike(f"%{journal}%"))
+
+    # 审核状态筛选
+    if review_status:
+        if review_status == "none":
+            # 无数据：extracted_count == 0
+            query = query.where(Literature.extracted_count == 0)
+            count_query = count_query.where(Literature.extracted_count == 0)
+        elif review_status == "pending":
+            # 未审核：有数据但 approved_count == 0
+            query = query.where(Literature.extracted_count > 0, Literature.approved_count == 0)
+            count_query = count_query.where(Literature.extracted_count > 0, Literature.approved_count == 0)
+        elif review_status == "partial":
+            # 部分审核：0 < approved_count < extracted_count
+            query = query.where(Literature.approved_count > 0, Literature.approved_count < Literature.extracted_count)
+            count_query = count_query.where(Literature.approved_count > 0, Literature.approved_count < Literature.extracted_count)
+        elif review_status == "approved":
+            # 已完成：approved_count == extracted_count AND extracted_count > 0
+            query = query.where(Literature.extracted_count > 0, Literature.approved_count == Literature.extracted_count)
+            count_query = count_query.where(Literature.extracted_count > 0, Literature.approved_count == Literature.extracted_count)
 
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
@@ -179,11 +200,11 @@ async def upload_literature(
     local_path = LOCAL_STORAGE_DIR / local_filename
     with open(local_path, "wb") as f:
         f.write(file_bytes)
-    logger.info(f"PDF saved locally: {local_path}")
+    logger.info(f"文件已保存到本地: {local_path}")
 
     # 2. 尝试上传到 MinIO（仅用于分布式/备份场景，失败不阻塞）
     object_name = f"literature/{uuid.uuid4()}.{ext}"
-    minio_path = upload_file(file_bytes, object_name, content_type="application/pdf")
+    minio_path = upload_file(file_bytes, object_name, content_type=get_mime_type(ext))
     if minio_path is None:
         logger.warning("MinIO 不可用，仅保存本地副本")
 

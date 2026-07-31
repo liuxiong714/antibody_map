@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, message, Spin, Select, Row, Col,
+  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, message, Spin, Select, Row, Col, Tooltip,
 } from 'antd';
-import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
@@ -21,6 +21,7 @@ const LiteratureDetail: React.FC = () => {
   const [dataPoints, setDataPoints] = useState<DataPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [extracting, setExtracting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [reviewNote, setReviewNote] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
@@ -156,6 +157,104 @@ const LiteratureDetail: React.FC = () => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // 同步数据点中的年份和省份到文献信息
+  // 优先级：已审核通过的数据点 > 所有数据点
+  const syncMetadataFromDataPoints = useCallback(async (force = false): Promise<Record<string, unknown> | null> => {
+    if (!literature || dataPoints.length === 0 || !id) return null;
+
+    const updates: Record<string, unknown> = {};
+
+    // 过滤：优先使用已审核通过的数据点，否则使用所有数据点
+    const approvedPoints = dataPoints.filter((dp) => dp.review_status === 'approved');
+    const candidatePoints = approvedPoints.length > 0 ? approvedPoints : dataPoints;
+
+    // 同步省份
+    if (force || !literature.province) {
+      const provinceCounts = new Map<string, number>();
+      candidatePoints.forEach((dp) => {
+        if (dp.province) {
+          provinceCounts.set(dp.province, (provinceCounts.get(dp.province) || 0) + 1);
+        }
+      });
+      if (provinceCounts.size > 0) {
+        const [topProvince, count] = Array.from(provinceCounts.entries()).sort((a, b) => b[1] - a[1])[0];
+        updates.province = topProvince;
+        // 如果有多个省份，同时取第一个省份作为 region
+        const uniqueProvinces = Array.from(provinceCounts.keys());
+        if (uniqueProvinces.length === 1) {
+          updates.region = topProvince;
+        }
+        console.log(`[Sync] 省份: ${topProvince} (${count} 个数据点支持, 共 ${provinceCounts.size} 个不同省份)`);
+      }
+    }
+
+    // 同步年份
+    if (force || !literature.pub_year) {
+      const yearCounts = new Map<number, number>();
+      candidatePoints.forEach((dp) => {
+        if (dp.collection_year) {
+          yearCounts.set(dp.collection_year, (yearCounts.get(dp.collection_year) || 0) + 1);
+        }
+      });
+      if (yearCounts.size > 0) {
+        // 选择众数年份，若有多个相同数量，选择最近的年份
+        const sortedYears = Array.from(yearCounts.entries()).sort((a, b) => {
+          if (b[1] !== a[1]) return b[1] - a[1];
+          return b[0] - a[0]; // 数量相同则选最近的年份
+        });
+        const [topYear, count] = sortedYears[0];
+        updates.pub_year = topYear;
+        console.log(`[Sync] 年份: ${topYear} (${count} 个数据点支持, 共 ${yearCounts.size} 个不同年份)`);
+      }
+    }
+
+    if (Object.keys(updates).length === 0) return null;
+
+    await updateLiterature(id, updates);
+    setLiterature((prev) => (prev ? { ...prev, ...updates } : prev));
+    return updates;
+  }, [literature, dataPoints, id]);
+
+  // 手动触发同步
+  const handleSyncFromDataPoints = async () => {
+    if (dataPoints.length === 0) {
+      message.warning('尚未提取数据点，无法同步');
+      return;
+    }
+    setSyncing(true);
+    try {
+      const prevProvince = literature?.province;
+      const prevYear = literature?.pub_year;
+      const result = await syncMetadataFromDataPoints(true);
+      if (result) {
+        const changed: string[] = [];
+        if (result.province && result.province !== prevProvince) changed.push(`省份: ${prevProvince || '空'} → ${result.province}`);
+        if (result.pub_year && result.pub_year !== prevYear) changed.push(`年份: ${prevYear || '空'} → ${result.pub_year}`);
+        if (changed.length > 0) {
+          message.success(`已同步: ${changed.join(', ')}`);
+        } else {
+          message.info('文献信息已是最新，无需同步');
+        }
+      } else {
+        message.info('数据点中暂无可用的省份或年份信息');
+      }
+    } catch {
+      message.error('同步失败，请重试');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // 自动同步：进入详情页后，如果年份或省份为空，则从数据点同步
+  useEffect(() => {
+    if (!literature || dataPoints.length === 0) return;
+    if (literature.pub_year && literature.province) return; // 已有信息则跳过
+
+    syncMetadataFromDataPoints(false).catch(() => {
+      // 静默失败
+    });
+  }, [literature, dataPoints, syncMetadataFromDataPoints]);
+
   const handleExtract = () => {
     setExtractModel(undefined);
     setExtractApiKey('');
@@ -187,6 +286,19 @@ const LiteratureDetail: React.FC = () => {
             }
             if (literature?.extraction_status === 'done') {
               message.success(`提取完成，共提取 ${literature.extracted_count} 个数据点`);
+              // 提取完成后自动同步年份和省份
+              setTimeout(() => {
+                syncMetadataFromDataPoints(false).then((updates) => {
+                  if (updates) {
+                    const parts: string[] = [];
+                    if (updates.province) parts.push(`省份=${updates.province}`);
+                    if (updates.pub_year) parts.push(`年份=${updates.pub_year}`);
+                    if (parts.length > 0) {
+                      message.success(`自动同步: ${parts.join(', ')}`);
+                    }
+                  }
+                }).catch(() => {});
+              }, 500);
             } else if (literature?.extraction_status === 'failed') {
               message.error('提取失败，请重试');
             }
@@ -360,6 +472,22 @@ const LiteratureDetail: React.FC = () => {
               { value: 'low', label: '低' },
             ]} />
         ) : (<ConfidenceBadge confidence={v} />),
+    },
+    {
+      title: '原文依据', key: 'source', width: 120,
+      render: (_: unknown, r: DataPoint) => {
+        const context = r.source_context;
+        const page = r.source_page;
+        if (!context && !page) return '-';
+
+        const displayText = page ? `第 ${page} 页` : (context ? context.substring(0, 20) + '...' : '-');
+
+        return (
+          <Tooltip title={context || undefined} placement="topLeft">
+            <span style={{ cursor: 'pointer' }}>{displayText}</span>
+          </Tooltip>
+        );
+      },
     },
     {
       title: '状态', key: 'status', width: 80,
@@ -558,6 +686,16 @@ const LiteratureDetail: React.FC = () => {
                       <Button icon={<ExperimentOutlined />} onClick={handleExtract} loading={extracting}>
                         AI 提取
                       </Button>
+                      <Tooltip title="从已提取的数据点中同步年份和省份信息">
+                        <Button
+                          icon={<SyncOutlined spin={syncing} />}
+                          onClick={handleSyncFromDataPoints}
+                          loading={syncing}
+                          disabled={dataPoints.length === 0}
+                        >
+                          同步信息
+                        </Button>
+                      </Tooltip>
                     </Space>
                   </>
                 )}

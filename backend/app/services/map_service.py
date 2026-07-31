@@ -215,3 +215,107 @@ async def get_summary(
         "total_sample": total_sample,
         "national_weighted_rate": national_rate,
     }
+
+
+async def get_province_yearly_data(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    data_type: Optional[str] = None,
+    province: Optional[str] = None,
+    age_min: Optional[int] = None,
+    age_max: Optional[int] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+    gender: Optional[str] = None,
+    occupation: Optional[str] = None,
+) -> list[dict]:
+    """按年份分组返回各省抗体水平数据，用于时间序列动态展示"""
+    base = select(DataPoint).where(DataPoint.review_status == "approved")
+
+    if disease:
+        base = base.where(DataPoint.disease == disease)
+    if data_type:
+        base = base.where(DataPoint.data_type == data_type)
+    if province:
+        base = base.where(DataPoint.province.ilike(f"%{province}%"))
+    if age_min is not None:
+        base = base.where(DataPoint.age_min >= age_min)
+    if age_max is not None:
+        base = base.where(DataPoint.age_max <= age_max)
+    if year_start:
+        base = base.where(DataPoint.collection_year >= year_start)
+    if year_end:
+        base = base.where(DataPoint.collection_year <= year_end)
+    if gender:
+        base = base.where(DataPoint.population.ilike(f"%{gender}%"))
+    if occupation:
+        base = base.where(DataPoint.population.ilike(f"%{occupation}%"))
+
+    result = await db.execute(base)
+    rows = result.scalars().all()
+
+    # 按年份分组: year -> { province_key -> aggregate }
+    year_map: dict[int, dict[str, dict]] = {}
+
+    for dp in rows:
+        year = dp.collection_year or 0
+        if year not in year_map:
+            year_map[year] = {}
+
+        provinces = _parse_provinces(dp.province)
+        for key in provinces:
+            if key not in year_map[year]:
+                year_map[year][key] = {
+                    "province": key,
+                    "literature_ids": set(),
+                    "data_points": [],
+                }
+            year_map[year][key]["literature_ids"].add(str(dp.literature_id) if dp.literature_id else "")
+            year_map[year][key]["data_points"].append(dp)
+
+    result_list = []
+    for year in sorted(year_map.keys()):
+        year_data = []
+        for key, group in year_map[year].items():
+            dps = group["data_points"]
+            valid_dps = [dp for dp in dps if dp.sample_size and dp.value is not None]
+
+            if valid_dps:
+                weighted_sum = float(sum(dp.value * dp.sample_size for dp in valid_dps))
+                total_sample = int(sum(dp.sample_size for dp in valid_dps))
+                weighted_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
+            else:
+                total_sample = 0
+                weighted_rate = None
+
+            year_data.append({
+                "province": key,
+                "point_count": len(dps),
+                "study_count": len(group["literature_ids"]),
+                "total_sample": total_sample,
+                "weighted_positivity": weighted_rate,
+            })
+
+        result_list.append({
+            "year": year,
+            "data": sorted(year_data, key=lambda x: x["province"]),
+        })
+
+    return result_list
+
+
+async def get_available_years(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+) -> list[int]:
+    """获取可用的年份列表（去重排序）"""
+    query = select(DataPoint.collection_year).where(
+        DataPoint.review_status == "approved",
+        DataPoint.collection_year.isnot(None),
+    )
+    if disease:
+        query = query.where(DataPoint.disease == disease)
+    query = query.distinct().order_by(DataPoint.collection_year)
+
+    result = await db.execute(query)
+    return [v for v in result.scalars().all() if v]

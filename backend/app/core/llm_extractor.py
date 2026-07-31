@@ -24,12 +24,15 @@ PROVINCE_LIST_TIP = f"""中国省份标准名称列表（必须从这里选择�
 
 PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请仔细阅读以下文献文本，提取所有抗体血清学数据点。一篇文献可能包含多个数据点（不同地区、不同人群、不同时间、不同检测指标），请全部提取。
 
+**【重要】每条数据必须标注原文出处**：包括来源页码（如能判断）和原文片段（20-50字），方便后续人工核对。
+
 {province_list_tip}
 
 ## 提取步骤
 1. **定位数据区域**：在文中找到"结果"、"表"、"图"、"阳性率"、"抗体水平"、"GMC"、"GMT"等关键词附近的内容
 2. **逐一提取每个数据点**：如果一个研究包含多个省份、城市、年龄组或检测指标，分别为每个创建独立的数据点
 3. **核对数值**：阳性率通常以百分比给出（如87.3%、87.3％），GMC通常以IU/ml或μg/ml为单位
+4. **标注来源**：找到提取数据所在的原文片段和页码（如能判断）
 
 ## JSON 输出格式
 {{
@@ -56,7 +59,9 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
       "gmc_ci_upper": GMC 95%置信区间上限,
       "journal": "发表杂志名称",
       "authors": "作者（多个用分号分隔）",
-      "author_affiliations": "作者单位"
+      "author_affiliations": "作者单位",
+      "source_page": 来源页码（整数，如无法判断填null）,
+      "source_context": "包含该数据的原文片段（20-50字，保留关键数字）"
     }}
   ]
 }}
@@ -69,11 +74,14 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
 - **多省份多城市**：如研究覆盖多个地区，每个地区作为一个独立数据点
 - **无法确定填null**：确实无法从文中确定的字段填null
 - **仅输出JSON**：不要包含任何解释性文字或markdown代码块标记
+- **【重要】标注来源**：每个数据点必须填写source_context，摘录包含关键数据的原文片段（如："阳性者215例，阳性率84.3%"）
 
 文献文本：
 {text}"""
 
 PROMPT_EN = """You are a professional epidemiological literature data extraction expert. Carefully read the following literature and extract ALL antibody serological data points. A single paper may contain multiple data points (different regions, populations, time periods, or assay types) — extract ALL of them.
+
+**【IMPORTANT】Each data point MUST include source attribution**: page number (if determinable) and original text snippet (20-50 chars) for manual verification.
 
 Chinese Province Name Reference List:
 {province_list_en}
@@ -82,6 +90,7 @@ Chinese Province Name Reference List:
 1. Find data regions: Look near "Results", tables, "positivity", "antibody level", "GMC", "GMT" keywords
 2. Extract each data point individually: If a study covers multiple provinces, cities, age groups, or assay types, create a separate entry for each
 3. Verify values: Positivity rates are usually percentages (e.g., 87.3%), GMC usually in IU/ml or μg/ml
+4. Mark source: Note the page and original text snippet containing the key data
 
 ## JSON Output Format
 {{
@@ -108,7 +117,9 @@ Chinese Province Name Reference List:
       "gmc_ci_upper": GMC 95% CI upper,
       "journal": "journal name",
       "authors": "authors (semicolon separated)",
-      "author_affiliations": "author affiliations"
+      "author_affiliations": "author affiliations",
+      "source_page": source page number (integer, null if undeterminable),
+      "source_context": "original text snippet containing key data (20-50 chars)"
     }}
   ]
 }}
@@ -121,6 +132,7 @@ Chinese Province Name Reference List:
 - Multiple regions → separate data point for each
 - Fill null if not determinable
 - Output ONLY JSON, no markdown code blocks
+- **【IMPORTANT】Include source_context**: Quote the original text snippet containing key numbers (e.g., "215 positive cases, positivity rate 84.3%")
 
 Literature text:
 {text}"""
@@ -325,13 +337,15 @@ class LLMExtractor:
 
             # 保留其他字符串字段
             for field in ["city", "population_type", "gmc_unit",
-                           "journal", "authors", "author_affiliations"]:
+                           "journal", "authors", "author_affiliations",
+                           "source_context"]:  # 新增：原文片段
                 dp[field] = item.get(field)
 
             # 整数字段
             for field in [
                 "study_start_year", "study_end_year", "sample_year",
                 "age_min", "age_max", "sample_size",
+                "source_page",  # 新增：来源页码
             ]:
                 val = item.get(field)
                 if val is not None:

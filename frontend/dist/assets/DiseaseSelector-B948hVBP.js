@@ -1,0 +1,1 @@
+import{j as l}from"./index-Bh5kbTd6.js";import{S as r,a7 as i}from"./api-YS8J3YiQ.js";const p=({value:a,onChange:o,allowClear:s=!0,style:t})=>l.jsx(r,{style:t||{width:180},placeholder:"选择疾病",value:a||void 0,onChange:e=>o(e||""),allowClear:s,options:i.map(e=>({value:e.key,label:e.name_cn}))});export{p as D};

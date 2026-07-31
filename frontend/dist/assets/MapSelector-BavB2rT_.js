@@ -1,0 +1,1 @@
+import{B as s}from"./index-CUFJ9KP8.js";import{D as n,S as p}from"./api-C4GXajIz.js";const m=({value:t,onChange:o,style:a})=>{const r=Object.entries(n).map(([e,l])=>({value:e,label:l}));return s.jsx(p,{style:a||{width:180},placeholder:"数据类型",value:t||void 0,onChange:e=>o(e||""),allowClear:!0,options:r})};export{m as M};

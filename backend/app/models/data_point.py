@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import ForeignKey, Integer, String, Numeric, DateTime, CheckConstraint
+from sqlalchemy import ForeignKey, Integer, String, Numeric, DateTime, CheckConstraint, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -34,6 +34,9 @@ class DataPoint(Base):
     assay: Mapped[Optional[str]] = mapped_column(String(200))
     population: Mapped[Optional[str]] = mapped_column(String(200))
     collection_year: Mapped[Optional[int]]
+    # 数据来源追踪（引用溯源）
+    source_page: Mapped[Optional[int]]  # 来源页码
+    source_context: Mapped[Optional[str]] = mapped_column(Text)  # 原文片段
     confidence: Mapped[str] = mapped_column(String(10), default="medium")
     review_status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime] = mapped_column(

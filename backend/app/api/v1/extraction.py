@@ -156,6 +156,11 @@ async def update_data_points(
         await db.execute(stmt)
         updated.append(item.id)
 
+    # 如果有审核状态变更，同步 literature.approved_count（修复审核状态显示不正确的问题）
+    has_review_change = any(item.review_status for item in req.data_points)
+    if has_review_change:
+        await _sync_approved_count(db, literature_id)
+
     await db.commit()
     return ApiResponse(message="数据点已更新", data={"updated": updated})
 
