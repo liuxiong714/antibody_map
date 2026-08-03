@@ -1,5 +1,5 @@
 import api from './api';
-import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData } from '../types';
+import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData, DataGapAnalysisResult } from '../types';
 
 // 拦截器已将 ApiResponse.data 提升到 resp.data，此处解包 AxiosResponse
 
@@ -52,6 +52,11 @@ export async function getApprovedDataPoints(params: Record<string, unknown>) {
 
 export async function getImmuneBarrier(params: Record<string, unknown>) {
   const { data } = await api.get<ImmuneBarrierData>('/analysis/immune-barrier', { params });
+  return data;
+}
+
+export async function getDataGapAnalysis(params?: Record<string, unknown>) {
+  const { data } = await api.get<DataGapAnalysisResult>('/analysis/data-gaps', { params });
   return data;
 }
 

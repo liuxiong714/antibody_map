@@ -1,18 +1,22 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress,
+  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import DiseaseSelector from '../components/DiseaseSelector';
 import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
-import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction } from '../services/literature';
-import { Literature } from '../types';
+import MergeDialog from '../components/MergeDialog';
+import DuplicateScanPanel from '../components/DuplicateScanPanel';
+import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, checkDuplicate } from '../services/literature';
+import { Literature, DuplicateMatchItem, MergeResult } from '../types';
 import { MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
 import { formatAuthors, truncate } from '../utils/format';
 import dayjs from 'dayjs';
+
+const { Text } = Typography;
 
 const LiteraturePage: React.FC = () => {
   const [items, setItems] = useState<Literature[]>([]);
@@ -48,6 +52,14 @@ const LiteraturePage: React.FC = () => {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLitId, setPreviewLitId] = useState<string | null>(null);
   const [previewLitTitle, setPreviewLitTitle] = useState('');
+
+  // 查重与合并
+  const [dupWarningOpen, setDupWarningOpen] = useState(false);
+  const [dupWarnings, setDupWarnings] = useState<{ litId: string; litTitle: string; duplicates: DuplicateMatchItem[] }[]>([]);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [mergeState, setMergeState] = useState<{ open: boolean; sourceId: string; targetId: string; sourceTitle: string; targetTitle: string }>({
+    open: false, sourceId: '', targetId: '', sourceTitle: '', targetTitle: '',
+  });
 
   const fetchList = useCallback(async () => {
     setLoading(true);
@@ -100,6 +112,7 @@ const LiteraturePage: React.FC = () => {
     const model = values.model;
     const apiKey = values.apiKey || undefined;
     const baseUrl = values.baseUrl || undefined;
+    const dupResults: { litId: string; litTitle: string; duplicates: DuplicateMatchItem[] }[] = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -121,6 +134,13 @@ const LiteraturePage: React.FC = () => {
           } else {
             await triggerExtraction(resp.id);
           }
+          // 上传后查重
+          try {
+            const dup = await checkDuplicate({ literature_id: resp.id });
+            if (dup.total > 0) {
+              dupResults.push({ litId: resp.id, litTitle: resp.title || file.name, duplicates: dup.duplicates });
+            }
+          } catch { /* 查重失败不阻塞 */ }
         }
         successCount++;
       } catch {
@@ -129,6 +149,12 @@ const LiteraturePage: React.FC = () => {
     }
 
     setUploading(false);
+
+    // 如果发现重复，弹出警告
+    if (dupResults.length > 0) {
+      setDupWarnings(dupResults);
+      setDupWarningOpen(true);
+    }
 
     if (files.length === 1) {
       if (successCount === 1) {
@@ -449,6 +475,9 @@ const LiteraturePage: React.FC = () => {
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
             上传文献
           </Button>
+          <Button icon={<CopyOutlined />} onClick={() => setScanOpen(true)}>
+            扫描重复
+          </Button>
         </Space>
       </Card>
 
@@ -588,6 +617,103 @@ const LiteraturePage: React.FC = () => {
         literatureId={previewLitId}
         literatureTitle={previewLitTitle}
         onClose={() => setPreviewOpen(false)}
+      />
+
+      {/* 上传后查重警告 */}
+      <Modal
+        title={<><CopyOutlined /> 发现重复文献</>}
+        open={dupWarningOpen}
+        onCancel={() => { setDupWarningOpen(false); setDupWarnings([]); }}
+        width={680}
+        footer={[
+          <Button key="scan" icon={<CopyOutlined />} onClick={() => { setDupWarningOpen(false); setDupWarnings([]); setScanOpen(true); }}>
+            打开扫描面板
+          </Button>,
+          <Button key="close" type="primary" onClick={() => { setDupWarningOpen(false); setDupWarnings([]); }}>
+            稍后处理
+          </Button>,
+        ]}
+      >
+        <p style={{ marginBottom: 12 }}>
+          上传过程中发现 <Text strong type="danger">{dupWarnings.length}</Text> 篇文献与库中已有记录重复，建议进行合并处理。
+        </p>
+        <Collapse
+          items={dupWarnings.map((w, i) => ({
+            key: String(i),
+            label: (
+              <Space>
+                <Text strong>{w.litTitle}</Text>
+                <Tag color="red">{w.duplicates.length} 条重复</Tag>
+              </Space>
+            ),
+            children: (
+              <div>
+                {w.duplicates.map((d, j) => (
+                  <div key={j} style={{
+                    padding: '6px 8px', marginBottom: 4, background: '#fafafa',
+                    borderRadius: 4, border: '1px solid #f0f0f0',
+                  }}>
+                    <Space wrap>
+                      <Text strong>{d.literature.title}</Text>
+                      {d.literature.pub_year && <Text type="secondary">{d.literature.pub_year}年</Text>}
+                      {d.match_reasons.map((r) => (
+                        <Tag key={r} color={
+                          r === 'doi' ? 'red' : r === 'title' ? 'orange' :
+                          r === 'title+authors' ? 'gold' : r === 'pdf_hash' ? 'volcano' : 'blue'
+                        }>
+                          {r === 'doi' ? 'DOI相同' : r === 'title' ? '标题相同' :
+                           r === 'title+authors' ? '标题+作者相似' : r === 'pdf_hash' ? '文件哈希相同' : r}
+                        </Tag>
+                      ))}
+                    </Space>
+                  </div>
+                ))}
+                <Button
+                  type="primary"
+                  size="small"
+                  style={{ marginTop: 8 }}
+                  onClick={() => {
+                    const dup = w.duplicates[0];
+                    setDupWarningOpen(false);
+                    setMergeState({
+                      open: true,
+                      sourceId: w.litId,
+                      targetId: dup.literature.id,
+                      sourceTitle: w.litTitle,
+                      targetTitle: dup.literature.title,
+                    });
+                  }}
+                >
+                  合并到已有文献
+                </Button>
+              </div>
+            ),
+          }))}
+        />
+      </Modal>
+
+      {/* 全库扫描面板 */}
+      <DuplicateScanPanel
+        open={scanOpen}
+        onClose={() => setScanOpen(false)}
+        onMerge={(sourceId, targetId, sourceTitle, targetTitle) => {
+          setScanOpen(false);
+          setMergeState({ open: true, sourceId, targetId, sourceTitle, targetTitle });
+        }}
+      />
+
+      {/* 合并对话框 */}
+      <MergeDialog
+        open={mergeState.open}
+        sourceId={mergeState.sourceId}
+        targetId={mergeState.targetId}
+        sourceTitle={mergeState.sourceTitle}
+        targetTitle={mergeState.targetTitle}
+        onClose={() => setMergeState((s) => ({ ...s, open: false }))}
+        onMerged={() => {
+          setMergeState((s) => ({ ...s, open: false }));
+          fetchList();
+        }}
       />
     </>
   );

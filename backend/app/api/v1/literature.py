@@ -10,7 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db
 from app.config import settings
 from app.schemas.common import ApiResponse, PagedResponse
-from app.schemas.literature import LiteratureCreate, LiteratureResponse, LiteratureUpdate
+from app.schemas.literature import (
+    LiteratureCreate, LiteratureResponse, LiteratureUpdate,
+    CheckDuplicateRequest, MergePreviewRequest, MergeRequest,
+)
 from app.core.document_parser import ALLOWED_EXTS, get_mime_type
 from app.services.literature_service import (
     list_literature,
@@ -19,6 +22,10 @@ from app.services.literature_service import (
     update_literature,
     delete_literature,
     upload_literature,
+    check_duplicates,
+    scan_duplicates,
+    preview_merge,
+    merge_literatures,
 )
 
 router = APIRouter()
@@ -171,4 +178,92 @@ async def download_pdf_file(
         media_type=get_mime_type(ext),
         filename=safe_filename,
         content_disposition_type="attachment",
+    )
+
+
+# ===== 查重与合并 API =====
+
+@router.post("/literatures/check-duplicate", response_model=ApiResponse)
+async def check_duplicate(
+    req: CheckDuplicateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """检查重复文献（按文献ID或字段）"""
+    try:
+        result = await check_duplicates(
+            db, req.literature_id,
+            title=req.title, doi=req.doi, authors=req.authors, pdf_hash=req.pdf_hash,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return ApiResponse(data={
+        "literature_id": result["literature_id"],
+        "total": result["total"],
+        "duplicates": [
+            {
+                "literature": LiteratureResponse.model_validate(d["literature"]).model_dump(),
+                "match_reasons": d["match_reasons"],
+                "match_values": d["match_values"],
+            }
+            for d in result["duplicates"]
+        ],
+    })
+
+
+@router.post("/literatures/scan-duplicates", response_model=ApiResponse)
+async def scan_duplicates_endpoint(
+    db: AsyncSession = Depends(get_db),
+):
+    """全库扫描重复文献"""
+    result = await scan_duplicates(db)
+    # 将 UUID 转为字符串以便 JSON 序列化
+    serializable_groups = []
+    for g in result["groups"]:
+        serializable_groups.append({
+            "literature_ids": [str(uid) for uid in g["literature_ids"]],
+            "match_reasons": g["match_reasons"],
+            "representative_id": str(g["representative_id"]),
+        })
+    return ApiResponse(data={
+        "groups": serializable_groups,
+        "total_groups": result["total_groups"],
+        "total_duplicates": result["total_duplicates"],
+    })
+
+
+@router.post("/literatures/merge/preview", response_model=ApiResponse)
+async def merge_preview(
+    req: MergePreviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """预览合并：字段对比 + 数据点冲突检测"""
+    try:
+        result = await preview_merge(db, req.source_id, req.target_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return ApiResponse(data=result)
+
+
+@router.post("/literatures/merge", response_model=ApiResponse)
+async def merge(
+    req: MergeRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """执行合并：将 source 合并进 target，删除 source"""
+    try:
+        result = await merge_literatures(
+            db, req.source_id, req.target_id,
+            req.field_choices,
+            req.dp_conflict_strategy,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ApiResponse(
+        message="合并成功",
+        data={
+            "merged_literature": LiteratureResponse.model_validate(result["merged_literature"]).model_dump(),
+            "moved_data_points": result["moved_data_points"],
+            "deleted_conflict_data_points": result["deleted_conflict_data_points"],
+            "deleted_source_id": result["deleted_source_id"],
+        },
     )

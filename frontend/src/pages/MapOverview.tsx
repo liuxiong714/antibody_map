@@ -2,12 +2,12 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Card, Row, Col, Statistic, Spin, message, Table, Select, InputNumber, Button, Slider, Segmented, Space, Tooltip, Tag } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts';
-import { SearchOutlined, ReloadOutlined, PlayCircleOutlined, PauseCircleOutlined, StepBackwardOutlined, StepForwardOutlined, CalendarOutlined, SyncOutlined } from '@ant-design/icons';
+import { SearchOutlined, ReloadOutlined, PlayCircleOutlined, PauseCircleOutlined, StepBackwardOutlined, StepForwardOutlined, CalendarOutlined, SyncOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import MapSelector from '../components/MapSelector';
 import { useFilterStore } from '../store';
-import { getProvinceData, getYearlyProvinceData, getAvailableYears } from '../services/map';
+import { getProvinceData, getYearlyProvinceData, getAvailableYears, getCityData } from '../services/map';
 import { MapDataPoint, YearlyMapData } from '../types';
 import { SERO_COLOR_STOPS, GMC_COLOR_STOPS, GENDER_OPTIONS, OCCUPATION_OPTIONS, PROVINCE_GEOJSON_NAME } from '../utils/constants';
 
@@ -27,6 +27,12 @@ const MapOverview: React.FC = () => {
   const [playSpeed, setPlaySpeed] = useState(1000);
   const playIntervalRef = useRef<number | null>(null);
   const yearRangeAutoRef = useRef<boolean>(false);  // 年份范围是否由系统自动管理
+
+  // 省份详情相关状态
+  const [selectedProvince, setSelectedProvince] = useState<string | null>(null);
+  const [provinceYearly, setProvinceYearly] = useState<YearlyMapData[]>([]);
+  const [provinceCities, setProvinceCities] = useState<MapDataPoint[]>([]);
+  const [provinceDetailLoading, setProvinceDetailLoading] = useState(false);
 
   // Load GeoJSON — register map synchronously BEFORE triggering render
   useEffect(() => {
@@ -198,6 +204,47 @@ const MapOverview: React.FC = () => {
     };
   }, []);
 
+  // 点击地图省份，获取该省份的详细数据
+  const handleProvinceClick = useCallback(async (provinceName: string) => {
+    setSelectedProvince(provinceName);
+    setProvinceDetailLoading(true);
+    try {
+      const baseParams: Record<string, unknown> = { province: provinceName };
+      if (disease) baseParams.disease = disease;
+      if (dataType) baseParams.data_type = dataType;
+      if (yearStart) baseParams.year_start = yearStart;
+      if (yearEnd) baseParams.year_end = yearEnd;
+      if (ageMin != null) baseParams.age_min = ageMin;
+      if (ageMax != null) baseParams.age_max = ageMax;
+      if (gender) baseParams.gender = gender;
+      if (occupation) baseParams.occupation = occupation;
+
+      // 并行获取：历年趋势数据 + 城市分布数据
+      const [yearlyResp, cityResp] = await Promise.all([
+        getYearlyProvinceData(baseParams),
+        getCityData({ province: provinceName, ...(disease ? { disease } : {}), ...(dataType ? { data_type: dataType } : {}) }),
+      ]);
+      setProvinceYearly(Array.isArray(yearlyResp) ? [...yearlyResp].sort((a, b) => a.year - b.year) : []);
+      setProvinceCities(Array.isArray(cityResp) ? cityResp : []);
+    } catch {
+      setProvinceYearly([]);
+      setProvinceCities([]);
+    } finally {
+      setProvinceDetailLoading(false);
+    }
+  }, [disease, dataType, yearStart, yearEnd, ageMin, ageMax, gender, occupation]);
+
+  // ECharts 地图点击事件
+  const onChartEvents = {
+    click: (params: { name: string; componentType: string }) => {
+      if (params.componentType !== 'series') return;
+      // params.name 是 GeoJSON 全名，需要映射回短名称
+      const entry = Object.entries(PROVINCE_GEOJSON_NAME).find(([, geoName]) => geoName === params.name);
+      const shortName = entry ? entry[0] : params.name;
+      if (shortName) handleProvinceClick(shortName);
+    },
+  };
+
   // 获取当前要展示的数据（静态或时间序列模式）
   const currentData: MapDataPoint[] = dynamicMode === 'timeline' && selectedYear != null
     ? yearlyData.find((y) => y.year === selectedYear)?.data || []
@@ -280,6 +327,58 @@ const MapOverview: React.FC = () => {
   const totalProvinces = currentData.length;
   const totalSample = currentData.reduce((s, d) => s + d.total_sample, 0);
 
+  // 当前选中省份在 currentData 中的数据
+  const currentProvinceData = selectedProvince
+    ? currentData.find((d) => d.province === selectedProvince)
+    : null;
+
+  // 省份历年趋势数据（扁平化为表格数据源）
+  const provinceYearlyTableData = provinceYearly.map((y) => {
+    const item = y.data.find((d) => d.province === selectedProvince);
+    return {
+      key: y.year,
+      year: y.year,
+      value: item?.weighted_positivity ?? null,
+      point_count: item?.point_count ?? 0,
+      total_sample: item?.total_sample ?? 0,
+    };
+  });
+
+  // 省份历年趋势图配置
+  const getTrendOption = () => {
+    if (provinceYearlyTableData.length === 0) return {};
+    const valueLabel = dataType === 'gmc' ? 'GMC' : '阳性率';
+    const unit = dataType === 'gmc' ? ' μg/ml' : '%';
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: Array<{ axisValue: string; data: number | null }>) =>
+          `${params[0].axisValue}年<br/>${valueLabel}: ${params[0].data != null ? params[0].data.toFixed(2) + unit : '无数据'}`,
+      },
+      grid: { left: 35, right: 10, top: 10, bottom: 25 },
+      xAxis: {
+        type: 'category',
+        data: provinceYearlyTableData.map((d) => String(d.year)),
+        axisLabel: { fontSize: 9, interval: Math.floor(provinceYearlyTableData.length / 5) },
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: { fontSize: 9, formatter: (v: number) => v + (dataType === 'gmc' ? '' : '%') },
+        scale: true,
+      },
+      series: [{
+        type: 'line',
+        data: provinceYearlyTableData.map((d) => d.value),
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 5,
+        lineStyle: { width: 2, color: '#1890ff' },
+        itemStyle: { color: '#1890ff' },
+        areaStyle: { color: 'rgba(24,144,255,0.1)' },
+      }],
+    };
+  };
+
   return (
     <Spin spinning={loading}>
       <Card style={{ marginBottom: 16 }}>
@@ -350,6 +449,7 @@ const MapOverview: React.FC = () => {
               <ReactECharts
                 option={getOption()}
                 style={{ height: 520 }}
+                onEvents={onChartEvents}
               />
             ) : (
               <Spin tip="加载地图数据..." style={{ height: 520, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -377,9 +477,23 @@ const MapOverview: React.FC = () => {
                     max={yearlyData[yearlyData.length - 1].year}
                     value={selectedYear || 0}
                     onChange={(v) => setSelectedYear(v as number)}
-                    marks={Object.fromEntries(
-                      yearlyData.map((y) => [y.year, String(y.year)])
-                    )}
+                    marks={(() => {
+                      const total = yearlyData.length;
+                      // 根据年份数量自动计算标记间隔，避免标签重叠
+                      let interval: number;
+                      if (total <= 10) interval = 1;
+                      else if (total <= 20) interval = 2;
+                      else if (total <= 30) interval = 3;
+                      else interval = 5;
+                      const marks: Record<number, string> = {};
+                      yearlyData.forEach((y, i) => {
+                        // 首尾年份或间隔倍数时显示标记
+                        if (i === 0 || i === total - 1 || i % interval === 0) {
+                          marks[y.year] = String(y.year);
+                        }
+                      });
+                      return marks;
+                    })()}
                     tooltip={{ formatter: (v) => `${v} 年` }}
                   />
                 </Col>
@@ -434,25 +548,132 @@ const MapOverview: React.FC = () => {
           )}
         </Col>
         <Col span={6}>
-          <Card title={dynamicMode === 'timeline' && selectedYear ? `${selectedYear}年 省份详情` : '省份详情'} style={{ height: '100%' }}>
-            <Table
-              dataSource={currentData}
-              rowKey="province"
-              size="small"
-              pagination={false}
-              scroll={{ y: 440 }}
-              columns={[
-                { title: '省份', dataIndex: 'province', key: 'province', width: 70 },
-                {
-                  title: dataType === 'gmc' ? 'GMC' : '阳性率',
-                  dataIndex: 'weighted_positivity',
-                  key: 'wp',
-                  width: 80,
-                  render: (v: number | null) => (v != null ? Number(v).toFixed(2) + (dataType === 'gmc' ? ' μg/ml' : '%') : '-'),
-                },
-                { title: '数据点', dataIndex: 'point_count', key: 'pc', width: 60 },
-              ]}
-            />
+          <Card
+            title={
+              <Space>
+                {selectedProvince && (
+                  <Button size="small" type="text" icon={<ArrowLeftOutlined />} onClick={() => setSelectedProvince(null)} />
+                )}
+                <span>{selectedProvince ? `${selectedProvince} 详情` : (dynamicMode === 'timeline' && selectedYear ? `${selectedYear}年 省份列表` : '省份列表')}</span>
+              </Space>
+            }
+            style={{ height: '100%' }}
+          >
+            {selectedProvince ? (
+              <Spin spinning={provinceDetailLoading}>
+                {/* 当前指标统计 */}
+                {currentProvinceData && (
+                  <Row gutter={8} style={{ marginBottom: 12 }}>
+                    <Col span={12}>
+                      <Statistic
+                        title={dataType === 'gmc' ? 'GMC' : '加权阳性率'}
+                        value={currentProvinceData.weighted_positivity != null ? Number(currentProvinceData.weighted_positivity).toFixed(2) : '-'}
+                        suffix={dataType === 'gmc' ? ' μg/ml' : '%'}
+                        valueStyle={{ fontSize: 18 }}
+                      />
+                    </Col>
+                    <Col span={12}>
+                      <Statistic title="总样本量" value={currentProvinceData.total_sample} valueStyle={{ fontSize: 18 }} />
+                    </Col>
+                  </Row>
+                )}
+                {currentProvinceData && (
+                  <Row gutter={8} style={{ marginBottom: 12 }}>
+                    <Col span={12}><span style={{ fontSize: 12, color: '#888' }}>数据点: {currentProvinceData.point_count}</span></Col>
+                    <Col span={12}><span style={{ fontSize: 12, color: '#888' }}>研究数: {currentProvinceData.study_count}</span></Col>
+                  </Row>
+                )}
+
+                {/* 历年趋势图 */}
+                {provinceYearlyTableData.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 'bold', color: '#666', marginBottom: 4 }}>历年趋势</div>
+                    <ReactECharts option={getTrendOption()} style={{ height: 120 }} />
+                  </div>
+                )}
+
+                {/* 历年数据表 */}
+                {provinceYearlyTableData.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 'bold', color: '#666', marginBottom: 4 }}>历年数据</div>
+                    <Table
+                      dataSource={provinceYearlyTableData}
+                      rowKey="year"
+                      size="small"
+                      pagination={false}
+                      scroll={{ y: 120 }}
+                      columns={[
+                        { title: '年份', dataIndex: 'year', key: 'year', width: 55 },
+                        {
+                          title: dataType === 'gmc' ? 'GMC' : '阳性率',
+                          dataIndex: 'value',
+                          key: 'value',
+                          width: 75,
+                          render: (v: number | null) => (v != null ? Number(v).toFixed(2) + (dataType === 'gmc' ? '' : '%') : '-'),
+                        },
+                        { title: '样本', dataIndex: 'total_sample', key: 'total_sample', width: 60 },
+                      ]}
+                    />
+                  </div>
+                )}
+
+                {/* 城市分布 */}
+                {provinceCities.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 'bold', color: '#666', marginBottom: 4 }}>城市分布</div>
+                    <Table
+                      dataSource={provinceCities}
+                      rowKey="city"
+                      size="small"
+                      pagination={false}
+                      scroll={{ y: 120 }}
+                      columns={[
+                        { title: '城市', dataIndex: 'city', key: 'city', width: 70 },
+                        {
+                          title: dataType === 'gmc' ? 'GMC' : '阳性率',
+                          dataIndex: 'weighted_positivity',
+                          key: 'wp',
+                          width: 70,
+                          render: (v: number | null) => (v != null ? Number(v).toFixed(2) + (dataType === 'gmc' ? '' : '%') : '-'),
+                        },
+                        { title: '数据点', dataIndex: 'point_count', key: 'pc', width: 50 },
+                      ]}
+                    />
+                  </div>
+                )}
+
+                {/* 无数据提示 */}
+                {!provinceDetailLoading && provinceYearlyTableData.length === 0 && provinceCities.length === 0 && (
+                  <div style={{ textAlign: 'center', color: '#999', padding: '20px 0' }}>该省份暂无详细数据</div>
+                )}
+              </Spin>
+            ) : (
+              <>
+                <div style={{ marginBottom: 8, fontSize: 12, color: '#999' }}>💡 点击地图省份查看详细信息</div>
+                <Table
+                  dataSource={currentData}
+                  rowKey="province"
+                  size="small"
+                  pagination={false}
+                  scroll={{ y: 420 }}
+                  onRow={(record) => ({
+                    onClick: () => handleProvinceClick(record.province),
+                    style: { cursor: 'pointer' },
+                  })}
+                  columns={[
+                    { title: '省份', dataIndex: 'province', key: 'province', width: 70 },
+                    {
+                      title: dataType === 'gmc' ? 'GMC' : '阳性率',
+                      dataIndex: 'weighted_positivity',
+                      key: 'wp',
+                      width: 80,
+                      render: (v: number | null) => (v != null ? Number(v).toFixed(2) + (dataType === 'gmc' ? ' μg/ml' : '%') : '-'),
+                    },
+                    { title: '数据点', dataIndex: 'point_count', key: 'pc', width: 60 },
+                  ]}
+                />
+              </>
+            )}
           </Card>
         </Col>
       </Row>

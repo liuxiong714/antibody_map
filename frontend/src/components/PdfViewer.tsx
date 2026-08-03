@@ -47,6 +47,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const renderTasksRef = useRef<Map<number, pdfjsLib.RenderTask>>(new Map());
   const visibleRangeRef = useRef<{ start: number; end: number }>({ start: 1, end: 1 });
   const allDimsRef = useRef<{ w: number; h: number }[]>([]);
+  const blobUrlRef = useRef<string | null>(null);
 
   // 计算适合宽度的缩放比例
   const calcFitWidthScale = useCallback(() => {
@@ -197,16 +198,36 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       if (observerRef.current) { observerRef.current.disconnect(); observerRef.current = null; }
       canvasMapRef.current.clear();
       pdfRef.current?.destroy();
+      // 清理之前的 blob URL
+      if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
 
       const url = `/api/v1/literatures/${literatureId}/file`;
+
+      // 预检：先 fetch 检查文件是否存在，避免 PDF.js 内部抛出 ERR_ABORTED 控制台错误
+      const response = await fetch(url);
+      if (!response.ok) {
+        if (mountedRef.current) {
+          if (response.status === 404) {
+            message.error('文献不存在或文件已丢失，可能已被删除或合并');
+          } else {
+            message.error(`文件加载失败 (HTTP ${response.status})`);
+          }
+        }
+        setLoading(false);
+        return;
+      }
+
+      // 将文件转为 blob URL 供 PDF.js 加载（当前已禁用 range/stream，整体下载无性能差异）
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      blobUrlRef.current = blobUrl;
+
       const loadingTask = pdfjsLib.getDocument({
-        url,
+        url: blobUrl,
         cMapUrl: CMAKE_URL,
         cMapPacked: true,
         useSystemFonts: true,
         standardFontDataUrl: STANDARD_FONTS_URL,
-        disableRange: true,
-        disableStream: true,
       });
       const pdf = await loadingTask.promise;
       pdfRef.current = pdf;
@@ -255,6 +276,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       pdfRef.current?.destroy();
       pdfRef.current = null;
       canvasMapRef.current.clear();
+      if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
     };
   }, [literatureId]);
 

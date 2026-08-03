@@ -164,3 +164,16 @@ async def get_approved_data_points(
         sort_order=sort_order,
     )
     return ApiResponse(data={"items": items, "total": total})
+
+
+@router.get("/analysis/data-gaps", response_model=ApiResponse)
+async def get_data_gaps(
+    disease: Optional[str] = Query(None, description="疾病筛选（不传则分析全库）"),
+    db: AsyncSession = Depends(get_db),
+):
+    """数据覆盖度分析：统计各省份各年份的数据点分布，识别需要审核和补充的数据缺口"""
+    data = await analysis_service.get_data_gap_analysis(
+        db=db,
+        disease=disease,
+    )
+    return ApiResponse(data=data)

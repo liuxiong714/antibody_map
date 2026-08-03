@@ -29,7 +29,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Database migration failed: {e}")
         raise
+
+    # 启动文件夹监控后台任务
+    from app.services.folder_monitor_service import _folder_monitor_loop
+    monitor_task = asyncio.create_task(_folder_monitor_loop())
+
     yield
+
+    # 停止文件夹监控后台任务
+    monitor_task.cancel()
+    try:
+        await monitor_task
+    except asyncio.CancelledError:
+        pass
+
     await engine.dispose()
 
 

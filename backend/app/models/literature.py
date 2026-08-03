@@ -26,6 +26,7 @@ class Literature(Base):
     publication_types: Mapped[Optional[list[str]]] = mapped_column(ARRAY(Text))
     source_db: Mapped[Optional[str]] = mapped_column(String(50))
     file_path: Mapped[Optional[str]] = mapped_column(String(500))
+    pdf_hash: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     has_fulltext: Mapped[bool] = mapped_column(Boolean, default=False)
     extraction_status: Mapped[str] = mapped_column(String(20), default="pending")
     extracted_count: Mapped[int] = mapped_column(Integer, default=0)

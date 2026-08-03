@@ -11,6 +11,7 @@ const LiteratureDetail = React.lazy(() => import('./pages/LiteratureDetail'));
 const Assessment = React.lazy(() => import('./pages/Assessment'));
 const Analysis = React.lazy(() => import('./pages/Analysis'));
 const Report = React.lazy(() => import('./pages/Report'));
+const FolderMonitor = React.lazy(() => import('./pages/FolderMonitor'));
 
 const PageLoader: React.FC = () => (
   <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '40vh' }}>
@@ -31,6 +32,7 @@ const App: React.FC = () => (
               <Route path="/assessment" element={<Assessment />} />
               <Route path="/analysis" element={<Analysis />} />
               <Route path="/report" element={<Report />} />
+              <Route path="/folders" element={<FolderMonitor />} />
             </Route>
           </Routes>
         </Suspense>

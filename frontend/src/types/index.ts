@@ -19,6 +19,7 @@ export interface Literature {
   publication_types: string[] | null;
   source_db: string | null;
   file_path: string | null;
+  pdf_hash: string | null;
   has_fulltext: boolean;
   extraction_status: string;
   extracted_count: number;
@@ -51,6 +52,70 @@ export interface DataPoint {
   source_context: string | null;
   source_page: number | null;
   created_at: string;
+}
+
+// ===== 查重与合并相关类型 =====
+
+export interface DuplicateMatchItem {
+  literature: Literature;
+  match_reasons: string[];
+  match_values: Record<string, string>;
+}
+
+export interface CheckDuplicateResult {
+  literature_id: string | null;
+  total: number;
+  duplicates: DuplicateMatchItem[];
+}
+
+export interface DuplicateGroup {
+  literature_ids: string[];
+  match_reasons: string[];
+  representative_id: string;
+}
+
+export interface ScanDuplicatesResult {
+  groups: DuplicateGroup[];
+  total_groups: number;
+  total_duplicates: number;
+}
+
+export interface FieldComparison {
+  field: string;
+  source_value: unknown;
+  target_value: unknown;
+  differs: boolean;
+}
+
+export interface DataPointConflictItem {
+  source_dp: Record<string, unknown>;
+  target_dp: Record<string, unknown>;
+  key: string;
+}
+
+export interface MergePreviewResult {
+  field_comparison: FieldComparison[];
+  source_data_point_count: number;
+  target_data_point_count: number;
+  conflicts: DataPointConflictItem[];
+  total_conflicts: number;
+}
+
+export type MergeFieldChoice = 'source' | 'target' | 'merge';
+export type DpConflictStrategy = 'keep_both' | 'prefer_target' | 'prefer_source';
+
+export interface MergeRequestPayload {
+  source_id: string;
+  target_id: string;
+  field_choices: Record<string, MergeFieldChoice>;
+  dp_conflict_strategy: DpConflictStrategy;
+}
+
+export interface MergeResult {
+  merged_literature: Literature;
+  moved_data_points: number;
+  deleted_conflict_data_points: number;
+  deleted_source_id: string;
 }
 
 export interface MapDataPoint {
@@ -132,4 +197,112 @@ export interface ImmuneBarrierData {
   yearly_trend: Array<{ year: number; weighted_positivity: number | null; sample_size: number; point_count: number }>;
   status: string;
   assessment: string;
+}
+
+// ===== 数据覆盖度分析 =====
+
+export interface DataGapOverview {
+  total_data_points: number;
+  total_provinces: number;
+  total_diseases: number;
+  year_range: [number, number] | null;
+  years: number[];
+  pending_count: number;
+  approved_count: number;
+  rejected_count: number;
+  total_gap_combos: number;
+}
+
+export interface ReviewNeededItem {
+  province: string;
+  year: number | null;
+  disease: string;
+  pending_count: number;
+  approved_count: number;
+  rejected_count: number;
+  total_count: number;
+}
+
+export interface DataGapItem {
+  disease: string;
+  covered_provinces: string[];
+  missing_provinces: string[];
+  covered_count: number;
+  missing_count: number;
+}
+
+export interface ProvinceYearCell {
+  total: number;
+  pending: number;
+  approved: number;
+}
+
+export interface ProvinceYearRow {
+  province: string;
+  years: Record<string, ProvinceYearCell>;
+  total: number;
+  pending: number;
+}
+
+export interface DataGapAnalysisResult {
+  overview: DataGapOverview;
+  review_needed: ReviewNeededItem[];
+  data_gaps: DataGapItem[];
+  province_year_matrix: ProvinceYearRow[];
+}
+
+// ===== 文件夹监控 =====
+
+export interface MonitoredFolder {
+  id: string;
+  name: string;
+  folder_path: string;
+  enabled: boolean;
+  scan_interval_seconds: number;
+  file_extensions: string | null;
+  auto_extract: boolean;
+  extraction_model: string | null;
+  extraction_api_key: string | null;
+  extraction_base_url: string | null;
+  last_scan_at: string | null;
+  last_scan_new_count: number;
+  total_imported_count: number;
+  status: string;  // idle / scanning / error
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MonitoredFolderCreate {
+  name: string;
+  folder_path: string;
+  enabled?: boolean;
+  scan_interval_seconds?: number;
+  file_extensions?: string | null;
+  auto_extract?: boolean;
+  extraction_model?: string | null;
+  extraction_api_key?: string | null;
+  extraction_base_url?: string | null;
+}
+
+export interface MonitoredFile {
+  id: string;
+  folder_id: string;
+  file_path: string;
+  file_name: string;
+  file_hash: string | null;
+  file_size: number | null;
+  file_mtime: string | null;
+  status: string;  // pending / imported / skipped_duplicate / failed
+  literature_id: string | null;
+  error_message: string | null;
+  imported_at: string | null;
+  created_at: string;
+}
+
+export interface ScanResult {
+  scanned: number;
+  imported: number;
+  skipped: number;
+  failed: number;
 }

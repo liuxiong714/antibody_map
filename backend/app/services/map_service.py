@@ -33,6 +33,55 @@ def _parse_provinces(raw: Optional[str]) -> list[str]:
     return result if result else ["unknown"]
 
 
+def _normalize_seroprevalence(value: float) -> float:
+    """标准化血清阳性率值：
+    - 如果值在 0~1 之间（小数格式），转换为百分比（×100）
+    - 上限封顶 100%
+    """
+    if value is None:
+        return None
+    v = float(value)
+    if 0 < v <= 1:
+        v = v * 100
+    if v > 100:
+        v = 100.0
+    if v < 0:
+        v = 0.0
+    return round(v, 4)
+
+
+def _calc_weighted_rate(dps: list, target_data_type: Optional[str] = None) -> tuple[Optional[float], int]:
+    """计算加权平均率和总样本量。
+
+    - target_data_type='seroprevalence': 仅使用阳性率数据点，值标准化到 0-100%
+    - target_data_type='gmc': 仅使用 GMC 数据点
+    - target_data_type=None: 仅使用 seroprevalence 数据点（避免与 GMC 混合导致 >100%）
+    - 返回 (weighted_rate, total_sample)
+    """
+    # 未指定数据类型时，默认只计算 seroprevalence（阳性率），避免 GMC 混入导致 >100%
+    effective_type = target_data_type or "seroprevalence"
+
+    valid_dps = [
+        dp for dp in dps
+        if dp.sample_size and dp.value is not None and dp.data_type == effective_type
+    ]
+
+    if not valid_dps:
+        return None, 0
+
+    if effective_type == "seroprevalence":
+        # 阳性率：标准化小数格式并封顶 100%
+        weighted_sum = float(sum(_normalize_seroprevalence(dp.value) * dp.sample_size for dp in valid_dps))
+    else:
+        # GMC: 直接使用原始值
+        weighted_sum = float(sum(float(dp.value) * dp.sample_size for dp in valid_dps))
+
+    total_sample = int(sum(dp.sample_size for dp in valid_dps))
+    weighted_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
+
+    return weighted_rate, total_sample
+
+
 async def get_province_data(
     db: AsyncSession,
     disease: Optional[str] = None,
@@ -88,15 +137,7 @@ async def get_province_data(
     result_list = []
     for key, group in province_map.items():
         dps = group["data_points"]
-        valid_dps = [dp for dp in dps if dp.sample_size and dp.value is not None]
-
-        if valid_dps:
-            weighted_sum = float(sum(dp.value * dp.sample_size for dp in valid_dps))
-            total_sample = int(sum(dp.sample_size for dp in valid_dps))
-            weighted_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
-        else:
-            total_sample = 0
-            weighted_rate = None
+        weighted_rate, total_sample = _calc_weighted_rate(dps, data_type)
 
         result_list.append({
             "province": key,
@@ -143,15 +184,7 @@ async def get_city_data(
     result_list = []
     for city, group in city_map.items():
         dps = group["data_points"]
-        valid_dps = [dp for dp in dps if dp.sample_size and dp.value is not None]
-
-        if valid_dps:
-            weighted_sum = float(sum(dp.value * dp.sample_size for dp in valid_dps))
-            total_sample = int(sum(dp.sample_size for dp in valid_dps))
-            weighted_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
-        else:
-            total_sample = 0
-            weighted_rate = None
+        weighted_rate, total_sample = _calc_weighted_rate(dps, data_type)
 
         result_list.append({
             "city": city,
@@ -199,14 +232,7 @@ async def get_summary(
         if dp.literature_id:
             lit_ids.add(str(dp.literature_id))
 
-    valid_dps = [dp for dp in rows if dp.sample_size and dp.value is not None]
-    if valid_dps:
-        weighted_sum = sum(dp.value * dp.sample_size for dp in valid_dps)
-        total_sample = sum(dp.sample_size for dp in valid_dps)
-        national_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
-    else:
-        total_sample = 0
-        national_rate = None
+    national_rate, total_sample = _calc_weighted_rate(rows, data_type)
 
     return {
         "province_count": len(provinces),
@@ -278,15 +304,7 @@ async def get_province_yearly_data(
         year_data = []
         for key, group in year_map[year].items():
             dps = group["data_points"]
-            valid_dps = [dp for dp in dps if dp.sample_size and dp.value is not None]
-
-            if valid_dps:
-                weighted_sum = float(sum(dp.value * dp.sample_size for dp in valid_dps))
-                total_sample = int(sum(dp.sample_size for dp in valid_dps))
-                weighted_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
-            else:
-                total_sample = 0
-                weighted_rate = None
+            weighted_rate, total_sample = _calc_weighted_rate(dps, data_type)
 
             year_data.append({
                 "province": key,
