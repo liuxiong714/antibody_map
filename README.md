@@ -12,17 +12,29 @@
 
 | 模块 | 功能 |
 |------|------|
-| **文献管理** | 上传 PDF 文献、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序** |
+| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/TXT/HTML 文献、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并** |
 | **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商 |
 | **数据审核与编辑** | 人工审核（通过/驳回）、行内编辑（疾病、地区、年龄段、数值等字段） |
 | **地图可视化** | 全国/省级/市级交互式抗体水平热力地图，点击省份钻取市级数据、**时间序列动画自动年份范围** |
-| **数据分析** | 逐年趋势、区域对比、年龄分层、免疫屏障评估（含 WHO 阈值） |
+| **数据分析** | 逐年趋势、区域对比、年龄分层、免疫屏障评估（含 WHO 阈值）、**数据覆盖度分析** |
+| **数据覆盖度分析** | 自动统计数据点分布，识别需要审核的数据、**数据缺失提醒**、疾病名称标准化合并 |
 | **报告生成** | LLM 生成抗体分析报告和疫苗接种策略研判报告，支持在线编辑和下载 |
+| **文件夹监控** | 定期监测指定文件夹，自动导入新文件并触发信息提取 |
 | **PDF 预览** | 基于 pdf.js 的在线 PDF 浏览器，支持分栏布局、面板折叠/展开 |
 
 ### 支持的疾病
 
 麻疹、腮腺炎、风疹、百日咳、白喉、破伤风、乙肝、甲肝、脊髓灰质炎、流感、新冠、流行性脑脊髓膜炎、水痘、手足口病、轮状病毒（15 种疫苗可预防 / 重点传染病）
+
+### 支持的文件格式
+
+PDF、CAJ、EPUB、DOCX、TXT、HTML（支持中文文献和外文文献）
+
+### 智能特性
+
+- **疾病名称标准化**：自动合并同一疾病的不同名称（如乙肝/乙型病毒性肝炎、甲肝/甲型病毒性肝炎、乙脑/流行性乙型脑炎）
+- **文献重复检测**：基于 DOI、标题、作者、PDF 哈希等多维度自动检测重复文献
+- **文件夹自动监控**：配置本地文件夹后，系统自动监测新文件并导入提取
 
 ## 技术栈
 
@@ -42,6 +54,7 @@
 antibody_map01/
 ├── docker-compose.yml              # Docker 基础设施编排 (PostgreSQL, Redis, MinIO)
 ├── start.sh / stop.sh              # 一键启动 / 停止脚本
+├── start.ps1 / stop.ps1            # Windows 一键启动 / 停止脚本
 ├── .env.example                    # 环境变量配置模板
 ├── backend/
 │   ├── app/
@@ -52,16 +65,18 @@ antibody_map01/
 │   │   │   └── v1/
 │   │   │       ├── router.py       # 路由注册中心
 │   │   │       ├── dictionary.py   # 疾病/省份/检测方法字典
-│   │   │       ├── literature.py   # 文献 CRUD + PDF 文件流
+│   │   │       ├── literature.py   # 文献 CRUD + PDF 文件流 + 重复检测
 │   │   │       ├── extraction.py   # AI 提取触发 + 数据点编辑/审核
 │   │   │       ├── map_data.py     # 省级/市级/汇总地图数据
 │   │   │       ├── search.py       # 高级文献 + 数据点检索
-│   │   │       ├── analysis.py     # 趋势/区域/年龄/免疫屏障分析
-│   │   │       └── report.py       # 报告生成/CRUD/下载
+│   │   │       ├── analysis.py     # 趋势/区域/年龄/免疫屏障/数据覆盖度分析
+│   │   │       ├── report.py       # 报告生成/CRUD/下载
+│   │   │       └── folder_monitor.py # 文件夹监控 API
 │   │   ├── core/                   # 核心引擎
 │   │   │   ├── llm_extractor.py    # LLM 提取器 (多厂商 + 指数退避重试)
 │   │   │   ├── pdf_parser.py       # PDF 文本解析 (PyMuPDF)
 │   │   │   ├── ocr_service.py      # OCR 服务 (Tesseract 中文)
+│   │   │   ├── document_parser.py  # 多格式文档解析 (PDF/CAJ/EPUB/DOCX/TXT/HTML)
 │   │   │   ├── text_preprocessor.py # 文本预处理
 │   │   │   ├── term_normalizer.py  # 术语 / 地名标准化
 │   │   │   └── minio_client.py     # MinIO 客户端
@@ -70,11 +85,18 @@ antibody_map01/
 │   │   │   ├── literature.py       # Literature
 │   │   │   ├── data_point.py       # DataPoint
 │   │   │   ├── disease_dict.py     # 疾病字典
-│   │   │   └── report.py           # Report
+│   │   │   ├── report.py           # Report
+│   │   │   └── monitored_folder.py # MonitoredFolder / MonitoredFile
 │   │   ├── services/               # 业务逻辑层
+│   │   │   ├── analysis_service.py # 数据分析服务（含疾病名称标准化）
+│   │   │   ├── map_service.py      # 地图数据服务
+│   │   │   ├── literature_service.py # 文献服务（含重复检测与合并）
+│   │   │   ├── extraction_service.py # 数据提取服务
+│   │   │   ├── report_service.py   # 报告服务
+│   │   │   └── folder_monitor_service.py # 文件夹监控服务
 │   │   ├── schemas/                # Pydantic 数据模型
 │   │   └── tasks/                  # Celery 异步任务
-│   ├── tests/                      # 单元测试 (44 个用例)
+│   ├── tests/                      # 单元测试
 │   └── requirements.txt
 └── frontend/
     ├── src/
@@ -86,8 +108,9 @@ antibody_map01/
     │   │   ├── Literature.tsx       # 文献管理列表
     │   │   ├── LiteratureDetail.tsx # 文献详情 (PDF 预览 + 数据提取 + 审核编辑)
     │   │   ├── Assessment.tsx       # 免疫屏障评估
-    │   │   ├── Analysis.tsx         # 多维数据分析
-    │   │   └── Report.tsx           # 报告生成与管理
+    │   │   ├── Analysis.tsx         # 多维数据分析 (含数据覆盖度)
+    │   │   ├── Report.tsx           # 报告生成与管理
+    │   │   └── FolderMonitor.tsx    # 文件夹监控管理
     │   ├── components/              # 公共组件 (PdfViewer, PdfPreviewModal, 选择器等)
     │   ├── services/                # API 服务层 (Axios)
     │   ├── store/                   # Zustand 全局状态管理
@@ -275,12 +298,15 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/literatures/upload` | 上传 PDF 文献 |
+| POST | `/literatures/upload` | 上传文献（支持 PDF/CAJ/EPUB/DOCX/TXT/HTML） |
 | GET | `/literatures` | 文献列表 (分页 + 关键词/疾病筛选) |
 | GET | `/literatures/{id}` | 文献详情 |
 | PUT | `/literatures/{id}` | 更新文献元信息 |
 | DELETE | `/literatures/{id}` | 删除文献 |
-| GET | `/literatures/{id}/file` | 获取 PDF 文件流 (在线预览) |
+| GET | `/literatures/{id}/file` | 获取文献文件流 (在线预览) |
+| POST | `/literatures/check-duplicate` | 检查单个文献是否重复 |
+| POST | `/literatures/scan-duplicates` | 扫描全库重复文献 |
+| POST | `/literatures/{id}/merge` | 合并重复文献 |
 
 ### 数据提取与审核
 
@@ -311,6 +337,7 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | GET | `/analysis/immune-barrier` | 免疫屏障评估 (含 WHO 阈值) |
 | GET | `/analysis/summary` | 汇总统计 |
 | GET | `/analysis/approved-data-points` | 已审核数据点列表 |
+| GET | `/analysis/data-gaps` | 数据覆盖度分析（含数据缺失提醒） |
 
 ### 高级检索
 
@@ -330,6 +357,17 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | PUT | `/reports/{id}` | 编辑报告 |
 | DELETE | `/reports/{id}` | 删除报告 |
 | GET | `/reports/{id}/download` | 下载报告 (.md) |
+
+### 文件夹监控
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/folders` | 列出所有监控文件夹 |
+| POST | `/folders` | 添加监控文件夹 |
+| PUT | `/folders/{folder_id}` | 更新监控文件夹配置 |
+| DELETE | `/folders/{folder_id}` | 删除监控文件夹 |
+| POST | `/folders/{folder_id}/scan` | 手动触发扫描文件夹 |
+| GET | `/folders/{folder_id}/files` | 查看文件处理记录 |
 
 ## 环境变量
 
@@ -364,16 +402,25 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 ## 数据流
 
 ```
-上传 PDF 文献
+文献上传 (PDF/CAJ/EPUB/DOCX/TXT/HTML)
     │
     ▼
-PDF 文本解析 (PyMuPDF, 乱码时 OCR 兜底)
+多格式文档解析 (PyMuPDF + caj2pdf + ebooklib + python-docx + bs4)
+    │
+    ▼
+文本预处理 (清洗 OCR 乱码、提取表格数据)
     │
     ▼
 LLM 结构化提取 (疾病 / 省份 / 阳性率 / GMC / 年龄段 / 样本量 / 采集年份)
     │
     ▼
+疾病名称标准化 (别名 → 标准名称: 乙型病毒性肝炎→乙肝 等)
+    │
+    ▼
 术语标准化 (疾病名 / 省份名 → 字典映射)
+    │
+    ▼
+文献重复检测 (DOI / 标题 / 作者 / PDF 哈希 多维度比对)
     │
     ▼
 生成 DataPoint 记录 (review_status = pending)
@@ -383,6 +430,9 @@ LLM 结构化提取 (疾病 / 省份 / 阳性率 / GMC / 年龄段 / 样本量 /
     │
     ▼
 地图可视化 (全国 / 省份 / 城市) + 多维度分析
+    │
+    ▼
+数据覆盖度分析 (数据缺失提醒 + 待审核数据统计)
     │
     ▼
 LLM 生成免疫学报告 + 疫苗接种策略报告
@@ -411,7 +461,7 @@ LLM 生成免疫学报告 + 疫苗接种策略报告
 |------|------|------|
 | id | UUID | 主键 |
 | literature_id | UUID | 外键 → Literature |
-| disease | TEXT | 疾病名称 |
+| disease | TEXT | 疾病名称（支持多种别名，后端会自动标准化） |
 | province / city | TEXT | 省 / 市 |
 | data_type | TEXT | seroprevalence / gmc |
 | value / unit | FLOAT / TEXT | 数值 / 单位 (%) |
@@ -420,6 +470,30 @@ LLM 生成免疫学报告 + 疫苗接种策略报告
 | collection_year | INT | 数据采集年份 |
 | confidence | ENUM | high / medium / low |
 | review_status | ENUM | pending / approved / rejected |
+
+### MonitoredFolder (监控文件夹)
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | UUID | 主键 |
+| name | TEXT | 文件夹名称 |
+| folder_path | TEXT | 文件夹路径 |
+| scan_interval | INT | 扫描间隔（分钟） |
+| status | ENUM | idle / scanning / error |
+| last_scan_at | DATETIME | 上次扫描时间 |
+| error_message | TEXT | 错误信息 |
+
+### MonitoredFile (监控文件记录)
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | UUID | 主键 |
+| folder_id | UUID | 外键 → MonitoredFolder |
+| file_path | TEXT | 文件路径 |
+| file_hash | TEXT | 文件哈希（用于变更检测） |
+| status | ENUM | pending / imported / error |
+| literature_id | UUID | 导入的文献 ID |
+| error_message | TEXT | 错误信息 |
 
 ## License
 
@@ -430,6 +504,27 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.3.0 (2026-08-03)
+
+#### 新功能
+
+- **文献重复检测与合并**：系统可基于 DOI、标题、作者、PDF 哈希等多维度自动检测重复文献，支持字段级冲突合并。
+
+- **数据覆盖度分析**：新增数据覆盖度分析模块，自动统计各省份各年份的数据点分布，识别需要审核的数据点，提供数据缺失提醒。
+
+- **疾病名称标准化**：实现疾病名称自动合并功能，将同一疾病的不同名称统一（如乙肝/乙型病毒性肝炎、甲肝/甲型病毒性肝炎、乙脑/流行性乙型脑炎等），提升数据展示准确性。
+
+- **文件夹监控**：支持配置本地文件夹进行定期监测，自动导入新文件并触发信息提取，实现文献数据的持续积累。
+
+- **多格式文献支持**：文献上传和提取支持 PDF、CAJ、EPUB、DOCX、TXT、HTML 等多种格式。
+
+#### 优化
+
+- 优化文献详情页面，从数据点同步年份和省份信息
+- 支持点击省份查看详细市级数据
+- 免疫屏障评估默认血清阳性率数据类型
+- 优化时间序列动画的年份范围选择
 
 ### v1.2.0 (2026-07-31)
 
