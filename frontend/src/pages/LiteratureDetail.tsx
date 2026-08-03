@@ -155,6 +155,16 @@ const LiteratureDetail: React.FC = () => {
     }
   }, [id]);
 
+  // 排查页码丢失问题：记录进入详情页时的来源上下文
+  useEffect(() => {
+    console.log('[文献详情] 详情页挂载', {
+      id,
+      // 存在备份状态说明是从列表页点击进入（返回列表时应恢复页码）
+      hasBackState: sessionStorage.getItem('literature_list_back_state') !== null,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => { fetchData(); }, [fetchData]);
 
   // 同步数据点中的年份和省份到文献信息
@@ -565,7 +575,13 @@ const LiteratureDetail: React.FC = () => {
 
   return (
     <>
-      <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/literature')} style={{ marginBottom: 12 }}>
+      <Button icon={<ArrowLeftOutlined />} onClick={() => {
+        console.log('[文献详情] 点击返回列表', {
+          id,
+          hasBackState: sessionStorage.getItem('literature_list_back_state') !== null,
+        });
+        navigate('/literature');
+      }} style={{ marginBottom: 12 }}>
         返回列表
       </Button>
 

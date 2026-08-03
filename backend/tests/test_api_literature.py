@@ -58,10 +58,10 @@ class TestLiteratureAPI:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
                 "/api/v1/literatures/upload",
-                files={"file": ("test.txt", b"not a pdf", "text/plain")},
+                files={"file": ("test.exe", b"not a supported doc", "application/octet-stream")},
             )
             assert response.status_code == 400
-            assert "只支持 PDF 文件" in response.json()["detail"]
+            assert "不支持的文件格式" in response.json()["detail"]
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_upload_literature_missing_file(self):

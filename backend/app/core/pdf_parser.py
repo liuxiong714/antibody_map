@@ -25,6 +25,9 @@ def extract_text(file_bytes: bytes) -> str:
         logger.warning("PyMuPDF 不可用，PDF 解析被跳过")
         return ""
 
+    # 单页有效文本少于该字符数 → 判定为扫描页/文字层损坏页，交给 OCR
+    PAGE_TEXT_MIN = 100
+
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         full_text_parts = []
@@ -33,11 +36,14 @@ def extract_text(file_bytes: bytes) -> str:
         for page_num in range(len(doc)):
             page = doc[page_num]
             # 先尝试直接提取文本
-            page_text = page.get_text("text")
-            if page_text.strip():
-                full_text_parts.append(page_text.strip())
+            page_text = page.get_text("text").strip()
+            if len(page_text) >= PAGE_TEXT_MIN:
+                full_text_parts.append(page_text)
             else:
-                # 该页无文本，记录用于 OCR
+                # 无文本或文本过短（扫描件/文字层损坏），整页交给 OCR
+                # 同时保留少量文本作为 OCR 失败时的兜底
+                if page_text:
+                    full_text_parts.append(page_text)
                 pix = page.get_pixmap(dpi=200)
                 page_images_for_ocr.append(pix.tobytes("png"))
 
@@ -45,9 +51,11 @@ def extract_text(file_bytes: bytes) -> str:
 
         combined_text = "\n\n".join(full_text_parts)
 
-        # 如果提取的文本过短（<100 字符），尝试 OCR
-        if len(combined_text.strip()) < 100 and page_images_for_ocr:
-            logger.info("PyMuPDF 提取文本过短，尝试 OCR 兜底...")
+        # 存在扫描页/文字层损坏页时，执行 OCR 兜底并合并结果
+        if page_images_for_ocr:
+            logger.info(
+                f"检测到 {len(page_images_for_ocr)} 个页面文本过短，尝试 OCR 兜底..."
+            )
             ocr_text = ocr_pdf_pages(
                 page_images_for_ocr,
                 fallback_to_baidu=settings.OCR_FALLBACK_TO_BAIDU,
@@ -55,7 +63,8 @@ def extract_text(file_bytes: bytes) -> str:
                 baidu_secret_key=settings.BAIDU_OCR_SECRET_KEY,
             )
             if ocr_text:
-                return ocr_text
+                parts = full_text_parts + [ocr_text] if full_text_parts else [ocr_text]
+                return "\n\n".join(parts)
 
         return combined_text if combined_text.strip() else ""
 

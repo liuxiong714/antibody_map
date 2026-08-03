@@ -12,3 +12,26 @@ frontend/public/cmaps/
 frontend/public/standard_fonts/
 .trae/
 backend/.pytest_cache/
+
+# 前端构建产物
+frontend/dist/
+frontend/npm-output.txt
+frontend/tsconfig.tsbuildinfo
+
+# 测试监控文件夹
+backend/data/test_monitor/
+
+# 日志与临时文件
+*.log
+*.tmp
+npm-output.txt
+pip_log.txt
+install_log.txt
+backend_output.log
+_uvicorn.log
+http_out.txt
+extract_result.txt
+trigger*.txt
+test_output.txt
+out.txt
+

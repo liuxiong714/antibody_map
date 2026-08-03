@@ -18,27 +18,67 @@ import dayjs from 'dayjs';
 
 const { Text } = Typography;
 
+// 保存/恢复列表状态的 sessionStorage key
+const LIST_STATE_KEY = 'literature_list_back_state';
+
 const LiteraturePage: React.FC = () => {
+  // lazy initializer：从 sessionStorage 一次性读取并解析上次离开列表页时的状态
+  const _cachedState = React.useMemo(() => {
+    try {
+      const raw = sessionStorage.getItem(LIST_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        console.log('[文献列表] 读取备份状态:', parsed);
+        return parsed;
+      }
+      console.log('[文献列表] sessionStorage 无备份状态（非详情页返回，按默认值加载）');
+    } catch (e) {
+      console.warn('[文献列表] 读取备份状态失败:', e);
+    }
+    return null;
+  }, []);
+
   const [items, setItems] = useState<Literature[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [keyword, setKeyword] = useState('');
-  const [disease, setDisease] = useState('');
-  const [province, setProvince] = useState('');
-  const [yearStart, setYearStart] = useState<number | undefined>();
-  const [yearEnd, setYearEnd] = useState<number | undefined>();
-  const [journal, setJournal] = useState('');
-  const [sortBy, setSortBy] = useState('created');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [reviewStatus, setReviewStatus] = useState<string>('');  // 审核状态筛选
-  const [sortInfo, setSortInfo] = useState<{ field: string | null; order: 'ascend' | 'descend' | null }>({ field: 'created_at', order: 'descend' });
+  const [page, setPage] = useState(() => (_cachedState?.page as number) || 1);
+  const [pageSize, setPageSize] = useState(() => (_cachedState?.pageSize as number) || 20);
+  const [keyword, setKeyword] = useState(() => (_cachedState?.keyword as string) || '');
+  const [disease, setDisease] = useState(() => (_cachedState?.disease as string) || '');
+  const [province, setProvince] = useState(() => (_cachedState?.province as string) || '');
+  const [yearStart, setYearStart] = useState<number | undefined>(() => _cachedState?.yearStart as number | undefined);
+  const [yearEnd, setYearEnd] = useState<number | undefined>(() => _cachedState?.yearEnd as number | undefined);
+  const [journal, setJournal] = useState(() => (_cachedState?.journal as string) || '');
+  const [sortBy, setSortBy] = useState(() => (_cachedState?.sortBy as string) || 'created');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(() => (_cachedState?.sortOrder as 'asc' | 'desc') || 'desc');
+  const [reviewStatus, setReviewStatus] = useState<string>(() => (_cachedState?.reviewStatus as string) || '');
+  const [sortInfo, setSortInfo] = useState<{ field: string | null; order: 'ascend' | 'descend' | null }>(() => (
+    _cachedState?.sortInfo as { field: string | null; order: 'ascend' | 'descend' | null }
+  ) || { field: 'created_at', order: 'descend' });
   const [loading, setLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0, fileName: '' });
   const [form] = Form.useForm();
   const navigate = useNavigate();
+
+  // 清除备份状态（成功挂载后不再需要）
+  useEffect(() => {
+    console.log('[文献列表] 列表页挂载完成，本次恢复: 页码=', page, '每页=', pageSize, '排序=', sortBy, sortOrder, '筛选=', { keyword, disease, province, yearStart, yearEnd, journal, reviewStatus });
+    sessionStorage.removeItem(LIST_STATE_KEY);
+  }, []);
+
+  /** 跳转到文献详情前，保存当前列表状态，以便返回时恢复 */
+  const saveStateAndNavigate = (litId: string) => {
+    const payload = {
+      sortBy, sortOrder, sortInfo, page, pageSize,
+      keyword, disease, province, yearStart, yearEnd, journal, reviewStatus,
+    };
+    console.log('[文献列表] 进入详情页前保存状态:', payload);
+    try {
+      sessionStorage.setItem(LIST_STATE_KEY, JSON.stringify(payload));
+    } catch { /* ignore */ }
+    navigate(`/literature/${litId}`);
+  };
 
   // 模型选择提取
   const [extractModalOpen, setExtractModalOpen] = useState(false);
@@ -244,7 +284,7 @@ const LiteraturePage: React.FC = () => {
       sorter: true,
       sortOrder: sortInfo.field === 'title' ? sortInfo.order : null,
       render: (t: string, r: Literature) => (
-        <a onClick={() => navigate(`/literature/${r.id}`)}>{truncate(t, 40)}</a>
+        <a onClick={() => saveStateAndNavigate(r.id)}>{truncate(t, 40)}</a>
       ),
     },
     {
@@ -373,7 +413,7 @@ const LiteraturePage: React.FC = () => {
               onClick={() => window.open(`/api/v1/literatures/${r.id}/download`)}
             />
           </Tooltip>
-          <Button size="small" onClick={() => navigate(`/literature/${r.id}`)}>详情</Button>
+          <Button size="small" onClick={() => saveStateAndNavigate(r.id)}>详情</Button>
           <Popconfirm title="确定删除？" onConfirm={() => handleDelete(r.id)}>
             <Button size="small" danger icon={<DeleteOutlined />} />
           </Popconfirm>

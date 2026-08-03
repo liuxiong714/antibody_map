@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
+from app.core.term_normalizer import normalize_disease
 
 # WHO 免疫屏障阈值（阳性率百分比）
 WHO_THRESHOLDS = {
@@ -32,7 +33,9 @@ def _build_base_query(disease, province, year_start, year_end, age_min, age_max,
     query = select(DataPoint).where(DataPoint.review_status == review_status)
 
     if disease:
-        query = query.where(DataPoint.disease == disease)
+        # 标准化疾病名称，数据库中的 disease 字段已统一为标准 key
+        normalized = normalize_disease(disease)
+        query = query.where(DataPoint.disease == normalized)
     if province:
         query = query.where(DataPoint.province.ilike(f"%{province}%"))
     if year_start:
@@ -456,154 +459,8 @@ CHINA_PROVINCES = [
     "台湾", "香港", "澳门",
 ]
 
-# 疾病名称标准化映射表（将别名/全称/英文key统一为常用中文名称）
-# 标准名称与前端 DISEASES 常量中的 name_cn 保持一致
-DISEASE_NAME_MAP = {
-    # 病毒性肝炎 - 英文key
-    "hepatitis_b": "乙肝",
-    "hepatitis_a": "甲肝",
-    "hepatitis_c": "丙肝",
-    "hepatitis_e": "戊肝",
-    # 病毒性肝炎 - 中文别名
-    "乙型病毒性肝炎": "乙肝",
-    "乙型肝炎": "乙肝",
-    "乙肝病毒": "乙肝",
-    "HBV": "乙肝",
-    "丙型病毒性肝炎": "丙肝",
-    "丙型肝炎": "丙肝",
-    "丙肝病毒": "丙肝",
-    "HCV": "丙肝",
-    "甲型病毒性肝炎": "甲肝",
-    "甲型肝炎": "甲肝",
-    "甲肝病毒": "甲肝",
-    "HAV": "甲肝",
-    "戊型病毒性肝炎": "戊肝",
-    "戊型肝炎": "戊肝",
-    "戊肝病毒": "戊肝",
-    "HEV": "戊肝",
-    # 脑炎
-    "乙型脑炎": "乙型脑炎",  # 标准名称，自身映射
-    "流行性乙型脑炎": "乙型脑炎",
-    "乙脑": "乙型脑炎",
-    "日本脑炎": "乙型脑炎",
-    "Japanese Encephalitis": "乙型脑炎",
-    "JEV": "乙型脑炎",
-    # 麻疹
-    "measles": "麻疹",
-    "麻疹病毒": "麻疹",
-    "Measles Virus": "麻疹",
-    "MV": "麻疹",
-    "rubeola": "麻疹",
-    # 风疹
-    "rubella": "风疹",
-    "风疹病毒": "风疹",
-    "Rubella Virus": "风疹",
-    "RV": "风疹",
-    "German Measles": "风疹",
-    # 腮腺炎
-    "mumps": "腮腺炎",
-    "流行性腮腺炎": "腮腺炎",
-    "腮腺炎病毒": "腮腺炎",
-    "Mumps Virus": "腮腺炎",
-    "MuV": "腮腺炎",
-    # 水痘
-    "varicella": "水痘",
-    "水痘-带状疱疹病毒": "水痘",
-    "水痘病毒": "水痘",
-    "Varicella Zoster Virus": "水痘",
-    "VZV": "水痘",
-    # 脊髓灰质炎
-    "polio": "脊灰",
-    "脊髓灰质炎": "脊灰",
-    "脊灰": "脊灰",  # 标准名称，自身映射
-    "小儿麻痹症": "脊灰",
-    "脊髓灰质炎病毒": "脊灰",
-    "Poliovirus": "脊灰",
-    "PV": "脊灰",
-    # 百日咳
-    "pertussis": "百日咳",
-    "百日咳杆菌": "百日咳",
-    "Bordetella pertussis": "百日咳",
-    "PT": "百日咳",
-    # 白喉
-    "diphtheria": "白喉",
-    "白喉杆菌": "白喉",
-    "Corynebacterium diphtheriae": "白喉",
-    "DT": "白喉",
-    # 破伤风
-    "tetanus": "破伤风",
-    "破伤风杆菌": "破伤风",
-    "Clostridium tetani": "破伤风",
-    "破伤风毒素": "破伤风",
-    "TT": "破伤风",
-    # 流感
-    "influenza": "流感",
-    "流感": "流感",  # 标准名称，自身映射
-    "流行性感冒": "流感",
-    "流感病毒": "流感",
-    "Influenza Virus": "流感",
-    "甲型流感": "流感",
-    "乙型流感": "流感",
-    "H1N1": "流感",
-    "H3N2": "流感",
-    # 新冠
-    "covid19": "新冠",
-    "新冠": "新冠",  # 标准名称，自身映射
-    "新冠肺炎": "新冠",
-    "新冠病毒": "新冠",
-    "SARS-CoV-2": "新冠",
-    "COVID-19": "新冠",
-    "新型冠状病毒": "新冠",
-    # 手足口病
-    "hfmd": "手足口",
-    "手足口": "手足口",  # 标准名称，自身映射
-    "手足口病": "手足口",
-    "手足口病病毒": "手足口",
-    "肠道病毒71型": "手足口",
-    "EV71": "手足口",
-    "Coxsackievirus A16": "手足口",
-    "CA16": "手足口",
-    # 轮状病毒
-    "rotavirus": "轮状病毒",
-    "轮状病毒疫苗": "轮状病毒",
-    "Rotavirus Vaccine": "轮状病毒",
-    "RVV": "轮状病毒",
-    # 脑膜炎
-    "meningitis": "流脑",
-    "流脑": "流脑",  # 标准名称，自身映射
-    "流行性脑脊髓膜炎": "流脑",
-    "脑膜炎球菌": "流脑",
-    "Meningococcal Disease": "流脑",
-    "N. meningitidis": "流脑",
-    # 结核病
-    "结核分枝杆菌": "结核病",
-    "结核菌": "结核病",
-    "Mycobacterium tuberculosis": "结核病",
-    "TB": "结核病",
-    # 其他
-    "EB病毒": "EB病毒感染",
-    "Epstein-Barr Virus": "EB病毒感染",
-    "EBV": "EB病毒感染",
-    "巨细胞病毒": "巨细胞病毒感染",
-    "Cytomegalovirus": "巨细胞病毒感染",
-    "CMV": "巨细胞病毒感染",
-    "单纯疱疹病毒": "单纯疱疹",
-    "Herpes Simplex Virus": "单纯疱疹",
-    "HSV": "单纯疱疹",
-    "狂犬病": "狂犬病",
-    "狂犬病毒": "狂犬病",
-    "Rabies Virus": "狂犬病",
-}
-
-
-def _normalize_disease_name(disease: str) -> str:
-    """标准化疾病名称，将别名/全称映射为常用名称。
-
-    如果疾病名称在映射表中，则返回标准名称；否则返回原名称。
-    """
-    if not disease:
-        return disease
-    return DISEASE_NAME_MAP.get(disease.strip(), disease.strip())
+# 疾病名称标准化统一使用 app.core.term_normalizer.normalize_disease
+# 数据库中的 disease 字段已在入库时和迁移脚本中标准化为标准 key
 
 
 async def get_data_gap_analysis(
@@ -629,9 +486,9 @@ async def get_data_gap_analysis(
         DataPoint.review_status,
     )
     if disease:
-        # 标准化查询的疾病名称
-        normalized_disease = _normalize_disease_name(disease)
-        query = query.where(DataPoint.disease.in_([disease, normalized_disease]) if disease != normalized_disease else DataPoint.disease == disease)
+        # 标准化查询参数，数据库中的 disease 字段已统一为标准 key
+        normalized_disease = normalize_disease(disease)
+        query = query.where(DataPoint.disease == normalized_disease)
 
     result = await db.execute(query)
     rows = result.all()
@@ -650,7 +507,7 @@ async def get_data_gap_analysis(
                     all_provinces.add(p)
         if r.disease:
             # 使用标准化名称统计
-            all_diseases.add(_normalize_disease_name(r.disease))
+            all_diseases.add(normalize_disease(r.disease))
         if r.collection_year:
             all_years.add(r.collection_year)
         if r.review_status in status_counts:
@@ -668,7 +525,7 @@ async def get_data_gap_analysis(
         if not prov:
             continue
         # 使用标准化疾病名称作为 key
-        normalized_dis = _normalize_disease_name(r.disease) if r.disease else r.disease
+        normalized_dis = normalize_disease(r.disease) if r.disease else r.disease
         key = (prov, r.collection_year, normalized_dis)
         if key not in pyd_map:
             pyd_map[key] = {"pending": 0, "approved": 0, "rejected": 0, "total": 0}
@@ -697,7 +554,7 @@ async def get_data_gap_analysis(
         if not r.disease or not r.province:
             continue
         # 使用标准化疾病名称进行分组
-        normalized_dis = _normalize_disease_name(r.disease)
+        normalized_dis = normalize_disease(r.disease)
         if normalized_dis not in disease_provinces:
             disease_provinces[normalized_dis] = set()
         for p in r.province.split(";"):

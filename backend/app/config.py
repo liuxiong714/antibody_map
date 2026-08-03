@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     BAIDU_OCR_API_KEY: str = ""
     BAIDU_OCR_SECRET_KEY: str = ""
     OCR_FALLBACK_TO_BAIDU: bool = False
+    # Tesseract 可执行文件路径（默认自动探测：PATH 或 Windows 常见安装位置）
+    TESSERACT_CMD: str = ""
+    # Tesseract 语言数据目录（tessdata），默认取可执行文件同目录下的 tessdata
+    TESSERACT_DATA_DIR: str = ""
 
     # App
     SECRET_KEY: str = ""  # 必须通过环境变量或 .env 文件配置

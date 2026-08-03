@@ -1,6 +1,9 @@
 import asyncio
 import logging
+import subprocess
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,11 +16,23 @@ logger = logging.getLogger("uvicorn")
 
 
 def _run_migrations():
-    """同步执行 Alembic 迁移（在子线程中运行以避免事件循环冲突）"""
-    from alembic.config import Config
-    from alembic import command
-    alembic_cfg = Config("alembic.ini")
-    command.upgrade(alembic_cfg, "head")
+    """通过子进程执行 Alembic 迁移，避免事件循环冲突。
+
+    在 uvicorn 的事件循环中通过 asyncio.to_thread 调用 alembic 时，
+    alembic env.py 内部的 asyncio.run() 会与主事件循环产生冲突导致死锁。
+    使用 subprocess 在独立进程中运行可彻底避免此问题。
+    """
+    backend_dir = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=str(backend_dir),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        logger.error(f"Alembic migration failed (exit {result.returncode}):\n{result.stderr}")
+        raise RuntimeError(f"Database migration failed: {result.stderr}")
     logger.info("Database migrations applied successfully")
 
 

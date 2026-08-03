@@ -5,61 +5,144 @@ from typing import Optional
 logger = logging.getLogger("uvicorn")
 
 # ==================== 疾病名称标准化映射 ====================
+# 15 种标准疾病：别名 → 英文 key（与前端 DISEASES 常量的 key 一致）
+# 非标准疾病：别名 → 中文标准名（前端无对应常量，直接显示中文）
 DISEASE_MAP: dict[str, str] = {
-    # 麻疹
+    # ---- 麻疹 (measles) ----
     "麻疹": "measles", "麻诊": "measles", "measles": "measles", "Measles": "measles",
-    # 腮腺炎
+    "麻疹病毒": "measles", "Measles Virus": "measles", "MV": "measles",
+    "rubeola": "measles", "Rubeola": "measles",
+    # ---- 腮腺炎 (mumps) ----
     "腮腺炎": "mumps", "流行性腮腺炎": "mumps", "mumps": "mumps", "Mumps": "mumps",
-    # 风疹
+    "腮腺炎病毒": "mumps", "Mumps Virus": "mumps", "MuV": "mumps",
+    # ---- 风疹 (rubella) ----
     "风疹": "rubella", "rubella": "rubella", "Rubella": "rubella",
-    # 百日咳
+    "风疹病毒": "rubella", "Rubella Virus": "rubella", "RV": "rubella",
+    "German Measles": "rubella", " german measles": "rubella",
+    # ---- 百日咳 (pertussis) ----
     "百日咳": "pertussis", "pertussis": "pertussis", "Pertussis": "pertussis",
-    # 白喉
+    "百日咳杆菌": "pertussis", "Bordetella pertussis": "pertussis", "PT": "pertussis",
+    # ---- 白喉 (diphtheria) ----
     "白喉": "diphtheria", "diphtheria": "diphtheria", "Diphtheria": "diphtheria",
-    # 破伤风
+    "白喉杆菌": "diphtheria", "Corynebacterium diphtheriae": "diphtheria", "DT": "diphtheria",
+    # ---- 破伤风 (tetanus) ----
     "破伤风": "tetanus", "tetanus": "tetanus", "Tetanus": "tetanus",
-    # 乙肝
-    "乙肝": "hepatitis_b", "乙型肝炎": "hepatitis_b", "hepatitis b": "hepatitis_b",
+    "破伤风杆菌": "tetanus", "Clostridium tetani": "tetanus",
+    "破伤风毒素": "tetanus", "TT": "tetanus",
+    # ---- 乙肝 (hepatitis_b) ----
+    "乙肝": "hepatitis_b", "乙型肝炎": "hepatitis_b", "乙型病毒性肝炎": "hepatitis_b",
+    "乙肝病毒": "hepatitis_b", "hepatitis b": "hepatitis_b", "hepatitis_b": "hepatitis_b",
     "Hepatitis B": "hepatitis_b", "HBV": "hepatitis_b", "hbv": "hepatitis_b",
-    # 甲肝
-    "甲肝": "hepatitis_a", "甲型肝炎": "hepatitis_a", "hepatitis a": "hepatitis_a",
+    # ---- 甲肝 (hepatitis_a) ----
+    "甲肝": "hepatitis_a", "甲型肝炎": "hepatitis_a", "甲型病毒性肝炎": "hepatitis_a",
+    "甲肝病毒": "hepatitis_a", "hepatitis a": "hepatitis_a", "hepatitis_a": "hepatitis_a",
     "Hepatitis A": "hepatitis_a", "HAV": "hepatitis_a", "hav": "hepatitis_a",
-    # 脊灰
-    "脊灰": "polio", "脊髓灰质炎": "polio", "polio": "polio", "Polio": "polio",
-    "Polimyelitis": "polio",
-    # 流感
-    "流感": "influenza", "流行性感冒": "influenza", "influenza": "influenza",
-    "Influenza": "influenza", "Flu": "influenza", "flu": "influenza",
-    # 新冠
-    "新冠": "covid19", "新型冠状病毒": "covid19", "COVID-19": "covid19",
-    "covid-19": "covid19", "covid19": "covid19", "SARS-CoV-2": "covid19",
-    "新冠肺炎": "covid19",
-    # 水痘
-    "水痘": "varicella", "varicella": "varicella", "Varicella": "varicella",
-    "chickenpox": "varicella",
-    # 手足口
-    "手足口": "hfmd", "手足口病": "hfmd", "HFMD": "hfmd",
-    # 轮状病毒
-    "轮状病毒": "rotavirus", "rotavirus": "rotavirus", "Rotavirus": "rotavirus",
-    # 流脑
-    "流脑": "meningitis", "流行性脑脊髓膜炎": "meningitis",
-    "meningitis": "meningitis",
+    # ---- 脊灰 (polio) ----
+    "脊灰": "polio", "脊髓灰质炎": "polio", "小儿麻痹症": "polio",
+    "脊髓灰质炎病毒": "polio", "polio": "polio", "Polio": "polio",
+    "Polimyelitis": "polio", "Poliomyelitis": "polio", "Poliovirus": "polio", "PV": "polio",
+    # ---- 流感 (influenza) ----
+    "流感": "influenza", "流行性感冒": "influenza", "流感病毒": "influenza",
+    "influenza": "influenza", "Influenza": "influenza", "Influenza Virus": "influenza",
+    "Flu": "influenza", "flu": "influenza",
+    "甲型流感": "influenza", "乙型流感": "influenza", "H1N1": "influenza", "H3N2": "influenza",
+    # ---- 新冠 (covid19) ----
+    "新冠": "covid19", "新冠肺炎": "covid19", "新冠病毒": "covid19",
+    "新型冠状病毒": "covid19", "新型冠状病毒感染": "covid19",
+    "COVID-19": "covid19", "covid-19": "covid19", "covid19": "covid19",
+    "SARS-CoV-2": "covid19", "SARS-CoV2": "covid19",
+    # ---- 流脑 (meningitis) ----
+    "流脑": "meningitis", "流行性脑脊髓膜炎": "meningitis", "脑膜炎球菌": "meningitis",
+    "meningitis": "meningitis", "Meningitis": "meningitis",
+    "Meningococcal Disease": "meningitis", "N. meningitidis": "meningitis",
+    # ---- 水痘 (varicella) ----
+    "水痘": "varicella", "水痘病毒": "varicella", "水痘-带状疱疹病毒": "varicella",
+    "varicella": "varicella", "Varicella": "varicella",
+    "Varicella Zoster Virus": "varicella", "VZV": "varicella", "chickenpox": "varicella",
+    # ---- 手足口 (hfmd) ----
+    "手足口": "hfmd", "手足口病": "hfmd", "手足口病病毒": "hfmd",
+    "hfmd": "hfmd", "HFMD": "hfmd",
+    "肠道病毒71型": "hfmd", "EV71": "hfmd",
+    "Coxsackievirus A16": "hfmd", "CA16": "hfmd",
+    # ---- 轮状病毒 (rotavirus) ----
+    "轮状病毒": "rotavirus", "轮状病毒疫苗": "rotavirus",
+    "rotavirus": "rotavirus", "Rotavirus": "rotavirus", "Rotavirus Vaccine": "rotavirus",
+    "RVV": "rotavirus",
+
+    # ============ 非标准疾病：别名 → 中文标准名 ============
+    # ---- 丙肝 ----
+    "丙肝": "丙肝", "丙型肝炎": "丙肝", "丙型病毒性肝炎": "丙肝",
+    "丙肝病毒": "丙肝", "HCV": "丙肝", "hcv": "丙肝", "Hepatitis C": "丙肝",
+    # ---- 戊肝 ----
+    "戊肝": "戊肝", "戊型肝炎": "戊肝", "戊型病毒性肝炎": "戊肝",
+    "戊肝病毒": "戊肝", "HEV": "戊肝", "hev": "戊肝", "Hepatitis E": "戊肝",
+    # ---- 乙型脑炎 ----
+    "乙型脑炎": "乙型脑炎", "流行性乙型脑炎": "乙型脑炎", "乙脑": "乙型脑炎",
+    "日本脑炎": "乙型脑炎", "Japanese Encephalitis": "乙型脑炎", "JEV": "乙型脑炎",
+    # ---- 结核病 ----
+    "结核病": "结核病", "结核分枝杆菌": "结核病", "结核菌": "结核病",
+    "Mycobacterium tuberculosis": "结核病", "TB": "结核病",
+    # ---- EB 病毒感染 ----
+    "EB病毒感染": "EB病毒感染", "EB病毒": "EB病毒感染",
+    "Epstein-Barr Virus": "EB病毒感染", "EBV": "EB病毒感染",
+    # ---- 巨细胞病毒感染 ----
+    "巨细胞病毒感染": "巨细胞病毒感染", "巨细胞病毒": "巨细胞病毒感染",
+    "Cytomegalovirus": "巨细胞病毒感染", "CMV": "巨细胞病毒感染",
+    # ---- 单纯疱疹 ----
+    "单纯疱疹": "单纯疱疹", "单纯疱疹病毒": "单纯疱疹",
+    "单纯疱疹病毒Ⅰ型": "单纯疱疹", "单纯疱疹病毒Ⅱ型": "单纯疱疹",
+    "单纯疱疹病毒Ⅰ型感染": "单纯疱疹", "单纯疱疹病毒Ⅱ型感染": "单纯疱疹",
+    "单纯疱疹病毒感染（总）": "单纯疱疹", "单纯疱疹病毒感染(总)": "单纯疱疹",
+    "Herpes Simplex Virus": "单纯疱疹", "HSV": "单纯疱疹",
+    # ---- 弓形虫感染 ----
+    "弓形虫感染": "弓形虫感染", "弓形虫": "弓形虫感染",
+    "Toxoplasma": "弓形虫感染", "Toxoplasmosis": "弓形虫感染",
+    # ---- 狂犬病 ----
+    "狂犬病": "狂犬病", "狂犬病毒": "狂犬病", "Rabies Virus": "狂犬病", "Rabies": "狂犬病",
+    # ---- 梅毒 ----
+    "梅毒": "梅毒", "梅毒螺旋体": "梅毒", "梅毒抗体": "梅毒",
+    "Treponema pallidum": "梅毒", "Syphilis": "梅毒", "TP": "梅毒",
+    # ---- 艾滋病 ----
+    "艾滋病": "艾滋病", "获得性免疫缺陷综合征": "艾滋病", "艾滋病病毒": "艾滋病",
+    "AIDS": "艾滋病", "HIV": "艾滋病", "HIV抗体": "艾滋病",
+    "人类免疫缺陷病毒": "艾滋病", "Human Immunodeficiency Virus": "艾滋病",
+    # ---- 混合感染（归入主要疾病） ----
+    "巨细胞病毒和弓形虫混合感染": "巨细胞病毒感染",
+    "单纯疱疹病毒Ⅱ型和弓形虫混合感染": "单纯疱疹",
 }
 
 
 def normalize_disease(name: Optional[str]) -> Optional[str]:
-    """标准化疾病名称"""
+    """标准化疾病名称。
+
+    匹配优先级：
+      1. 精确匹配（大小写敏感）
+      2. 精确匹配（大小写不敏感）
+      3. 模糊匹配：name 包含某个 key（按 key 长度降序，选最长匹配）
+    """
     if not name:
         return None
     name = name.strip()
-    # 精确匹配
+    # 1. 精确匹配
     if name in DISEASE_MAP:
         return DISEASE_MAP[name]
-    # 模糊匹配：尝试在 key 中查找包含关系
+    # 2. 大小写不敏感精确匹配
     name_lower = name.lower()
     for key, value in DISEASE_MAP.items():
-        if key.lower() in name_lower or name_lower in key.lower():
+        if key.lower() == name_lower:
             return value
+    # 3. 模糊匹配：name 包含某个 key（按 key 长度降序，选最长匹配）
+    #    只检查 name 是否包含 key（单向），避免短缩写词误匹配
+    #    如 "CMV" 不会被 "MV" 误匹配为 "measles"
+    best_key = None
+    best_value = None
+    for key, value in DISEASE_MAP.items():
+        if len(key) >= 2 and key.lower() in name_lower:
+            if best_key is None or len(key) > len(best_key):
+                best_key = key
+                best_value = value
+    if best_value is not None:
+        return best_value
     # 保留原文
     return name
 

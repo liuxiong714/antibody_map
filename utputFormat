@@ -1,6 +1,0 @@
-HTTP/1.1 307 Temporary Redirect
-date: Tue, 21 Jul 2026 07:45:43 GMT
-server: uvicorn
-content-length: 0
-location: http://localhost:8000/api/v1/literatures
-

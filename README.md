@@ -45,7 +45,7 @@ PDF、CAJ、EPUB、DOCX、TXT、HTML（支持中文文献和外文文献）
 | **数据库** | PostgreSQL 15 |
 | **存储** | MinIO 对象存储 / 本地文件系统双模式 |
 | **AI/LLM** | OpenAI SDK 兼容协议，支持 DeepSeek / OpenAI / 通义千问 (Qwen) 多厂商 |
-| **PDF 处理** | PyMuPDF (fitz) + Tesseract OCR (中文支持) |
+| **PDF 处理** | PyMuPDF (fitz) + Tesseract OCR (中文, 自动探测安装路径) |
 | **运维** | Docker Compose (PostgreSQL + Redis + MinIO), start.sh 一键启动 |
 
 ## 项目结构
@@ -56,6 +56,8 @@ antibody_map01/
 ├── start.sh / stop.sh              # 一键启动 / 停止脚本
 ├── start.ps1 / stop.ps1            # Windows 一键启动 / 停止脚本
 ├── .env.example                    # 环境变量配置模板
+├── docs/                           # 文档
+│   └── tesseract_setup.md          # Tesseract OCR 部署配置指南
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                 # FastAPI 应用入口 (CORS, lifespan)
@@ -127,7 +129,7 @@ antibody_map01/
 - Python 3.10+
 - Node.js 18+ (推荐 20+)
 - Docker Desktop (Windows / macOS) 或 Docker & Docker Compose (Linux)
-- Tesseract OCR (可选，用于扫描版 PDF 的文字识别)
+- Tesseract OCR (可选，用于扫描版 PDF 的文字识别，安装与配置见 [docs/tesseract_setup.md](docs/tesseract_setup.md))
 
 ### Windows 一键部署（推荐）
 
@@ -396,7 +398,8 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | 变量 | 说明 | 默认值 |
 |------|------|------|
 | `CORS_ORIGINS` | 跨域白名单 (逗号分隔) | `localhost:3000,localhost:5173` |
-| `TESSERACT_CMD` | Tesseract 可执行文件路径 | `tesseract` |
+| `TESSERACT_CMD` | Tesseract 可执行文件路径 | 自动探测 (PATH + Windows 常见安装位置) |
+| `TESSERACT_DATA_DIR` | Tesseract 语言包 (tessdata) 目录 | 自动探测 (可执行文件同级 tessdata) |
 | `PDF_STORAGE` | PDF 存储模式 | `local` (或 `minio`) |
 
 ## 数据流
@@ -504,6 +507,24 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.4.0 (2026-08-04)
+
+#### 新功能
+
+- **扫描版文献 OCR 识别**：文字层缺失或损坏的扫描 PDF 自动触发 Tesseract OCR（中文 chi_sim + 英文 eng 双语言）识别；支持自动探测 Tesseract 安装位置与语言包目录，并新增 `TESSERACT_CMD` / `TESSERACT_DATA_DIR` 配置项，安装与配置详见 [docs/tesseract_setup.md](docs/tesseract_setup.md)。
+
+- **文献列表状态保持**：点击文献标题进入详情页再返回列表时，自动恢复上次的排序方式、筛选条件和页码，避免每次返回都重置到第一页。
+
+- **疾病名称标准化扩展**：`DISEASE_MAP` 补全梅毒、艾滋病及其英文别名（HIV、AIDS、Treponema pallidum、Syphilis 等），查询与入库统一复用标准化逻辑。
+
+#### 优化
+
+- 修复扫描版 PDF 中"文字层损坏但非空"导致的 OCR 兜底不触发问题（单页文本 < 100 字符即走 OCR）
+- 提取结果为空时状态标记为 `failed`（而非 `done`），避免无数据文献误判为提取成功
+- 修正文献上传测试断言（TXT 已受支持），后端测试增至 44 项全部通过
+- 文献详情页与列表页关键节点新增调试日志，便于排查状态恢复问题
+- Git 换行符统一为 LF（.gitattributes），前端构建产物与临时文件移出版本库（.gitignore）
 
 ### v1.3.0 (2026-08-03)
 

@@ -1,14 +1,18 @@
 import logging
 import io
+import os
+import shutil
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 try:
     import pytesseract
     from PIL import Image, ImageEnhance, ImageFilter
-    HAS_TESSERACT = True
+    HAS_PYTESSERACT = True
     PIL_IMAGE_TYPE = Image.Image
 except ImportError:
-    HAS_TESSERACT = False
+    pytesseract = None
+    HAS_PYTESSERACT = False
     PIL_IMAGE_TYPE = Any
 
 try:
@@ -16,6 +20,8 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+
+from app.config import settings
 
 logger = logging.getLogger("uvicorn")
 
@@ -28,6 +34,68 @@ LANGUAGE_MAP = {
     "de": "deu",
     "es": "spa",
 }
+
+
+def _resolve_tesseract_cmd() -> Optional[str]:
+    """解析 tesseract 可执行文件路径：配置 > PATH > Windows 常见安装位置"""
+    cmd = (settings.TESSERACT_CMD or "").strip()
+    if cmd:
+        if Path(cmd).exists() or shutil.which(cmd):
+            return cmd
+        logger.warning(f"配置的 TESSERACT_CMD 不可用，尝试自动探测: {cmd}")
+
+    found = shutil.which("tesseract")
+    if found:
+        return found
+
+    candidates = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        str(Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Tesseract-OCR" / "tesseract.exe"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _resolve_tessdata_dir() -> Optional[str]:
+    """解析 tessdata 目录：配置 > 可执行文件同目录下的 tessdata"""
+    data_dir = (settings.TESSERACT_DATA_DIR or "").strip()
+    if data_dir:
+        if Path(data_dir).is_dir():
+            return data_dir
+        logger.warning(f"配置的 TESSERACT_DATA_DIR 不存在: {data_dir}")
+
+    if TESSERACT_CMD_PATH:
+        candidate = Path(TESSERACT_CMD_PATH).parent / "tessdata"
+        if candidate.is_dir():
+            return str(candidate)
+    return None
+
+
+def _tessdata_config() -> str:
+    """生成 pytesseract 需要的 tessdata 配置参数"""
+    tessdata_dir = _resolve_tessdata_dir()
+    if tessdata_dir:
+        # 注意：pytesseract 在 Windows 上使用 shlex.split(config, posix=False)，
+        # 双引号会被原样保留进参数导致路径无效，因此这里不加引号。
+        # 含空格路径由 TESSDATA_PREFIX 环境变量兜底（见模块底部）。
+        return f"--tessdata-dir {tessdata_dir}"
+    return ""
+
+
+TESSERACT_CMD_PATH = _resolve_tesseract_cmd()
+if TESSERACT_CMD_PATH and HAS_PYTESSERACT:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD_PATH
+
+TESSDATA_DIR = _resolve_tessdata_dir()
+if TESSDATA_DIR:
+    # 环境变量被 tesseract 子进程继承，可绕过命令行引号问题（兼容含空格的路径）
+    os.environ.setdefault("TESSDATA_PREFIX", TESSDATA_DIR)
+
+# 仅当 pytesseract 可导入且 tesseract 可执行文件存在时才视为可用
+HAS_TESSERACT = HAS_PYTESSERACT and TESSERACT_CMD_PATH is not None
 
 
 def preprocess_image(image_bytes: bytes) -> PIL_IMAGE_TYPE:
@@ -54,12 +122,12 @@ def preprocess_image(image_bytes: bytes) -> PIL_IMAGE_TYPE:
 def ocr_tesseract(image_bytes: bytes, lang: str = "chi_sim+eng") -> Optional[str]:
     """使用 Tesseract 执行 OCR"""
     if not HAS_TESSERACT:
-        logger.warning("pytesseract 未安装，跳过 Tesseract OCR")
+        logger.warning("Tesseract OCR 不可用（pytesseract 或 tesseract 可执行文件缺失），跳过 Tesseract OCR")
         return None
 
     try:
         image = preprocess_image(image_bytes)
-        text = pytesseract.image_to_string(image, lang=lang)
+        text = pytesseract.image_to_string(image, lang=lang, config=_tessdata_config())
         result = text.strip()
         if result:
             logger.debug(f"Tesseract OCR 成功，提取 {len(result)} 字符")
@@ -196,9 +264,11 @@ def ocr_pdf_pages(page_images: list[bytes], lang: str = "zh",
     return None
 
 
-def get_ocr_status() -> Dict[str, bool]:
+def get_ocr_status() -> Dict[str, Any]:
     """获取 OCR 服务状态"""
     return {
         "tesseract_available": HAS_TESSERACT,
+        "tesseract_cmd": TESSERACT_CMD_PATH or "",
+        "tessdata_dir": _resolve_tessdata_dir() or "",
         "requests_available": HAS_REQUESTS,
     }

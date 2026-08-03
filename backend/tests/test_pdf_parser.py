@@ -28,7 +28,10 @@ class TestPdfParser:
         mock_doc.__getitem__.return_value = mock_page
         mock_fitz.open.return_value = mock_doc
 
-        result = extract_text(b"valid pdf bytes")
+        # 短文本页面（<100 字符）会走 OCR 兜底分支，mock OCR 返回 None
+        with patch("app.core.pdf_parser.ocr_pdf_pages", return_value=None) as mock_ocr:
+            result = extract_text(b"valid pdf bytes")
+            mock_ocr.assert_called_once()
 
         assert "广东省" in result
         assert "1245" in result
