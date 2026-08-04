@@ -209,6 +209,7 @@ export interface ImmuneBarrierData {
 export interface DataGapOverview {
   total_data_points: number;
   total_provinces: number;
+  total_cities: number;
   total_diseases: number;
   year_range: [number, number] | null;
   years: number[];
@@ -216,7 +217,11 @@ export interface DataGapOverview {
   approved_count: number;
   rejected_count: number;
   total_gap_combos: number;
+  combo_status_counts?: Record<string, number>;
+  well_covered_threshold?: number;
 }
+
+export type CoverageStatus = 'well_covered' | 'need_review' | 'need_supplement' | 'need_both';
 
 export interface ReviewNeededItem {
   province: string;
@@ -226,6 +231,20 @@ export interface ReviewNeededItem {
   approved_count: number;
   rejected_count: number;
   total_count: number;
+  completeness_score?: number;
+  status?: CoverageStatus;
+}
+
+export interface SupplementNeededItem {
+  province: string;
+  year: number | null;
+  disease: string;
+  pending_count: number;
+  approved_count: number;
+  rejected_count: number;
+  total_count: number;
+  completeness_score?: number;
+  status?: CoverageStatus;
 }
 
 export interface DataGapItem {
@@ -234,12 +253,16 @@ export interface DataGapItem {
   missing_provinces: string[];
   covered_count: number;
   missing_count: number;
+  /** 覆盖完整度 0-100，covered_count / 中国省份总数 × 100（P0+ 分析模块新增） */
+  coverage_percent?: number;
 }
 
 export interface ProvinceYearCell {
   total: number;
   pending: number;
   approved: number;
+  completeness_score?: number;
+  status?: CoverageStatus;
 }
 
 export interface ProvinceYearRow {
@@ -247,13 +270,29 @@ export interface ProvinceYearRow {
   years: Record<string, ProvinceYearCell>;
   total: number;
   pending: number;
+  approved?: number;
+  completeness_score?: number;
+  status?: CoverageStatus;
+}
+
+export interface CityYearRow {
+  province: string;
+  city: string;
+  years: Record<string, ProvinceYearCell>;
+  total: number;
+  pending: number;
+  approved?: number;
+  completeness_score?: number;
+  status?: CoverageStatus;
 }
 
 export interface DataGapAnalysisResult {
   overview: DataGapOverview;
   review_needed: ReviewNeededItem[];
+  supplement_needed: SupplementNeededItem[];
   data_gaps: DataGapItem[];
   province_year_matrix: ProvinceYearRow[];
+  city_year_matrix: CityYearRow[];
 }
 
 // ===== 文件夹监控 =====

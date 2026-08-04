@@ -41,6 +41,13 @@ class DataPoint(Base):
     source_char_start: Mapped[Optional[int]] = mapped_column(Integer)  # 在全文中的起始字符位置（0-based，含）
     source_char_end: Mapped[Optional[int]] = mapped_column(Integer)    # 在全文中的结束字符位置（0-based，不含）
     is_grounded: Mapped[bool] = mapped_column(Boolean, default=False)   # 是否在原文中成功找到对应片段
+    # P1-1：主估计/子估计层级（参考 SeroTracker）
+    # estimate_type: primary=主估计（如全省汇总），subgroup=子估计（如按年龄/地区/免疫史分组）
+    # parent_id: 子估计指向其主估计的 id；主估计该字段为 None
+    estimate_type: Mapped[str] = mapped_column(String(20), default="primary")
+    parent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("data_point.id", ondelete="SET NULL"), nullable=True
+    )
     confidence: Mapped[str] = mapped_column(String(10), default="medium")
     review_status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime] = mapped_column(
@@ -63,5 +70,9 @@ class DataPoint(Base):
         CheckConstraint(
             "review_status IN ('pending','approved','rejected')",
             name="dp_review_status_check",
+        ),
+        CheckConstraint(
+            "estimate_type IN ('primary','subgroup')",
+            name="dp_estimate_type_check",
         ),
     )

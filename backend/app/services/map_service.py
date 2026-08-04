@@ -94,8 +94,11 @@ async def get_province_data(
     gender: Optional[str] = None,
     occupation: Optional[str] = None,
 ) -> list[dict]:
-    """get province aggregated data (approved only)"""
-    base = select(DataPoint).where(DataPoint.review_status == "approved")
+    """get province aggregated data (approved only, P1-1: primary estimates by default)"""
+    base = select(DataPoint).where(
+        DataPoint.review_status == "approved",
+        DataPoint.estimate_type == "primary",
+    )
 
     if disease:
         base = base.where(DataPoint.disease == disease)
@@ -157,10 +160,11 @@ async def get_city_data(
     disease: Optional[str] = None,
     data_type: Optional[str] = None,
 ) -> list[dict]:
-    """get city-level aggregated data"""
+    """get city-level aggregated data (P1-1: primary estimates by default)"""
     base = (
         select(DataPoint)
         .where(DataPoint.review_status == "approved")
+        .where(DataPoint.estimate_type == "primary")
         .where(DataPoint.province.ilike(f"%{province}%"))
     )
     if disease:
@@ -203,8 +207,11 @@ async def get_summary(
     disease: Optional[str] = None,
     data_type: Optional[str] = None,
 ) -> dict:
-    """get national summary"""
-    base = select(DataPoint).where(DataPoint.review_status == "approved")
+    """get national summary (P1-1: primary estimates by default)"""
+    base = select(DataPoint).where(
+        DataPoint.review_status == "approved",
+        DataPoint.estimate_type == "primary",
+    )
     if disease:
         base = base.where(DataPoint.disease == disease)
     if data_type:
@@ -255,8 +262,11 @@ async def get_province_yearly_data(
     gender: Optional[str] = None,
     occupation: Optional[str] = None,
 ) -> list[dict]:
-    """按年份分组返回各省抗体水平数据，用于时间序列动态展示"""
-    base = select(DataPoint).where(DataPoint.review_status == "approved")
+    """按年份分组返回各省抗体水平数据，用于时间序列动态展示 (P1-1: primary estimates by default)"""
+    base = select(DataPoint).where(
+        DataPoint.review_status == "approved",
+        DataPoint.estimate_type == "primary",
+    )
 
     if disease:
         base = base.where(DataPoint.disease == disease)
@@ -326,9 +336,10 @@ async def get_available_years(
     db: AsyncSession,
     disease: Optional[str] = None,
 ) -> list[int]:
-    """获取可用的年份列表（去重排序）"""
+    """获取可用的年份列表（去重排序, P1-1: primary estimates by default）"""
     query = select(DataPoint.collection_year).where(
         DataPoint.review_status == "approved",
+        DataPoint.estimate_type == "primary",
         DataPoint.collection_year.isnot(None),
     )
     if disease:
@@ -337,3 +348,44 @@ async def get_available_years(
 
     result = await db.execute(query)
     return [v for v in result.scalars().all() if v]
+
+
+async def get_population_options(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+) -> list[str]:
+    """获取所有已审核数据点中出现的人群分类（population 字段）。
+
+    population 字段可能包含多个值（以分号分隔），这里拆分、去空白、去重、排序。
+    仅查询主估计（estimate_type='primary'）避免子组重复。
+    结果用于前端"全部职业"下拉框的动态选项。
+    """
+    query = select(DataPoint.population).where(
+        DataPoint.review_status == "approved",
+        DataPoint.estimate_type == "primary",
+        DataPoint.population.isnot(None),
+        DataPoint.population != "",
+    )
+    if disease:
+        query = query.where(DataPoint.disease == disease)
+
+    result = await db.execute(query)
+    raw_values = result.scalars().all()
+
+    # 拆分分号分隔的多个值，去空白、去重
+    seen: set[str] = set()
+    options: list[str] = []
+    for raw in raw_values:
+        if not raw:
+            continue
+        # 兼容中英文分号
+        parts = raw.replace("；", ";").split(";")
+        for p in parts:
+            p = p.strip()
+            if p and p not in seen:
+                seen.add(p)
+                options.append(p)
+
+    # 按拼音/字符排序（中文按 Unicode 排序）
+    options.sort()
+    return options

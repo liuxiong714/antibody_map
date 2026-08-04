@@ -28,9 +28,16 @@ WHO_THRESHOLDS = {
 
 
 def _build_base_query(disease, province, year_start, year_end, age_min, age_max,
-                      data_type=None, review_status="approved"):
-    """构建通用数据点查询"""
+                      data_type=None, review_status="approved", include_subgroups=False):
+    """构建通用数据点查询。
+
+    P1-1：默认只查主估计（estimate_type='primary'）避免重复计算，
+    传 include_subgroups=True 可包含子估计。
+    """
     query = select(DataPoint).where(DataPoint.review_status == review_status)
+    # P1-1：默认过滤主估计
+    if not include_subgroups:
+        query = query.where(DataPoint.estimate_type == "primary")
 
     if disease:
         # 标准化疾病名称，数据库中的 disease 字段已统一为标准 key
@@ -450,6 +457,70 @@ async def get_approved_data_points(
     return items, total
 
 
+async def get_approved_data_points_for_snapshot(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+    age_min: Optional[int] = None,
+    age_max: Optional[int] = None,
+    data_type: Optional[str] = None,
+    limit: int = 50000,
+) -> list[dict]:
+    """P2-1：获取审核通过的数据点（含文献元数据），用于公开数据集快照导出。
+
+    与 get_approved_data_points 的区别：
+    - 包含 estimate_type, source_page, is_grounded 字段
+    - 关联 Literature 表获取 title/pub_year/journal
+    - 不分页（一次性导出，limit 上限 50000 防止 OOM）
+    - 默认只导出主估计（include_subgroups=False）
+    """
+    query = _build_base_query(
+        disease, province, year_start, year_end, age_min, age_max, data_type,
+        review_status="approved", include_subgroups=False,
+    )
+    query = query.add_columns(
+        Literature.title, Literature.pub_year, Literature.journal
+    ).outerjoin(Literature, DataPoint.literature_id == Literature.id)
+    query = query.order_by(DataPoint.collection_year.desc().nullslast()).limit(limit)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    items = []
+    for r in rows:
+        dp = r[0]
+        lit_title = r[1]
+        lit_year = r[2]
+        lit_journal = r[3]
+        items.append({
+            "disease": dp.disease,
+            "province": dp.province,
+            "city": dp.city,
+            "data_type": dp.data_type,
+            "value": float(dp.value) if dp.value is not None else None,
+            "unit": dp.unit,
+            "ci_lower": float(dp.ci_lower) if dp.ci_lower is not None else None,
+            "ci_upper": float(dp.ci_upper) if dp.ci_upper is not None else None,
+            "sample_size": dp.sample_size,
+            "age_min": dp.age_min,
+            "age_max": dp.age_max,
+            "population": dp.population,
+            "collection_year": dp.collection_year,
+            "method": dp.method,
+            "assay": dp.assay,
+            "estimate_type": dp.estimate_type,
+            "confidence": dp.confidence,
+            "source_page": dp.source_page,
+            "is_grounded": bool(dp.is_grounded),
+            "literature_title": lit_title,
+            "literature_year": lit_year,
+            "literature_journal": lit_journal,
+        })
+    return items
+
+
 # 中国 34 省级行政区基准列表（用于检测数据缺失）
 CHINA_PROVINCES = [
     "北京", "天津", "河北", "山西", "内蒙古", "辽宁", "吉林", "黑龙江",
@@ -467,26 +538,73 @@ async def get_data_gap_analysis(
     db: AsyncSession,
     disease: Optional[str] = None,
 ) -> dict:
-    """数据覆盖度分析：统计各省份各年份的数据点分布，识别需要审核和补充的数据缺口。
+    """数据覆盖度分析：统计各省份/城市×各年份的数据点分布，识别需要审核和补充的数据缺口。
+
+    增强版（2026-08-05）：
+    - 新增城市（地区）维度统计
+    - 计算每个省×年和城市×年的**完整性评分**并按评分排序（高→低，完善的排在前面）
+    - 区分"需要审核"和"需要补充"两种情况
+    - 所有条目（包括已完善）都保留展示
 
     查询 ALL 数据点（含 pending/approved/rejected 全部状态），
-    返回 overview / review_needed / data_gaps / province_year_matrix。
+    返回 overview / review_needed / supplement_needed / data_gaps
+           / province_year_matrix / city_year_matrix。
     """
-    # 基础查询：全部数据点（不限 review_status）
+    # ---- 完整性评分常量 ----
+    # 已审核数据点 ≥ 这个阈值 → 该组合被认为"完善"
+    WELL_COVERED_THRESHOLD = 5
+    # 每个已审核数据点贡献多少分（满分 100）
+    MAX_APPROVED_SCORE = 70
+    # 待审核惩罚系数：每个 pending 扣 2 分（最多 30 分）
+    PENALTY_PER_PENDING = 2
+    MAX_PENDING_PENALTY = 30
+
+    def _calc_completeness(approved: int, pending: int, total_years: int) -> float:
+        """计算完整性评分（0-100）。
+
+        规则：
+        - 基础分：min(approved / WELL_COVERED_THRESHOLD, 1) × MAX_APPROVED_SCORE
+        - 待审核惩罚：min(pending × PENALTY_PER_PENDING, MAX_PENDING_PENALTY)
+        - 特殊：approved=0 且 pending=0 但该省有数据（被循环到）→ 0 分（需补充）
+        """
+        base = min(approved / WELL_COVERED_THRESHOLD, 1.0) * MAX_APPROVED_SCORE
+        penalty = min(pending * PENALTY_PER_PENDING, MAX_PENDING_PENALTY)
+        score = base - penalty
+        # 如果 total_years=0（该组合无任何年份数据）→ 0 分
+        if approved + pending == 0:
+            score = 0.0
+        return max(0.0, round(score, 2))
+
+    def _status_label(approved: int, pending: int) -> str:
+        """给省×年或城市×年组合打标签。"""
+        if approved == 0 and pending == 0:
+            return "need_supplement"   # 完全无数据，需要补充
+        if approved == 0:
+            return "need_review"        # 有待审核但还没通过，需要先审核
+        if approved < WELL_COVERED_THRESHOLD:
+            if pending > 0:
+                return "need_both"       # 数据不足 + 有待审核
+            return "need_supplement"     # 数据不足，需要补充
+        if pending > 0:
+            return "need_review"        # 已达标但仍有待审核
+        return "well_covered"            # 完善
+
+    # 基础查询：全部数据点（不限 review_status），同时取 city
     query = select(
         DataPoint.province,
+        DataPoint.city,
         DataPoint.collection_year,
         DataPoint.disease,
         DataPoint.review_status,
         func.count(DataPoint.id).label("cnt"),
     ).group_by(
         DataPoint.province,
+        DataPoint.city,
         DataPoint.collection_year,
         DataPoint.disease,
         DataPoint.review_status,
     )
     if disease:
-        # 标准化查询参数，数据库中的 disease 字段已统一为标准 key
         normalized_disease = normalize_disease(disease)
         query = query.where(DataPoint.disease == normalized_disease)
 
@@ -495,9 +613,10 @@ async def get_data_gap_analysis(
 
     # ---- 1. 总览统计 ----
     total_dp = sum(r.cnt for r in rows)
-    all_provinces = set()
-    all_diseases = set()
-    all_years = set()
+    all_provinces: set[str] = set()
+    all_cities: set[str] = set()
+    all_diseases: set[str] = set()
+    all_years: set[int] = set()
     status_counts = {"pending": 0, "approved": 0, "rejected": 0}
     for r in rows:
         if r.province:
@@ -505,8 +624,12 @@ async def get_data_gap_analysis(
                 p = p.strip()
                 if p:
                     all_provinces.add(p)
+        if r.city:
+            for c in r.city.replace("；", ";").split(";"):
+                c = c.strip()
+                if c:
+                    all_cities.add(c)
         if r.disease:
-            # 使用标准化名称统计
             all_diseases.add(normalize_disease(r.disease))
         if r.collection_year:
             all_years.add(r.collection_year)
@@ -515,8 +638,7 @@ async def get_data_gap_analysis(
 
     year_list = sorted(y for y in all_years if y is not None) if all_years else []
 
-    # ---- 2. 需要审核的数据点（pending > 0 的 province+year+disease 组合）----
-    # 聚合: province, year, disease -> {pending: N, approved: N, rejected: N}
+    # ---- 2. 需要审核 / 需要补充的组合（省×年×疾病 细粒度）----
     pyd_map: dict[tuple, dict] = {}
     for r in rows:
         if not r.province:
@@ -524,8 +646,7 @@ async def get_data_gap_analysis(
         prov = r.province.split(";")[0].strip()
         if not prov:
             continue
-        # 使用标准化疾病名称作为 key
-        normalized_dis = normalize_disease(r.disease) if r.disease else r.disease
+        normalized_dis = normalize_disease(r.disease) if r.disease else (r.disease or "未知")
         key = (prov, r.collection_year, normalized_dis)
         if key not in pyd_map:
             pyd_map[key] = {"pending": 0, "approved": 0, "rejected": 0, "total": 0}
@@ -533,27 +654,36 @@ async def get_data_gap_analysis(
             pyd_map[key][r.review_status] += r.cnt
         pyd_map[key]["total"] += r.cnt
 
-    review_needed = []
+    review_needed: list[dict] = []
+    supplement_needed: list[dict] = []
     for (prov, year, dis), counts in pyd_map.items():
-        if counts["pending"] > 0:
-            review_needed.append({
-                "province": prov,
-                "year": year,
-                "disease": dis or "未知",
-                "pending_count": counts["pending"],
-                "approved_count": counts["approved"],
-                "rejected_count": counts["rejected"],
-                "total_count": counts["total"],
-            })
-    review_needed.sort(key=lambda x: x["pending_count"], reverse=True)
+        status = _status_label(counts["approved"], counts["pending"])
+        base_item = {
+            "province": prov,
+            "year": year,
+            "disease": dis,
+            "pending_count": counts["pending"],
+            "approved_count": counts["approved"],
+            "rejected_count": counts["rejected"],
+            "total_count": counts["total"],
+            "completeness_score": _calc_completeness(counts["approved"], counts["pending"], len(year_list)),
+            "status": status,
+        }
+        if status in ("need_review", "need_both"):
+            review_needed.append(base_item)
+        if status in ("need_supplement", "need_both"):
+            supplement_needed.append(base_item)
+
+    # review_needed: 按 pending_count 降序（待审越多越紧急）
+    review_needed.sort(key=lambda x: (-x["pending_count"], -x["completeness_score"]))
+    # supplement_needed: 按 approved 升序（approved=0 的排在最前），再按 pending 升序
+    supplement_needed.sort(key=lambda x: (x["approved_count"], x["pending_count"], -x["total_count"]))
 
     # ---- 3. 数据缺失分析（按疾病分组，找出完全没有数据的省份）----
-    # disease -> set of provinces that have data
     disease_provinces: dict[str, set[str]] = {}
     for r in rows:
         if not r.disease or not r.province:
             continue
-        # 使用标准化疾病名称进行分组
         normalized_dis = normalize_disease(r.disease)
         if normalized_dis not in disease_provinces:
             disease_provinces[normalized_dis] = set()
@@ -562,24 +692,32 @@ async def get_data_gap_analysis(
             if p:
                 disease_provinces[normalized_dis].add(p)
 
-    data_gaps = []
-    for dis, provs in disease_provinces.items():
+    data_gaps: list[dict] = []
+    # 对 all_diseases（包含在 disease_provinces 中以及全部）都生成条目，
+    # 保证数据"完全完整的疾病"（如麻疹）也能显示，方便用户一目了然。
+    for dis in sorted(all_diseases):
+        provs = disease_provinces.get(dis, set())
         missing = [p for p in CHINA_PROVINCES if p not in provs]
-        if missing:
-            data_gaps.append({
-                "disease": dis,
-                "covered_provinces": sorted(provs),
-                "missing_provinces": missing,
-                "covered_count": len(provs),
-                "missing_count": len(missing),
-            })
-    data_gaps.sort(key=lambda x: x["missing_count"], reverse=True)
-
+        if len(missing) == 0:
+            # 完全覆盖 CHINA_PROVINCES → 直接记 100%
+            coverage = 100.0
+        else:
+            denom = max(len(CHINA_PROVINCES), 1)
+            coverage = round(len(provs) / denom * 100, 2)
+        data_gaps.append({
+            "disease": dis,
+            "covered_provinces": sorted(provs),
+            "missing_provinces": missing,
+            "covered_count": len(provs),
+            "missing_count": len(missing),
+            "coverage_percent": min(coverage, 100.0),
+        })
+    # 越完善（缺失越少）越排在前面；缺失相同时覆盖省数越多越前，再按疾病名稳定排序
+    data_gaps.sort(key=lambda x: (x["missing_count"], -x["covered_count"], x["disease"]))
     total_gap_combos = sum(g["missing_count"] for g in data_gaps)
 
-    # ---- 4. 省份×年份矩阵 ----
-    # province -> year -> {total, pending, approved}
-    matrix_map: dict[str, dict[int, dict]] = {}
+    # ---- 4. 省份×年份矩阵（带完整性评分，按完整性降序）----
+    py_matrix_map: dict[str, dict[int, dict]] = {}
     for r in rows:
         if not r.province:
             continue
@@ -587,31 +725,107 @@ async def get_data_gap_analysis(
         if not prov:
             continue
         year = r.collection_year
-        if prov not in matrix_map:
-            matrix_map[prov] = {}
-        if year not in matrix_map[prov]:
-            matrix_map[prov][year] = {"total": 0, "pending": 0, "approved": 0}
-        matrix_map[prov][year]["total"] += r.cnt
+        if prov not in py_matrix_map:
+            py_matrix_map[prov] = {}
+        if year not in py_matrix_map[prov]:
+            py_matrix_map[prov][year] = {"total": 0, "pending": 0, "approved": 0}
+        py_matrix_map[prov][year]["total"] += r.cnt
         if r.review_status == "pending":
-            matrix_map[prov][year]["pending"] += r.cnt
+            py_matrix_map[prov][year]["pending"] += r.cnt
         elif r.review_status == "approved":
-            matrix_map[prov][year]["approved"] += r.cnt
+            py_matrix_map[prov][year]["approved"] += r.cnt
 
-    province_year_matrix = []
-    for prov in sorted(matrix_map.keys()):
-        year_data = matrix_map[prov]
+    province_year_matrix: list[dict] = []
+    for prov, year_data in py_matrix_map.items():
         total_for_prov = sum(yd["total"] for yd in year_data.values())
         pending_for_prov = sum(yd["pending"] for yd in year_data.values())
+        approved_for_prov = sum(yd["approved"] for yd in year_data.values())
+        # 为每个年份单元格追加 completeness_score 和 status
+        years_formatted: dict[str, dict] = {}
+        for y in sorted(y for y in year_data.keys() if y is not None):
+            cell = year_data[y]
+            years_formatted[str(y)] = {
+                **cell,
+                "completeness_score": _calc_completeness(cell["approved"], cell["pending"], len(year_list)),
+                "status": _status_label(cell["approved"], cell["pending"]),
+            }
+        # 省份整体完整性评分（所有年份的加权）
+        overall_score = _calc_completeness(approved_for_prov, pending_for_prov, len(year_list))
+        overall_status = _status_label(approved_for_prov, pending_for_prov)
         province_year_matrix.append({
             "province": prov,
-            "years": {str(y): year_data[y] for y in sorted(y for y in year_data.keys() if y is not None)},
+            "years": years_formatted,
             "total": total_for_prov,
             "pending": pending_for_prov,
+            "approved": approved_for_prov,
+            "completeness_score": overall_score,
+            "status": overall_status,
         })
+
+    # 按完整性评分降序（完善的排在前面），评分相同按 total 降序
+    province_year_matrix.sort(key=lambda x: (-x["completeness_score"], -x["total"]))
+
+    # ---- 5. 城市×年份矩阵（新增地区维度）----
+    cy_matrix_map: dict[tuple[str, str], dict[int, dict]] = {}
+    for r in rows:
+        if not r.province or not r.city:
+            continue
+        prov = r.province.split(";")[0].strip()
+        city = r.city.replace("；", ";").split(";")[0].strip()
+        if not prov or not city:
+            continue
+        year = r.collection_year
+        key = (prov, city)
+        if key not in cy_matrix_map:
+            cy_matrix_map[key] = {}
+        if year not in cy_matrix_map[key]:
+            cy_matrix_map[key][year] = {"total": 0, "pending": 0, "approved": 0}
+        cy_matrix_map[key][year]["total"] += r.cnt
+        if r.review_status == "pending":
+            cy_matrix_map[key][year]["pending"] += r.cnt
+        elif r.review_status == "approved":
+            cy_matrix_map[key][year]["approved"] += r.cnt
+
+    city_year_matrix: list[dict] = []
+    for (prov, city), year_data in cy_matrix_map.items():
+        total_city = sum(yd["total"] for yd in year_data.values())
+        pending_city = sum(yd["pending"] for yd in year_data.values())
+        approved_city = sum(yd["approved"] for yd in year_data.values())
+        years_formatted: dict[str, dict] = {}
+        for y in sorted(y for y in year_data.keys() if y is not None):
+            cell = year_data[y]
+            years_formatted[str(y)] = {
+                **cell,
+                "completeness_score": _calc_completeness(cell["approved"], cell["pending"], len(year_list)),
+                "status": _status_label(cell["approved"], cell["pending"]),
+            }
+        overall_score = _calc_completeness(approved_city, pending_city, len(year_list))
+        overall_status = _status_label(approved_city, pending_city)
+        city_year_matrix.append({
+            "province": prov,
+            "city": city,
+            "years": years_formatted,
+            "total": total_city,
+            "pending": pending_city,
+            "approved": approved_city,
+            "completeness_score": overall_score,
+            "status": overall_status,
+        })
+
+    # 城市矩阵同样按完整性降序
+    city_year_matrix.sort(key=lambda x: (-x["completeness_score"], -x["total"]))
+
+    # ---- 6. 概览统计（附加）----
+    # 统计"完善"、"待审核"、"需补充"的省×年组合数
+    status_counts_combos = {"well_covered": 0, "need_review": 0, "need_supplement": 0, "need_both": 0}
+    for row in province_year_matrix:
+        for cell in row["years"].values():
+            status_counts_combos[cell["status"]] = status_counts_combos.get(cell["status"], 0) + 1
 
     overview = {
         "total_data_points": total_dp,
         "total_provinces": len(all_provinces),
+        "total_cities": len(all_cities),
         "total_diseases": len(all_diseases),
         "year_range": [year_list[0], year_list[-1]] if year_list else None,
         "years": year_list,
@@ -619,11 +833,690 @@ async def get_data_gap_analysis(
         "approved_count": status_counts["approved"],
         "rejected_count": status_counts["rejected"],
         "total_gap_combos": total_gap_combos,
+        # 新增：组合状态统计
+        "combo_status_counts": status_counts_combos,
+        # 新增：阈值说明
+        "well_covered_threshold": WELL_COVERED_THRESHOLD,
     }
 
     return {
         "overview": overview,
         "review_needed": review_needed,
+        "supplement_needed": supplement_needed,
         "data_gaps": data_gaps,
         "province_year_matrix": province_year_matrix,
+        "city_year_matrix": city_year_matrix,
     }
+
+
+# ============================================================
+# P0: FOI（感染力 Force of Infection）+ 群体免疫阈值分析
+# 纯分析逻辑，不新增数据库字段，数据全部来自已审核的 seroprevalence 数据点
+# ============================================================
+
+# ---- 流行病学参数 ----
+# 平均寿命（年），用于 R0 = λ × L（Catalitic 模型近似）
+DEFAULT_LIFE_EXPECTANCY = 75.0
+
+# 按疾病预设的参考 R0（Anderson & May 经典值 + 文献典型范围）
+# 用于计算 HIT = 1 - 1/R0，并作为 FOI 合理性校验的先验
+R0_REFERENCE: dict[str, tuple[float, float]] = {
+    # disease: (R0_typical, R0_range_low..high)
+    "measles":     (15.0, 12.0, 18.0),   # 麻疹：极强传染性
+    "mumps":        (5.5,  4.0,  7.0),   # 腮腺炎
+    "rubella":      (6.0,  5.0,  7.0),   # 风疹
+    "pertussis":   (15.0, 12.0, 17.0),   # 百日咳
+    "diphtheria":   (6.5,  4.0,  8.0),   # 白喉
+    "polio":        (5.0,  4.0,  6.0),   # 脊髓灰质炎
+    "smallpox":     (5.0,  3.5,  6.0),   # 天花（参考）
+    "hepatitis_b":  (4.0,  2.0,  6.0),   # 乙肝
+    "hepatitis_a":  (3.5,  2.0,  5.0),   # 甲肝
+    "varicella":    (6.5,  5.0,  9.0),   # 水痘
+    "influenza":    (2.5,  1.4,  3.5),   # 季节性流感
+    "covid19":      (3.0,  2.0,  5.0),   # 新冠（原始株）
+    "meningitis":   (1.5,  1.1,  2.0),   # 流脑
+    "hfmd":         (3.0,  2.0,  4.5),   # 手足口
+    "rotavirus":    (3.0,  2.0,  4.0),   # 轮状病毒
+}
+
+
+def _calc_foi_from_sp(seroprevalence: float, age_mid: float) -> Optional[float]:
+    """催化模型（Catalitic Model）：SP(a) = 1 - e^(-λ a) → λ = -ln(1 - SP) / a
+
+    边界处理：
+    - SP = 0 → λ = 0
+    - SP ≥ 1 → 返回 None（数学上 ln(0) 无解，视为超饱和）
+    - age_mid ≤ 0 → 返回 None（分母无效）
+    """
+    if seroprevalence <= 0 or age_mid <= 0:
+        return 0.0 if seroprevalence <= 0 else None
+    sp_clamped = min(seroprevalence / 100.0, 0.9999)  # 转成比例（0-1），避免 -ln(0)
+    if sp_clamped <= 0:
+        return 0.0
+    import math
+    foi = -math.log(1.0 - sp_clamped) / age_mid
+    return round(foi, 6)
+
+
+def _midpoint_age(age_min: Optional[int], age_max: Optional[int]) -> Optional[float]:
+    """计算年龄组中点年龄，用于催化模型 FOI 估算。
+
+    - 区间 [a, b] → (a + b) / 2
+    - 只有 age_min → age_min + 2.5（经验半宽）
+    - 只有 age_max → age_max / 2
+    - 都没有 → None
+    """
+    if age_min is not None and age_max is not None:
+        if age_min < 0 or age_max < age_min:
+            return None
+        return (age_min + age_max) / 2.0
+    if age_min is not None:
+        return float(age_min) + 2.5
+    if age_max is not None:
+        return age_max / 2.0
+    return None
+
+
+def _calc_hit_from_r0(r0: float) -> float:
+    """群体免疫阈值 HIT = 1 - 1/R0，转成百分比（0-100）。"""
+    if r0 is None or r0 <= 1.0:
+        return 0.0
+    return round((1.0 - 1.0 / r0) * 100.0, 2)
+
+
+def _calc_r0_from_foi(foi_avg: float, life_exp: float = DEFAULT_LIFE_EXPECTANCY) -> Optional[float]:
+    """从平均 FOI 反推 R0 ≈ λ × L（Catalitic 模型：λ ≈ R0 / L → R0 ≈ λ·L）。
+
+    仅对地方性疾病（地方性儿童期感染）合理；
+    新冠/流感等非终身免疫疾病此公式有偏差，结果会在注释中标记。
+    """
+    if foi_avg is None or foi_avg <= 0:
+        return None
+    return round(foi_avg * life_exp, 3)
+
+
+async def get_foi_analysis(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+) -> dict:
+    """P0-1: FOI（感染力）+ 群体免疫阈值综合分析。
+
+    纯分析逻辑（无 DB 变更），输入：已审核通过的 seroprevalence 数据点。
+    步骤：
+      1. 按疾病聚合（如 disease=None 则按疾病逐一计算）
+      2. 对每个年龄组，用催化模型 λ = -ln(1-SP)/age 估算 FOI
+      3. 计算加权平均 FOI（按 sample_size 加权）
+      4. 反推 R0 估计值：R0 ≈ λ × L
+      5. 计算 HIT：HIT = 1 - 1/R0，并与 WHO 阈值对比
+      6. 按省份 × 疾病输出 FOI 热力矩阵
+    """
+    # 仅取已审核通过的 seroprevalence 主估计数据点（含 sample_size + 可计算年龄中点）
+    query = _build_base_query(
+        disease, province, year_start, year_end,
+        age_min=None, age_max=None,
+        data_type="seroprevalence",
+        review_status="approved",
+        include_subgroups=False,
+    )
+    result = await db.execute(query)
+    rows: list[DataPoint] = result.scalars().all()
+
+    if not rows:
+        return {
+            "disease": disease,
+            "total_data_points": 0,
+            "foi_by_age_group": [],
+            "summary": {
+                "weighted_avg_foi": None,
+                "estimated_r0": None,
+                "r0_reference": None,
+                "foi_hit_percent": None,
+                "who_threshold": None,
+                "herd_immunity_status": "no_data",
+            },
+            "province_foi_matrix": [],
+            "notes": ["无已审核通过的 seroprevalence 数据，无法进行 FOI 分析"],
+        }
+
+    # 按疾病分组（若传了 disease 则只有一个组）
+    disease_rows: dict[str, list[DataPoint]] = {}
+    for r in rows:
+        dis = r.disease or "未知"
+        normalized = normalize_disease(dis)
+        dis_key = normalized or dis
+        if dis_key not in disease_rows:
+            disease_rows[dis_key] = []
+        disease_rows[dis_key].append(r)
+
+    per_disease_results: list[dict] = []
+    province_foi_matrix: list[dict] = []
+    notes: list[str] = []
+
+    for dis_key, dis_rows in disease_rows.items():
+        # --- 1) FOI 按年龄组汇总 ---
+        # 聚合到 AGE_GROUPS 的 5 个标准桶
+        age_buckets: dict[str, dict] = {g[0]: {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []} for g in AGE_GROUPS}
+        age_buckets["其他"] = {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []}
+
+        for r in dis_rows:
+            if r.value is None:
+                continue
+            sp = float(r.value)
+            ss = r.sample_size or 0
+            label = _get_age_group_label(r.age_min, r.age_max)
+            if label is None:
+                label = "其他"
+            if label not in age_buckets:
+                age_buckets[label] = {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []}
+
+            age_mid = _midpoint_age(r.age_min, r.age_max)
+            foi = _calc_foi_from_sp(sp, age_mid) if age_mid is not None else None
+
+            bucket = age_buckets[label]
+            if ss and ss > 0:
+                bucket["sp_sum"] += sp * ss
+                bucket["sample_sum"] += ss
+            bucket["dp_count"] += 1
+            if foi is not None:
+                bucket["foi_values"].append((foi, ss or 1))  # (值, 权重)
+
+        foi_by_age: list[dict] = []
+        # 标准 5 个年龄组
+        for age_label, lo, hi in AGE_GROUPS:
+            bucket = age_buckets[age_label]
+            if bucket["dp_count"] == 0:
+                continue
+            w_sp = round(bucket["sp_sum"] / bucket["sample_sum"], 2) if bucket["sample_sum"] > 0 else None
+            if bucket["foi_values"]:
+                fv_total_w = sum(w for _, w in bucket["foi_values"])
+                w_foi = round(sum(v * w for v, w in bucket["foi_values"]) / fv_total_w, 6) if fv_total_w > 0 else None
+            else:
+                w_foi = None
+            foi_by_age.append({
+                "age_group": age_label,
+                "age_mid_approx": (lo + hi) / 2.0,
+                "data_point_count": bucket["dp_count"],
+                "total_samples": bucket["sample_sum"],
+                "weighted_positivity_rate": w_sp,
+                "weighted_avg_foi_per_year": w_foi,
+            })
+        # 追加"其他"桶（标准年龄组之外的数据），避免数据被丢弃
+        other_bucket = age_buckets.get("其他")
+        if other_bucket and other_bucket["dp_count"] > 0:
+            w_sp = round(other_bucket["sp_sum"] / other_bucket["sample_sum"], 2) if other_bucket["sample_sum"] > 0 else None
+            if other_bucket["foi_values"]:
+                fv_total_w = sum(w for _, w in other_bucket["foi_values"])
+                w_foi = round(sum(v * w for v, w in other_bucket["foi_values"]) / fv_total_w, 6) if fv_total_w > 0 else None
+            else:
+                w_foi = None
+            foi_by_age.append({
+                "age_group": "其他",
+                "age_mid_approx": 30.0,  # 经验中位年龄
+                "data_point_count": other_bucket["dp_count"],
+                "total_samples": other_bucket["sample_sum"],
+                "weighted_positivity_rate": w_sp,
+                "weighted_avg_foi_per_year": w_foi,
+            })
+
+        # --- 2) 全年龄段加权平均 FOI ---
+        # 取每个年龄组的 foi 汇总到整体
+        all_foi_tuples: list[tuple[float, int]] = []
+        for f in foi_by_age:
+            if f["weighted_avg_foi_per_year"] is not None and f["total_samples"] > 0:
+                all_foi_tuples.append((f["weighted_avg_foi_per_year"], f["total_samples"]))
+        if all_foi_tuples:
+            w_total = sum(w for _, w in all_foi_tuples)
+            weighted_avg_foi = round(
+                sum(v * w for v, w in all_foi_tuples) / w_total, 6
+            ) if w_total > 0 else None
+        else:
+            weighted_avg_foi = None
+
+        # --- 3) R0 估计：R0 ≈ λ·L（催化模型）+ 文献参考 ---
+        estimated_r0 = _calc_r0_from_foi(weighted_avg_foi) if weighted_avg_foi is not None else None
+        r0_ref = R0_REFERENCE.get(dis_key)  # (typical, low, high)
+
+        # 如果 FOI 推出来的 R0 严重超出文献范围，给出 note
+        if r0_ref and estimated_r0 is not None:
+            typical, rlow, rhigh = r0_ref
+            if estimated_r0 < rlow * 0.3:
+                notes.append(f"[{dis_key}] 基于 FOI 的 R0 估计（{estimated_r0}）显著低于文献参考区间 [{rlow}, {rhigh}]，可能是 SP 偏低或年龄覆盖不全。")
+            elif estimated_r0 > rhigh * 2:
+                notes.append(f"[{dis_key}] 基于 FOI 的 R0 估计（{estimated_r0}）显著高于文献参考区间 [{rlow}, {rhigh}]，可能受年龄分组偏差影响。")
+
+        # --- 4) HIT（群体免疫阈值）两种估计 ---
+        # 方案 A：FOI → R0 → HIT
+        foi_hit_percent = _calc_hit_from_r0(estimated_r0) if estimated_r0 is not None else None
+        # 方案 B：文献 R0（typical）→ HIT
+        reference_hit = _calc_hit_from_r0(r0_ref[0]) if r0_ref else None
+        who_threshold = WHO_THRESHOLDS.get(dis_key)
+
+        # --- 5) 群体免疫状态判定 ---
+        # 用加权平均 SP 与 HIT（优先 FOI 估计，否则参考 WHO）对比
+        overall_sp = None
+        sp_valid = [(r.value, r.sample_size or 1) for r in dis_rows if r.value is not None]
+        if sp_valid:
+            w_sum = sum(w for _, w in sp_valid)
+            overall_sp = round(sum(v * w for v, w in sp_valid) / w_sum, 2) if w_sum > 0 else None
+
+        hit_target = foi_hit_percent or who_threshold or reference_hit
+        if overall_sp is not None and hit_target is not None:
+            if overall_sp >= hit_target:
+                herd_status = "reached"        # 已达群体免疫
+            elif overall_sp >= hit_target - 10:
+                herd_status = "near"           # 接近
+            else:
+                herd_status = "not_reached"    # 未达到
+        else:
+            herd_status = "undetermined"
+
+        # --- 6) 省份 × 疾病 FOI 矩阵 ---
+        prov_map: dict[str, dict] = {}
+        for r in dis_rows:
+            if r.value is None:
+                continue
+            prov_raw = r.province or "未知"
+            for p in prov_raw.split(";"):
+                p = p.strip()
+                if not p:
+                    p = "未知"
+                if p not in prov_map:
+                    prov_map[p] = {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []}
+                pm = prov_map[p]
+                sp = float(r.value)
+                ss = r.sample_size or 0
+                if ss and ss > 0:
+                    pm["sp_sum"] += sp * ss
+                    pm["sample_sum"] += ss
+                pm["dp_count"] += 1
+                age_mid = _midpoint_age(r.age_min, r.age_max)
+                foi = _calc_foi_from_sp(sp, age_mid) if age_mid is not None else None
+                if foi is not None:
+                    pm["foi_values"].append((foi, ss or 1))
+
+        for prov_name, pm in prov_map.items():
+            if pm["dp_count"] == 0:
+                continue
+            w_sp = round(pm["sp_sum"] / pm["sample_sum"], 2) if pm["sample_sum"] > 0 else None
+            if pm["foi_values"]:
+                fw = sum(w for _, w in pm["foi_values"])
+                prov_foi = round(sum(v * w for v, w in pm["foi_values"]) / fw, 6) if fw > 0 else None
+            else:
+                prov_foi = None
+            # 省域 HIT 达标判定
+            p_hit = "undetermined"
+            if w_sp is not None and hit_target is not None:
+                if w_sp >= hit_target:
+                    p_hit = "reached"
+                elif w_sp >= hit_target - 10:
+                    p_hit = "near"
+                else:
+                    p_hit = "not_reached"
+            province_foi_matrix.append({
+                "disease": dis_key,
+                "province": prov_name,
+                "data_point_count": pm["dp_count"],
+                "total_samples": pm["sample_sum"],
+                "weighted_positivity_rate": w_sp,
+                "weighted_avg_foi_per_year": prov_foi,
+                "herd_immunity_status": p_hit,
+                "hit_target_percent": hit_target,
+            })
+
+        summary_block = {
+            "disease": dis_key,
+            "total_data_points": len(dis_rows),
+            "overall_weighted_positivity_rate": overall_sp,
+            "weighted_avg_foi_per_year": weighted_avg_foi,
+            "estimated_r0_from_foi": estimated_r0,
+            "r0_reference": {
+                "typical": r0_ref[0] if r0_ref else None,
+                "range_low": r0_ref[1] if r0_ref else None,
+                "range_high": r0_ref[2] if r0_ref else None,
+            },
+            "hit_from_foi_percent": foi_hit_percent,
+            "hit_from_reference_r0_percent": reference_hit,
+            "who_threshold_percent": who_threshold,
+            "hit_target_used_percent": hit_target,
+            "herd_immunity_status": herd_status,
+            "life_expectancy_used": DEFAULT_LIFE_EXPECTANCY,
+        }
+
+        per_disease_results.append({
+            "disease": dis_key,
+            "summary": summary_block,
+            "foi_by_age_group": foi_by_age,
+        })
+
+    # 如果只传了一个疾病，把 summary 提升到顶层
+    top_disease_summary = per_disease_results[0]["summary"] if len(per_disease_results) == 1 else None
+
+    return {
+        "disease": disease,
+        "total_data_points": len(rows),
+        "per_disease_results": per_disease_results,
+        "summary": top_disease_summary or {
+            "num_diseases_analyzed": len(per_disease_results),
+            "diseases": sorted(disease_rows.keys()),
+        },
+        "province_foi_matrix": province_foi_matrix,
+        "notes": notes if notes else [],
+    }
+
+
+# ============================================================
+# P1: 疫苗效果 (VE / Vaccine Effectiveness) + 接种率 (Coverage) 分析
+# 策略：
+#   1. 不新增 DB 字段，数据来自已有的 seroprevalence 数据点（人群标签）
+#   2. 若 population 字段包含"已接种"/"未接种"/"接种过"/"无免疫史"等关键字，
+#      则按接种状态拆分，计算 VE = 1 - (SP_vax / SP_unvax)
+#   3. 若没有分亚组数据，提供接种率推算（screening method）需要的组件
+#      以及参考接种率（按疾病-省份，默认查 NIP 覆盖预设表）
+# ============================================================
+
+# ---- 国家免疫规划 (NIP) 典型接种率（按疾病，参考 2020-2024 年 CDC/WHO 报告）
+# 单位：%，值为全国估计平均值
+NIP_COVERAGE_REFERENCE: dict[str, dict[str, float]] = {
+    # disease: {province: coverage_percent, "__national__": fallback}
+    "measles": {
+        "__national__": 95.0,
+        "北京": 97.0, "上海": 97.5, "江苏": 96.5, "浙江": 96.0, "广东": 95.5,
+        "河南": 94.5, "山东": 95.5, "河北": 94.0, "四川": 93.5, "湖北": 94.0,
+    },
+    "mumps": {"__national__": 90.0},
+    "rubella": {"__national__": 92.0},
+    "pertussis": {"__national__": 95.0},
+    "diphtheria": {"__national__": 95.0},
+    "polio": {"__national__": 96.0},
+    "hepatitis_b": {"__national__": 95.0},
+    "hepatitis_a": {"__national__": 70.0},  # 非强制，部分省
+    "varicella": {"__national__": 55.0},    # 二类苗
+    "influenza": {"__national__": 3.5},     # 成人低覆盖
+    "covid19": {"__national__": 89.0},
+    "meningitis": {"__national__": 75.0},
+    "hfmd": {"__national__": 35.0},         # EV71 疫苗
+    "rotavirus": {"__national__": 30.0},    # 口服轮状
+}
+
+
+def _split_vax_unvax(rows: list) -> tuple[list, list]:
+    """根据 DataPoint.population 中的关键词，拆分为「已接种组」和「未接种组」。
+
+    识别关键词：
+    - 已接种: 已接种、接种过、疫苗接种、免疫史阳性、vaccinated、immunized
+    - 未接种: 未接种、无免疫史、未免疫、未接种疫苗、unvaccinated、naive
+
+    未命中关键词的数据点返回在 unclassified 列表（不参与 VE 计算但仍统计）。
+    """
+    _VAXXED_KW = ("已接种", "接种过", "疫苗接种", "免疫史阳性", "vaccinated", "immunized",
+                  "全程接种", "完成接种", "≥1剂", "1剂及以上")
+    _UNVAXXED_KW = ("未接种", "无免疫史", "未免疫", "未接种疫苗", "unvaccinated", "naive",
+                    "接种史阴性", "未注射疫苗")
+    # 拆分中英文关键词：中文是独立词，英文可能相互包含（unvaccinated ⊃ vaccinated）
+    _zh_vax = tuple(k for k in _VAXXED_KW if not all(ord(c) < 128 for c in k))
+    _zh_unvax = tuple(k for k in _UNVAXXED_KW if not all(ord(c) < 128 for c in k))
+
+    vaxxed, unvaxxed = [], []
+    for r in rows:
+        pop_orig = getattr(r, "population", None) or ""
+        pop = pop_orig.lower()
+        dis_name = getattr(r, "disease", None) or ""
+        kw_str = f"{pop} {dis_name}"
+
+        # 中文关键词冲突检测：若同时出现「已接种类」和「未接种类」→ 不分类
+        zh_v = any(k in pop_orig for k in _zh_vax)
+        zh_u = any(k in pop_orig for k in _zh_unvax)
+        if zh_v and zh_u:
+            continue  # 冲突：如「已接种与未接种人群对比」
+
+        # 英文/其余逻辑：先判 unvaxxed
+        u_hit = zh_u or any(k.lower() in kw_str for k in _UNVAXXED_KW)
+        if u_hit:
+            unvaxxed.append(r)
+            continue
+
+        v_hit = zh_v
+        if not v_hit:
+            for k in _VAXXED_KW:
+                kl = k.lower()
+                if kl not in kw_str:
+                    continue
+                # 对 vaccinated/immunized 做前缀保护：前面是 'un'/'non' 时不算
+                if all(ord(c) < 128 for c in k) and k.endswith(("vaccinated", "immunized")):
+                    idx = kw_str.index(kl)
+                    before = kw_str[max(0, idx - 4): idx]
+                    if before.endswith("un") or before.endswith("non"):
+                        continue
+                v_hit = True
+                break
+        if v_hit:
+            vaxxed.append(r)
+        # 其余: 不明确，不参与 VE 计算
+    return vaxxed, unvaxxed
+
+
+def _calc_ve_from_sp(sp_vax: float, sp_unvax: float) -> Optional[float]:
+    """疫苗保护性效果（抗体阳性率维度）：VE_sero = 1 - SP_vax / SP_unvax。
+
+    注意：这是「VE against seroconversion/infection」的近似值；
+    如果 SP_vax > SP_unvax（接种组阳性反而更高，因疫苗诱导抗体），
+    说明不是保护性抗体阳转率维度，需返回 None。
+    """
+    if sp_unvax is None or sp_vax is None or sp_unvax <= 0:
+        return None
+    ratio = sp_vax / sp_unvax
+    if ratio >= 1.0:
+        # 接种组阳性率 >= 未接种组：通常是疫苗诱导了抗体（这是期望的），
+        # 但该公式不能用于计算「保护性 VE」，返回 None 并标注
+        return None
+    return round((1.0 - ratio) * 100.0, 2)  # 转 %
+
+
+def _get_reference_coverage(disease: str, province: Optional[str]) -> Optional[float]:
+    """查 NIP 参考接种率：优先省级别，其次国家级。"""
+    if not disease:
+        return None
+    dis_map = NIP_COVERAGE_REFERENCE.get(disease, {})
+    if province and province in dis_map:
+        return dis_map[province]
+    return dis_map.get("__national__")
+
+
+def _implied_coverage_from_hit(
+    overall_sp: float, hit_target: float,
+) -> Optional[float]:
+    """粗略反推接种率：若假设 HIT = herd immunity threshold = coverage × VE_induced，
+    则 coverage_implied ≈ overall_sp / hit_target（当整体 SP 被视为疫苗诱导+自然感染的混合时，
+    此近似偏保守，仅用于给出参考值）。"""
+    if hit_target is None or hit_target <= 0 or overall_sp is None:
+        return None
+    impl = min(100.0, round(overall_sp / hit_target * 100.0, 2))
+    return impl
+
+
+async def get_vaccine_analysis(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+) -> dict:
+    """P1: 疫苗效果 (VE) + 接种率综合分析。
+
+    计算逻辑：
+      1. 按疾病-省份聚合所有已审核的 seroprevalence 数据点
+      2. 将数据点按接种状态拆分（已接种/未接种），如果两个亚组都有 SP，则计算 VE
+      3. 计算「整体 SP」，并结合 FOI 模块的 HIT 反推隐含接种率
+      4. 叠加 NIP 参考接种率表，输出省-疾病覆盖矩阵
+
+    不新增 DB 字段；若拆分不出接种亚组，VE 字段返回 null 并在 notes 中说明。
+    """
+    query = _build_base_query(
+        disease, province, year_start, year_end,
+        age_min=None, age_max=None,
+        data_type="seroprevalence",
+        review_status="approved",
+        include_subgroups=True,   # VE 计算可能依赖子估计的细分人群
+    )
+    result = await db.execute(query)
+    rows: list = result.scalars().all()
+
+    notes: list[str] = []
+    if not rows:
+        return {
+            "disease": disease,
+            "total_data_points": 0,
+            "per_disease_results": [],
+            "province_coverage_matrix": [],
+            "notes": ["无已审核通过的数据点，无法进行疫苗分析"],
+        }
+
+    # ---- 先复用 FOI 模块计算 HIT（轻量：只取 summary 部分，用已实现的 helper 直接计算）----
+    # 为了避免循环和重复计算，这里用「独立版本」计算每个疾病的 HIT：
+    # 用文献 R0 估计计算（若没有则用 WHO 阈值替代），避免再跑 FOI 全流程
+
+    # 按疾病分组
+    disease_rows: dict[str, list] = {}
+    for r in rows:
+        dis = getattr(r, "disease", None) or "未知"
+        norm = normalize_disease(dis)
+        key = norm or dis
+        if key not in disease_rows:
+            disease_rows[key] = []
+        disease_rows[key].append(r)
+
+    per_disease_results: list[dict] = []
+    province_coverage_matrix: list[dict] = []
+
+    for dis_key, dis_rows in disease_rows.items():
+        # 整体 SP（加权）
+        sp_list = [(float(r.value), r.sample_size or 1) for r in dis_rows if r.value is not None]
+        if sp_list:
+            wsum = sum(w for _, w in sp_list)
+            overall_sp = round(sum(v * w for v, w in sp_list) / wsum, 2) if wsum > 0 else None
+        else:
+            overall_sp = None
+
+        # ---- VE 计算（接种 vs 未接种拆分）----
+        vaxxed, unvaxxed = _split_vax_unvax(dis_rows)
+        ve_result: dict | None = None
+        if vaxxed and unvaxxed:
+            def _wsp(group):
+                lst = [(float(r.value), r.sample_size or 1) for r in group if r.value is not None]
+                if not lst:
+                    return None
+                sw = sum(w for _, w in lst)
+                return round(sum(v * w for v, w in lst) / sw, 2) if sw > 0 else None
+            sp_v = _wsp(vaxxed)
+            sp_u = _wsp(unvaxxed)
+            ve_percent = _calc_ve_from_sp(sp_v, sp_u)
+            total_n = sum(r.sample_size or 0 for r in vaxxed) + sum(r.sample_size or 0 for r in unvaxxed)
+            ve_result = {
+                "vaxxed_points": len(vaxxed),
+                "unvaxxed_points": len(unvaxxed),
+                "vaxxed_total_samples": sum(r.sample_size or 0 for r in vaxxed),
+                "unvaxxed_total_samples": sum(r.sample_size or 0 for r in unvaxxed),
+                "vaxxed_weighted_sp": sp_v,
+                "unvaxxed_weighted_sp": sp_u,
+                "ve_infection_percent": ve_percent,  # 保护性 VE（可能为 None）
+                "interpretation": (
+                    f"接种组阳性率 {sp_v}% vs 未接种组 {sp_u}%；"
+                    + (f"VE(against infection)≈{ve_percent}%" if ve_percent is not None
+                       else "接种组阳性率≥未接种组，属疫苗诱导抗体（非保护性维度），无法用该公式算 VE")
+                ) if sp_v is not None and sp_u is not None else None,
+            }
+        else:
+            if len(vaxxed) == 0 and len(unvaxxed) == 0:
+                notes.append(
+                    f"[{dis_key}] 没有找到明确标注「已接种/未接种」亚组的数据点，无法直接计算 VE。"
+                    "建议在文献审核时补充人群标签，或通过子估计（estimate_type='subgroup'）拆分接种状态。"
+                )
+
+        # ---- 接种率推算 ----
+        r0_ref = R0_REFERENCE.get(dis_key)
+        hit_percent = _calc_hit_from_r0(r0_ref[0]) if r0_ref else WHO_THRESHOLDS.get(dis_key)
+        implied_cov = _implied_coverage_from_hit(overall_sp, hit_percent)
+
+        ref_cov = _get_reference_coverage(dis_key, None)  # 国家级先
+
+        per_disease_results.append({
+            "disease": dis_key,
+            "total_data_points": len(dis_rows),
+            "overall_weighted_sp": overall_sp,
+            "herd_immunity_target_percent": hit_percent,
+            "reference_r0_typical": r0_ref[0] if r0_ref else None,
+            "ve_result": ve_result,
+            "coverage": {
+                "nip_reference_national_percent": ref_cov,
+                "implied_from_seroprevalence_percent": implied_cov,
+            },
+        })
+
+        # ---- 省 × 疾病覆盖率矩阵 ----
+        # 先按省聚合
+        prov_map: dict[str, list] = {}
+        for r in dis_rows:
+            p_raw = getattr(r, "province", None) or "未知"
+            for p in p_raw.split(";"):
+                p = p.strip() or "未知"
+                if p not in prov_map:
+                    prov_map[p] = []
+                prov_map[p].append(r)
+
+        for prov_name, prov_rows in prov_map.items():
+            sp_l = [(float(r.value), r.sample_size or 1) for r in prov_rows if r.value is not None]
+            if sp_l:
+                sw = sum(w for _, w in sp_l)
+                psp = round(sum(v * w for v, w in sp_l) / sw, 2) if sw > 0 else None
+            else:
+                psp = None
+            # 省级别 VE（同样尝试拆分）
+            pv, pu = _split_vax_unvax(prov_rows)
+            prov_ve = None
+            if pv and pu:
+                def _wsp2(group):
+                    lst = [(float(r.value), r.sample_size or 1) for r in group if r.value is not None]
+                    if not lst: return None
+                    sw2 = sum(w for _, w in lst)
+                    return round(sum(v * w for v, w in lst) / sw2, 2) if sw2 > 0 else None
+                prov_ve = _calc_ve_from_sp(_wsp2(pv), _wsp2(pu))
+            prov_nip = _get_reference_coverage(dis_key, prov_name) or ref_cov
+            p_impl = _implied_coverage_from_hit(psp, hit_percent)
+            # 达标判定：implied_cov >= NIP 参考 → on_track
+            status = "undetermined"
+            if p_impl is not None and prov_nip is not None:
+                if p_impl >= prov_nip:
+                    status = "on_track"
+                elif p_impl >= prov_nip - 10:
+                    status = "near"
+                else:
+                    status = "below"
+            province_coverage_matrix.append({
+                "disease": dis_key,
+                "province": prov_name,
+                "data_point_count": len(prov_rows),
+                "weighted_sp_percent": psp,
+                "ve_infection_percent": prov_ve,
+                "nip_reference_coverage_percent": prov_nip,
+                "implied_coverage_from_sp_percent": p_impl,
+                "coverage_status": status,
+            })
+
+    top_summary = per_disease_results[0] if len(per_disease_results) == 1 else None
+
+    return {
+        "disease": disease,
+        "province": province,
+        "total_data_points": len(rows),
+        "summary": top_summary or {
+            "num_diseases_analyzed": len(per_disease_results),
+            "diseases": sorted(disease_rows.keys()),
+        },
+        "per_disease_results": per_disease_results,
+        "province_coverage_matrix": province_coverage_matrix,
+        "notes": notes,
+    }
+

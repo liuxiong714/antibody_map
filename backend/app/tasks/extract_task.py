@@ -1,14 +1,16 @@
 import asyncio
 import logging
 import os
+import hashlib
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.config import settings
 from app.core.llm_extractor import LLMExtractor
 from app.core.document_parser import extract_text
+from app.core.pdf_table_parser import extract_tables_markdown
 from app.core.text_preprocessor import preprocess
 from app.models.base import async_session
 from app.models.data_point import DataPoint
@@ -26,6 +28,69 @@ from app.core.extraction_grounding import (
 )
 
 logger = logging.getLogger("celery.task")
+
+
+def _compute_age_group(age_min: Optional[int], age_max: Optional[int]) -> Optional[str]:
+    """A4：根据 age_min/age_max 生成标准年龄组标签，便于前端筛选和地图聚合。
+
+    规则：
+    - 两者都有 → "{min}-{max}岁"
+    - 只有 min → "{min}岁及以上"
+    - 只有 max → "{max}岁及以下"
+    - 都没有 → None
+    """
+    if age_min is not None and age_max is not None:
+        return f"{age_min}-{age_max}岁"
+    if age_min is not None:
+        return f"{age_min}岁及以上"
+    if age_max is not None:
+        return f"{age_max}岁及以下"
+    return None
+
+
+# B6：表格 Markdown 哈希缓存（进程级，避免同一文件重抽时重复提取）
+_table_hash_cache: dict[str, str] = {}
+
+
+async def _load_feedback_examples(db) -> list[str]:
+    """B9：从数据库加载最近被 rejected 的数据点，格式化为 few-shot 示例。
+
+    返回格式：["省份'XX'错误：应为'YY'", "数值超范围：87.3% 应在0-100之间", ...]
+    """
+    count = getattr(settings, "LLM_FEEDBACK_FEW_SHOT_COUNT", 5)
+    result = await db.execute(
+        select(DataPoint)
+        .where(DataPoint.review_status == "rejected")
+        .order_by(DataPoint.updated_at.desc())
+        .limit(count)
+    )
+    rejected_points = result.scalars().all()
+    if not rejected_points:
+        return []
+
+    examples: list[str] = []
+    for dp in rejected_points:
+        issues = []
+        if dp.province and dp.province not in CHINA_PROVINCE_NAMES:
+            issues.append(f"省份'{dp.province}'不在标准枚举中")
+        if dp.value is not None:
+            if dp.data_type == "seroprevalence" and not (0 <= float(dp.value) <= 100):
+                issues.append(f"阳性率{dp.value}超出0-100范围")
+            elif dp.data_type == "gmc" and float(dp.value) < 0:
+                issues.append(f"GMC值{dp.value}为负数")
+        if not dp.is_grounded:
+            issues.append("原文片段无法在文献中定位")
+        if dp.confidence == "low":
+            issues.append("置信度过低")
+
+        if issues:
+            desc = f"[{dp.disease or '未知疾病'}] "
+            if dp.province:
+                desc += f"{dp.province} "
+            desc += "；".join(issues)
+            examples.append(desc)
+
+    return examples[:count]
 
 
 # 本地存储目录（与 literature_service 保持一致）
@@ -87,21 +152,86 @@ def _download_pdf(object_name: str) -> Optional[bytes]:
         return None
 
 
-def _extract_result_to_datapoints(
+async def _link_subgroup_parents(db, all_data_points: list[DataPoint]) -> None:
+    """P1-1：归并子估计的 parent_id 到对应主估计。
+
+    匹配策略（按优先级）：
+    1. 子估计的 _parent_group 文本包含主估计的 province 名称，且 disease 和 data_type 匹配
+    2. 若无匹配主估计，子估计保持 parent_id=None（独立数据点）
+
+    需要先 flush 让主估计获得 id，再回填子估计的 parent_id。
+    """
+    # 先 flush，让主估计拿到 id
+    await db.flush()
+
+    primaries = [dp for dp in all_data_points if dp.estimate_type == "primary"]
+    subgroups = [dp for dp in all_data_points if dp.estimate_type == "subgroup"]
+
+    if not subgroups or not primaries:
+        return
+
+    linked = 0
+    for sub in subgroups:
+        parent_group = getattr(sub, "_parent_group", None) or ""
+        # 在主估计中找匹配：disease + data_type 相同，且 parent_group 包含主估计的 province
+        best_match = None
+        for pri in primaries:
+            if pri.disease != sub.disease:
+                continue
+            if pri.data_type != sub.data_type:
+                continue
+            # parent_group 文本匹配主估计的 province 或 city
+            if pri.province and pri.province in parent_group:
+                best_match = pri
+                break
+            if pri.city and pri.city in parent_group:
+                best_match = pri
+                break
+            # 兜底：parent_group 为空或通用描述，取同 disease+data_type 的第一个主估计
+            if not parent_group and best_match is None:
+                best_match = pri
+
+        if best_match is not None:
+            sub.parent_id = best_match.id
+            linked += 1
+
+    if linked:
+        logger.info(f"P1-1 子估计归并: {linked}/{len(subgroups)} 个子估计已关联到主估计")
+
+
+async def _extract_result_to_datapoints(
     literature_id: str,
     extract_result: dict,
     *,
     clean_text: str,
+    extractor: Optional[LLMExtractor] = None,
 ) -> list[DataPoint]:
     """将 LLM 提取结果转换为 DataPoint 列表，并附加：
        1) 精确字符级溯源（grounding）
        2) 强 Schema 校验（province 枚举 / 值域校验）
+
+    A3：当 grounding 失败且 extractor 可用时，用 LLM 重新提取 source_context 再匹配。
     """
     data_points = []
 
     # ---- 步骤 A：字符级溯源 grounding ----
     source_ctx = extract_result.get("source_context")
     grounding = ground_extraction(clean_text, source_ctx, extract_result)
+
+    # A3：grounding 失败时用 LLM 重抽 source_context
+    if not grounding.is_grounded and extractor and getattr(settings, "GROUNDING_LLM_REGROUND", True):
+        try:
+            new_ctx = await extractor.reground_source_context(clean_text, extract_result)
+        except Exception as e:
+            logger.warning(f"A3 重抽 source_context 异常: {e}")
+            new_ctx = None
+        if new_ctx:
+            # 用新片段重新 grounding
+            grounding = ground_extraction(clean_text, new_ctx, extract_result)
+            if grounding.is_grounded:
+                logger.info(f"A3 重抽 source_context 后 grounding 成功: {new_ctx[:40]!r}")
+            # 无论 grounding 是否成功，都更新 source_context
+            extract_result = {**extract_result, "source_context": new_ctx}
 
     # ---- 步骤 B：强 Schema 校验 + province 枚举 ----
     cleaned, flags = validate_extraction_schema(extract_result, grounded=grounding.is_grounded)
@@ -159,6 +289,7 @@ def _extract_result_to_datapoints(
         "city": cleaned.get("city"),
         "age_min": cleaned.get("age_min"),
         "age_max": cleaned.get("age_max"),
+        "age_group": _compute_age_group(cleaned.get("age_min"), cleaned.get("age_max")),
         "sample_size": cleaned.get("sample_size"),
         "method": cleaned.get("detection_method"),
         "assay": cleaned.get("antibody_type"),
@@ -172,7 +303,12 @@ def _extract_result_to_datapoints(
         "is_grounded": bool(grounding.is_grounded),
         "review_status": "pending",
         "confidence": confidence,
+        # P1-1：主估计/子估计层级
+        "estimate_type": cleaned.get("estimate_type", "primary"),
     }
+
+    # P1-1：记录 parent_group 标识，供主流程归并子估计的 parent_id
+    parent_group = cleaned.get("parent_group")
 
     # 血清阳性率数据点
     if cleaned.get("positivity_rate") is not None:
@@ -184,6 +320,9 @@ def _extract_result_to_datapoints(
             ci_upper=cleaned.get("positivity_ci_upper"),
             **common,
         )
+        # P1-1：暂存 parent_group 到私有属性，主流程归并时使用
+        if parent_group:
+            dp_sp._parent_group = parent_group
         data_points.append(dp_sp)
 
     # GMC 数据点
@@ -196,6 +335,8 @@ def _extract_result_to_datapoints(
             ci_upper=cleaned.get("gmc_ci_upper"),
             **common,
         )
+        if parent_group:
+            dp_gmc._parent_group = parent_group
         data_points.append(dp_gmc)
 
     return data_points
@@ -243,6 +384,26 @@ async def _process_literature_async(
             )
         logger.info(f"文件解析成功: {len(raw_text)} 字符")
 
+        # 3b. P0-1：PDF/CAJ 文件额外提取结构化表格 Markdown，注入 LLM 提示词
+        # B6：表格 Markdown 哈希缓存，同一文件重抽时跳过 pdfplumber 提取
+        tables_md = ""
+        if file_ext in (".pdf", ".caj"):
+            file_hash = hashlib.md5(file_bytes).hexdigest()
+            if file_hash in _table_hash_cache:
+                tables_md = _table_hash_cache[file_hash]
+                logger.info(f"B6 表格 Markdown 命中缓存: {len(tables_md)} 字符 (hash={file_hash[:8]})")
+            else:
+                try:
+                    tables_md = extract_tables_markdown(file_bytes)
+                    if tables_md:
+                        logger.info(f"P0-1 表格提取成功: {len(tables_md)} 字符 Markdown")
+                        _table_hash_cache[file_hash] = tables_md
+                    else:
+                        logger.info("P0-1 未检测到结构化表格或 pdfplumber 不可用，跳过表格注入")
+                except Exception as e:
+                    logger.warning(f"P0-1 表格提取失败（不影响纯文本提取）: {e}")
+                    tables_md = ""
+
         # 4. 预处理文本（保留 clean_text 用于 grounding）
         clean_text = preprocess(raw_text)
         logger.info(f"文本预处理完成: {len(clean_text)} 字符")
@@ -259,13 +420,26 @@ async def _process_literature_async(
 
         # 5. LLM 提取（返回数据点列表）
         extractor = LLMExtractor(model=model, api_key=api_key, base_url=base_url)
-        logger.info(f"开始 LLM 提取: model={model or settings.LLM_MODEL}")
+
+        # B9：加载审核反馈示例（rejected 数据点），注入 prompt 提升准确度
+        if getattr(settings, "LLM_FEEDBACK_FEW_SHOT", True):
+            try:
+                feedback_examples = await _load_feedback_examples(db)
+                if feedback_examples:
+                    extractor.set_feedback_examples(feedback_examples)
+            except Exception as e:
+                logger.warning(f"B9 加载审核反馈示例失败（不影响提取）: {e}")
+
+        passes = getattr(settings, "LLM_EXTRACTION_PASSES", 2)
+        logger.info(f"开始 LLM 提取: model={model or settings.LLM_MODEL}, extraction_passes={passes}")
         extract_results = await extractor.extract_with_retry(
             text=clean_text,
             language="zh",
             title=literature.title or "",
             journal=literature.journal or "",
             pub_year=literature.pub_year,
+            tables_md=tables_md,
+            extraction_passes=passes,
         )
         logger.info(f"LLM 提取完成: {len(extract_results)} 个数据点")
 
@@ -274,10 +448,11 @@ async def _process_literature_async(
         stats_grounded = 0
         stats_province_ok = 0
         for extract_result in extract_results:
-            dp_list = _extract_result_to_datapoints(
+            dp_list = await _extract_result_to_datapoints(
                 literature_id,
                 extract_result,
                 clean_text=clean_text,
+                extractor=extractor,
             )
             for dp in dp_list:
                 if dp.is_grounded:
@@ -287,12 +462,19 @@ async def _process_literature_async(
                 db.add(dp)
                 all_data_points.append(dp)
 
+        # 6b. P1-1：归并子估计的 parent_id 到对应主估计
+        # 逻辑：子估计的 _parent_group 标识匹配主估计的 (province+disease+data_type) 组合
+        await _link_subgroup_parents(db, all_data_points)
+
+        stats_primary = sum(1 for dp in all_data_points if dp.estimate_type == "primary")
+        stats_subgroup = sum(1 for dp in all_data_points if dp.estimate_type == "subgroup")
         logger.info(
             f"数据点创建完成: {len(all_data_points)} 条 "
             f"(血清阳性率: {sum(1 for dp in all_data_points if dp.data_type == 'seroprevalence')}, "
             f"GMC: {sum(1 for dp in all_data_points if dp.data_type == 'gmc')}, "
             f"grounded: {stats_grounded}/{len(all_data_points) or 1}, "
-            f"province_ok: {stats_province_ok}/{len(all_data_points) or 1})"
+            f"province_ok: {stats_province_ok}/{len(all_data_points) or 1}, "
+            f"primary: {stats_primary}, subgroup: {stats_subgroup})"
         )
 
         # 7. 更新文献元信息（从第一个数据点中提取）

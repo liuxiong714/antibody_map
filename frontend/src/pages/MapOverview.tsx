@@ -7,9 +7,9 @@ import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import MapSelector from '../components/MapSelector';
 import { useFilterStore } from '../store';
-import { getProvinceData, getYearlyProvinceData, getAvailableYears, getCityData } from '../services/map';
+import { getProvinceData, getYearlyProvinceData, getAvailableYears, getCityData, getPopulationOptions } from '../services/map';
 import { MapDataPoint, YearlyMapData } from '../types';
-import { SERO_COLOR_STOPS, GMC_COLOR_STOPS, GENDER_OPTIONS, OCCUPATION_OPTIONS, PROVINCE_GEOJSON_NAME } from '../utils/constants';
+import { SERO_COLOR_STOPS, GMC_COLOR_STOPS, GENDER_OPTIONS, PROVINCE_GEOJSON_NAME } from '../utils/constants';
 
 const MapOverview: React.FC = () => {
   const { disease, dataType, province, yearStart, yearEnd, ageMin, ageMax, gender, occupation,
@@ -34,6 +34,9 @@ const MapOverview: React.FC = () => {
   const [provinceCities, setProvinceCities] = useState<MapDataPoint[]>([]);
   const [provinceDetailLoading, setProvinceDetailLoading] = useState(false);
 
+  // 动态人群（职业）选项——根据文献中实际定义的研究对象自动更新
+  const [populationOptions, setPopulationOptions] = useState<string[]>([]);
+
   // Load GeoJSON — register map synchronously BEFORE triggering render
   useEffect(() => {
     fetch('/china.json')
@@ -44,6 +47,14 @@ const MapOverview: React.FC = () => {
       })
       .catch(() => message.error('地图数据加载失败'));
   }, []);
+
+  // 动态获取人群（职业）选项——根据已审核数据点的 population 字段自动更新
+  // 疾病切换时重新获取（不同疾病可能有不同的人群分类）
+  useEffect(() => {
+    getPopulationOptions(disease || undefined)
+      .then((opts) => setPopulationOptions(Array.isArray(opts) ? opts : []))
+      .catch((e) => console.error('获取人群选项失败:', e));
+  }, [disease]);
 
   // Fetch map data
   const fetchData = useCallback(async () => {
@@ -415,7 +426,10 @@ const MapOverview: React.FC = () => {
           </Col>
           <Col>
             <Select value={occupation} onChange={setOccupation} style={{ width: 130 }} placeholder="职业（人群）" allowClear
-              options={OCCUPATION_OPTIONS} />
+              options={[
+                { value: '', label: '全部职业' },
+                ...populationOptions.map((p) => ({ value: p, label: p })),
+              ]} />
           </Col>
           <Col>
             <InputNumber style={{ width: 90 }} placeholder="起始年" value={yearStart} onChange={(v: number | null) => { yearRangeAutoRef.current = false; setYearRange(v, yearEnd); }} />

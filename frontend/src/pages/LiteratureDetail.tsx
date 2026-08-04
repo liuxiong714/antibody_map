@@ -948,6 +948,13 @@ const LiteratureDetail: React.FC = () => {
                         导出 CSV
                       </Button>
                       <Button
+                        icon={<DownloadOutlined />}
+                        onClick={() => window.open(`/api/v1/literatures/${id}/extraction/traceability-html`)}
+                        disabled={dataPoints.length === 0}
+                      >
+                        溯源 HTML
+                      </Button>
+                      <Button
                         type="primary"
                         icon={<CheckOutlined />}
                         disabled={selectedRowKeys.length === 0}

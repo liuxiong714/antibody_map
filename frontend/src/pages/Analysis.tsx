@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { Card, Row, Col, Spin, Empty, message, Button, Tabs, Table, Space, Statistic, Alert, Tag, Collapse, Tooltip } from 'antd';
+import { Card, Row, Col, Spin, Empty, message, Button, Tabs, Table, Space, Statistic, Alert, Tag, Collapse, Tooltip, Progress } from 'antd';
 import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined, DownloadOutlined } from '@ant-design/icons';
 import ReactECharts from 'echarts-for-react';
 import DiseaseSelector from '../components/DiseaseSelector';
@@ -234,7 +234,7 @@ const Analysis: React.FC = () => {
   const handleTableChange = (
     pagination: { current?: number; pageSize?: number },
     _filters: unknown,
-    sorter: { field?: string; order?: string | null },
+    sorter: any,
   ) => {
     const page = pagination.current || 1;
     const pageSize = pagination.pageSize || 50;
@@ -243,9 +243,10 @@ const Analysis: React.FC = () => {
 
     let sortBy: string | undefined;
     let sortOrder: string | undefined;
-    if (sorter.order) {
-      sortBy = sorter.field as string;
-      sortOrder = sorter.order === 'ascend' ? 'asc' : 'desc';
+    const singleSorter = Array.isArray(sorter) ? sorter[0] : sorter;
+    if (singleSorter && singleSorter.order) {
+      sortBy = String(singleSorter.field);
+      sortOrder = singleSorter.order === 'ascend' ? 'asc' : 'desc';
     }
     setDpSortBy(sortBy);
     setDpSortOrder(sortOrder);
@@ -339,6 +340,17 @@ const Analysis: React.FC = () => {
             导出 Excel
           </Button>
         </Col>
+        <Col>
+          <Button icon={<DownloadOutlined />} onClick={() => {
+            const params = new URLSearchParams();
+            if (localDisease) params.set('disease', localDisease);
+            if (localDataType) params.set('data_type', localDataType);
+            if (province) params.set('province', province);
+            window.open(`/api/v1/analysis/dataset-snapshot?${params.toString()}`);
+          }}>
+            数据集快照
+          </Button>
+        </Col>
       </Row>
     </Card>
   );
@@ -429,24 +441,69 @@ const Analysis: React.FC = () => {
     DISEASES.map((d) => [d.key, d.name_cn])
   );
 
-  // 热力图单元格背景色（根据数据点数量）
-  const getCellBg = (total: number) => {
-    if (total === 0) return 'transparent';
-    if (total <= 2) return '#fff7e6';
-    if (total <= 5) return '#ffe7ba';
-    if (total <= 10) return '#ffd591';
-    if (total <= 20) return '#ffa940';
-    return '#fa541c';
+  // ===================== 新增：状态/评分 辅助函数 =====================
+  type CoverageStatus = 'well_covered' | 'need_review' | 'need_supplement' | 'need_both';
+
+  const statusMeta: Record<CoverageStatus, { label: string; color: string; tag: string }> = {
+    well_covered: { label: '完善', color: '#52c41a', tag: 'success' },
+    need_review: { label: '需审核', color: '#fa8c16', tag: 'warning' },
+    need_supplement: { label: '需补充', color: '#f5222d', tag: 'error' },
+    need_both: { label: '需审核+补充', color: '#eb2f96', tag: 'magenta' },
   };
 
-  const reviewColumns = [
+  const renderStatus = (status?: CoverageStatus) => {
+    if (!status) return '-';
+    const s = statusMeta[status];
+    return <Tag color={s.tag}>{s.label}</Tag>;
+  };
+
+  const renderCompleteness = (score?: number) => {
+    if (score == null) return '-';
+    let color = '#52c41a';
+    if (score < 30) color = '#f5222d';
+    else if (score < 60) color = '#fa8c16';
+    else if (score < 80) color = '#faad14';
+    return (
+      <Space>
+        <Progress percent={score} size={[60, 6]} showInfo={false} strokeColor={color} />
+        <span style={{ color, fontWeight: 'bold', minWidth: 32, display: 'inline-block' }}>{score}</span>
+      </Space>
+    );
+  };
+
+  // 热力图单元格背景色（根据完整性评分 + 数据量）
+  const getCellBg = (total: number, status?: CoverageStatus) => {
+    if (total === 0) return 'transparent';
+    // 基础色系（根据总量）
+    let bg = '#fff7e6';
+    if (total <= 2) bg = '#fff7e6';
+    else if (total <= 5) bg = '#ffe7ba';
+    else if (total <= 10) bg = '#ffd591';
+    else if (total <= 20) bg = '#ffa940';
+    else bg = '#fa541c';
+    // 若状态为完善 → 叠加绿色系
+    if (status === 'well_covered') {
+      if (total <= 2) bg = '#f6ffed';
+      else if (total <= 5) bg = '#d9f7be';
+      else if (total <= 10) bg = '#b7eb8f';
+      else if (total <= 20) bg = '#95de64';
+      else bg = '#73d13d';
+    }
+    // 需要补充 → 叠加红色系
+    if (status === 'need_supplement') {
+      bg = total < 3 ? '#fff1f0' : '#ffccc7';
+    }
+    return bg;
+  };
+
+  const commonAuditColumns = (sortByPending: boolean = true) => [
     {
       title: '省份', dataIndex: 'province', key: 'province', width: 100,
-      sorter: (a: ReviewNeededItem, b: ReviewNeededItem) => a.province.localeCompare(b.province),
+      sorter: (a: { province: string }, b: { province: string }) => a.province.localeCompare(b.province),
     },
     {
       title: '年份', dataIndex: 'year', key: 'year', width: 80,
-      sorter: (a: ReviewNeededItem, b: ReviewNeededItem) => (a.year || 0) - (b.year || 0),
+      sorter: (a: { year: number | null }, b: { year: number | null }) => (a.year || 0) - (b.year || 0),
       render: (v: number | null) => v || '-',
     },
     {
@@ -454,9 +511,24 @@ const Analysis: React.FC = () => {
       render: (v: string) => diseaseNameMap[v] || v,
     },
     {
+      title: '完整性评分',
+      dataIndex: 'completeness_score',
+      key: 'completeness_score',
+      width: 140,
+      sorter: (a: { completeness_score?: number }, b: { completeness_score?: number }) => (a.completeness_score ?? 0) - (b.completeness_score ?? 0),
+      render: renderCompleteness,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 110,
+      render: renderStatus,
+    },
+    {
       title: '待审核', dataIndex: 'pending_count', key: 'pending_count', width: 90,
-      sorter: (a: ReviewNeededItem, b: ReviewNeededItem) => a.pending_count - b.pending_count,
-      defaultSortOrder: 'descend' as const,
+      sorter: (a: { pending_count: number }, b: { pending_count: number }) => a.pending_count - b.pending_count,
+      defaultSortOrder: (sortByPending ? 'descend' : 'ascend') as 'descend' | 'ascend',
       render: (v: number) => <Tag color={v >= 10 ? 'red' : v >= 5 ? 'orange' : 'default'}>{v}</Tag>,
     },
     { title: '已通过', dataIndex: 'approved_count', key: 'approved_count', width: 80 },
@@ -464,18 +536,72 @@ const Analysis: React.FC = () => {
     { title: '总计', dataIndex: 'total_count', key: 'total_count', width: 80 },
   ];
 
-  // 构建热力图表格列
-  const allYears = gapData?.overview.years || [];
-  const heatmapColumns = [
-    {
-      title: '省份',
-      dataIndex: 'province',
-      key: 'province',
-      width: 80,
+  // 需要审核：默认按 pending 降序
+  const reviewColumns = commonAuditColumns(true);
+  // 需要补充：默认按 approved 升序
+  const supplementColumns = commonAuditColumns(false);
+
+  // 构建省/城市 年份矩阵列（通用函数）
+  const buildMatrixColumns = (
+    allYears: number[],
+    withProvinceColumn: boolean,
+    withCityColumn: boolean,
+  ) => {
+    const cols: any[] = [];
+    if (withProvinceColumn) {
+      cols.push({
+        title: '省份',
+        dataIndex: 'province',
+        key: 'province',
+        width: 80,
+        fixed: 'left' as const,
+        sorter: (a: any, b: any) => a.province.localeCompare(b.province),
+      });
+    }
+    if (withCityColumn) {
+      cols.push({
+        title: '城市',
+        dataIndex: 'city',
+        key: 'city',
+        width: 100,
+        fixed: 'left' as const,
+        sorter: (a: any, b: any) => a.city.localeCompare(b.city),
+      });
+    }
+    cols.push({
+      title: '完整性评分',
+      dataIndex: 'completeness_score',
+      key: 'completeness_score',
+      width: 120,
       fixed: 'left' as const,
-      sorter: (a: ProvinceYearRow, b: ProvinceYearRow) => a.province.localeCompare(b.province),
-    },
-    {
+      sorter: (a: ProvinceYearRow, b: ProvinceYearRow) => (a.completeness_score ?? 0) - (b.completeness_score ?? 0),
+      defaultSortOrder: 'descend' as const,
+      render: renderCompleteness,
+    });
+    cols.push({
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 100,
+      fixed: 'left' as const,
+      render: renderStatus,
+    });
+    cols.push({
+      title: '已通过',
+      dataIndex: 'approved',
+      key: 'approved',
+      width: 70,
+      sorter: (a: ProvinceYearRow, b: ProvinceYearRow) => (a.approved ?? 0) - (b.approved ?? 0),
+    });
+    cols.push({
+      title: '待审核',
+      dataIndex: 'pending',
+      key: 'pending',
+      width: 70,
+      sorter: (a: ProvinceYearRow, b: ProvinceYearRow) => a.pending - b.pending,
+      render: (v: number) => v > 0 ? <Tag color="orange">{v}</Tag> : v,
+    });
+    cols.push({
       title: '总计',
       dataIndex: 'total',
       key: 'total',
@@ -483,28 +609,36 @@ const Analysis: React.FC = () => {
       fixed: 'left' as const,
       sorter: (a: ProvinceYearRow, b: ProvinceYearRow) => a.total - b.total,
       render: (v: number) => <strong>{v}</strong>,
-    },
-    ...allYears.map((year) => ({
+    });
+    cols.push(...allYears.map((year) => ({
       title: String(year),
       key: String(year),
-      width: 60,
+      width: 64,
       align: 'center' as const,
       render: (_: unknown, record: ProvinceYearRow) => {
         const cell = record.years[String(year)];
         if (!cell || cell.total === 0) {
           return <span style={{ color: '#ccc' }}>-</span>;
         }
-        const bg = getCellBg(cell.total);
+        const bg = getCellBg(cell.total, cell.status);
         const hasPending = cell.pending > 0;
+        const statusInfo = cell.status ? statusMeta[cell.status as CoverageStatus] : null;
+        const tooltipText = [
+          `总计: ${cell.total}`,
+          `已通过: ${cell.approved}`,
+          `待审核: ${cell.pending}`,
+          statusInfo ? `状态: ${statusInfo.label}` : null,
+          `评分: ${cell.completeness_score ?? '-'}`,
+        ].filter(Boolean).join('\n');
         return (
-          <Tooltip title={`总计: ${cell.total} | 待审核: ${cell.pending} | 已通过: ${cell.approved}`}>
+          <Tooltip title={tooltipText}>
             <div style={{
               background: bg,
               borderRadius: 3,
-              padding: '2px 6px',
+              padding: '2px 4px',
               textAlign: 'center',
               cursor: 'pointer',
-              border: hasPending ? '1px solid #ff4d4f' : '1px solid transparent',
+              border: hasPending ? '1px solid #ff4d4f' : `1px solid ${cell.status === 'well_covered' ? '#52c41a' : 'transparent'}`,
             }}>
               <span style={{ fontSize: 12, fontWeight: hasPending ? 'bold' : 'normal' }}>
                 {cell.total}
@@ -513,8 +647,15 @@ const Analysis: React.FC = () => {
           </Tooltip>
         );
       },
-    })),
-  ];
+    })));
+    return cols;
+  };
+
+  // 构建热力图表格列（省份矩阵）
+  const allYears = gapData?.overview.years || [];
+  const provinceHeatmapColumns = buildMatrixColumns(allYears, true, false);
+  // 构建热力图表格列（城市矩阵）
+  const cityHeatmapColumns = buildMatrixColumns(allYears, true, true);
 
   const coverageContent = (
     <Spin spinning={gapLoading}>
@@ -522,7 +663,7 @@ const Analysis: React.FC = () => {
         <>
           {/* 概览统计卡片 */}
           <Row gutter={16} style={{ marginBottom: 16 }}>
-            <Col span={6}>
+            <Col span={4}>
               <Card>
                 <Statistic
                   title="总数据点"
@@ -531,7 +672,7 @@ const Analysis: React.FC = () => {
                 />
               </Card>
             </Col>
-            <Col span={6}>
+            <Col span={4}>
               <Card>
                 <Statistic
                   title="覆盖省份"
@@ -542,7 +683,26 @@ const Analysis: React.FC = () => {
                 />
               </Card>
             </Col>
-            <Col span={6}>
+            <Col span={4}>
+              <Card>
+                <Statistic
+                  title="覆盖城市"
+                  value={gapData.overview.total_cities || 0}
+                  valueStyle={{ color: '#1677ff' }}
+                  prefix={<CheckCircleOutlined />}
+                />
+              </Card>
+            </Col>
+            <Col span={4}>
+              <Card>
+                <Statistic
+                  title="已通过数据点"
+                  value={gapData.overview.approved_count}
+                  valueStyle={{ color: '#52c41a' }}
+                />
+              </Card>
+            </Col>
+            <Col span={4}>
               <Card>
                 <Statistic
                   title="待审核数据点"
@@ -552,7 +712,7 @@ const Analysis: React.FC = () => {
                 />
               </Card>
             </Col>
-            <Col span={6}>
+            <Col span={4}>
               <Card>
                 <Statistic
                   title="缺失省份-疾病组合"
@@ -564,13 +724,46 @@ const Analysis: React.FC = () => {
             </Col>
           </Row>
 
+          {/* 组合状态概览 */}
+          {gapData.overview.combo_status_counts && (
+            <Row gutter={16} style={{ marginBottom: 16 }}>
+              {(['well_covered', 'need_review', 'need_supplement', 'need_both'] as CoverageStatus[]).map(status => {
+                const count = gapData.overview.combo_status_counts?.[status] ?? 0;
+                const info = statusMeta[status];
+                return (
+                  <Col span={6} key={status}>
+                    <Card>
+                      <Statistic
+                        title={<span style={{ color: info.color }}>省×年组合：{info.label}</span>}
+                        value={count}
+                        valueStyle={{ color: info.color }}
+                        suffix={`/ ${Object.values(gapData.overview.combo_status_counts || {}).reduce((a: number, b: number) => a + b, 0)}`}
+                      />
+                    </Card>
+                  </Col>
+                );
+              })}
+            </Row>
+          )}
+
           {/* 年份范围信息 */}
           {gapData.overview.year_range && (
             <Alert
               type="info"
               showIcon
               style={{ marginBottom: 16 }}
-              message={`数据覆盖年份范围：${gapData.overview.year_range[0]} - ${gapData.overview.year_range[1]}，共 ${gapData.overview.years.length} 个年份，涉及 ${gapData.overview.total_diseases} 种疾病`}
+              message={
+                <>
+                  数据覆盖年份范围：<strong>{gapData.overview.year_range[0]} - {gapData.overview.year_range[1]}</strong>，
+                  共 <strong>{gapData.overview.years.length}</strong> 个年份，
+                  涉及 <strong>{gapData.overview.total_diseases}</strong> 种疾病。
+                  {gapData.overview.well_covered_threshold && (
+                    <span style={{ marginLeft: 12, color: '#52c41a' }}>
+                      完善判定标准：已通过 ≥ {gapData.overview.well_covered_threshold} 条且无待审核
+                    </span>
+                  )}
+                </>
+              }
             />
           )}
 
@@ -584,6 +777,12 @@ const Analysis: React.FC = () => {
                 </Space>
               }
               style={{ marginBottom: 16 }}
+              extra={
+                <Space>
+                  <Tag color="warning">需审核</Tag>
+                  <Tag color="magenta">需审核+补充</Tag>
+                </Space>
+              }
             >
               <Alert
                 type="warning"
@@ -591,13 +790,13 @@ const Analysis: React.FC = () => {
                 style={{ marginBottom: 12 }}
                 message="以下省份和年份的数据点尚未完成审核，请前往文献详情页审核后才能纳入分析统计"
               />
-              <Table
-                rowKey={(r: ReviewNeededItem) => `${r.province}-${r.year}-${r.disease}`}
-                columns={reviewColumns}
-                dataSource={gapData.review_needed}
+              <Table<any>
+                rowKey={(r: any) => `${r.province}-${r.year}-${r.disease}`}
+                columns={reviewColumns as any}
+                dataSource={gapData.review_needed as any[]}
                 size="small"
                 pagination={{ pageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50] }}
-                scroll={{ x: 600 }}
+                scroll={{ x: 950 }}
               />
             </Card>
           ) : (
@@ -610,90 +809,170 @@ const Analysis: React.FC = () => {
             </Card>
           )}
 
-          {/* 数据缺失提醒 */}
-          {gapData.data_gaps.length > 0 ? (
+          {/* 需要补充提醒 */}
+          {gapData.supplement_needed && gapData.supplement_needed.length > 0 ? (
             <Card
               title={
                 <Space>
-                  <WarningOutlined style={{ color: '#fa8c16' }} />
-                  <span>数据缺失提醒（按疾病分组）</span>
+                  <WarningOutlined style={{ color: '#f5222d' }} />
+                  <span>需要补充的数据点（{gapData.supplement_needed.length} 个省份-年份-疾病组合需要补充）</span>
                 </Space>
               }
               style={{ marginBottom: 16 }}
+              extra={
+                <Space>
+                  <Tag color="error">需补充</Tag>
+                  <Tag color="magenta">需审核+补充</Tag>
+                </Space>
+              }
             >
               <Alert
-                type="warning"
+                type="error"
                 showIcon
                 style={{ marginBottom: 12 }}
-                message="以下疾病在部分省份完全没有数据，建议补充相关文献和数据提取"
+                message="以下省份和年份数据不足或完全没有数据，建议补充相关文献和数据提取"
               />
-              <Collapse
-                items={gapData.data_gaps.map((g: DataGapItem) => ({
+              <Table<any>
+                rowKey={(r: any) => `${r.province}-${r.year}-${r.disease}-sup`}
+                columns={supplementColumns as any}
+                dataSource={gapData.supplement_needed as any[]}
+                size="small"
+                pagination={{ pageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50] }}
+                scroll={{ x: 950 }}
+              />
+            </Card>
+          ) : null}
+
+          {/* 数据缺失提醒（按疾病分组）—— 所有疾病均展示，越完善越靠前 */}
+          <Card
+            title={
+              <Space>
+                <WarningOutlined style={{ color: '#fa8c16' }} />
+                <span>数据覆盖情况（按疾病分组，越完善越靠前）</span>
+                <Tag color="blue">共 {gapData.data_gaps.length} 种疾病</Tag>
+              </Space>
+            }
+            style={{ marginBottom: 16 }}
+          >
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="完善的疾病排在最前面（可直接看到覆盖完整的标杆），缺失较多的在后。绿色'覆盖完整'= 省份全覆盖，无需补充。"
+            />
+            <Collapse
+              items={gapData.data_gaps.map((g: DataGapItem) => {
+                const fullyCovered = g.missing_count === 0;
+                const covPct = g.coverage_percent ??
+                  (34 ? Math.round(g.covered_count / 34 * 100) : 100);
+                return {
                   key: g.disease,
                   label: (
                     <Space>
                       <span style={{ fontWeight: 'bold' }}>{diseaseNameMap[g.disease] || g.disease}</span>
-                      <Tag color="green">已覆盖 {g.covered_count} 省</Tag>
-                      <Tag color="red">缺失 {g.missing_count} 省</Tag>
+                      {fullyCovered ? (
+                        <Tag color="gold">✅ 覆盖完整 {g.covered_count}/{g.covered_count} 省</Tag>
+                      ) : (
+                        <>
+                          <Tag color="green">已覆盖 {g.covered_count} 省</Tag>
+                          <Tag color="red">缺失 {g.missing_count} 省</Tag>
+                        </>
+                      )}
+                      <Tag color={fullyCovered ? 'success' : 'processing'}>
+                        完整度 {covPct}%
+                      </Tag>
                     </Space>
                   ),
                   children: (
                     <div>
-                      <p style={{ marginBottom: 8, color: '#888' }}>
-                        建议补充以下 {g.missing_count} 个省份的{diseaseNameMap[g.disease] || g.disease}相关数据：
-                      </p>
-                      <Space wrap>
-                        {g.missing_provinces.map((p) => (
-                          <Tag key={p} color="orange" style={{ marginBottom: 4 }}>{p}</Tag>
-                        ))}
-                      </Space>
+                      {fullyCovered ? (
+                        <Alert type="success" showIcon
+                          message={`${diseaseNameMap[g.disease] || g.disease}已覆盖全部省份，数据完善`}
+                          description="可作为标杆疾病。可拓展年龄组/年份细分或增加抗体类型以进一步提高精度。"
+                          style={{ marginBottom: 12 }}
+                        />
+                      ) : (
+                        <>
+                          <p style={{ marginBottom: 8, color: '#888' }}>
+                            建议补充以下 <b>{g.missing_count}</b> 个省份的{diseaseNameMap[g.disease] || g.disease}相关数据：
+                          </p>
+                          <Space wrap>
+                            {g.missing_provinces.map((p) => (
+                              <Tag key={p} color="orange" style={{ marginBottom: 4 }}>{p}</Tag>
+                            ))}
+                          </Space>
+                        </>
+                      )}
                       <div style={{ marginTop: 12 }}>
                         <span style={{ color: '#52c41a', fontSize: 13 }}>已有数据省份：</span>
                         <Space wrap size={[4, 4]} style={{ marginTop: 4 }}>
-                          {g.covered_provinces.map((p) => (
+                          {g.covered_provinces.length > 0 ? g.covered_provinces.map((p) => (
                             <Tag key={p} color="blue">{p}</Tag>
-                          ))}
+                          )) : <Tag>暂无</Tag>}
                         </Space>
                       </div>
                     </div>
                   ),
-                }))}
-              />
-            </Card>
-          ) : (
-            <Card style={{ marginBottom: 16 }}>
-              <Alert type="success" showIcon message="所有疾病均已覆盖所有省份，无数据缺失" />
-            </Card>
-          )}
+                };
+              })}
+            />
+          </Card>
 
-          {/* 省份×年份热力图 */}
+          {/* 省份×年份矩阵（按完整性评分降序） */}
           <Card
-            title="省份 × 年份数据点分布热力图"
-            extra={
+            title={
               <Space>
-                <Tag color="default">无数据</Tag>
-                <Tag style={{ background: '#fff7e6', border: '1px solid #ffd591' }}>1-2</Tag>
-                <Tag style={{ background: '#ffe7ba', border: '1px solid #ffd591' }}>3-5</Tag>
-                <Tag style={{ background: '#ffd591', border: '1px solid #ffa940' }}>6-10</Tag>
-                <Tag style={{ background: '#ffa940', border: '1px solid #fa541c' }}>11-20</Tag>
-                <Tag style={{ background: '#fa541c', color: '#fff' }}>{'>20'}</Tag>
+                <span>省份 × 年份数据点分布矩阵</span>
+                <Tag color="blue">按完整性排序（完善的在前）</Tag>
+              </Space>
+            }
+            extra={
+              <Space wrap>
+                <Tag color="success">完善</Tag>
+                <Tag color="warning">需审核</Tag>
+                <Tag color="error">需补充</Tag>
+                <Tag color="magenta">需审核+补充</Tag>
                 <Tag color="red">红框=有待审核</Tag>
               </Space>
             }
+            style={{ marginBottom: 16 }}
           >
             {gapData.province_year_matrix.length > 0 ? (
               <Table
                 rowKey="province"
-                columns={heatmapColumns}
+                columns={provinceHeatmapColumns}
                 dataSource={gapData.province_year_matrix}
                 size="small"
                 pagination={false}
-                scroll={{ x: 80 + 60 + allYears.length * 60 }}
+                scroll={{ x: 80 + 100 + 120 + 70 + 70 + 60 + allYears.length * 64 }}
               />
             ) : (
               <Empty description="暂无数据" />
             )}
           </Card>
+
+          {/* 城市×年份矩阵（按完整性评分降序） */}
+          {gapData.city_year_matrix && gapData.city_year_matrix.length > 0 && (
+            <Card
+              title={
+                <Space>
+                  <span>城市 × 年份数据点分布矩阵</span>
+                  <Tag color="green">{gapData.city_year_matrix.length} 个城市</Tag>
+                  <Tag color="blue">按完整性排序</Tag>
+                </Space>
+              }
+              style={{ marginBottom: 16 }}
+            >
+              <Table
+                rowKey={(r: any) => `${r.province}-${r.city}`}
+                columns={cityHeatmapColumns}
+                dataSource={gapData.city_year_matrix}
+                size="small"
+                pagination={{ pageSize: 15, showSizeChanger: true, pageSizeOptions: [15, 30, 50] }}
+                scroll={{ x: 80 + 100 + 100 + 120 + 70 + 70 + 60 + allYears.length * 64 }}
+              />
+            </Card>
+          )}
         </>
       ) : (
         <Empty description="正在加载..." />

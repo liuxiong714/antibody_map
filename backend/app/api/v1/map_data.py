@@ -116,6 +116,20 @@ async def available_years(
     return ApiResponse(data=years)
 
 
+@router.get("/map/population-options", response_model=ApiResponse)
+async def population_options(
+    disease: Optional[str] = Query(None, description="disease key, optional filter"),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取所有已审核数据点中出现的人群分类列表。
+
+    用于前端"全部职业"下拉框的动态选项——根据文献中实际定义的研究对象
+    自动更新，而非硬编码列表。支持按疾病筛选。
+    """
+    options = await map_service.get_population_options(db=db, disease=disease)
+    return ApiResponse(data=options)
+
+
 @router.get("/map/export-data-points")
 async def export_map_data_points(
     disease: Optional[str] = Query(None, description="disease key"),

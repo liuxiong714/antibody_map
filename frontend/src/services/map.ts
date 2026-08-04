@@ -20,6 +20,13 @@ export async function getAvailableYears(disease?: string) {
   return data;
 }
 
+export async function getPopulationOptions(disease?: string) {
+  const params: Record<string, unknown> = {};
+  if (disease) params.disease = disease;
+  const { data } = await api.get<string[]>('/map/population-options', { params });
+  return data;
+}
+
 export async function getCityData(params: Record<string, unknown>) {
   const { data } = await api.get<MapDataPoint[]>('/map/city-data', { params });
   return data;

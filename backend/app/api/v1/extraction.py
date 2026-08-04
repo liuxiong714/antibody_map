@@ -1,7 +1,9 @@
 import logging
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 import csv
 import io
@@ -20,6 +22,10 @@ from app.services.extraction_service import (
     trigger_extraction,
     get_extraction_status,
     get_extraction_results,
+)
+from app.core.traceability_html import (
+    generate_traceability_html,
+    datapoint_dict_to_trace,
 )
 
 router = APIRouter()
@@ -188,6 +194,62 @@ async def export_data_points(
         content=output.getvalue().encode("utf-8-sig"),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''data_points_{literature_id}.csv"},
+    )
+
+
+@router.get("/literatures/{literature_id}/extraction/traceability-html")
+async def export_traceability_html(
+    literature_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """P1-2：导出自包含溯源 HTML（高亮原文 + 侧边栏数据点列表，可离线打开）"""
+    # 1. 文献标题
+    lit_result = await db.execute(
+        select(Literature.title).where(Literature.id == literature_id)
+    )
+    title_row = lit_result.scalar_one_or_none()
+    if not title_row:
+        raise HTTPException(status_code=404, detail="文献不存在")
+    title = title_row or str(literature_id)
+
+    # 2. 数据点列表
+    data_points = await get_extraction_results(db, literature_id)
+    if not data_points:
+        raise HTTPException(status_code=404, detail="该文献暂无提取数据点，无法生成溯源 HTML")
+
+    # 3. 读取缓存的 clean_text（溯源文本）
+    text_path = Path("data/pdfs") / f"{literature_id}.txt"
+    if not text_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="溯源文本未缓存，请重新提取该文献后再导出 HTML",
+        )
+    try:
+        full_text = text_path.read_text(encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取溯源文本失败: {e}")
+
+    # 4. 转换数据点为 TracePoint 并生成 HTML
+    traces = [datapoint_dict_to_trace(dpo) for dpo in data_points]
+    html_content = generate_traceability_html(
+        title=title,
+        full_text=full_text,
+        data_points=traces,
+    )
+
+    # 5. 构建安全的下载文件名
+    safe_title = "".join(c for c in title if c not in r'\/:*?"<>|').strip() or str(literature_id)
+    filename = quote(f"{safe_title}_溯源报告.html")
+
+    logger.info(
+        f"[P1-2] 导出溯源 HTML: literature_id={literature_id}, "
+        f"dp_count={len(traces)}, text_len={len(full_text)}"
+    )
+
+    return Response(
+        content=html_content.encode("utf-8"),
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
     )
 
 

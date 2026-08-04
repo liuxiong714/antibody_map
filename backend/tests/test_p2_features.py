@@ -278,7 +278,7 @@ def test_extract_with_retry_chunking():
     # mock extract 方法返回不同的数据点
     call_count = [0]
 
-    async def mock_extract(self, text, language, title, journal, pub_year):
+    async def mock_extract(self, text, language, title, journal, pub_year, **kwargs):
         call_count[0] += 1
         return [
             {"disease_name": "麻疹", "province": "广东", "city": "广州",
@@ -308,7 +308,7 @@ def test_extract_with_retry_chunking():
     # 4e: 验证去重生效（多个块返回相同数据点时）
     call_count2 = [0]
 
-    async def mock_extract_dedup(self, text, language, title, journal, pub_year):
+    async def mock_extract_dedup(self, text, language, title, journal, pub_year, **kwargs):
         call_count2[0] += 1
         # 每个块都返回相同的数据点
         return [

@@ -19,6 +19,13 @@ from app.core.term_normalizer import CHINA_PROVINCE_NAMES
 
 logger = logging.getLogger("uvicorn")
 
+# A3：从配置读取模糊匹配阈值，默认 0.72
+try:
+    from app.config import settings as _settings
+    _DEFAULT_FUZZY_THRESHOLD = getattr(_settings, "GROUNDING_FUZZY_THRESHOLD", 0.72)
+except Exception:
+    _DEFAULT_FUZZY_THRESHOLD = 0.72
+
 _ALLOWED_DATA_TYPES = {"seroprevalence", "gmc"}
 _ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 _ALLOWED_REVIEW_STATUS = {"pending", "approved", "rejected"}
@@ -95,26 +102,84 @@ def _exact_match(text_norm: str, ctx_norm: str, ctx_raw: str) -> Optional[tuple[
     return orig_start, orig_end, matched
 
 
-def _fuzzy_match(text_norm: str, ctx_norm: str) -> Optional[tuple[int, int, str]]:
-    """Fuzzy match using difflib.SequenceMatcher for OCR-like noisy differences."""
+def _fuzzy_match(
+    text_norm: str,
+    ctx_norm: str,
+    threshold: float = _DEFAULT_FUZZY_THRESHOLD,
+) -> Optional[tuple[int, int, str]]:
+    """Fuzzy match using LCS dynamic programming alignment (P0-2 upgrade).
+
+    Replaces the previous difflib.SequenceMatcher sliding-window approach with an
+    O(n*m) LCS-based alignment that:
+    1. Finds the best matching window in text_norm for ctx_norm.
+    2. Returns the char span with the highest LCS coverage of ctx_norm.
+
+    A3：threshold 参数可从配置 GROUNDING_FUZZY_THRESHOLD 覆盖，默认 0.72。
+    """
     if not ctx_norm or len(ctx_norm) < 6:
         return None
-    # Sliding window over the text with ratio threshold
-    window = max(len(ctx_norm) + 20, 30)
-    step = max(1, len(ctx_norm) // 2)
+
+    n = len(text_norm)
+    m = len(ctx_norm)
+    # 限制 ctx 长度避免 DP 表过大
+    if m > 200:
+        ctx_norm = ctx_norm[:200]
+        m = len(ctx_norm)
+
     best_ratio = 0.0
     best_span: Optional[tuple[int, int, str]] = None
-    for i in range(0, max(1, len(text_norm) - window + 1), step):
+    # 滑动窗口，窗口大小略大于 ctx 以容纳插入
+    window = min(n, m + 20)
+    step = max(1, m // 3)
+
+    for i in range(0, max(1, n - window + 1), step):
         chunk = text_norm[i:i + window]
-        ratio = difflib.SequenceMatcher(None, chunk, ctx_norm).ratio()
+        ratio = _lcs_coverage(chunk, ctx_norm)
         if ratio > best_ratio:
             best_ratio = ratio
-            if ratio >= 0.78:
+            if ratio >= threshold:
                 best_span = (i, i + len(chunk), chunk)
-    if best_ratio >= 0.78:
-        logger.debug(f"[grounding] fuzzy match ratio={best_ratio:.2f} ctx[:30]={ctx_norm[:30]!r}")
+
+    if best_ratio >= threshold:
+        logger.debug(f"[grounding] LCS fuzzy match ratio={best_ratio:.2f} threshold={threshold} ctx[:30]={ctx_norm[:30]!r}")
         return best_span
     return None
+
+
+def _lcs_len(a: str, b: str) -> int:
+    """计算 a 与 b 的 LCS 长度。使用 O(n*m) 动态规划，滚动数组节省内存。"""
+    if not a or not b:
+        return 0
+    la, lb = len(a), len(b)
+    prev = [0] * (lb + 1)
+    curr = [0] * (lb + 1)
+    for i in range(1, la + 1):
+        ai = a[i - 1]
+        for j in range(1, lb + 1):
+            if ai == b[j - 1]:
+                curr[j] = prev[j - 1] + 1
+            else:
+                curr[j] = max(prev[j], curr[j - 1])
+        prev, curr = curr, prev
+    return prev[lb]
+
+
+def _lcs_ratio(a: str, b: str) -> float:
+    """LCS 匹配率 = LCS_len / max(len_a, len_b)。用于衡量两串整体相似度。"""
+    if not a or not b:
+        return 0.0
+    return _lcs_len(a, b) / max(len(a), len(b))
+
+
+def _lcs_coverage(text_chunk: str, ctx: str) -> float:
+    """ctx 在 text_chunk 中的 LCS 覆盖率 = LCS_len / len(ctx)。
+
+    衡量 ctx 有多少字符被 text_chunk 按顺序匹配到，
+    对 OCR 噪声（text 略长于 ctx）更合理。
+    """
+    if not ctx or not text_chunk:
+        return 0.0
+    return _lcs_len(text_chunk, ctx) / len(ctx)
 
 
 def _keyphrase_match(text_norm: str, ctx_norm: str, extract: dict) -> Optional[tuple[int, int, str]]:
@@ -164,6 +229,8 @@ def ground_extraction(
     source_text: str,
     source_context: Optional[str],
     extract_item: dict,
+    *,
+    fuzzy_threshold: Optional[float] = None,
 ) -> GroundingResult:
     """Try to locate the extraction within the original source text.
 
@@ -175,6 +242,8 @@ def ground_extraction(
         The snippet LLM claimed as evidence, e.g. 20-50 chars of original text.
     extract_item : dict
         The whole extraction record; used as fallback key-phrase anchors.
+    fuzzy_threshold : Optional[float]
+        A3：自定义模糊匹配阈值，None 时用全局默认 _DEFAULT_FUZZY_THRESHOLD。
 
     Returns
     -------
@@ -186,6 +255,7 @@ def ground_extraction(
         logger.warning("[grounding] source_text is empty")
         return res
 
+    threshold = fuzzy_threshold if fuzzy_threshold is not None else _DEFAULT_FUZZY_THRESHOLD
     text_norm = _normalize_for_match(source_text)
     ctx_norm = _normalize_for_match(source_context or "")
 
@@ -202,7 +272,7 @@ def ground_extraction(
         return res
 
     # Strategy 2: fuzzy match on source_context
-    fuzzy = _fuzzy_match(text_norm, ctx_norm)
+    fuzzy = _fuzzy_match(text_norm, ctx_norm, threshold=threshold)
     if fuzzy is not None:
         s, e, matched = fuzzy
         res.is_grounded = True

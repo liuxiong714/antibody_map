@@ -312,3 +312,100 @@ async def export_analysis(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename*=UTF-8''analysis_export.xlsx"},
     )
+
+
+@router.get("/analysis/dataset-snapshot")
+async def export_dataset_snapshot(
+    disease: Optional[str] = Query(None, description="疾病筛选"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    year_start: Optional[int] = Query(None, description="起始年份"),
+    year_end: Optional[int] = Query(None, description="结束年份"),
+    age_min: Optional[int] = Query(None, description="最小年龄"),
+    age_max: Optional[int] = Query(None, description="最大年龄"),
+    data_type: Optional[str] = Query(None, description="数据类型"),
+    db: AsyncSession = Depends(get_db),
+):
+    """P2-1：导出公开数据集快照 ZIP（CSV + 数据字典 + README + LICENSE）"""
+    from urllib.parse import quote
+    from app.core.dataset_snapshot import generate_dataset_snapshot_zip
+
+    data_points = await analysis_service.get_approved_data_points_for_snapshot(
+        db=db,
+        disease=disease,
+        province=province,
+        year_start=year_start,
+        year_end=year_end,
+        age_min=age_min,
+        age_max=age_max,
+        data_type=data_type,
+    )
+
+    filters = {
+        "disease": disease,
+        "province": province,
+        "year_start": year_start,
+        "year_end": year_end,
+        "age_min": age_min,
+        "age_max": age_max,
+        "data_type": data_type,
+    }
+
+    zip_bytes = generate_dataset_snapshot_zip(data_points, filters=filters)
+
+    filename = quote("antibody_dataset_snapshot.zip")
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
+
+
+@router.get("/analysis/foi-herd-immunity", response_model=ApiResponse)
+async def get_foi_herd_immunity(
+    disease: Optional[str] = Query(None, description="疾病筛选（不传则全库分析）"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    year_start: Optional[int] = Query(None, description="起始年份"),
+    year_end: Optional[int] = Query(None, description="结束年份"),
+    db: AsyncSession = Depends(get_db),
+):
+    """P0: FOI（感染力）+ 群体免疫阈值综合分析。
+
+    纯分析逻辑（无 DB 变更）：
+    - 用催化模型 λ = -ln(1-SP)/age 估算各年龄组 FOI
+    - 反推 R0 ≈ λ·L（L 取默认 75 年）
+    - 计算 HIT = 1 - 1/R0，并与 WHO 阈值对比
+    - 按省份 × 疾病输出 FOI 热力矩阵与群体免疫状态
+    """
+    data = await analysis_service.get_foi_analysis(
+        db=db,
+        disease=disease,
+        province=province,
+        year_start=year_start,
+        year_end=year_end,
+    )
+    return ApiResponse(data=data)
+
+
+@router.get("/analysis/vaccine-effectiveness-coverage", response_model=ApiResponse)
+async def get_vaccine_ve_coverage(
+    disease: Optional[str] = Query(None, description="疾病筛选（不传则全库分析）"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    year_start: Optional[int] = Query(None, description="起始年份"),
+    year_end: Optional[int] = Query(None, description="结束年份"),
+    db: AsyncSession = Depends(get_db),
+):
+    """P1: 疫苗效果 (VE / Vaccine Effectiveness) + 接种率综合分析。
+
+    - 尝试根据 DataPoint.population 中的「已接种/未接种」标签拆分亚组，
+      计算 VE(against infection) = 1 - SP_vax / SP_unvax
+    - 若未找到接种亚组，返回参考接种率（NIP 预设表）与从整体 SP 反推的隐含接种率
+    - 返回省 × 疾病覆盖率矩阵（on_track / near / below）
+    """
+    data = await analysis_service.get_vaccine_analysis(
+        db=db,
+        disease=disease,
+        province=province,
+        year_start=year_start,
+        year_end=year_end,
+    )
+    return ApiResponse(data=data)
