@@ -42,6 +42,15 @@ export async function uploadLiterature(formData: FormData) {
   return data;
 }
 
+export async function createLiteratureFromUrl(url: string, title?: string, province?: string) {
+  const formData = new FormData();
+  formData.append('url', url);
+  if (title) formData.append('title', title);
+  if (province) formData.append('province', province);
+  const { data } = await api.post<Literature>('/literatures/from-url', formData);
+  return data;
+}
+
 export interface ExtractionOptions {
   model: string;
   apiKey?: string;
@@ -82,9 +91,73 @@ export async function updateDataPoints(
     confidence?: string | null;
     method?: string | null;
     assay?: string | null;
+    source_page?: number | null;
+    source_context?: string | null;
+    // P0 新增：精确字符级溯源
+    source_char_start?: number | null;
+    source_char_end?: number | null;
+    is_grounded?: boolean;
   }>,
 ) {
   const { data } = await api.put(`/literatures/${literatureId}/extraction`, { data_points: dataPoints });
+  return data;
+}
+
+export async function createDataPoint(
+  literatureId: string,
+  dataPoint: {
+    disease?: string | null;
+    province?: string | null;
+    city?: string | null;
+    data_type?: string | null;
+    value?: number | null;
+    unit?: string | null;
+    sample_size?: number | null;
+    population?: string | null;
+    age_min?: number | null;
+    age_max?: number | null;
+    collection_year?: number | null;
+    confidence?: string | null;
+    method?: string | null;
+    assay?: string | null;
+    source_page?: number | null;
+    source_context?: string | null;
+    // P0 新增：精确字符级溯源
+    source_char_start?: number | null;
+    source_char_end?: number | null;
+    is_grounded?: boolean;
+  },
+) {
+  const { data } = await api.post(`/literatures/${literatureId}/extraction/data-points`, dataPoint);
+  return data;
+}
+
+// ===== P2：溯源文本查看 =====
+
+export interface SourceTextResult {
+  full_text: string | null;
+  snippet: string | null;
+  snippet_start?: number;
+  snippet_end?: number;
+  highlight_start?: number;
+  highlight_end?: number;
+  total_length: number;
+  truncated?: boolean;
+}
+
+export async function getSourceText(
+  literatureId: string,
+  start?: number,
+  end?: number,
+  context = 200,
+): Promise<SourceTextResult> {
+  const params: Record<string, number> = { context };
+  if (start != null) params.start = start;
+  if (end != null) params.end = end;
+  const { data } = await api.get<SourceTextResult>(
+    `/literatures/${literatureId}/source-text`,
+    { params },
+  );
   return data;
 }
 

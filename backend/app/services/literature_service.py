@@ -258,27 +258,36 @@ async def upload_literature(
     doi: Optional[str] = None,
     province: Optional[str] = None,
 ) -> Optional[Literature]:
+    logger.info(f"[upload_literature] 开始: filename={filename}, size={len(file_bytes)} bytes, title={title or '(无)'}")
     ext = filename.rsplit(".", 1)[-1] if "." in filename else "pdf"
+    logger.info(f"[upload_literature] 解析扩展名: ext={ext}")
 
     # 1. 始终保存到本地文件系统（确保提取时能找到文件）
     LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     local_filename = f"{uuid.uuid4()}.{ext}"
     local_path = LOCAL_STORAGE_DIR / local_filename
-    with open(local_path, "wb") as f:
-        f.write(file_bytes)
-    logger.info(f"文件已保存到本地: {local_path}")
+    try:
+        with open(local_path, "wb") as f:
+            f.write(file_bytes)
+        logger.info(f"[upload_literature] 本地保存成功: path={local_path}")
+    except Exception as e:
+        logger.error(f"[upload_literature] 本地保存失败: path={local_path}, error={e}", exc_info=True)
+        return None
 
     # 2. 尝试上传到 MinIO（仅用于分布式/备份场景，失败不阻塞）
     object_name = f"literature/{uuid.uuid4()}.{ext}"
     minio_path = upload_file(file_bytes, object_name, content_type=get_mime_type(ext))
     if minio_path is None:
-        logger.warning("MinIO 不可用，仅保存本地副本")
+        logger.warning(f"[upload_literature] MinIO 不可用，仅保存本地副本: filename={filename}")
+    else:
+        logger.info(f"[upload_literature] MinIO 上传成功: object_name={object_name}")
 
     # 3. 数据库记录使用本地路径（_download_pdf 会优先匹配本地文件）
     stored_path = str(local_path)
 
     # 4. 计算文件哈希用于查重
     pdf_hash = compute_pdf_hash(file_bytes)
+    logger.info(f"[upload_literature] 哈希计算完成: hash={pdf_hash[:16]}..., filename={filename}")
 
     # 创建文献记录
     literature = Literature(
@@ -291,8 +300,19 @@ async def upload_literature(
         source_db="upload",
     )
     db.add(literature)
-    await db.commit()
-    await db.refresh(literature)
+    try:
+        await db.commit()
+        await db.refresh(literature)
+        logger.info(f"[upload_literature] 数据库记录创建成功: id={literature.id}, title={literature.title}")
+    except Exception as e:
+        logger.error(f"[upload_literature] 数据库提交失败: filename={filename}, error={e}", exc_info=True)
+        # 回滚本地文件以避免脏文件残留
+        try:
+            os.remove(local_path)
+            logger.info(f"[upload_literature] 已清理本地文件: {local_path}")
+        except Exception as cleanup_err:
+            logger.warning(f"[upload_literature] 清理本地文件失败: {local_path}, {cleanup_err}")
+        return None
     return literature
 
 

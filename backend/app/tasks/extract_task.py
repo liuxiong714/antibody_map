@@ -16,6 +16,14 @@ from app.models.literature import Literature
 from app.tasks.celery_app import celery_app
 from app.core.minio_client import get_minio_client
 from app.core.term_normalizer import normalize_province, CHINA_PROVINCE_NAMES
+from app.core.extraction_grounding import (
+    ground_extraction,
+    validate_extraction_schema,
+    validate_data_type as _validate_data_type,
+    validate_confidence as _validate_confidence,
+    validate_review_status as _validate_review_status,
+    ValidationFlags,
+)
 
 logger = logging.getLogger("celery.task")
 
@@ -82,60 +90,110 @@ def _download_pdf(object_name: str) -> Optional[bytes]:
 def _extract_result_to_datapoints(
     literature_id: str,
     extract_result: dict,
+    *,
+    clean_text: str,
 ) -> list[DataPoint]:
-    """将 LLM 提取结果转换为 DataPoint 列表（血清阳性率 + GMC）"""
+    """将 LLM 提取结果转换为 DataPoint 列表，并附加：
+       1) 精确字符级溯源（grounding）
+       2) 强 Schema 校验（province 枚举 / 值域校验）
+    """
     data_points = []
 
-    # 省份标准化并拆分
-    raw_province = extract_result.get("province")
-    if raw_province:
-        # 先用 normalize_province 标准化，如果失败则保留原文
-        normalized = normalize_province(raw_province)
+    # ---- 步骤 A：字符级溯源 grounding ----
+    source_ctx = extract_result.get("source_context")
+    grounding = ground_extraction(clean_text, source_ctx, extract_result)
+
+    # ---- 步骤 B：强 Schema 校验 + province 枚举 ----
+    cleaned, flags = validate_extraction_schema(extract_result, grounded=grounding.is_grounded)
+
+    province_raw = cleaned.get("province")
+    if province_raw:
+        normalized = normalize_province(province_raw)
         if normalized and normalized in CHINA_PROVINCE_NAMES:
             province = normalized
+            if not flags.province_valid:
+                flags.province_valid = True
         else:
-            province = raw_province
+            province = province_raw
     else:
         province = None
 
+    # ---- 步骤 C：合并 schema flags -> confidence 降级策略 ----
+    # 规则（严格但不丢弃数据）：
+    #   - 非 grounded        ->  confidence = low
+    #   - province 非枚举    ->  confidence = low
+    #   - value 超出合理范围 ->  confidence = low
+    #   - 多个问题同时存在 ->  confidence = low （最低档），并在 review 列表前置
+    confidence = "medium"
+    reasons = flags.schema_issues
+    if not grounding.is_grounded:
+        reasons = reasons + ["not_grounded"]
+    if "province_not_in_enum" in reasons:
+        confidence = "low"
+    if "value_out_of_range" in reasons:
+        confidence = "low"
+    if "not_grounded" in reasons and confidence != "low":
+        # 非 grounding 单独仅降为 medium（保留人工判断空间），如果还有其他问题 -> low
+        # 这里保持默认 medium，不做更严降级
+        pass
+    if len(reasons) >= 2:
+        confidence = "low"
+
+    logger.info(
+        f"[extract_to_dp] validation: province_ok={flags.province_valid} "
+        f"value_range_ok={flags.value_range_valid} grounded={grounding.is_grounded} "
+        f"-> confidence={confidence} reasons={reasons}"
+    )
+
+    # 保存最终修正过的 source_context（如果 grounding 匹配到更精确的片段）
+    final_source_context = (
+        grounding.matched_snippet
+        if grounding.is_grounded and grounding.matched_snippet
+        else (extract_result.get("source_context"))
+    )
+
     common = {
         "literature_id": literature_id,
-        "disease": extract_result.get("disease_name"),
+        "disease": cleaned.get("disease_name"),
         "province": province,
-        "city": extract_result.get("city"),
-        "age_min": extract_result.get("age_min"),
-        "age_max": extract_result.get("age_max"),
-        "sample_size": extract_result.get("sample_size"),
-        "method": extract_result.get("detection_method"),
-        "assay": extract_result.get("antibody_type"),
-        "population": extract_result.get("population_type"),
-        "collection_year": extract_result.get("sample_year") or extract_result.get("study_start_year"),
-        "source_page": extract_result.get("source_page"),  # 新增：来源页码
-        "source_context": extract_result.get("source_context"),  # 新增：原文片段
+        "city": cleaned.get("city"),
+        "age_min": cleaned.get("age_min"),
+        "age_max": cleaned.get("age_max"),
+        "sample_size": cleaned.get("sample_size"),
+        "method": cleaned.get("detection_method"),
+        "assay": cleaned.get("antibody_type"),
+        "population": cleaned.get("population_type"),
+        "collection_year": cleaned.get("sample_year") or cleaned.get("study_start_year"),
+        "source_page": cleaned.get("source_page"),
+        "source_context": final_source_context,
+        # P0：精确字符级溯源字段
+        "source_char_start": grounding.source_char_start,
+        "source_char_end": grounding.source_char_end,
+        "is_grounded": bool(grounding.is_grounded),
         "review_status": "pending",
-        "confidence": "medium",
+        "confidence": confidence,
     }
 
     # 血清阳性率数据点
-    if extract_result.get("positivity_rate") is not None:
+    if cleaned.get("positivity_rate") is not None:
         dp_sp = DataPoint(
             data_type="seroprevalence",
-            value=extract_result["positivity_rate"],
+            value=cleaned["positivity_rate"],
             unit="%",
-            ci_lower=extract_result.get("positivity_ci_lower"),
-            ci_upper=extract_result.get("positivity_ci_upper"),
+            ci_lower=cleaned.get("positivity_ci_lower"),
+            ci_upper=cleaned.get("positivity_ci_upper"),
             **common,
         )
         data_points.append(dp_sp)
 
     # GMC 数据点
-    if extract_result.get("gmc_value") is not None:
+    if cleaned.get("gmc_value") is not None:
         dp_gmc = DataPoint(
             data_type="gmc",
-            value=extract_result["gmc_value"],
-            unit=extract_result.get("gmc_unit"),
-            ci_lower=extract_result.get("gmc_ci_lower"),
-            ci_upper=extract_result.get("gmc_ci_upper"),
+            value=cleaned["gmc_value"],
+            unit=cleaned.get("gmc_unit"),
+            ci_lower=cleaned.get("gmc_ci_lower"),
+            ci_upper=cleaned.get("gmc_ci_upper"),
             **common,
         )
         data_points.append(dp_gmc)
@@ -149,7 +207,7 @@ async def _process_literature_async(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
 ) -> dict:
-    """异步文献处理：PDF 解析 → LLM 提取 → 保存数据点"""
+    """异步文献处理：PDF 解析 → LLM 提取 → 保存数据点（含精确溯源和强 Schema）"""
     async with async_session() as db:
         # 1. 查找文献记录
         result = await db.execute(
@@ -185,9 +243,19 @@ async def _process_literature_async(
             )
         logger.info(f"文件解析成功: {len(raw_text)} 字符")
 
-        # 4. 预处理文本
+        # 4. 预处理文本（保留 clean_text 用于 grounding）
         clean_text = preprocess(raw_text)
         logger.info(f"文本预处理完成: {len(clean_text)} 字符")
+
+        # 4b. P2：保存 clean_text 到文件，供溯源查看使用
+        try:
+            text_dir = Path(settings.MINIO_BUCKET_LITERATURE) if False else Path("data/pdfs")
+            text_dir.mkdir(parents=True, exist_ok=True)
+            text_path = text_dir / f"{literature_id}.txt"
+            text_path.write_text(clean_text, encoding="utf-8")
+            logger.info(f"溯源文本已缓存: {text_path}")
+        except Exception as e:
+            logger.warning(f"缓存溯源文本失败（不影响提取）: {e}")
 
         # 5. LLM 提取（返回数据点列表）
         extractor = LLMExtractor(model=model, api_key=api_key, base_url=base_url)
@@ -201,18 +269,30 @@ async def _process_literature_async(
         )
         logger.info(f"LLM 提取完成: {len(extract_results)} 个数据点")
 
-        # 6. 为每个提取数据点创建 DataPoint 记录
+        # 6. 为每个提取数据点创建 DataPoint 记录（含 grounding + schema 校验）
         all_data_points = []
+        stats_grounded = 0
+        stats_province_ok = 0
         for extract_result in extract_results:
-            dp_list = _extract_result_to_datapoints(literature_id, extract_result)
+            dp_list = _extract_result_to_datapoints(
+                literature_id,
+                extract_result,
+                clean_text=clean_text,
+            )
             for dp in dp_list:
+                if dp.is_grounded:
+                    stats_grounded += 1
+                if dp.province in CHINA_PROVINCE_NAMES:
+                    stats_province_ok += 1
                 db.add(dp)
                 all_data_points.append(dp)
 
         logger.info(
             f"数据点创建完成: {len(all_data_points)} 条 "
             f"(血清阳性率: {sum(1 for dp in all_data_points if dp.data_type == 'seroprevalence')}, "
-            f"GMC: {sum(1 for dp in all_data_points if dp.data_type == 'gmc')})"
+            f"GMC: {sum(1 for dp in all_data_points if dp.data_type == 'gmc')}, "
+            f"grounded: {stats_grounded}/{len(all_data_points) or 1}, "
+            f"province_ok: {stats_province_ok}/{len(all_data_points) or 1})"
         )
 
         # 7. 更新文献元信息（从第一个数据点中提取）

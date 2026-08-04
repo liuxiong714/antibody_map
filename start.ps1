@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # Antibody Map 一键启动脚本 (Windows PowerShell)
 # 用法: 右键 -> 使用 PowerShell 运行，或在终端执行 .\start.ps1
 # ============================================================
@@ -34,12 +34,12 @@ function Stop-PortProcess($port) {
     $procs = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
              Select-Object -ExpandProperty OwningProcess -Unique
     if ($procs) {
-        foreach ($pid in $procs) {
+        foreach ($procId in $procs) {
             try {
-                $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
+                $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
                 if ($proc) {
-                    Write-Color "  关闭端口 $port 上的进程: $($proc.ProcessName) (PID $pid)" "DarkYellow"
-                    Stop-Process -Id $pid -Force
+                    Write-Color "  关闭端口 $port 上的进程: $($proc.ProcessName) (PID $procId)" "DarkYellow"
+                    Stop-Process -Id $procId -Force
                 }
             } catch { }
         }

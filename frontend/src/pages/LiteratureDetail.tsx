@@ -1,17 +1,19 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, message, Spin, Select, Row, Col, Tooltip,
+  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip,
 } from 'antd';
-import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined, DownloadOutlined, PlusOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
 import {
-  getLiterature, getExtractionResults, updateDataPoints, triggerExtraction, updateLiterature,
+  getLiterature, getExtractionResults, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText,
 } from '../services/literature';
 import PdfViewer from '../components/PdfViewer';
-import { DATA_TYPE_LABEL, MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
+import FilePreview from '../components/FilePreview';
+import { DATA_TYPE_LABEL, DISEASES, PROVINCES, MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
+import type { Literature, DataPoint } from '../types';
 import dayjs from 'dayjs';
 
 const LiteratureDetail: React.FC = () => {
@@ -52,6 +54,73 @@ const LiteratureDetail: React.FC = () => {
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editRowData, setEditRowData] = useState<Partial<DataPoint> | null>(null);
   const [editSavingRow, setEditSavingRow] = useState(false);
+
+  // 手动新增数据点状态
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [addForm, setAddForm] = useState<Record<string, unknown>>({ confidence: 'medium', is_grounded: false });
+  const [addSaving, setAddSaving] = useState(false);
+
+  // P2：溯源查看弹窗状态
+  const [sourceModalOpen, setSourceModalOpen] = useState(false);
+  const [sourceText, setSourceText] = useState('');
+  const [sourceHighlightStart, setSourceHighlightStart] = useState<number | null>(null);
+  const [sourceHighlightEnd, setSourceHighlightEnd] = useState<number | null>(null);
+  const [sourceLoading, setSourceLoading] = useState(false);
+
+  // 需求3：新增数据点弹窗拖拽
+  const [addModalPos, setAddModalPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const modalDragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null);
+
+  const handleModalDragMouseDown = (e: React.MouseEvent) => {
+    modalDragRef.current = { startX: e.clientX, startY: e.clientY, baseX: addModalPos.x, baseY: addModalPos.y };
+    e.preventDefault();
+  };
+
+  useEffect(() => {
+    if (!addModalOpen) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!modalDragRef.current) return;
+      const dx = e.clientX - modalDragRef.current.startX;
+      const dy = e.clientY - modalDragRef.current.startY;
+      setAddModalPos({ x: modalDragRef.current.baseX + dx, y: modalDragRef.current.baseY + dy });
+    };
+    const handleMouseUp = () => { modalDragRef.current = null; };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [addModalOpen]);
+
+  const handleViewSource = async (r: DataPoint) => {
+    if (!id) return;
+    setSourceModalOpen(true);
+    setSourceLoading(true);
+    setSourceText('');
+    setSourceHighlightStart(null);
+    setSourceHighlightEnd(null);
+    try {
+      const hasRange = r.source_char_start != null && r.source_char_end != null;
+      const result = await getSourceText(
+        id,
+        hasRange ? r.source_char_start! : undefined,
+        hasRange ? r.source_char_end! : undefined,
+        300,
+      );
+      if (result.snippet != null) {
+        setSourceText(result.snippet);
+        setSourceHighlightStart(result.highlight_start ?? null);
+        setSourceHighlightEnd(result.highlight_end ?? null);
+      } else if (result.full_text != null) {
+        setSourceText(result.full_text);
+      }
+    } catch (e) {
+      console.error('获取溯源文本失败:', e);
+    } finally {
+      setSourceLoading(false);
+    }
+  };
 
   const handleStartEdit = () => {
     if (!literature) return;
@@ -94,7 +163,9 @@ const LiteratureDetail: React.FC = () => {
       const fields: (keyof DataPoint)[] = [
         'disease', 'province', 'city', 'data_type', 'value', 'unit',
         'sample_size', 'population', 'age_min', 'age_max', 'collection_year',
-        'confidence', 'method', 'assay',
+        'confidence', 'method', 'assay', 'source_page', 'source_context',
+        // P0 新增：精确字符级溯源字段（允许手动修复）
+        'source_char_start', 'source_char_end', 'is_grounded',
       ];
       fields.forEach((f) => {
         if (editRowData[f] !== undefined) {
@@ -106,7 +177,8 @@ const LiteratureDetail: React.FC = () => {
       setEditingRowId(null);
       setEditRowData(null);
       fetchData();
-    } catch {
+    } catch (err) {
+      console.error('[LiteratureDetail] 保存数据点行编辑失败:', err);
       message.error('更新失败');
     } finally {
       setEditSavingRow(false);
@@ -131,7 +203,8 @@ const LiteratureDetail: React.FC = () => {
       message.success('文献信息已更新');
       setEditing(false);
       fetchData();
-    } catch {
+    } catch (err) {
+      console.error('[LiteratureDetail] 保存文献编辑失败:', err);
       message.error('更新失败');
     } finally {
       setSaving(false);
@@ -148,7 +221,8 @@ const LiteratureDetail: React.FC = () => {
       ]);
       setLiterature(lit);
       setDataPoints((ext as { data_points?: DataPoint[] })?.data_points || []);
-    } catch {
+    } catch (err) {
+      console.error('[LiteratureDetail] 加载文献详情失败:', err);
       message.error('加载文献详情失败');
     } finally {
       setLoading(false);
@@ -248,7 +322,8 @@ const LiteratureDetail: React.FC = () => {
       } else {
         message.info('数据点中暂无可用的省份或年份信息');
       }
-    } catch {
+    } catch (err) {
+      console.error('[LiteratureDetail] 同步数据点信息失败:', err);
       message.error('同步失败，请重试');
     } finally {
       setSyncing(false);
@@ -316,7 +391,8 @@ const LiteratureDetail: React.FC = () => {
         });
       }, 3000);
       setPollingInterval(interval);
-    } catch {
+    } catch (err) {
+      console.error('[LiteratureDetail] 提取任务提交失败:', err);
       message.error('提取失败');
     } finally {
       setExtracting(false);
@@ -337,7 +413,8 @@ const LiteratureDetail: React.FC = () => {
       await updateDataPoints(id, [{ id: dpId, review_status: status }]);
       message.success(status === 'approved' ? '已通过' : '已驳回');
       fetchData();
-    } catch {
+    } catch (err) {
+      console.error('[LiteratureDetail] 单个审核操作失败:', err);
       message.error('操作失败');
     }
   };
@@ -352,7 +429,8 @@ const LiteratureDetail: React.FC = () => {
       setModalOpen(false);
       setReviewNote('');
       fetchData();
-    } catch {
+    } catch (err) {
+      console.error('[LiteratureDetail] 批量审核操作失败:', err);
       message.error('批量操作失败');
     }
   };
@@ -484,17 +562,82 @@ const LiteratureDetail: React.FC = () => {
         ) : (<ConfidenceBadge confidence={v} />),
     },
     {
-      title: '原文依据', key: 'source', width: 120,
+      title: '溯源', key: 'grounded', width: 76,
+      sorter: (a, b) => Number(b.is_grounded) - Number(a.is_grounded),
       render: (_: unknown, r: DataPoint) => {
+        if (r.is_grounded) {
+          const extra = r.source_char_start != null && r.source_char_end != null
+            ? ` [${r.source_char_start},${r.source_char_end})`
+            : '';
+          return (
+            <Tooltip title={`原文已匹配${extra}`} placement="topLeft">
+              <Tag color="green" style={{ margin: 0 }}>✓ 已匹配</Tag>
+            </Tooltip>
+          );
+        }
+        return (
+          <Tooltip title="LLM 提供的原文依据在整篇文档中未找到对应片段，疑似幻觉，建议优先审核" placement="topLeft">
+            <Tag color="red" style={{ margin: 0 }}>⚠ 未匹配</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: '原文依据', key: 'source', width: 180,
+      render: (_: unknown, r: DataPoint) => {
+        if (isEditing(r)) {
+          return (
+            <Space size={4} style={{ width: 170 }} direction="vertical">
+              <Space size={4}>
+                <InputNumber size="small" value={editRowData?.source_page ?? undefined}
+                  onChange={(v) => updateEditField('source_page', v ?? null)}
+                  placeholder="页码" style={{ width: 60 }} min={1} />
+                <Input size="small" value={editRowData?.source_context ?? ''}
+                  onChange={(e) => updateEditField('source_context', e.target.value || null)}
+                  placeholder="原文上下文" style={{ width: 100 }} />
+              </Space>
+              <Space size={4}>
+                <InputNumber size="small" value={editRowData?.source_char_start ?? undefined}
+                  onChange={(v) => updateEditField('source_char_start', v ?? null)}
+                  placeholder="起始" style={{ width: 80 }} min={0} />
+                <InputNumber size="small" value={editRowData?.source_char_end ?? undefined}
+                  onChange={(v) => updateEditField('source_char_end', v ?? null)}
+                  placeholder="结束" style={{ width: 80 }} min={0} />
+              </Space>
+              <Checkbox
+                checked={!!editRowData?.is_grounded}
+                onChange={(e) => updateEditField('is_grounded', e.target.checked)}
+              >
+                已匹配原文
+              </Checkbox>
+            </Space>
+          );
+        }
         const context = r.source_context;
         const page = r.source_page;
-        if (!context && !page) return '-';
+        const hasInterval = r.source_char_start != null && r.source_char_end != null;
+        if (!context && !page && !hasInterval) return '-';
 
-        const displayText = page ? `第 ${page} 页` : (context ? context.substring(0, 20) + '...' : '-');
+        const displayText = page
+          ? `第 ${page} 页`
+          : (hasInterval
+              ? `[${r.source_char_start},${r.source_char_end})`
+              : (context ? context.substring(0, 20) + '...' : '-'));
+
+        const tooltipLines: string[] = [];
+        if (page) tooltipLines.push(`页码：第 ${page} 页`);
+        if (hasInterval) tooltipLines.push(`字符区间：[${r.source_char_start}, ${r.source_char_end})`);
+        if (context) tooltipLines.push(context);
+        const tooltip = tooltipLines.length > 0 ? tooltipLines.join('\n') : undefined;
 
         return (
-          <Tooltip title={context || undefined} placement="topLeft">
-            <span style={{ cursor: 'pointer' }}>{displayText}</span>
+          <Tooltip title={tooltip || '点击查看原文'} placement="topLeft">
+            <span
+              style={{ cursor: 'pointer', color: r.is_grounded ? undefined : '#b82601' }}
+              onClick={() => handleViewSource(r)}
+            >
+              {displayText}
+            </span>
           </Tooltip>
         );
       },
@@ -788,6 +931,23 @@ const LiteratureDetail: React.FC = () => {
                   extra={
                     <Space>
                       <Button
+                        icon={<PlusOutlined />}
+                        onClick={() => {
+                          setAddForm({ confidence: 'medium', is_grounded: false });
+                          setAddModalPos({ x: 0, y: 0 });
+                          setAddModalOpen(true);
+                        }}
+                      >
+                        新增数据点
+                      </Button>
+                      <Button
+                        icon={<DownloadOutlined />}
+                        onClick={() => window.open(`/api/v1/literatures/${id}/extraction/export`)}
+                        disabled={dataPoints.length === 0}
+                      >
+                        导出 CSV
+                      </Button>
+                      <Button
                         type="primary"
                         icon={<CheckOutlined />}
                         disabled={selectedRowKeys.length === 0}
@@ -815,6 +975,11 @@ const LiteratureDetail: React.FC = () => {
                     showSorterTooltip={{ title: '点击排序' }}
                     scroll={{ x: 1400 }}
                     size="middle"
+                    rowClassName={(r: DataPoint) => {
+                      if (r.confidence === 'low') return 'low-confidence-row';
+                      if (!r.is_grounded) return 'ungrounded-row';
+                      return '';
+                    }}
                     rowSelection={{
                       selectedRowKeys,
                       onChange: (keys) => setSelectedRowKeys(keys),
@@ -896,8 +1061,9 @@ const LiteratureDetail: React.FC = () => {
                 style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
               >
                 {id ? (
-                  <PdfViewer
+                  <FilePreview
                     literatureId={id}
+                    filePath={literature?.file_path || null}
                     defaultScale={0.8}
                     maxHeight="100%"
                   />
@@ -973,6 +1139,318 @@ const LiteratureDetail: React.FC = () => {
             </>
           );
         })()}
+      </Modal>
+
+      <Modal
+        title={
+          <div
+            onMouseDown={handleModalDragMouseDown}
+            style={{ cursor: 'move', userSelect: 'none', display: 'inline-block', width: '100%' }}
+          >
+            <PlusOutlined /> 新增数据点 <span style={{ fontSize: 12, color: '#999', marginLeft: 8 }}>(可拖拽移动)</span>
+          </div>
+        }
+        open={addModalOpen}
+        onCancel={() => setAddModalOpen(false)}
+        onOk={async () => {
+          if (!id) return;
+          setAddSaving(true);
+          try {
+            await createDataPoint(id, addForm);
+            message.success('数据点已添加');
+            setAddModalOpen(false);
+            fetchData();
+          } catch (err) {
+            console.error('[LiteratureDetail] 手动新增数据点失败:', err);
+            message.error('添加失败');
+          } finally {
+            setAddSaving(false);
+          }
+        }}
+        confirmLoading={addSaving}
+        okText="添加"
+        cancelText="取消"
+        width={640}
+        mask={false}
+        maskClosable={false}
+        style={{ left: addModalPos.x, top: addModalPos.y, pointerEvents: 'auto' }}
+        wrapProps={{ style: { pointerEvents: 'none' } }}
+        modalRender={(node) => <div style={{ pointerEvents: 'auto' }}>{node}</div>}
+      >
+        <Row gutter={[16, 12]}>
+          <Col span={8}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>疾病</div>
+            <Select
+              style={{ width: '100%' }}
+              size="small"
+              placeholder="选择疾病"
+              allowClear
+              value={addForm.disease as string | undefined}
+              onChange={(v) => setAddForm((f) => ({ ...f, disease: v || null }))}
+              options={DISEASES.map((d) => ({ value: d.key, label: d.name_cn }))}
+            />
+          </Col>
+          <Col span={8}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>数据类型</div>
+            <Select
+              style={{ width: '100%' }}
+              size="small"
+              placeholder="选择类型"
+              allowClear
+              value={addForm.data_type as string | undefined}
+              onChange={(v) => setAddForm((f) => ({ ...f, data_type: v || null }))}
+              options={Object.entries(DATA_TYPE_LABEL).map(([k, label]) => ({ value: k, label }))}
+            />
+          </Col>
+          <Col span={8}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>置信度</div>
+            <Select
+              style={{ width: '100%' }}
+              size="small"
+              value={addForm.confidence as string}
+              onChange={(v) => setAddForm((f) => ({ ...f, confidence: v }))}
+              options={[
+                { value: 'high', label: '高' },
+                { value: 'medium', label: '中' },
+                { value: 'low', label: '低' },
+              ]}
+            />
+          </Col>
+          <Col span={8}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>省份</div>
+            <Select
+              style={{ width: '100%' }}
+              size="small"
+              placeholder="选择省份"
+              allowClear
+              showSearch
+              value={addForm.province as string | undefined}
+              onChange={(v) => setAddForm((f) => ({ ...f, province: v || null }))}
+              options={PROVINCES.map((p) => ({ value: p, label: p }))}
+            />
+          </Col>
+          <Col span={8}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>城市</div>
+            <Input
+              size="small"
+              placeholder="输入城市"
+              value={addForm.city as string | undefined}
+              onChange={(e) => setAddForm((f) => ({ ...f, city: e.target.value || null }))}
+            />
+          </Col>
+          <Col span={8}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>群体</div>
+            <Input
+              size="small"
+              placeholder="如：儿童、学生"
+              value={addForm.population as string | undefined}
+              onChange={(e) => setAddForm((f) => ({ ...f, population: e.target.value || null }))}
+            />
+          </Col>
+          <Col span={6}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>数值</div>
+            <InputNumber
+              size="small"
+              style={{ width: '100%' }}
+              placeholder="数值"
+              value={addForm.value as number | undefined}
+              onChange={(v) => setAddForm((f) => ({ ...f, value: v ?? null }))}
+              step={0.1}
+            />
+          </Col>
+          <Col span={6}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>单位</div>
+            <Input
+              size="small"
+              placeholder="如：%、IU/mL"
+              value={addForm.unit as string | undefined}
+              onChange={(e) => setAddForm((f) => ({ ...f, unit: e.target.value || null }))}
+            />
+          </Col>
+          <Col span={6}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>样本量</div>
+            <InputNumber
+              size="small"
+              style={{ width: '100%' }}
+              placeholder="样本量"
+              value={addForm.sample_size as number | undefined}
+              onChange={(v) => setAddForm((f) => ({ ...f, sample_size: v ?? null }))}
+              min={0}
+            />
+          </Col>
+          <Col span={6}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>采集年份</div>
+            <InputNumber
+              size="small"
+              style={{ width: '100%' }}
+              placeholder="年份"
+              value={addForm.collection_year as number | undefined}
+              onChange={(v) => setAddForm((f) => ({ ...f, collection_year: v ?? null }))}
+              min={1900}
+              max={2100}
+            />
+          </Col>
+          <Col span={6}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>年龄下限</div>
+            <InputNumber
+              size="small"
+              style={{ width: '100%' }}
+              placeholder="最小年龄"
+              value={addForm.age_min as number | undefined}
+              onChange={(v) => setAddForm((f) => ({ ...f, age_min: v ?? null }))}
+              min={0}
+              max={150}
+            />
+          </Col>
+          <Col span={6}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>年龄上限</div>
+            <InputNumber
+              size="small"
+              style={{ width: '100%' }}
+              placeholder="最大年龄"
+              value={addForm.age_max as number | undefined}
+              onChange={(v) => setAddForm((f) => ({ ...f, age_max: v ?? null }))}
+              min={0}
+              max={150}
+            />
+          </Col>
+          <Col span={6}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>方法</div>
+            <Input
+              size="small"
+              placeholder="检测方法"
+              value={addForm.method as string | undefined}
+              onChange={(e) => setAddForm((f) => ({ ...f, method: e.target.value || null }))}
+            />
+          </Col>
+          <Col span={6}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>试剂/试纸</div>
+            <Input
+              size="small"
+              placeholder="试剂/试纸"
+              value={addForm.assay as string | undefined}
+              onChange={(e) => setAddForm((f) => ({ ...f, assay: e.target.value || null }))}
+            />
+          </Col>
+          <Col span={12}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>来源页码</div>
+            <InputNumber
+              size="small"
+              style={{ width: '100%' }}
+              placeholder="页码"
+              value={addForm.source_page as number | undefined}
+              onChange={(v) => setAddForm((f) => ({ ...f, source_page: v ?? null }))}
+              min={1}
+            />
+          </Col>
+          <Col span={12}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>字符区间 [start, end)</div>
+            <Space size={4}>
+              <InputNumber
+                size="small"
+                style={{ width: 120 }}
+                placeholder="起始"
+                min={0}
+                value={addForm.source_char_start as number | undefined}
+                onChange={(v) => setAddForm((f) => ({ ...f, source_char_start: v ?? null }))}
+              />
+              <InputNumber
+                size="small"
+                style={{ width: 120 }}
+                placeholder="结束"
+                min={0}
+                value={addForm.source_char_end as number | undefined}
+                onChange={(v) => setAddForm((f) => ({ ...f, source_char_end: v ?? null }))}
+              />
+            </Space>
+          </Col>
+          <Col span={24}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>原文依据</div>
+            <Input.TextArea
+              rows={2}
+              placeholder="输入原文依据上下文"
+              value={addForm.source_context as string | undefined}
+              onChange={(e) => setAddForm((f) => ({ ...f, source_context: e.target.value || null }))}
+            />
+          </Col>
+          <Col span={24} style={{ marginBottom: 4 }}>
+            <div
+              style={{
+                fontSize: 12,
+                color: addForm.is_grounded ? '#389e0d' : '#b82601',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
+              <span>
+                溯源状态：
+                {addForm.is_grounded
+                  ? '已匹配原文（用户手动确认）'
+                  : '未匹配 / 未确认'}
+              </span>
+              <Button
+                size="small"
+                type={addForm.is_grounded ? 'default' : 'primary'}
+                onClick={() =>
+                  setAddForm((f) => ({ ...f, is_grounded: !f.is_grounded }))
+                }
+              >
+                {addForm.is_grounded ? '取消确认' : '手动标记为已匹配'}
+              </Button>
+            </div>
+          </Col>
+        </Row>
+      </Modal>
+
+      {/* P2：溯源查看弹窗 */}
+      <Modal
+        title="溯源查看 — 原文高亮"
+        open={sourceModalOpen}
+        onCancel={() => setSourceModalOpen(false)}
+        footer={null}
+        width={800}
+        styles={{ body: { maxHeight: '60vh', overflow: 'auto' } }}
+      >
+        {sourceLoading ? (
+          <div style={{ textAlign: 'center', padding: '40px 0' }}>
+            <Spin tip="加载原文中..." />
+          </div>
+        ) : sourceText ? (
+          <div
+            style={{
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+              lineHeight: 1.8,
+              fontSize: 14,
+              fontFamily: "'Consolas', 'Monaco', monospace",
+              background: '#fafafa',
+              padding: 16,
+              borderRadius: 6,
+              border: '1px solid #e8e8e8',
+            }}
+          >
+            {(() => {
+              if (sourceHighlightStart == null || sourceHighlightEnd == null) {
+                return sourceText;
+              }
+              const before = sourceText.substring(0, sourceHighlightStart);
+              const highlight = sourceText.substring(sourceHighlightStart, sourceHighlightEnd);
+              const after = sourceText.substring(sourceHighlightEnd);
+              return (
+                <>
+                  {before}
+                  <span className="source-highlight">{highlight}</span>
+                  {after}
+                </>
+              );
+            })()}
+          </div>
+        ) : (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+            未能获取溯源文本。该文献可能尚未提取，或溯源文本缓存不存在，请重新提取该文献。
+          </div>
+        )}
       </Modal>
     </>
   );

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Card, Row, Col, Statistic, Spin, message, Table, Select, InputNumber, Button, Slider, Segmented, Space, Tooltip, Tag } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts';
-import { SearchOutlined, ReloadOutlined, PlayCircleOutlined, PauseCircleOutlined, StepBackwardOutlined, StepForwardOutlined, CalendarOutlined, SyncOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { SearchOutlined, ReloadOutlined, PlayCircleOutlined, PauseCircleOutlined, StepBackwardOutlined, StepForwardOutlined, CalendarOutlined, SyncOutlined, ArrowLeftOutlined, DownloadOutlined } from '@ant-design/icons';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import MapSelector from '../components/MapSelector';
@@ -429,6 +429,23 @@ const MapOverview: React.FC = () => {
           </Col>
           <Col>
             <Button icon={<ReloadOutlined />} onClick={() => { stopPlay(); yearRangeAutoRef.current = false; reset(); dynamicMode === 'timeline' ? fetchYearlyData() : fetchData(); }}>重置</Button>
+          </Col>
+          <Col>
+            <Button icon={<DownloadOutlined />} onClick={() => {
+              const params = new URLSearchParams();
+              if (disease) params.set('disease', disease);
+              if (dataType) params.set('data_type', dataType);
+              if (province) params.set('province', province);
+              if (yearStart) params.set('year_start', String(yearStart));
+              if (yearEnd) params.set('year_end', String(yearEnd));
+              if (ageMin != null) params.set('age_min', String(ageMin));
+              if (ageMax != null) params.set('age_max', String(ageMax));
+              if (gender) params.set('gender', gender);
+              if (occupation) params.set('occupation', occupation);
+              window.open(`/api/v1/map/export-data-points?${params.toString()}`);
+            }}>
+              导出 CSV
+            </Button>
           </Col>
         </Row>
       </Card>

@@ -3,14 +3,12 @@
 按文件扩展名分发到对应解析器，统一返回纯文本：
 - .pdf  → PyMuPDF（复用 pdf_parser，含 OCR 兜底）
 - .caj  → caj2pdf 转 PDF → PyMuPDF（尽力而为，失败抛 RuntimeError）
-- .epub → ebooklib 读 XHTML → bs4 取文本
-- .docx → python-docx 取段落
-- .txt  → utf-8 解码（回退 gbk/gb18030）
-- .html/.htm → bs4 去标签取文本
+- .epub/.docx/.pptx/.xlsx/.txt/.html/.htm → 策略模式解析器（processors 包）
+  各格式独立解析器类，通过 @register_parser 装饰器注册到 _PARSER_REGISTRY，
+  新增格式只需在 processors 包下新建文件并注册。
 
 MIME 映射表供上传校验、文件服务、MinIO 上传共用。
 """
-import io
 import logging
 import shutil
 import subprocess
@@ -18,6 +16,7 @@ import tempfile
 from pathlib import Path
 
 from app.core.pdf_parser import extract_text as pdf_extract_text
+from app.core.processors import get_parser
 
 logger = logging.getLogger("uvicorn")
 
@@ -27,6 +26,8 @@ MIME_MAP = {
     ".caj": "application/octet-stream",
     ".epub": "application/epub+zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".txt": "text/plain",
     ".html": "text/html",
     ".htm": "text/html",
@@ -35,7 +36,7 @@ MIME_MAP = {
 ALLOWED_EXTS = set(MIME_MAP.keys())
 
 # 标题清理时需识别的已知后缀（顺序无关，仅取首个匹配）
-_KNOWN_EXTS = (".pdf", ".caj", ".epub", ".docx", ".txt", ".html", ".htm")
+_KNOWN_EXTS = (".pdf", ".caj", ".epub", ".docx", ".pptx", ".xlsx", ".txt", ".html", ".htm")
 
 
 def get_mime_type(file_ext: str) -> str:
@@ -58,92 +59,46 @@ def extract_text(file_bytes: bytes, file_ext: str = ".pdf") -> str:
     """按扩展名分发到对应解析器，提取纯文本。
 
     CAJ 转换失败时抛 RuntimeError（由上层捕获并标记 failed），
-    其他格式解析异常返回空串（上层据此判断"文本为空"）。
+    PDF 使用 pdf_parser（含 OCR 兜底），其他格式使用策略模式解析器。
     """
     ext = normalize_ext(file_ext)
+    byte_len = len(file_bytes)
+    logger.info(f"[文档解析] 开始解析: 格式={ext}, 文件大小={byte_len} 字节")
 
     try:
         if ext == ".pdf":
-            return pdf_extract_text(file_bytes)
+            result = pdf_extract_text(file_bytes)
+            text_len = len(result)
+            logger.info(f"[文档解析] PDF 解析完成: {text_len} 字符 (含 OCR 兜底)")
+            return result
+
         if ext == ".caj":
+            logger.info("[文档解析] CAJ 格式，准备调用 caj2pdf 转换...")
             pdf_bytes = _caj_to_pdf_bytes(file_bytes)
-            return pdf_extract_text(pdf_bytes)
-        if ext == ".epub":
-            return _extract_epub(file_bytes)
-        if ext == ".docx":
-            return _extract_docx(file_bytes)
-        if ext == ".txt":
-            return _extract_txt(file_bytes)
-        if ext in (".html", ".htm"):
-            return _extract_html(file_bytes)
+            logger.info(f"[文档解析] CAJ 转换成功: {len(pdf_bytes)} 字节 PDF")
+            result = pdf_extract_text(pdf_bytes)
+            logger.info(f"[文档解析] CAJ 解析完成: {len(result)} 字符")
+            return result
+
+        # 策略模式：从 processors 注册表获取解析器
+        parser = get_parser(ext)
+        if parser is not None:
+            parser_name = parser.__class__.__name__
+            logger.info(f"[文档解析] 使用策略模式解析器: {parser_name} (格式={ext})")
+            result = parser.extract_text(file_bytes)
+            text_len = len(result)
+            logger.info(f"[文档解析] {parser_name} 解析完成: {text_len} 字符")
+            return result
+
+        logger.warning(f"[文档解析] 未找到匹配的解析器: {ext}")
         raise ValueError(f"不支持的文件格式: {ext}")
     except RuntimeError:
         # CAJ 转换失败等显式错误，向上传播以便日志明确
+        logger.warning(f"[文档解析] {ext} 解析抛出 RuntimeError，向上传播")
         raise
     except Exception as e:
-        logger.error(f"文件解析失败 ({ext}): {e}")
+        logger.error(f"[文档解析] 文件解析失败 ({ext}): {e}")
         return ""
-
-
-def _extract_epub(file_bytes: bytes) -> str:
-    """从 EPUB 提取文本：ebooklib 读 XHTML → bs4 取文本。"""
-    import ebooklib
-    from ebooklib import epub
-    from bs4 import BeautifulSoup
-
-    # 抑制 ebooklib 的.epub.epubread 非致命警告噪音
-    logging.getLogger("ebooklib").setLevel(logging.ERROR)
-
-    book = epub.read_epub(io.BytesIO(file_bytes))
-    parts = []
-    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
-        soup = BeautifulSoup(item.get_body_content() or b"", "html.parser")
-        text = soup.get_text(separator="\n")
-        if text.strip():
-            parts.append(text.strip())
-    return "\n\n".join(parts)
-
-
-def _extract_docx(file_bytes: bytes) -> str:
-    """从 DOCX 提取段落文本。"""
-    import docx  # python-docx
-
-    document = docx.Document(io.BytesIO(file_bytes))
-    parts = [p.text for p in document.paragraphs if p.text and p.text.strip()]
-    # 表格单元格文本
-    for table in document.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                if cell.text and cell.text.strip():
-                    parts.append(cell.text.strip())
-    return "\n".join(parts)
-
-
-def _extract_txt(file_bytes: bytes) -> str:
-    """纯文本解码：utf-8 → gbk → gb18030 → ignore。"""
-    for enc in ("utf-8", "gbk", "gb18030"):
-        try:
-            return file_bytes.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return file_bytes.decode("utf-8", errors="ignore")
-
-
-def _extract_html(file_bytes: bytes) -> str:
-    """HTML 去标签取文本。"""
-    from bs4 import BeautifulSoup
-
-    html = None
-    for enc in ("utf-8", "gbk"):
-        try:
-            html = file_bytes.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    if html is None:
-        html = file_bytes.decode("utf-8", errors="ignore")
-    soup = BeautifulSoup(html, "html.parser")
-    return soup.get_text(separator="\n")
 
 
 def _caj_to_pdf_bytes(caj_bytes: bytes) -> bytes:

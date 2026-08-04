@@ -12,15 +12,17 @@
 
 | 模块 | 功能 |
 |------|------|
-| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/TXT/HTML 文献、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并** |
-| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商 |
-| **数据审核与编辑** | 人工审核（通过/驳回）、行内编辑（疾病、地区、年龄段、数值等字段） |
+| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**文献列表/数据点导出 CSV** |
+| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取** |
+| **精确字符溯源** | 每个数据点锚定到原文的精确字符区间（`source_char_start/end`），采用精确/模糊/关键短语三级匹配，未匹配自动降级置信度并红色高亮待审 |
+| **长文档分块并行提取** | 超过 2 万字符的文献按段落边界分块、并行调用 LLM 提取，结果自动合并去重 |
+| **强 Schema 约束** | LLM 输出经 JSON Schema 校验（省份枚举、阳性率 0-100% 范围、GMC 正值等），字段违规自动降级置信度 |
+| **数据审核与编辑** | 人工审核（通过/驳回）、行内编辑（疾病、地区、年龄段、数值、**原文依据、溯源字符区间**等字段）、**手动新增数据点**（提取失败时补录） |
 | **地图可视化** | 全国/省级/市级交互式抗体水平热力地图，点击省份钻取市级数据、**时间序列动画自动年份范围** |
-| **数据分析** | 逐年趋势、区域对比、年龄分层、免疫屏障评估（含 WHO 阈值）、**数据覆盖度分析** |
-| **数据覆盖度分析** | 自动统计数据点分布，识别需要审核的数据、**数据缺失提醒**、疾病名称标准化合并 |
+| **数据分析** | 逐年趋势、区域对比、年龄分层、免疫屏障评估（含 WHO 阈值）、**数据覆盖度分析**、**多表单 Excel 数据导出** |
 | **报告生成** | LLM 生成抗体分析报告和疫苗接种策略研判报告，支持在线编辑和下载 |
 | **文件夹监控** | 定期监测指定文件夹，自动导入新文件并触发信息提取 |
-| **PDF 预览** | 基于 pdf.js 的在线 PDF 浏览器，支持分栏布局、面板折叠/展开 |
+| **多格式预览** | PDF 使用 pdf.js 渲染；TXT/HTML/DOCX/PPTX/XLSX/EPUB 显示解析后文本；CAJ 提示下载，支持分栏布局、面板折叠/展开 |
 
 ### 支持的疾病
 
@@ -28,13 +30,15 @@
 
 ### 支持的文件格式
 
-PDF、CAJ、EPUB、DOCX、TXT、HTML（支持中文文献和外文文献）
+PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文文献，解析采用**策略模式**：各格式独立解析器 + 统一注册表分发）
 
 ### 智能特性
 
 - **疾病名称标准化**：自动合并同一疾病的不同名称（如乙肝/乙型病毒性肝炎、甲肝/甲型病毒性肝炎、乙脑/流行性乙型脑炎）
 - **文献重复检测**：基于 DOI、标题、作者、PDF 哈希等多维度自动检测重复文献
 - **文件夹自动监控**：配置本地文件夹后，系统自动监测新文件并导入提取
+- **扫描件 OCR 兜底**：文字层缺失或损坏的扫描 PDF 自动触发 Tesseract OCR（中文+英文），失败可回退云端 OCR
+- **交互式溯源查看**：点击数据点可查看原文上下文并高亮定位字符区间，方便人工核验 LLM 提取结果
 
 ## 技术栈
 
@@ -44,9 +48,10 @@ PDF、CAJ、EPUB、DOCX、TXT、HTML（支持中文文献和外文文献）
 | **后端** | Python 3.10+, FastAPI + Uvicorn, SQLAlchemy 2.0 (async), Celery + Redis, Pydantic 2.0 |
 | **数据库** | PostgreSQL 15 |
 | **存储** | MinIO 对象存储 / 本地文件系统双模式 |
-| **AI/LLM** | OpenAI SDK 兼容协议，支持 DeepSeek / OpenAI / 通义千问 (Qwen) 多厂商 |
-| **PDF 处理** | PyMuPDF (fitz) + Tesseract OCR (中文, 自动探测安装路径) |
-| **运维** | Docker Compose (PostgreSQL + Redis + MinIO), start.sh 一键启动 |
+| **AI/LLM** | OpenAI SDK 兼容协议，支持 DeepSeek / OpenAI / 通义千问 (Qwen) 多厂商；JSON Schema 强约束 + 精确字符级溯源 |
+| **文档解析** | 策略模式解析器注册表：PyMuPDF (fitz) + pdfplumber、python-docx、python-pptx、openpyxl、ebooklib、BeautifulSoup、caj2pdf |
+| **OCR** | Tesseract OCR (中文/英文，自动探测安装路径) + 百度 OCR 云端回退 |
+| **运维** | Docker Compose (PostgreSQL + Redis + MinIO), start.sh / start.ps1 一键启动 |
 
 ## 项目结构
 
@@ -75,10 +80,13 @@ antibody_map01/
 │   │   │       ├── report.py       # 报告生成/CRUD/下载
 │   │   │       └── folder_monitor.py # 文件夹监控 API
 │   │   ├── core/                   # 核心引擎
-│   │   │   ├── llm_extractor.py    # LLM 提取器 (多厂商 + 指数退避重试)
-│   │   │   ├── pdf_parser.py       # PDF 文本解析 (PyMuPDF)
-│   │   │   ├── ocr_service.py      # OCR 服务 (Tesseract 中文)
-│   │   │   ├── document_parser.py  # 多格式文档解析 (PDF/CAJ/EPUB/DOCX/TXT/HTML)
+│   │   │   ├── llm_extractor.py    # LLM 提取器 (多厂商 + 指数退避重试 + 长文档分块并行)
+│   │   │   ├── extraction_grounding.py # 精确字符级溯源 + 强 Schema 校验
+│   │   │   ├── document_parser.py  # 多格式文档解析分发 (策略模式注册表)
+│   │   │   ├── processors/         # 各格式解析器 (docx/pptx/xlsx/epub/html/txt + @register_parser)
+│   │   │   ├── pdf_parser.py       # PDF 文本解析 (PyMuPDF, 乱码/空文本自动走 OCR)
+│   │   │   ├── ocr_service.py      # OCR 服务 (Tesseract 本地 + 百度 OCR 云端回退)
+│   │   │   ├── url_fetcher.py      # URL/HTML 网页抓取与标题提取
 │   │   │   ├── text_preprocessor.py # 文本预处理
 │   │   │   ├── term_normalizer.py  # 术语 / 地名标准化
 │   │   │   └── minio_client.py     # MinIO 客户端
@@ -113,7 +121,7 @@ antibody_map01/
     │   │   ├── Analysis.tsx         # 多维数据分析 (含数据覆盖度)
     │   │   ├── Report.tsx           # 报告生成与管理
     │   │   └── FolderMonitor.tsx    # 文件夹监控管理
-    │   ├── components/              # 公共组件 (PdfViewer, PdfPreviewModal, 选择器等)
+    │   ├── components/              # 公共组件 (PdfViewer, FilePreview, PdfPreviewModal, 选择器等)
     │   ├── services/                # API 服务层 (Axios)
     │   ├── store/                   # Zustand 全局状态管理
     │   ├── types/                   # TypeScript 类型定义
@@ -300,14 +308,19 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/literatures/upload` | 上传文献（支持 PDF/CAJ/EPUB/DOCX/TXT/HTML） |
+| POST | `/literatures/upload` | 上传文献（支持 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML） |
+| POST | `/literatures/from-url` | 从 URL 抓取 HTML 网页创建文献 |
 | GET | `/literatures` | 文献列表 (分页 + 关键词/疾病筛选) |
+| GET | `/literatures/export` | 导出文献列表 CSV（跟随当前筛选条件） |
 | GET | `/literatures/{id}` | 文献详情 |
 | PUT | `/literatures/{id}` | 更新文献元信息 |
 | DELETE | `/literatures/{id}` | 删除文献 |
 | GET | `/literatures/{id}/file` | 获取文献文件流 (在线预览) |
+| GET | `/literatures/{id}/download` | 下载原文件 (attachment) |
+| GET | `/literatures/{id}/source-text` | 获取溯源文本（按字符区间截取，供溯源高亮） |
 | POST | `/literatures/check-duplicate` | 检查单个文献是否重复 |
 | POST | `/literatures/scan-duplicates` | 扫描全库重复文献 |
+| POST | `/literatures/merge/preview` | 合并前预览冲突 |
 | POST | `/literatures/{id}/merge` | 合并重复文献 |
 
 ### 数据提取与审核
@@ -317,6 +330,8 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | POST | `/literatures/{id}/extraction` | 触发 AI 数据提取 (可指定模型/API Key/Base URL) |
 | GET | `/literatures/{id}/extraction/status` | 查询提取任务状态 |
 | GET | `/literatures/{id}/extraction` | 获取提取的数据点列表 |
+| GET | `/literatures/{id}/extraction/export` | 导出数据点 CSV |
+| POST | `/literatures/{id}/extraction/data-points` | 手动新增数据点 |
 | PUT | `/literatures/{id}/extraction` | 编辑数据点字段 + 审核状态更新 |
 | POST | `/literatures/{id}/extraction/confirm` | 批量审核通过 |
 | POST | `/literatures/{id}/extraction/dispute` | 批量驳回 |
@@ -328,6 +343,9 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | GET | `/map/province-data` | 省级抗体水平地图数据 |
 | GET | `/map/city-data` | 市级抗体水平数据 |
 | GET | `/map/summary` | 全国汇总统计 |
+| GET | `/map/yearly-data` | 逐年地图数据（时间序列动画） |
+| GET | `/map/available-years` | 可用年份列表 |
+| GET | `/map/export-data-points` | 导出已审核数据点 CSV（跟随地图筛选条件） |
 
 ### 数据分析
 
@@ -340,6 +358,7 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | GET | `/analysis/summary` | 汇总统计 |
 | GET | `/analysis/approved-data-points` | 已审核数据点列表 |
 | GET | `/analysis/data-gaps` | 数据覆盖度分析（含数据缺失提醒） |
+| GET | `/analysis/export` | 导出分析数据 Excel（多工作表） |
 
 ### 高级检索
 
@@ -405,16 +424,19 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 ## 数据流
 
 ```
-文献上传 (PDF/CAJ/EPUB/DOCX/TXT/HTML)
+文献上传 (PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML) 或 URL 网页导入
     │
     ▼
-多格式文档解析 (PyMuPDF + caj2pdf + ebooklib + python-docx + bs4)
+多格式文档解析 (策略模式注册表：PyMuPDF + pdfplumber / python-docx / python-pptx / openpyxl / ebooklib / bs4 / caj2pdf)
     │
     ▼
-文本预处理 (清洗 OCR 乱码、提取表格数据)
+文本预处理 (清洗 OCR 乱码；文字层缺失或损坏自动触发 Tesseract OCR，可回退云端 OCR)
     │
     ▼
-LLM 结构化提取 (疾病 / 省份 / 阳性率 / GMC / 年龄段 / 样本量 / 采集年份)
+LLM 结构化提取 (疾病 / 省份 / 阳性率 / GMC / 年龄段 / 样本量 / 采集年份；长文档 >2 万字符分块并行)
+    │
+    ▼
+精确字符级溯源 + 强 Schema 校验 (三级匹配定位原文字符区间；省份枚举/数值范围校验，违规降级置信度)
     │
     ▼
 疾病名称标准化 (别名 → 标准名称: 乙型病毒性肝炎→乙肝 等)
@@ -426,13 +448,13 @@ LLM 结构化提取 (疾病 / 省份 / 阳性率 / GMC / 年龄段 / 样本量 /
 文献重复检测 (DOI / 标题 / 作者 / PDF 哈希 多维度比对)
     │
     ▼
-生成 DataPoint 记录 (review_status = pending)
+生成 DataPoint 记录 (review_status = pending, 低置信度红色高亮)
     │
     ▼
-人工审核 + 行内编辑 → approved / rejected
+人工审核 + 行内编辑 (支持手动新增数据点 / 修订溯源字符区间) → approved / rejected
     │
     ▼
-地图可视化 (全国 / 省份 / 城市) + 多维度分析
+地图可视化 (全国 / 省份 / 城市) + 多维度分析 + 数据导出 (CSV / Excel)
     │
     ▼
 数据覆盖度分析 (数据缺失提醒 + 待审核数据统计)
@@ -507,6 +529,34 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.5.0 (2026-08-04)
+
+#### 新功能
+
+- **精确字符级溯源（Grounding）**：每个数据点锚定到原文的精确字符区间（`source_char_start` / `source_char_end`），采用精确匹配、模糊匹配、关键短语匹配三级策略定位，LLM 幻觉产物自动标记 `is_grounded=false`；详情页新增"溯源查看"功能，可在原文中高亮定位字符区间。
+
+- **强 Schema 约束**：LLM 提取结果经结构化校验（省份枚举归一化、血清阳性率 0-100% 范围、GMC/滴度正值校验等），字段违规自动降级置信度等级并红色高亮待审，显著降低无效数据入库。
+
+- **长文档分块并行提取**：超过 2 万字符的文献按段落边界自动分块，并行调用 LLM 提取后合并去重，解决超长文献"大海捞针"导致的提取遗漏。
+
+- **多格式扩展与解析重构**：新增 PPTX / XLSX 文献支持；文档解析重构为**策略模式**（`processors/` 目录 + `@register_parser` 注册表分发）；新增 **URL/HTML 网页导入**（`/literatures/from-url`），自动提取网页标题。
+
+- **云端 OCR 回退**：Tesseract 本地 OCR 基础上新增百度 OCR 云端回退，扫描版文献识别成功率提升。
+
+- **数据导出**：文献列表 CSV、数据点 CSV、地图数据点 CSV、分析结果多工作表 Excel（4 个导出接口）。
+
+- **上传流程优化**：上传文献时可选择**不自动触发 AI 提取**，后续在详情页手动启动。
+
+- **手动新增数据点**：提取失败或遗漏时，可在文献详情页手动补录数据点。
+
+- **多格式在线预览**：非 PDF 文件（TXT/HTML/DOCX/PPTX/XLSX/EPUB）在详情页可查看解析后文本，CAJ 提示下载查看。
+
+#### 优化
+
+- 数据点行内编辑支持修订"原文依据"（页码 + 上下文）与溯源字符区间
+- 上传 / 预览核心链路新增详细日志输出，便于异常排查
+- 新增测试：P0 溯源与 Schema（7 项）、P1 多格式功能（47 项）、P2 分块与可视化（39 项）、日志链路（9 项），累计 100+ 项全部通过
 
 ### v1.4.0 (2026-08-04)
 

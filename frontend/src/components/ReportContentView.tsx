@@ -65,7 +65,8 @@ const ReportContentView: React.FC<Props> = ({ content, editable = false, reportI
       setEditing(false);
       message.success('报告已保存');
       onSaved?.(editContent);
-    } catch {
+    } catch (err) {
+      console.error('[ReportContentView] 保存报告失败:', err);
       message.error('保存失败');
     } finally {
       setSaving(false);

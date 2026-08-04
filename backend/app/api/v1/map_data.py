@@ -1,7 +1,13 @@
+import csv
+import io
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.data_point import DataPoint
 
 from app.api.deps import get_db
 from app.schemas.common import ApiResponse
@@ -108,3 +114,65 @@ async def available_years(
     """获取可用年份列表，用于时间滑块"""
     years = await map_service.get_available_years(db=db, disease=disease)
     return ApiResponse(data=years)
+
+
+@router.get("/map/export-data-points")
+async def export_map_data_points(
+    disease: Optional[str] = Query(None, description="disease key"),
+    data_type: Optional[str] = Query(None, description="data type: seroprevalence | gmc"),
+    province: Optional[str] = Query(None, description="province filter"),
+    age_min: Optional[int] = Query(None, description="minimum age"),
+    age_max: Optional[int] = Query(None, description="maximum age"),
+    year_start: Optional[int] = Query(None, description="start year"),
+    year_end: Optional[int] = Query(None, description="end year"),
+    gender: Optional[str] = Query(None, description="gender"),
+    occupation: Optional[str] = Query(None, description="occupation"),
+    db: AsyncSession = Depends(get_db),
+):
+    """导出已审核数据点为 CSV（地图页筛选条件）"""
+    base = select(DataPoint).where(DataPoint.review_status == "approved")
+    if disease:
+        base = base.where(DataPoint.disease == disease)
+    if data_type:
+        base = base.where(DataPoint.data_type == data_type)
+    if province:
+        base = base.where(DataPoint.province.ilike(f"%{province}%"))
+    if age_min is not None:
+        base = base.where(DataPoint.age_min >= age_min)
+    if age_max is not None:
+        base = base.where(DataPoint.age_max <= age_max)
+    if year_start:
+        base = base.where(DataPoint.collection_year >= year_start)
+    if year_end:
+        base = base.where(DataPoint.collection_year <= year_end)
+    if gender:
+        base = base.where(DataPoint.population.ilike(f"%{gender}%"))
+    if occupation:
+        base = base.where(DataPoint.population.ilike(f"%{occupation}%"))
+
+    result = await db.execute(base)
+    rows = result.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "疾病", "省份", "城市", "数据类型", "数值", "单位", "样本量",
+        "年龄下限", "年龄上限", "采集年份", "置信度", "人群",
+        "检测方法", "assay", "CI下限", "CI上限", "审核状态",
+    ])
+    for dp in rows:
+        writer.writerow([
+            dp.disease, dp.province, dp.city, dp.data_type,
+            float(dp.value) if dp.value else None, dp.unit, dp.sample_size,
+            dp.age_min, dp.age_max, dp.collection_year, dp.confidence,
+            dp.population, dp.method, dp.assay,
+            float(dp.ci_lower) if dp.ci_lower else None,
+            float(dp.ci_upper) if dp.ci_upper else None,
+            dp.review_status,
+        ])
+
+    return Response(
+        content=output.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''map_data_points.csv"},
+    )

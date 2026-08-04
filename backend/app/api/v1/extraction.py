@@ -3,7 +3,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import csv
+import io
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +47,12 @@ class DataPointReviewItem(BaseModel):
     confidence: Optional[str] = None
     method: Optional[str] = None
     assay: Optional[str] = None
+    source_page: Optional[int] = None
+    source_context: Optional[str] = None
+    # P0 新增：精确字符级溯源
+    source_char_start: Optional[int] = None
+    source_char_end: Optional[int] = None
+    is_grounded: Optional[bool] = None
 
 
 class UpdateDataPointsRequest(BaseModel):
@@ -58,6 +68,30 @@ class ExtractionRequest(BaseModel):
     model: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+
+
+class CreateDataPointRequest(BaseModel):
+    """手动新增数据点"""
+    disease: Optional[str] = None
+    province: Optional[str] = None
+    city: Optional[str] = None
+    data_type: Optional[str] = None
+    value: Optional[float] = None
+    unit: Optional[str] = None
+    sample_size: Optional[int] = None
+    population: Optional[str] = None
+    age_min: Optional[float] = None
+    age_max: Optional[float] = None
+    collection_year: Optional[int] = None
+    confidence: Optional[str] = "medium"
+    method: Optional[str] = None
+    assay: Optional[str] = None
+    source_page: Optional[int] = None
+    source_context: Optional[str] = None
+    # P0 新增：精确字符级溯源
+    source_char_start: Optional[int] = None
+    source_char_end: Optional[int] = None
+    is_grounded: bool = False
 
 
 # ── 提取相关路由 ────────────────────────────────────────
@@ -112,6 +146,108 @@ async def get_results(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.get("/literatures/{literature_id}/extraction/export")
+async def export_data_points(
+    literature_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """导出文献的数据点为 CSV"""
+    data_points = await get_extraction_results(db, literature_id)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "疾病", "省份", "城市", "数据类型", "数值", "单位", "样本量",
+        "年龄下限", "年龄上限", "采集年份", "置信度", "审核状态", "来源页码",
+        "原文依据", "溯源区间", "是否已匹配原文",
+    ])
+    for dp in data_points:
+        interval = ""
+        if dp.get("source_char_start") is not None and dp.get("source_char_end") is not None:
+            interval = f"[{dp['source_char_start']}, {dp['source_char_end']})"
+        writer.writerow([
+            dp.get("disease", ""),
+            dp.get("province", ""),
+            dp.get("city", ""),
+            dp.get("data_type", ""),
+            dp.get("value"),
+            dp.get("unit", ""),
+            dp.get("sample_size"),
+            dp.get("age_min"),
+            dp.get("age_max"),
+            dp.get("collection_year"),
+            dp.get("confidence", ""),
+            dp.get("review_status", ""),
+            dp.get("source_page", ""),
+            (dp.get("source_context") or "").replace("\n", " "),
+            interval,
+            "是" if dp.get("is_grounded") else "否",
+        ])
+
+    return Response(
+        content=output.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''data_points_{literature_id}.csv"},
+    )
+
+
+@router.post("/literatures/{literature_id}/extraction/data-points", response_model=ApiResponse)
+async def create_data_point(
+    literature_id: uuid.UUID,
+    req: CreateDataPointRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """手动新增数据点"""
+    # 验证文献存在
+    result = await db.execute(
+        select(Literature).where(Literature.id == literature_id)
+    )
+    literature = result.scalar_one_or_none()
+    if not literature:
+        raise HTTPException(status_code=404, detail="文献不存在")
+
+    # 创建数据点
+    dp = DataPoint(
+        literature_id=literature_id,
+        disease=req.disease,
+        province=req.province,
+        city=req.city,
+        data_type=req.data_type,
+        value=req.value,
+        unit=req.unit,
+        sample_size=req.sample_size,
+        population=req.population,
+        age_min=req.age_min,
+        age_max=req.age_max,
+        collection_year=req.collection_year,
+        confidence=req.confidence or "medium",
+        method=req.method,
+        assay=req.assay,
+        source_page=req.source_page,
+        source_context=req.source_context,
+        # P0 新增：精确字符级溯源
+        source_char_start=req.source_char_start,
+        source_char_end=req.source_char_end,
+        is_grounded=bool(req.is_grounded),
+        review_status="pending",
+    )
+    db.add(dp)
+    await db.flush()
+
+    # 更新文献提取状态和计数
+    if literature.extraction_status in (None, "", "failed", "pending"):
+        literature.extraction_status = "done"
+    literature.extracted_count = (literature.extracted_count or 0) + 1
+    literature.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+
+    return ApiResponse(
+        message="数据点已添加",
+        data={"id": str(dp.id)},
+    )
+
+
 # ── 审核相关路由 ────────────────────────────────────────
 
 @router.put("/literatures/{literature_id}/extraction", response_model=ApiResponse)
@@ -125,7 +261,9 @@ async def update_data_points(
     editable_fields = [
         "disease", "province", "city", "data_type", "value", "unit",
         "sample_size", "population", "age_min", "age_max", "collection_year",
-        "confidence", "method", "assay",
+        "confidence", "method", "assay", "source_page", "source_context",
+        # P0 新增：精确字符级溯源
+        "source_char_start", "source_char_end", "is_grounded",
     ]
 
     for item in req.data_points:

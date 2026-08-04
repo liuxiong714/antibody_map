@@ -1,5 +1,6 @@
 import logging
 import io
+import re
 from typing import Optional
 
 try:
@@ -27,6 +28,8 @@ def extract_text(file_bytes: bytes) -> str:
 
     # 单页有效文本少于该字符数 → 判定为扫描页/文字层损坏页，交给 OCR
     PAGE_TEXT_MIN = 100
+    # 文本中数字字符少于该值 → 疑似字体编码损坏的乱码文本，也交给 OCR
+    PAGE_DIGIT_MIN = 3
 
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -37,7 +40,8 @@ def extract_text(file_bytes: bytes) -> str:
             page = doc[page_num]
             # 先尝试直接提取文本
             page_text = page.get_text("text").strip()
-            if len(page_text) >= PAGE_TEXT_MIN:
+            digit_count = len(re.findall(r"\d", page_text))
+            if len(page_text) >= PAGE_TEXT_MIN and digit_count >= PAGE_DIGIT_MIN:
                 full_text_parts.append(page_text)
             else:
                 # 无文本或文本过短（扫描件/文字层损坏），整页交给 OCR

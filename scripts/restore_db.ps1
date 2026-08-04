@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # 数据库恢复导入脚本 (Windows PowerShell)
 # 用法: .\scripts\restore_db.ps1 -BackupFile backups\latest_backup.sql
 # 作用: 将备份的 SQL 文件导入到新的 PostgreSQL 数据库中

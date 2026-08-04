@@ -55,7 +55,8 @@ const DuplicateScanPanel: React.FC<DuplicateScanPanelProps> = ({ open, onClose, 
         }
         setLitMap(map);
       }
-    } catch {
+    } catch (err) {
+      console.error('[DuplicateScanPanel] 扫描重复文献失败:', err);
       message.error('扫描失败，请重试');
     } finally {
       setLoading(false);

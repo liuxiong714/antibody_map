@@ -129,6 +129,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
 
     // 并行渲染（限制并发数）
     const batchSize = 4;
+    console.log(`[PdfViewer] 渲染批次: range=[${start}-${end}], toRender=${toRender.length} 页`);
     for (let i = 0; i < toRender.length; i += batchSize) {
       const batch = toRender.slice(i, i + batchSize);
       const results = await Promise.allSettled(
@@ -137,6 +138,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       results.forEach((r, idx) => {
         if (r.status === 'fulfilled' && r.value) {
           mountCanvas(batch[idx], r.value);
+        } else if (r.status === 'rejected') {
+          console.error(`[PdfViewer] 页面渲染失败: page=${batch[idx]}`, r.reason);
         }
       });
     }
@@ -190,6 +193,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
 
   const loadPdf = useCallback(async () => {
     if (!literatureId) return;
+    console.log(`[PdfViewer] 开始加载 PDF: literatureId=${literatureId}`);
     setLoading(true);
     try {
       // 清理之前的状态
@@ -202,14 +206,18 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
 
       const url = `/api/v1/literatures/${literatureId}/file`;
+      console.log(`[PdfViewer] 预检请求: ${url}`);
 
       // 预检：先 fetch 检查文件是否存在，避免 PDF.js 内部抛出 ERR_ABORTED 控制台错误
       const response = await fetch(url);
+      console.log(`[PdfViewer] 预检响应: status=${response.status}, ok=${response.ok}`);
       if (!response.ok) {
         if (mountedRef.current) {
           if (response.status === 404) {
+            console.error(`[PdfViewer] 文件不存在: literatureId=${literatureId}`);
             message.error('文献不存在或文件已丢失，可能已被删除或合并');
           } else {
+            console.error(`[PdfViewer] 文件加载失败 HTTP ${response.status}: literatureId=${literatureId}`);
             message.error(`文件加载失败 (HTTP ${response.status})`);
           }
         }
@@ -219,6 +227,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
 
       // 将文件转为 blob URL 供 PDF.js 加载（当前已禁用 range/stream，整体下载无性能差异）
       const blob = await response.blob();
+      console.log(`[PdfViewer] 文件下载完成: size=${blob.size} bytes, type=${blob.type}`);
       const blobUrl = URL.createObjectURL(blob);
       blobUrlRef.current = blobUrl;
 
@@ -229,7 +238,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         useSystemFonts: true,
         standardFontDataUrl: STANDARD_FONTS_URL,
       });
+      console.log(`[PdfViewer] 调用 pdfjsLib.getDocument 解析 PDF...`);
       const pdf = await loadingTask.promise;
+      console.log(`[PdfViewer] PDF 解析成功: numPages=${pdf.numPages}`);
       pdfRef.current = pdf;
       setNumPages(pdf.numPages);
       setCurrentPage(1);
@@ -245,17 +256,21 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       allDimsRef.current = dims;
       firstPageWidthRef.current = dims[0]?.w || 0;
       setPageDims(dims);
+      console.log(`[PdfViewer] 页面尺寸计算完成: ${dims.length} 页, 首页宽=${dims[0]?.w}, 首页高=${dims[0]?.h}`);
 
       // 计算适合宽度的缩放
       const fit = calcFitWidthScale();
       const useScale = fit || defaultScale;
+      console.log(`[PdfViewer] 缩放计算: fitWidth=${fit}, defaultScale=${defaultScale}, useScale=${useScale}`);
       setScale(useScale);
 
       setLoading(false);
+      console.log(`[PdfViewer] PDF 加载流程完成，等待 setupObserver`);
 
       // 延迟设置 observer（等待 React 渲染出占位符）
       setTimeout(() => setupObserver(), 100);
-    } catch {
+    } catch (err) {
+      console.error(`[PdfViewer] PDF 加载异常: literatureId=${literatureId}`, err);
       if (mountedRef.current) {
         message.error('PDF 加载失败，请确认文件是否存在');
       }

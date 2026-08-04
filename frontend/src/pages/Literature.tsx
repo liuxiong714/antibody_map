@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography,
+  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import DiseaseSelector from '../components/DiseaseSelector';
@@ -10,7 +10,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, checkDuplicate } from '../services/literature';
+import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, checkDuplicate, createLiteratureFromUrl } from '../services/literature';
 import { Literature, DuplicateMatchItem, MergeResult } from '../types';
 import { MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
 import { formatAuthors, truncate } from '../utils/format';
@@ -76,7 +76,7 @@ const LiteraturePage: React.FC = () => {
     console.log('[文献列表] 进入详情页前保存状态:', payload);
     try {
       sessionStorage.setItem(LIST_STATE_KEY, JSON.stringify(payload));
-    } catch { /* ignore */ }
+    } catch (err) { console.error('[Literature] 保存列表状态失败:', err); /* ignore */ }
     navigate(`/literature/${litId}`);
   };
 
@@ -101,6 +101,13 @@ const LiteraturePage: React.FC = () => {
     open: false, sourceId: '', targetId: '', sourceTitle: '', targetTitle: '',
   });
 
+  // URL 导入
+  const [urlModalOpen, setUrlModalOpen] = useState(false);
+  const [urlInput, setUrlInput] = useState('');
+  const [urlTitle, setUrlTitle] = useState('');
+  const [urlProvince, setUrlProvince] = useState('');
+  const [urlImporting, setUrlImporting] = useState(false);
+
   const fetchList = useCallback(async () => {
     setLoading(true);
     try {
@@ -117,7 +124,8 @@ const LiteraturePage: React.FC = () => {
       const resp = await listLiterature(params);
       setItems(resp.items);
       setTotal(resp.total);
-    } catch {
+    } catch (err) {
+      console.error('[Literature] 加载文献列表失败:', err);
       message.error('加载文献列表失败');
     } finally {
       setLoading(false);
@@ -131,7 +139,8 @@ const LiteraturePage: React.FC = () => {
       await deleteLiterature(id);
       message.success('删除成功');
       fetchList();
-    } catch {
+    } catch (err) {
+      console.error('[Literature] 删除文献失败:', err);
       message.error('删除失败');
     }
   };
@@ -152,6 +161,7 @@ const LiteraturePage: React.FC = () => {
     const model = values.model;
     const apiKey = values.apiKey || undefined;
     const baseUrl = values.baseUrl || undefined;
+    const autoExtract = values.autoExtract !== false; // 默认 true
     const dupResults: { litId: string; litTitle: string; duplicates: DuplicateMatchItem[] }[] = [];
 
     for (let i = 0; i < files.length; i++) {
@@ -169,10 +179,12 @@ const LiteraturePage: React.FC = () => {
         const resp = await uploadLiterature(fd);
 
         if (resp?.id) {
-          if (model && model !== '') {
-            await triggerExtraction(resp.id, { model, apiKey, baseUrl });
-          } else {
-            await triggerExtraction(resp.id);
+          if (autoExtract) {
+            if (model && model !== '') {
+              await triggerExtraction(resp.id, { model, apiKey, baseUrl });
+            } else {
+              await triggerExtraction(resp.id);
+            }
           }
           // 上传后查重
           try {
@@ -180,10 +192,11 @@ const LiteraturePage: React.FC = () => {
             if (dup.total > 0) {
               dupResults.push({ litId: resp.id, litTitle: resp.title || file.name, duplicates: dup.duplicates });
             }
-          } catch { /* 查重失败不阻塞 */ }
+          } catch (err) { console.error('[Literature] 查重失败:', err); /* 查重失败不阻塞 */ }
         }
         successCount++;
-      } catch {
+      } catch (err) {
+        console.error('[Literature] 上传文件失败:', err);
         failCount++;
       }
     }
@@ -198,7 +211,7 @@ const LiteraturePage: React.FC = () => {
 
     if (files.length === 1) {
       if (successCount === 1) {
-        message.success('上传成功，已启动 AI 提取');
+        message.success(autoExtract ? '上传成功，已启动 AI 提取' : '上传成功（未启动 AI 提取，可后续手动提取）');
       } else {
         message.error('上传失败');
       }
@@ -207,7 +220,7 @@ const LiteraturePage: React.FC = () => {
       if (failCount > 0) {
         message.warning(`${msg}，失败 ${failCount} 个`);
       } else {
-        message.success(`${msg}，已全部启动 AI 提取`);
+        message.success(autoExtract ? `${msg}，已全部启动 AI 提取` : `${msg}（未启动 AI 提取，可后续手动提取）`);
       }
     }
 
@@ -241,7 +254,8 @@ const LiteraturePage: React.FC = () => {
       message.success(`已使用 ${MODEL_OPTIONS.find((o) => o.value === extractModel)?.label || '默认模型'} 启动 AI 提取`);
       setExtractModalOpen(false);
       fetchList();
-    } catch {
+    } catch (err) {
+      console.error('[Literature] 提取失败:', err);
       message.error('提取失败，请检查后端服务是否正常');
     } finally {
       setExtracting(false);
@@ -515,8 +529,29 @@ const LiteraturePage: React.FC = () => {
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
             上传文献
           </Button>
+          <Button icon={<LinkOutlined />} onClick={() => {
+            setUrlInput('');
+            setUrlTitle('');
+            setUrlProvince('');
+            setUrlModalOpen(true);
+          }}>
+            从 URL 导入
+          </Button>
           <Button icon={<CopyOutlined />} onClick={() => setScanOpen(true)}>
             扫描重复
+          </Button>
+          <Button icon={<ExportOutlined />} onClick={() => {
+            const params = new URLSearchParams();
+            if (keyword) params.set('keyword', keyword);
+            if (disease) params.set('disease', disease);
+            if (province) params.set('province', province);
+            if (yearStart) params.set('year_start', String(yearStart));
+            if (yearEnd) params.set('year_end', String(yearEnd));
+            if (journal) params.set('journal', journal);
+            if (reviewStatus) params.set('review_status', reviewStatus);
+            window.open(`/api/v1/literatures/export?${params.toString()}`);
+          }}>
+            导出 CSV
           </Button>
         </Space>
       </Card>
@@ -553,7 +588,7 @@ const LiteraturePage: React.FC = () => {
       >
         <Form form={form} layout="vertical">
           <Form.Item name="file" label="文献文件（支持多选）" rules={[{ required: true, message: '请选择文件' }]} valuePropName="fileList" getValueFromEvent={(e: any) => e?.fileList}>
-            <Upload beforeUpload={() => false} accept=".pdf,.caj,.epub,.docx,.txt,.html,.htm" maxCount={20} multiple>
+            <Upload beforeUpload={() => false} accept=".pdf,.caj,.epub,.docx,.pptx,.xlsx,.txt,.html,.htm" maxCount={20} multiple>
               <Button icon={<UploadOutlined />}>选择文献文件（可多选）</Button>
             </Upload>
           </Form.Item>
@@ -568,6 +603,9 @@ const LiteraturePage: React.FC = () => {
           </Form.Item>
           <Form.Item name="model" label="AI 提取模型">
             <Select placeholder="默认配置" allowClear options={MODEL_OPTIONS} disabled={uploading} />
+          </Form.Item>
+          <Form.Item name="autoExtract" valuePropName="checked" initialValue={true}>
+            <Checkbox disabled={uploading}>上传后自动启动 AI 提取（取消则仅上传文件，后续可手动提取）</Checkbox>
           </Form.Item>
           <Form.Item noStyle dependencies={['model']}>
             {({ getFieldValue }) => {
@@ -606,6 +644,60 @@ const LiteraturePage: React.FC = () => {
             </div>
           )}
         </Form>
+      </Modal>
+
+      {/* URL 导入对话框 */}
+      <Modal
+        title={<><LinkOutlined /> 从 URL 导入文献</>}
+        open={urlModalOpen}
+        onCancel={() => { setUrlModalOpen(false); setUrlInput(''); setUrlTitle(''); setUrlProvince(''); }}
+        onOk={async () => {
+          if (!urlInput.trim()) { message.error('请输入 URL'); return; }
+          setUrlImporting(true);
+          try {
+            const lit = await createLiteratureFromUrl(
+              urlInput.trim(),
+              urlTitle.trim() || undefined,
+              urlProvince.trim() || undefined,
+            );
+            message.success(`URL 导入成功：${lit.title || lit.id}`);
+            setUrlModalOpen(false);
+            setUrlInput('');
+            setUrlTitle('');
+            setUrlProvince('');
+            fetchList();
+          } catch (err) {
+            console.error('[Literature] URL 导入失败:', err);
+            message.error('URL 导入失败');
+          } finally {
+            setUrlImporting(false);
+          }
+        }}
+        confirmLoading={urlImporting}
+        okText="导入"
+        width={520}
+      >
+        <div style={{ marginBottom: 16, color: '#888' }}>
+          输入网页 URL，系统将自动抓取页面 HTML 内容并创建文献记录。
+        </div>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Input
+            placeholder="https://example.com/article"
+            value={urlInput}
+            onChange={(e) => setUrlInput(e.target.value)}
+            prefix={<LinkOutlined />}
+          />
+          <Input
+            placeholder="文献标题（选填，留空则自动从页面提取）"
+            value={urlTitle}
+            onChange={(e) => setUrlTitle(e.target.value)}
+          />
+          <Input
+            placeholder="关联省份（选填）"
+            value={urlProvince}
+            onChange={(e) => setUrlProvince(e.target.value)}
+          />
+        </Space>
       </Modal>
 
       <Modal

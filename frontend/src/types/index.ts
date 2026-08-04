@@ -51,7 +51,12 @@ export interface DataPoint {
   review_status: string;
   source_context: string | null;
   source_page: number | null;
+  // P0 新增：精确字符级溯源字段
+  source_char_start: number | null;
+  source_char_end: number | null;
+  is_grounded: boolean;
   created_at: string;
+  updated_at: string;
 }
 
 // ===== 查重与合并相关类型 =====

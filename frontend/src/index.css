@@ -145,3 +145,28 @@ body {
   max-width: 100%;
   border-radius: 4px;
 }
+
+/* ── P2：低置信度/未溯源数据点行高亮 ── */
+.ant-table-row.low-confidence-row > td {
+  background-color: #fff1f0 !important;
+}
+
+.ant-table-row.low-confidence-row:hover > td {
+  background-color: #ffd6d3 !important;
+}
+
+.ant-table-row.ungrounded-row > td {
+  background-color: #fffbe6 !important;
+}
+
+.ant-table-row.ungrounded-row:hover > td {
+  background-color: #fff1b8 !important;
+}
+
+/* ── P2：溯源查看弹窗中的高亮文本 ── */
+.source-highlight {
+  background-color: #fff7be;
+  border-bottom: 2px solid #faad14;
+  font-weight: 600;
+  padding: 0 2px;
+}

@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Card, Row, Col, Spin, Empty, message, Button, Tabs, Table, Space, Statistic, Alert, Tag, Collapse, Tooltip } from 'antd';
-import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined } from '@ant-design/icons';
+import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined, DownloadOutlined } from '@ant-design/icons';
 import ReactECharts from 'echarts-for-react';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
@@ -64,7 +64,8 @@ const Analysis: React.FC = () => {
       setTrendData((trend.data as DataItem[]) || []);
       setRegionData((region.data as DataItem[]) || []);
       setAgeData((age.data as DataItem[]) || []);
-    } catch {
+    } catch (err) {
+      console.error('[Analysis] 数据加载失败:', err);
       message.error('数据加载失败');
     } finally {
       setLoading(false);
@@ -81,7 +82,8 @@ const Analysis: React.FC = () => {
       if (appliedDisease) params.disease = appliedDisease;
       const data = await getDataGapAnalysis(Object.keys(params).length > 0 ? params : undefined);
       setGapData(data);
-    } catch {
+    } catch (err) {
+      console.error('[Analysis] 数据覆盖度分析加载失败:', err);
       message.error('数据覆盖度分析加载失败');
     } finally {
       setGapLoading(false);
@@ -111,7 +113,8 @@ const Analysis: React.FC = () => {
       const data = res as { items: DataItem[]; total: number };
       setApprovedData(data.items || []);
       setApprovedTotal(data.total || 0);
-    } catch {
+    } catch (err) {
+      console.error('[Analysis] 数据点加载失败:', err);
       message.error('数据点加载失败');
     } finally {
       setApprovedLoading(false);
@@ -323,6 +326,17 @@ const Analysis: React.FC = () => {
         <Col>
           <Button type="primary" icon={<SearchOutlined />} onClick={handleConfirm}>
             查询
+          </Button>
+        </Col>
+        <Col>
+          <Button icon={<DownloadOutlined />} onClick={() => {
+            const params = new URLSearchParams();
+            if (localDisease) params.set('disease', localDisease);
+            if (localDataType) params.set('data_type', localDataType);
+            if (province) params.set('province', province);
+            window.open(`/api/v1/analysis/export?${params.toString()}`);
+          }}>
+            导出 Excel
           </Button>
         </Col>
       </Row>

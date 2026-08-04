@@ -134,11 +134,16 @@ async def get_extraction_results(
             "age_min": dp.age_min,
             "age_max": dp.age_max,
             "collection_year": dp.collection_year,
-            "source_page": dp.source_page,  # 新增：来源页码
-            "source_context": dp.source_context,  # 新增：原文片段
+            "source_page": dp.source_page,
+            "source_context": dp.source_context,
+            # P0 新增：精确字符级溯源
+            "source_char_start": dp.source_char_start,
+            "source_char_end": dp.source_char_end,
+            "is_grounded": bool(dp.is_grounded),
             "confidence": dp.confidence,
             "review_status": dp.review_status,
             "created_at": dp.created_at.isoformat() if dp.created_at else None,
+            "updated_at": dp.updated_at.isoformat() if dp.updated_at else None,
         }
         for dp in data_points
     ]

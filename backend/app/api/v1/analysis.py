@@ -1,6 +1,8 @@
+import io
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
@@ -177,3 +179,136 @@ async def get_data_gaps(
         disease=disease,
     )
     return ApiResponse(data=data)
+
+
+@router.get("/analysis/export")
+async def export_analysis(
+    disease: Optional[str] = Query(None, description="疾病筛选"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    year_start: Optional[int] = Query(None, description="起始年份"),
+    year_end: Optional[int] = Query(None, description="结束年份"),
+    age_min: Optional[int] = Query(None, description="最小年龄"),
+    age_max: Optional[int] = Query(None, description="最大年龄"),
+    data_type: Optional[str] = Query(None, description="数据类型"),
+    db: AsyncSession = Depends(get_db),
+):
+    """导出分析数据为 Excel 多 sheet"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    # 并行获取所有分析数据
+    import asyncio
+    trend_data, region_data, age_data, summary_data, approved_result = await asyncio.gather(
+        analysis_service.get_trend(db=db, disease=disease, province=province,
+                                    year_start=year_start, year_end=year_end,
+                                    age_min=age_min, age_max=age_max, data_type=data_type),
+        analysis_service.get_region_compare(db=db, disease=disease, province=province,
+                                             year_start=year_start, year_end=year_end,
+                                             age_min=age_min, age_max=age_max, data_type=data_type),
+        analysis_service.get_age_stratify(db=db, disease=disease, province=province,
+                                           year_start=year_start, year_end=year_end,
+                                           age_min=age_min, age_max=age_max, data_type=data_type),
+        analysis_service.get_summary(db=db, disease=disease, province=province,
+                                      year_start=year_start, year_end=year_end,
+                                      age_min=age_min, age_max=age_max, data_type=data_type),
+        analysis_service.get_approved_data_points(db=db, disease=disease, province=province,
+                                                   year_start=year_start, year_end=year_end,
+                                                   age_min=age_min, age_max=age_max,
+                                                   data_type=data_type, offset=0, limit=10000),
+    )
+    approved_items, _ = approved_result
+
+    wb = Workbook()
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_align = Alignment(horizontal="center", vertical="center")
+
+    def _write_header(ws, headers):
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
+
+    def _write_rows(ws, rows, start_row=2):
+        for r_idx, row in enumerate(rows, start_row):
+            for c_idx, val in enumerate(row, 1):
+                cell = ws.cell(row=r_idx, column=c_idx, value=val)
+                if isinstance(val, (int, float)):
+                    cell.alignment = Alignment(horizontal="center")
+
+    # Sheet 1: 汇总统计
+    ws_summary = wb.active
+    ws_summary.title = "汇总统计"
+    _write_header(ws_summary, ["指标", "数值"])
+    s = summary_data if isinstance(summary_data, dict) else {}
+    _write_rows(ws_summary, [[k, v] for k, v in s.items()])
+    for col in range(1, 3):
+        ws_summary.column_dimensions[chr(64 + col)].width = 25
+
+    # Sheet 2: 年份趋势
+    if trend_data:
+        ws_trend = wb.create_sheet("年份趋势")
+        trend_keys = list(trend_data[0].keys()) if isinstance(trend_data[0], dict) else []
+        _write_header(ws_trend, trend_keys)
+        for i, row in enumerate(trend_data, 2):
+            if isinstance(row, dict):
+                for j, k in enumerate(trend_keys, 1):
+                    ws_trend.cell(row=i, column=j, value=row.get(k))
+        for col_idx in range(1, len(trend_keys) + 1):
+            ws_trend.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else "A"].width = 18
+
+    # Sheet 3: 区域对比
+    if region_data:
+        ws_region = wb.create_sheet("区域对比")
+        region_keys = list(region_data[0].keys()) if isinstance(region_data[0], dict) else []
+        _write_header(ws_region, region_keys)
+        for i, row in enumerate(region_data, 2):
+            if isinstance(row, dict):
+                for j, k in enumerate(region_keys, 1):
+                    ws_region.cell(row=i, column=j, value=row.get(k))
+        for col_idx in range(1, len(region_keys) + 1):
+            ws_region.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else "A"].width = 18
+
+    # Sheet 4: 年龄分层
+    if age_data:
+        ws_age = wb.create_sheet("年龄分层")
+        age_keys = list(age_data[0].keys()) if isinstance(age_data[0], dict) else []
+        _write_header(ws_age, age_keys)
+        for i, row in enumerate(age_data, 2):
+            if isinstance(row, dict):
+                for j, k in enumerate(age_keys, 1):
+                    ws_age.cell(row=i, column=j, value=row.get(k))
+        for col_idx in range(1, len(age_keys) + 1):
+            ws_age.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else "A"].width = 18
+
+    # Sheet 5: 数据点明细
+    if approved_items:
+        ws_dp = wb.create_sheet("数据点明细")
+        dp_fields = [
+            "literature_title", "disease", "province", "city", "age_group",
+            "sample_size", "data_type", "value", "unit", "ci_lower", "ci_upper",
+            "collection_year", "method", "population", "confidence",
+        ]
+        dp_headers = [
+            "文献标题", "疾病", "省份", "城市", "年龄组", "样本量", "数据类型",
+            "数值", "单位", "CI下限", "CI上限", "采集年份", "检测方法", "人群", "置信度",
+        ]
+        _write_header(ws_dp, dp_headers)
+        for i, item in enumerate(approved_items, 2):
+            if isinstance(item, dict):
+                for j, field in enumerate(dp_fields, 1):
+                    ws_dp.cell(row=i, column=j, value=item.get(field))
+        for col_idx in range(1, len(dp_headers) + 1):
+            ws_dp.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else "A"].width = 18
+
+    # 输出到字节流
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''analysis_export.xlsx"},
+    )

@@ -303,10 +303,10 @@ class LLMExtractor:
                     partial = content_clean[:i+1]
                     try:
                         return json_module.loads(partial)
-                    except:
-                        pass
-        except:
-            pass
+                    except Exception:
+                        logger.warning("JSON 逐字符解析失败，尝试下一个字符")
+        except Exception:
+            logger.warning("JSON 逐字符外层解析失败")
 
         logger.error(f"无法解析 LLM 响应为 JSON: {content[:500]}")
         logger.error(f"响应长度: {len(content)}")
@@ -381,6 +381,62 @@ class LLMExtractor:
             for p in points
         )
 
+    @staticmethod
+    def _chunk_text(text: str, chunk_size: int = 15000, overlap: int = 500) -> list[tuple[int, str]]:
+        """P2：将长文本按段落边界分块，返回 [(chunk_start_char, chunk_text), ...]"""
+        if len(text) <= chunk_size:
+            return [(0, text)]
+
+        chunks: list[tuple[int, str]] = []
+        pos = 0
+        while pos < len(text):
+            end = min(pos + chunk_size, len(text))
+            # 如果不是最后一块，尝试在段落/句子边界切分
+            if end < len(text):
+                # 优先在换行符处切分
+                for sep in ["\n\n", "\n", "。", "；", ". ", "; "]:
+                    last_sep = text.rfind(sep, pos + chunk_size - overlap, end)
+                    if last_sep != -1:
+                        end = last_sep + len(sep)
+                        break
+            chunk = text[pos:end]
+            if chunk.strip():
+                chunks.append((pos, chunk))
+            pos = end
+
+        logger.info(f"长文本分块: {len(text)} 字符 → {len(chunks)} 块 (chunk_size={chunk_size}, overlap={overlap})")
+        return chunks
+
+    @staticmethod
+    def _deduplicate_points(points: list[dict]) -> list[dict]:
+        """P2：合并去重 — 基于 disease+province+data_type+value 的组合去重"""
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for p in points:
+            # 构造去重 key：疾病+省份+数据类型+数值
+            disease = (p.get("disease_name") or "").strip()
+            province = (p.get("province") or "").strip()
+            city = (p.get("city") or "").strip()
+            age_min = p.get("age_min")
+            age_max = p.get("age_max")
+            if p.get("positivity_rate") is not None:
+                key_val = f"sero:{p.get('positivity_rate')}"
+            elif p.get("gmc_value") is not None:
+                key_val = f"gmc:{p.get('gmc_value')}"
+            else:
+                key_val = f"other:{p.get('detection_method', '')}"
+
+            key = f"{disease}|{province}|{city}|{age_min}|{age_max}|{key_val}"
+            if key not in seen:
+                seen.add(key)
+                unique.append(p)
+            else:
+                logger.info(f"去重: 移除重复数据点 {key}")
+
+        if len(unique) < len(points):
+            logger.info(f"合并去重: {len(points)} → {len(unique)} 个数据点 (移除 {len(points) - len(unique)} 个重复)")
+        return unique
+
     async def extract(
         self,
         text: str,
@@ -448,7 +504,27 @@ class LLMExtractor:
         pub_year: Optional[int] = None,
         max_retries: int = 3,
     ) -> list[dict]:
-        """带重试的提取"""
+        """带重试的提取。P2：长文档（>20000字符）自动分块并行提取+合并去重。"""
+        # P2：长文档分块判断
+        CHUNK_THRESHOLD = 20000
+        if len(text) > CHUNK_THRESHOLD:
+            logger.info(f"P2 长文档分块提取: 文本长度={len(text)} > 阈值={CHUNK_THRESHOLD}")
+            chunks = self._chunk_text(text)
+            all_points: list[dict] = []
+
+            for idx, (chunk_offset, chunk_text) in enumerate(chunks):
+                logger.info(f"分块 {idx + 1}/{len(chunks)}: offset={chunk_offset}, len={len(chunk_text)}")
+                chunk_result = await self._extract_single_chunk_with_retry(
+                    chunk_text, language, title, journal, pub_year, max_retries,
+                )
+                # 调整 source_context 中的字符位置（如果有的话，后续 grounding 会重新匹配）
+                all_points.extend(chunk_result)
+
+            logger.info(f"所有分块提取完成，共 {len(all_points)} 个数据点，开始去重...")
+            deduped = self._deduplicate_points(all_points)
+            return deduped
+
+        # 短文档：原有逻辑
         last_result: list[dict] = []
         for attempt in range(max_retries):
             try:
@@ -465,4 +541,30 @@ class LLMExtractor:
                 if attempt == max_retries - 1:
                     raise
 
+        return last_result
+
+    async def _extract_single_chunk_with_retry(
+        self,
+        chunk_text: str,
+        language: str,
+        title: str,
+        journal: str,
+        pub_year: Optional[int],
+        max_retries: int,
+    ) -> list[dict]:
+        """单个文本块的带重试提取"""
+        last_result: list[dict] = []
+        for attempt in range(max_retries):
+            try:
+                result = await self.extract(chunk_text, language, title, journal, pub_year)
+                last_result = result
+                if self._has_key_fields(result) or attempt == max_retries - 1:
+                    return result
+                logger.warning(
+                    f"分块提取结果缺少关键字段，第 {attempt + 1}/{max_retries} 次重试..."
+                )
+            except Exception as e:
+                logger.error(f"分块提取失败（第 {attempt + 1} 次）: {e}")
+                if attempt == max_retries - 1:
+                    return last_result  # 单块失败不阻塞其他块
         return last_result

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import ForeignKey, Integer, String, Numeric, DateTime, CheckConstraint, Text
+from sqlalchemy import ForeignKey, Integer, String, Numeric, DateTime, CheckConstraint, Text, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -37,10 +37,18 @@ class DataPoint(Base):
     # 数据来源追踪（引用溯源）
     source_page: Mapped[Optional[int]]  # 来源页码
     source_context: Mapped[Optional[str]] = mapped_column(Text)  # 原文片段
+    # 精确字符级溯源（P0 新增）
+    source_char_start: Mapped[Optional[int]] = mapped_column(Integer)  # 在全文中的起始字符位置（0-based，含）
+    source_char_end: Mapped[Optional[int]] = mapped_column(Integer)    # 在全文中的结束字符位置（0-based，不含）
+    is_grounded: Mapped[bool] = mapped_column(Boolean, default=False)   # 是否在原文中成功找到对应片段
     confidence: Mapped[str] = mapped_column(String(10), default="medium")
     review_status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
     )
 
     __table_args__ = (

@@ -52,7 +52,7 @@ const Report: React.FC = () => {
     try {
       const resp = await listReports({ page: 1, page_size: 50 });
       setReports(resp.items || []);
-    } catch { message.error('加载报告列表失败'); }
+    } catch (err) { console.error('[Report] 加载报告列表失败:', err); message.error('加载报告列表失败'); }
     finally { setHistoryLoading(false); }
   }, []);
 
@@ -71,7 +71,7 @@ const Report: React.FC = () => {
       setReport(resp);
       message.success('报告生成成功');
       fetchHistory();
-    } catch { message.error('报告生成失败'); }
+    } catch (err) { console.error('[Report] 抗体报告生成失败:', err); message.error('报告生成失败'); }
     finally { setLoading(false); }
   };
 
@@ -97,7 +97,7 @@ const Report: React.FC = () => {
       setReport(resp);
       message.success('疫苗接种策略报告生成成功');
       fetchHistory();
-    } catch { message.error('报告生成失败'); }
+    } catch (err) { console.error('[Report] 策略报告生成失败:', err); message.error('报告生成失败'); }
     finally { setStrategyLoading(false); }
   };
 
@@ -109,7 +109,7 @@ const Report: React.FC = () => {
         const resp = await getReport(record.id);
         const full = { ...record, content: resp.content };
         setPreviewReport(full);
-      } catch { message.error('加载报告内容失败'); }
+      } catch (err) { console.error('[Report] 加载报告内容失败:', err); message.error('加载报告内容失败'); }
     }
     setPreviewVisible(true);
   };
@@ -140,7 +140,7 @@ const Report: React.FC = () => {
       setEditing(false);
       message.success('报告已保存');
       fetchHistory();
-    } catch { message.error('保存失败'); }
+    } catch (err) { console.error('[Report] 保存报告失败:', err); message.error('保存失败'); }
     finally { setSaving(false); }
   };
 
@@ -151,7 +151,7 @@ const Report: React.FC = () => {
       message.success('报告已删除');
       if (report?.id === record.id) setReport(null);
       fetchHistory();
-    } catch { message.error('删除失败'); }
+    } catch (err) { console.error('[Report] 删除报告失败:', err); message.error('删除失败'); }
     finally { setDeleting(false); }
   };
 
