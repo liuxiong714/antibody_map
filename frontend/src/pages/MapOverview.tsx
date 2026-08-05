@@ -806,6 +806,13 @@ const MapOverview: React.FC = () => {
           >
             {selectedProvince ? (
               <Spin spinning={provinceDetailLoading}>
+                {/* 疾病信息 */}
+                {disease && (
+                  <div style={{ marginBottom: 12, padding: '4px 8px', background: '#e6f7ff', borderRadius: 4, fontSize: 13, color: '#1890ff' }}>
+                    疾病: <strong>{disease}</strong>
+                  </div>
+                )}
+
                 {/* 当前指标统计 */}
                 {currentProvinceData && (
                   <Row gutter={8} style={{ marginBottom: 12 }}>
