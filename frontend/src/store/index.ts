@@ -10,14 +10,14 @@ interface FilterState {
   ageMin: number | null;
   ageMax: number | null;
   gender: string;
-  occupation: string;
+  occupation: string[];
   setDisease: (d: string) => void;
   setDataType: (t: string) => void;
   setProvince: (p: string) => void;
   setYearRange: (start: number | null, end: number | null) => void;
   setAgeRange: (min: number | null, max: number | null) => void;
   setGender: (g: string) => void;
-  setOccupation: (o: string) => void;
+  setOccupation: (o: string[]) => void;
   reset: () => void;
 }
 
@@ -32,7 +32,7 @@ export const useFilterStore = create<FilterState>()(
       ageMin: null,
       ageMax: null,
       gender: '',
-      occupation: '',
+      occupation: [],
       setDisease: (disease: string) => set({ disease }),
       setDataType: (dataType) => set({ dataType }),
       setProvince: (province) => set({ province }),
@@ -44,7 +44,7 @@ export const useFilterStore = create<FilterState>()(
         disease: '', dataType: '', province: '',
         yearStart: null, yearEnd: null,
         ageMin: null, ageMax: null,
-        gender: '', occupation: '',
+        gender: '', occupation: [],
       }),
     }),
     { name: 'antibody-filter-store' }

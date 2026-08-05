@@ -13,15 +13,16 @@
 | 模块 | 功能 |
 |------|------|
 | **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**文献列表/数据点导出 CSV** |
-| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取** |
+| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取**；提取完成后可选显示**Token 用量、费用估算及使用的大模型** |
 | **精确字符溯源** | 每个数据点锚定到原文的精确字符区间（`source_char_start/end`），采用精确/模糊/关键短语三级匹配，未匹配自动降级置信度并红色高亮待审 |
 | **长文档分块并行提取** | 超过 2 万字符的文献按段落边界分块、并行调用 LLM 提取，结果自动合并去重 |
 | **强 Schema 约束** | LLM 输出经 JSON Schema 校验（省份枚举、阳性率 0-100% 范围、GMC 正值等），字段违规自动降级置信度 |
 | **数据审核与编辑** | 人工审核（通过/驳回）、行内编辑（疾病、地区、年龄段、数值、**原文依据、溯源字符区间**等字段）、**手动新增数据点**（提取失败时补录） |
 | **地图可视化** | 全国/省级/市级交互式抗体水平热力地图，点击省份钻取市级数据、**时间序列动画自动年份范围** |
-| **数据分析** | 逐年趋势、区域对比、年龄分层、免疫屏障评估（含 WHO 阈值）、**数据覆盖度分析**、**多表单 Excel 数据导出**、**FOI 感染力分析**（催化模型 + R0 估算 + 群体免疫阈值 HIT）、**疫苗效果 VE 分析**（已接种/未接种亚组拆分 + 保护率估算）、**接种率双轨分析**（NIP 参考表 + 血清阳性率反推隐含接种率） |
+| **数据分析** | 逐年趋势、区域对比、年龄分层、**免疫屏障评估**（复用 FOI 模块 R0/HIT 计算，新增年龄分层分析与省份对比矩阵，HIT 阈值优先级：FOI 估算>WHO 建议>文献 R0）、**数据覆盖度分析**、**多表单 Excel 数据导出**、**FOI 感染力分析**（催化模型 + R0 估算 + 群体免疫阈值 HIT）、**疫苗效果 VE 分析**（已接种/未接种亚组拆分 + 保护率估算）、**接种率双轨分析**（NIP 参考表 + 血清阳性率反推隐含接种率） |
 | **报告生成** | LLM 生成抗体分析报告和疫苗接种策略研判报告，支持在线编辑和下载 |
 | **文件夹监控** | 定期监测指定文件夹，自动导入新文件并触发信息提取 |
+| **Edge 浏览器插件** | 参考 Mendeley 设计，在浏览器中一键将文献添加到数据库并触发 AI 提取；支持 15+ 学术站点元数据自动识别、PDF 智能抓取上传、URL 网页导入、右键菜单、桌面通知 |
 | **多格式预览** | PDF 使用 pdf.js 渲染；TXT/HTML/DOCX/PPTX/XLSX/EPUB 显示解析后文本；CAJ 提示下载，支持分栏布局、面板折叠/展开 |
 
 ### 支持的疾病
@@ -63,6 +64,15 @@ antibody_map01/
 ├── .env.example                    # 环境变量配置模板
 ├── docs/                           # 文档
 │   └── tesseract_setup.md          # Tesseract OCR 部署配置指南
+├── browser-extension/              # Edge 浏览器插件（参考 Mendeley）
+│   ├── manifest.json
+│   ├── background.js
+│   ├── content-script.js
+│   ├── popup.html / popup.js
+│   ├── options.html / options.js
+│   ├── styles.css
+│   ├── icons/
+│   └── README.md
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                 # FastAPI 应用入口 (CORS, lifespan)
@@ -354,7 +364,7 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | GET | `/analysis/trend` | 逐年趋势分析 |
 | GET | `/analysis/region-compare` | 区域对比分析 |
 | GET | `/analysis/age-stratify` | 年龄分层分析 |
-| GET | `/analysis/immune-barrier` | 免疫屏障评估 (含 WHO 阈值) |
+| GET | `/analysis/immune-barrier` | **免疫屏障评估**（复用 FOI 模块 R0/HIT 计算，新增年龄分层分析与省份对比矩阵，HIT 阈值优先级：FOI 估算 > WHO 建议 > 文献 R0） |
 | GET | `/analysis/summary` | 汇总统计 |
 | GET | `/analysis/approved-data-points` | 已审核数据点列表 |
 | GET | `/analysis/data-gaps` | 数据覆盖度分析（含数据缺失提醒，按完善度排序） |
@@ -484,6 +494,13 @@ LLM 生成免疫学报告 + 疫苗接种策略报告
 | extraction_status | ENUM | pending / processing / done / failed |
 | extracted_count | INT | 已提取数据点数量 |
 | approved_count | INT | 已审核通过数量 |
+| llm_model_used | TEXT | 提取使用的大模型名称 |
+| total_tokens | INT | 本次提取消耗的总 Token 数 |
+| llm_cost_usd | NUMERIC(10,6) | 估算费用（美元） |
+| prompt_tokens | INT | 输入 Token 数 |
+| completion_tokens | INT | 输出 Token 数 |
+| llm_call_count | INT | LLM 调用次数 |
+| llm_usage_detail | JSON | 按模型细分的 Token 用量明细 |
 
 ### DataPoint (数据点)
 
@@ -534,6 +551,35 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.6.1 (2026-08-05)
+
+#### 新功能
+
+- **LLM Token 用量与费用统计**：AI 提取完成后可选显示本次提取消耗的 Token 数、估算费用及使用的 LLM 模型；支持按模型细分（多模型调用时分别统计）；作者可配置是否在提取完成时显示此信息（`showUsageOnComplete` 本地偏好）。数据库新增 `llm_model_used`、`total_tokens`、`llm_cost_usd` 等字段，后端 `llm_extractor.py` 新增 `_accumulate_usage` / `get_usage_summary` 方法跟踪 6 个 Provider（OpenAI / DeepSeek / Qwen / Ollama 等）的实时用量与定价。
+
+- **免疫屏障评估优化**（参考 serotracker 项目）：
+  - 复用 FOI 模块的催化模型（λ = -ln(1-SP)/age）估算 FOI，反推 R0 ≈ λ·L，计算 HIT = 1 - 1/R0
+  - HIT 阈值优先级：FOI 估算 > WHO 硬编码 > 文献 R0（`R0_REFERENCE` 15 种疾病），输出 `hit_target_source` 标识
+  - 新增年龄分层分析（`age_groups`）：5 个标准年龄组（<1岁、1-4岁、5-14岁、15-59岁、≥60岁），含各组的阳性率、FOI、免疫屏障状态
+  - 新增省份对比矩阵（`province_matrix`）：每省含数据点数、样本量、阳性率、FOI、估算 R0、屏障状态，支持排序与状态筛选
+  - 前端新增年龄筛选输入框、年龄分层柱状图（含阈值参考线和状态颜色编码）、FOI/R0/HIT 统计卡片、省份矩阵表格
+
+- **Edge 浏览器插件**（参考 Mendeley 浏览器插件设计）：
+  - Manifest V3 架构，存放于 `browser-extension/` 目录
+  - 支持 15+ 学术站点元数据自动识别（PubMed / PMC / Nature / Science / Cell / Springer / Wiley / Lancet / BMJ / medRxiv / arXiv / 知网 / 万方 / 维普 等）
+  - 智能判断提交策略：PDF 文件直接抓取上传；页面含 PDF 链接则自动抓取；否则走 URL 导入（保存 HTML）
+  - 弹窗展示元数据预览（标题/作者/DOI/期刊/年份/摘要/提交方式），支持编辑后提交
+  - 提交后自动触发 AI 提取，弹窗内实时轮询提取状态（每 3 秒，最多 60 次）
+  - 右键菜单「添加到抗体图谱数据库」、桌面通知、设置页（后端地址/默认省份/LLM 模型配置）
+  - 通过 `host_permissions` + background service worker 绕过 CORS 限制
+
+#### 优化
+
+- 新增 7 个数据库字段（Alembic 迁移文件 `add_llm_token_usage.py`）
+- 免疫屏障评估 API 响应扩展：新增 `r0_reference`、`age_groups`、`province_matrix`、`summary.hit_target_used_percent` 等字段
+- 前端导航菜单中"文件夹监控"模块调整到最后一位
+- 后端 `py_compile` 语法检查通过，前端 `tsc` 类型检查无新增错误
 
 ### v1.6.0 (2026-08-05)
 

@@ -414,9 +414,15 @@ const LiteraturePage: React.FC = () => {
               size="small"
               icon={<EyeOutlined />}
               onClick={() => {
-                setPreviewLitId(r.id);
-                setPreviewLitTitle(r.title);
-                setPreviewOpen(true);
+                // HTML 文件直接在浏览器新标签页打开（浏览器原生渲染）
+                const ext = r.file_path ? r.file_path.split('.').pop()?.toLowerCase() : '';
+                if (ext === 'html' || ext === 'htm') {
+                  window.open(`/api/v1/literatures/${r.id}/file`, '_blank');
+                } else {
+                  setPreviewLitId(r.id);
+                  setPreviewLitTitle(r.title);
+                  setPreviewOpen(true);
+                }
               }}
             />
           </Tooltip>

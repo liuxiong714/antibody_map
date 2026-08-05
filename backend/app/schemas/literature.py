@@ -65,6 +65,14 @@ class LiteratureResponse(BaseModel):
     extraction_status: str
     extracted_count: int
     approved_count: int
+    # LLM 提取的 token 用量与费用统计
+    llm_model_used: Optional[str] = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    llm_cost_usd: Optional[float] = None
+    llm_call_count: int = 0
+    llm_usage_detail: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
 

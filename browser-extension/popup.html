@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>抗体图谱助手</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="header">
+    <img src="icons/icon48.png" alt="logo" class="logo">
+    <div class="title">抗体图谱助手</div>
+  </div>
+
+  <!-- 后端状态指示 -->
+  <div class="status-bar" id="statusBar">
+    <span class="status-dot" id="statusDot"></span>
+    <span id="statusText">检测中...</span>
+    <a href="#" id="openOptions" class="link-btn">设置</a>
+  </div>
+
+  <!-- 主操作区 -->
+  <div class="panel" id="mainPanel">
+    <div class="form-row">
+      <label>当前页面</label>
+      <div class="page-info" id="pageInfo">—</div>
+    </div>
+
+    <div class="form-row">
+      <label>标题</label>
+      <input type="text" id="title" placeholder="自动从页面提取，可编辑">
+    </div>
+
+    <div class="form-row">
+      <label>DOI</label>
+      <input type="text" id="doi" placeholder="10.xxxx/xxxx">
+    </div>
+
+    <div class="form-row">
+      <label>省份</label>
+      <input type="text" id="province" placeholder="可选，如 北京 / Shanghai">
+    </div>
+
+    <div class="form-row">
+      <label>作者</label>
+      <div class="authors" id="authors">—</div>
+    </div>
+
+    <div class="form-row">
+      <label>年份 / 期刊</label>
+      <div class="meta-line"><span id="year">—</span> · <span id="journal">—</span></div>
+    </div>
+
+    <div class="form-row">
+      <label>提交方式</label>
+      <div class="method-info" id="methodInfo">—</div>
+    </div>
+
+    <div class="actions">
+      <button id="submitBtn" class="primary-btn" disabled>添加到数据库</button>
+      <label class="checkbox-line">
+        <input type="checkbox" id="autoExtract" checked>
+        <span>提交后自动触发 AI 提取</span>
+      </label>
+    </div>
+  </div>
+
+  <!-- 进度区 -->
+  <div class="panel hidden" id="progressPanel">
+    <div class="step" id="step1">
+      <span class="step-icon">1</span>
+      <span class="step-text">提交文献</span>
+      <span class="step-status" id="step1Status">等待中</span>
+    </div>
+    <div class="step" id="step2">
+      <span class="step-icon">2</span>
+      <span class="step-text">AI 提取</span>
+      <span class="step-status" id="step2Status">等待中</span>
+    </div>
+    <div class="step" id="step3">
+      <span class="step-icon">3</span>
+      <span class="step-text">完成</span>
+      <span class="step-status" id="step3Status">等待中</span>
+    </div>
+    <div class="progress-info" id="progressInfo"></div>
+    <button id="resetBtn" class="secondary-btn hidden">重新开始</button>
+    <button id="openDetailBtn" class="primary-btn hidden">查看详情</button>
+  </div>
+
+  <!-- 错误区 -->
+  <div class="panel hidden error-panel" id="errorPanel">
+    <div class="error-msg" id="errorMsg"></div>
+    <button id="retryBtn" class="secondary-btn">重试</button>
+  </div>
+
+  <div class="footer">
+    <span id="versionText">v1.0.0</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

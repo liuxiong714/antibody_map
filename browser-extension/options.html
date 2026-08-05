@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>抗体图谱助手 - 设置</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="options-body">
+  <h1>抗体图谱助手 - 设置</h1>
+
+  <div class="form-group">
+    <label for="backend_url">后端服务地址 *</label>
+    <input type="url" id="backend_url" placeholder="http://localhost:8000" required>
+    <div class="hint">抗体图谱后端 API 地址。Linux/Mac 默认 8000 端口；Windows PowerShell 脚本默认 8080 端口。</div>
+  </div>
+
+  <div class="form-group">
+    <label for="default_province">默认省份</label>
+    <input type="text" id="default_province" placeholder="如：北京 / Shanghai（可留空）">
+    <div class="hint">提交文献时自动填入的省份字段，可在弹窗中覆盖。</div>
+  </div>
+
+  <div class="form-group">
+    <label>
+      <input type="checkbox" id="auto_extract" checked>
+      提交后自动触发 AI 提取
+    </label>
+    <div class="hint">关闭后，文献仅入库保存，需到 Web 端手动点击"提取"。</div>
+  </div>
+
+  <hr style="margin: 20px 0; border: none; border-top: 1px solid #f0f0f0;">
+
+  <h3 style="margin-bottom: 12px; color: #555;">LLM 模型配置（可选）</h3>
+  <div class="hint" style="margin-bottom: 14px;">
+    留空则使用后端 .env 中配置的默认模型。如需覆盖，可在此指定。
+  </div>
+
+  <div class="form-group">
+    <label for="llm_model">模型名称</label>
+    <input type="text" id="llm_model" placeholder="如：deepseek-chat / qwen-plus / gpt-4o-mini">
+  </div>
+
+  <div class="form-group">
+    <label for="llm_api_key">API Key（可选）</label>
+    <input type="text" id="llm_api_key" placeholder="覆盖后端默认 LLM API Key">
+    <div class="hint">仅在需要使用个人 API Key 计费时填写。明文存储于本地，请勿在公共电脑配置。</div>
+  </div>
+
+  <div class="form-group">
+    <label for="llm_base_url">自定义 Base URL（可选）</label>
+    <input type="text" id="llm_base_url" placeholder="如：https://api.deepseek.com/v1">
+  </div>
+
+  <div class="actions">
+    <button id="saveBtn" class="primary-btn">保存设置</button>
+    <button id="testBtn" class="secondary-btn">测试后端连通性</button>
+  </div>
+
+  <div id="statusMsg" class="status-msg" style="display:none;"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

@@ -15,10 +15,10 @@ const { Sider, Content, Header } = Layout;
 const menuItems = [
   { key: '/', icon: <EnvironmentOutlined />, label: '地图总览' },
   { key: '/literature', icon: <BookOutlined />, label: '文献管理' },
-  { key: '/folders', icon: <FolderOpenOutlined />, label: '文件夹监控' },
   { key: '/analysis', icon: <BarChartOutlined />, label: '数据分析' },
   { key: '/assessment', icon: <SafetyOutlined />, label: '免疫屏障评估' },
   { key: '/report', icon: <FileTextOutlined />, label: '报告生成' },
+  { key: '/folders', icon: <FolderOpenOutlined />, label: '文件夹监控' },
 ];
 
 const MainLayout: React.FC = () => {

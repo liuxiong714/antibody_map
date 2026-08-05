@@ -33,3 +33,8 @@ class OllamaProvider(BaseLLMProvider):
     def supports_response_format(cls) -> bool:
         # Ollama 本地模型不支持 response_format 参数
         return False
+
+    @classmethod
+    def get_pricing(cls) -> Optional[tuple[float, float]]:
+        """Ollama 本地部署，无 API 费用。"""
+        return (0.0, 0.0)

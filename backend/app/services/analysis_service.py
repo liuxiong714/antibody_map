@@ -1,3 +1,5 @@
+import logging
+import math
 from typing import Optional
 
 from sqlalchemy import select, func, distinct
@@ -6,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
 from app.core.term_normalizer import normalize_disease
+
+logger = logging.getLogger("uvicorn")
 
 # WHO 免疫屏障阈值（阳性率百分比）
 WHO_THRESHOLDS = {
@@ -275,28 +279,63 @@ async def get_immune_barrier_assessment(
     age_min: Optional[int] = None,
     age_max: Optional[int] = None,
 ) -> dict:
-    """免疫屏障评估"""
+    """免疫屏障评估（复用 FOI 模块的 R0/HIT 计算）。
+
+    优化点（参考 serotracker）：
+      1. 复用 FOI 催催化模型 λ = -ln(1-SP)/age 估算 FOI；
+      2. 反推 R0 ≈ λ·L，计算 HIT = 1 - 1/R0；
+      3. HIT 阈值优先级：FOI 估计 > WHO 硬编码 > 文献 R0；
+      4. 新增年龄分层分析（age_groups）；
+      5. 新增省份对比矩阵（province_matrix）。
+    """
+    logger.info(
+        f"[ImmuneBarrier] 开始评估: disease={disease}, province={province}, "
+        f"year_start={year_start}, year_end={year_end}, age_min={age_min}, age_max={age_max}"
+    )
+
     query = _build_base_query(disease, province, year_start, year_end, age_min, age_max,
                               review_status="approved")
     result = await db.execute(query)
     rows = result.scalars().all()
 
+    # 标准化疾病 key，用于查 R0_REFERENCE / WHO_THRESHOLDS
+    dis_key = normalize_disease(disease) if disease else None
+    r0_ref = R0_REFERENCE.get(dis_key) if dis_key else None  # (typical, low, high)
+    who_threshold = WHO_THRESHOLDS.get(dis_key) if dis_key else None
+    reference_hit = _calc_hit_from_r0(r0_ref[0]) if r0_ref else None
+
+    r0_reference_block = {
+        "typical": r0_ref[0] if r0_ref else None,
+        "range_low": r0_ref[1] if r0_ref else None,
+        "range_high": r0_ref[2] if r0_ref else None,
+    }
+
     if not rows:
+        logger.warning(f"[ImmuneBarrier] 无审核通过数据: disease={disease}")
         return {
-            "disease": disease,
-            "who_threshold": WHO_THRESHOLDS.get(disease) if disease else None,
+            "disease": dis_key or disease,
+            "who_threshold": who_threshold,
+            "r0_reference": r0_reference_block,
             "summary": {
                 "total_data_points": 0,
                 "total_literatures": 0,
                 "total_samples": 0,
                 "weighted_positivity_rate": None,
+                "weighted_avg_foi_per_year": None,
+                "estimated_r0_from_foi": None,
+                "hit_from_foi_percent": None,
+                "hit_from_reference_r0_percent": reference_hit,
+                "hit_target_used_percent": None,
+                "hit_target_source": "none",
             },
             "yearly_trend": [],
+            "age_groups": [],
+            "province_matrix": [],
             "status": "no_data",
             "assessment": "暂无审核通过的数据可供评估。",
         }
 
-    # 加权阳性率
+    # --- 1) 总体加权阳性率 ---
     sp_rows = [r for r in rows if r.data_type == "seroprevalence" and r.sample_size]
     if sp_rows:
         total_sample = sum(r.sample_size for r in sp_rows)
@@ -308,7 +347,45 @@ async def get_immune_barrier_assessment(
 
     lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
 
-    # 逐年趋势
+    # --- 2) FOI 估算（按年龄中点 + sample_size 加权）---
+    foi_tuples: list[tuple[float, int]] = []
+    for r in sp_rows:
+        if r.value is None:
+            continue
+        age_mid = _midpoint_age(r.age_min, r.age_max)
+        if age_mid is None:
+            continue
+        foi = _calc_foi_from_sp(float(r.value), age_mid)
+        if foi is not None:
+            foi_tuples.append((foi, r.sample_size or 1))
+
+    if foi_tuples:
+        w_total_foi = sum(w for _, w in foi_tuples)
+        weighted_avg_foi = round(
+            sum(v * w for v, w in foi_tuples) / w_total_foi, 6
+        ) if w_total_foi > 0 else None
+    else:
+        weighted_avg_foi = None
+
+    estimated_r0 = _calc_r0_from_foi(weighted_avg_foi) if weighted_avg_foi is not None else None
+    foi_hit_percent = _calc_hit_from_r0(estimated_r0) if estimated_r0 is not None else None
+
+    # HIT 阈值优先级：FOI 估计 > WHO 硬编码 > 文献 R0
+    hit_target = foi_hit_percent or who_threshold or reference_hit
+    hit_source = (
+        "foi" if foi_hit_percent else
+        ("who" if who_threshold else
+         ("ref_r0" if reference_hit else "none"))
+    )
+
+    logger.info(
+        f"[ImmuneBarrier] FOI/R0/HIT: weighted_avg_foi={weighted_avg_foi}, "
+        f"estimated_r0={estimated_r0}, foi_hit={foi_hit_percent}%, "
+        f"reference_hit={reference_hit}%, who_threshold={who_threshold}%, "
+        f"hit_target={hit_target}% (source={hit_source})"
+    )
+
+    # --- 3) 逐年趋势 ---
     year_groups: dict[int, list[DataPoint]] = {}
     for r in rows:
         if r.collection_year is None:
@@ -336,36 +413,177 @@ async def get_immune_barrier_assessment(
             "point_count": len(group),
         })
 
-    # WHO 阈值对比
-    threshold = WHO_THRESHOLDS.get(disease) if disease else None
+    # --- 4) 年龄分层分析 ---
+    age_map: dict[str, dict] = {
+        g[0]: {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []}
+        for g in AGE_GROUPS
+    }
+    age_map["其他"] = {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []}
 
-    if threshold is not None and weighted_rate is not None:
-        if weighted_rate >= threshold:
-            status = "established"
-            assessment = f"该疾病群体抗体阳性率（{weighted_rate}%）已达到 WHO 建议的免疫屏障阈值（{threshold}%），免疫屏障已建立。"
-        elif weighted_rate >= threshold - 10:
-            status = "borderline"
-            assessment = f"该疾病群体抗体阳性率（{weighted_rate}%）接近但未完全达到 WHO 建议的免疫屏障阈值（{threshold}%），建议加强重点人群免疫。"
+    for r in sp_rows:
+        if r.value is None:
+            continue
+        label = _get_age_group_label(r.age_min, r.age_max) or "其他"
+        if label not in age_map:
+            age_map[label] = {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []}
+        bucket = age_map[label]
+        sp = float(r.value)
+        ss = r.sample_size or 0
+        if ss > 0:
+            bucket["sp_sum"] += sp * ss
+            bucket["sample_sum"] += ss
+        bucket["dp_count"] += 1
+        age_mid = _midpoint_age(r.age_min, r.age_max)
+        foi = _calc_foi_from_sp(sp, age_mid) if age_mid is not None else None
+        if foi is not None:
+            bucket["foi_values"].append((foi, ss or 1))
+
+    age_groups_out: list[dict] = []
+    for age_label, lo, hi in AGE_GROUPS:
+        bucket = age_map[age_label]
+        if bucket["dp_count"] == 0:
+            continue
+        w_sp = round(bucket["sp_sum"] / bucket["sample_sum"], 2) if bucket["sample_sum"] > 0 else None
+        if bucket["foi_values"]:
+            fw = sum(w for _, w in bucket["foi_values"])
+            w_foi = round(sum(v * w for v, w in bucket["foi_values"]) / fw, 6) if fw > 0 else None
         else:
-            status = "insufficient"
-            assessment = f"该疾病群体抗体阳性率（{weighted_rate}%）低于 WHO 建议的免疫屏障阈值（{threshold}%），免疫屏障不足，建议加强免疫接种。"
-    else:
-        status = "no_data"
-        assessment = "暂无足够数据或对应的 WHO 阈值进行对比评估。"
+            w_foi = None
+        age_status = _barrier_status_from_rate(w_sp, hit_target)
+        age_groups_out.append({
+            "age_group": age_label,
+            "age_range": [lo, hi],
+            "data_point_count": bucket["dp_count"],
+            "total_samples": bucket["sample_sum"],
+            "weighted_positivity_rate": w_sp,
+            "weighted_avg_foi_per_year": w_foi,
+            "status": age_status,
+        })
+
+    # --- 5) 省份对比矩阵 ---
+    prov_map: dict[str, dict] = {}
+    for r in sp_rows:
+        if r.value is None:
+            continue
+        prov_raw = r.province or "未知"
+        for p in prov_raw.split(";"):
+            p = p.strip()
+            if not p:
+                p = "未知"
+            if p not in prov_map:
+                prov_map[p] = {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []}
+            pm = prov_map[p]
+            sp = float(r.value)
+            ss = r.sample_size or 0
+            if ss > 0:
+                pm["sp_sum"] += sp * ss
+                pm["sample_sum"] += ss
+            pm["dp_count"] += 1
+            age_mid = _midpoint_age(r.age_min, r.age_max)
+            foi = _calc_foi_from_sp(sp, age_mid) if age_mid is not None else None
+            if foi is not None:
+                pm["foi_values"].append((foi, ss or 1))
+
+    province_matrix: list[dict] = []
+    for prov_name, pm in prov_map.items():
+        if pm["dp_count"] == 0:
+            continue
+        w_sp = round(pm["sp_sum"] / pm["sample_sum"], 2) if pm["sample_sum"] > 0 else None
+        if pm["foi_values"]:
+            fw = sum(w for _, w in pm["foi_values"])
+            prov_foi = round(sum(v * w for v, w in pm["foi_values"]) / fw, 6) if fw > 0 else None
+        else:
+            prov_foi = None
+        prov_r0 = _calc_r0_from_foi(prov_foi) if prov_foi is not None else None
+        prov_status = _barrier_status_from_rate(w_sp, hit_target)
+        province_matrix.append({
+            "province": prov_name,
+            "data_point_count": pm["dp_count"],
+            "total_samples": pm["sample_sum"],
+            "weighted_positivity_rate": w_sp,
+            "weighted_avg_foi_per_year": prov_foi,
+            "estimated_r0_from_foi": prov_r0,
+            "hit_target_percent": hit_target,
+            "status": prov_status,
+        })
+    province_matrix.sort(key=lambda x: x["province"])
+
+    # --- 6) 总体状态判定 ---
+    status, assessment = _barrier_status_with_message(weighted_rate, hit_target, hit_source)
+
+    logger.info(
+        f"[ImmuneBarrier] 评估完成: status={status}, weighted_rate={weighted_rate}%, "
+        f"hit_target={hit_target}%, age_groups={len(age_groups_out)}, "
+        f"provinces={len(province_matrix)}"
+    )
 
     return {
-        "disease": disease,
-        "who_threshold": threshold,
+        "disease": dis_key or disease,
+        "who_threshold": who_threshold,
+        "r0_reference": r0_reference_block,
         "summary": {
             "total_data_points": len(rows),
             "total_literatures": len(lit_ids),
             "total_samples": total_sample,
             "weighted_positivity_rate": weighted_rate,
+            "weighted_avg_foi_per_year": weighted_avg_foi,
+            "estimated_r0_from_foi": estimated_r0,
+            "hit_from_foi_percent": foi_hit_percent,
+            "hit_from_reference_r0_percent": reference_hit,
+            "hit_target_used_percent": hit_target,
+            "hit_target_source": hit_source,
         },
         "yearly_trend": yearly_trend,
+        "age_groups": age_groups_out,
+        "province_matrix": province_matrix,
         "status": status,
         "assessment": assessment,
     }
+
+
+def _barrier_status_from_rate(rate: Optional[float], hit_target: Optional[float]) -> str:
+    """根据阳性率与 HIT 阈值判定免疫屏障状态。
+
+    返回值与前端 STATUS_CONFIG 保持一致：
+      established / borderline / insufficient / undetermined
+    """
+    if rate is None or hit_target is None:
+        return "undetermined"
+    if rate >= hit_target:
+        return "established"
+    if rate >= hit_target - 10:
+        return "borderline"
+    return "insufficient"
+
+
+def _barrier_status_with_message(
+    rate: Optional[float],
+    hit_target: Optional[float],
+    hit_source: str,
+) -> tuple[str, str]:
+    """总体状态判定 + 文案。"""
+    source_label = {"foi": "FOI 估算", "who": "WHO 建议", "ref_r0": "文献 R0", "none": "无"}.get(
+        hit_source, hit_source
+    )
+    if hit_target is not None and rate is not None:
+        if rate >= hit_target:
+            return (
+                "established",
+                f"该疾病群体抗体阳性率（{rate}%）已达到免疫屏障阈值（{hit_target}%，来源：{source_label}），"
+                f"免疫屏障已建立。",
+            )
+        if rate >= hit_target - 10:
+            return (
+                "borderline",
+                f"该疾病群体抗体阳性率（{rate}%）接近但未完全达到免疫屏障阈值（{hit_target}%，来源：{source_label}），"
+                f"建议加强重点人群免疫。",
+            )
+        return (
+            "insufficient",
+            f"该疾病群体抗体阳性率（{rate}%）低于免疫屏障阈值（{hit_target}%，来源：{source_label}），"
+            f"免疫屏障不足，建议加强免疫接种。",
+        )
+    return ("no_data", "暂无足够数据或对应的阈值进行对比评估。")
 
 
 async def get_approved_data_points(
@@ -889,13 +1107,17 @@ def _calc_foi_from_sp(seroprevalence: float, age_mid: float) -> Optional[float]:
     - age_mid ≤ 0 → 返回 None（分母无效）
     """
     if seroprevalence <= 0 or age_mid <= 0:
-        return 0.0 if seroprevalence <= 0 else None
+        result = 0.0 if seroprevalence <= 0 else None
+        logger.debug(f"[FOI] _calc_foi_from_sp 边界返回: SP={seroprevalence}, age_mid={age_mid} → foi={result}")
+        return result
     sp_clamped = min(seroprevalence / 100.0, 0.9999)  # 转成比例（0-1），避免 -ln(0)
     if sp_clamped <= 0:
+        logger.debug(f"[FOI] _calc_foi_from_sp SP_clamped≤0: SP={seroprevalence} → foi=0.0")
         return 0.0
-    import math
     foi = -math.log(1.0 - sp_clamped) / age_mid
-    return round(foi, 6)
+    result = round(foi, 6)
+    logger.debug(f"[FOI] _calc_foi_from_sp: SP={seroprevalence}%, age_mid={age_mid}, sp_ratio={sp_clamped:.6f} → foi={result}/年")
+    return result
 
 
 def _midpoint_age(age_min: Optional[int], age_max: Optional[int]) -> Optional[float]:
@@ -908,20 +1130,31 @@ def _midpoint_age(age_min: Optional[int], age_max: Optional[int]) -> Optional[fl
     """
     if age_min is not None and age_max is not None:
         if age_min < 0 or age_max < age_min:
+            logger.warning(f"[FOI] _midpoint_age 无效年龄范围: age_min={age_min}, age_max={age_max} → None")
             return None
-        return (age_min + age_max) / 2.0
+        mid = (age_min + age_max) / 2.0
+        logger.debug(f"[FOI] _midpoint_age: age_min={age_min}, age_max={age_max} → mid={mid}")
+        return mid
     if age_min is not None:
-        return float(age_min) + 2.5
+        mid = float(age_min) + 2.5
+        logger.debug(f"[FOI] _midpoint_age(仅age_min): age_min={age_min} → mid={mid} (经验半宽+2.5)")
+        return mid
     if age_max is not None:
-        return age_max / 2.0
+        mid = age_max / 2.0
+        logger.debug(f"[FOI] _midpoint_age(仅age_max): age_max={age_max} → mid={mid}")
+        return mid
+    logger.debug(f"[FOI] _midpoint_age: age_min和age_max均为None → None")
     return None
 
 
 def _calc_hit_from_r0(r0: float) -> float:
     """群体免疫阈值 HIT = 1 - 1/R0，转成百分比（0-100）。"""
     if r0 is None or r0 <= 1.0:
+        logger.debug(f"[FOI] _calc_hit_from_r0: r0={r0} (≤1或None) → HIT=0.0%")
         return 0.0
-    return round((1.0 - 1.0 / r0) * 100.0, 2)
+    hit = round((1.0 - 1.0 / r0) * 100.0, 2)
+    logger.debug(f"[FOI] _calc_hit_from_r0: r0={r0} → HIT={hit}%")
+    return hit
 
 
 def _calc_r0_from_foi(foi_avg: float, life_exp: float = DEFAULT_LIFE_EXPECTANCY) -> Optional[float]:
@@ -931,8 +1164,11 @@ def _calc_r0_from_foi(foi_avg: float, life_exp: float = DEFAULT_LIFE_EXPECTANCY)
     新冠/流感等非终身免疫疾病此公式有偏差，结果会在注释中标记。
     """
     if foi_avg is None or foi_avg <= 0:
+        logger.debug(f"[FOI] _calc_r0_from_foi: foi_avg={foi_avg} (≤0或None) → R0=None")
         return None
-    return round(foi_avg * life_exp, 3)
+    r0 = round(foi_avg * life_exp, 3)
+    logger.info(f"[FOI] _calc_r0_from_foi: foi_avg={foi_avg}/年, L={life_exp}年 → R0≈{r0}")
+    return r0
 
 
 async def get_foi_analysis(
@@ -964,6 +1200,12 @@ async def get_foi_analysis(
     result = await db.execute(query)
     rows: list[DataPoint] = result.scalars().all()
 
+    logger.info(
+        f"[FOI] get_foi_analysis 开始: disease={disease}, province={province}, "
+        f"year_start={year_start}, year_end={year_end}, "
+        f"查询到 {len(rows)} 条已审核 seroprevalence 数据点"
+    )
+
     if not rows:
         return {
             "disease": disease,
@@ -990,6 +1232,12 @@ async def get_foi_analysis(
         if dis_key not in disease_rows:
             disease_rows[dis_key] = []
         disease_rows[dis_key].append(r)
+
+    logger.info(f"[FOI] 按疾病分组: {len(disease_rows)} 种疾病 → {list(disease_rows.keys())}")
+    for dk, drs in disease_rows.items():
+        sp_count = sum(1 for r in drs if r.value is not None)
+        age_count = sum(1 for r in drs if _midpoint_age(r.age_min, r.age_max) is not None)
+        logger.info(f"[FOI]   疾病={dk}: 总数据点={len(drs)}, 有value={sp_count}, 可算年龄中点={age_count}")
 
     per_disease_results: list[dict] = []
     province_foi_matrix: list[dict] = []
@@ -1035,6 +1283,11 @@ async def get_foi_analysis(
                 w_foi = round(sum(v * w for v, w in bucket["foi_values"]) / fv_total_w, 6) if fv_total_w > 0 else None
             else:
                 w_foi = None
+            logger.info(
+                f"[FOI] [{dis_key}] 年龄组={age_label}: dp_count={bucket['dp_count']}, "
+                f"samples={bucket['sample_sum']}, w_sp={w_sp}%, w_foi={w_foi}/年, "
+                f"foi_values_count={len(bucket['foi_values'])}"
+            )
             foi_by_age.append({
                 "age_group": age_label,
                 "age_mid_approx": (lo + hi) / 2.0,
@@ -1075,17 +1328,32 @@ async def get_foi_analysis(
         else:
             weighted_avg_foi = None
 
+        logger.info(
+            f"[FOI] [{dis_key}] 全年龄段加权平均FOI: "
+            f"参与年龄组数={len(all_foi_tuples)}, "
+            f"各年龄组(foi,samples)={[(v, w) for v, w in all_foi_tuples]}, "
+            f"加权总样本={w_total if all_foi_tuples else 0} → "
+            f"weighted_avg_foi={weighted_avg_foi}/年"
+        )
+
         # --- 3) R0 估计：R0 ≈ λ·L（催化模型）+ 文献参考 ---
         estimated_r0 = _calc_r0_from_foi(weighted_avg_foi) if weighted_avg_foi is not None else None
         r0_ref = R0_REFERENCE.get(dis_key)  # (typical, low, high)
+
+        logger.info(
+            f"[FOI] [{dis_key}] R0估算: estimated_r0_from_foi={estimated_r0}, "
+            f"r0_reference={r0_ref}"
+        )
 
         # 如果 FOI 推出来的 R0 严重超出文献范围，给出 note
         if r0_ref and estimated_r0 is not None:
             typical, rlow, rhigh = r0_ref
             if estimated_r0 < rlow * 0.3:
                 notes.append(f"[{dis_key}] 基于 FOI 的 R0 估计（{estimated_r0}）显著低于文献参考区间 [{rlow}, {rhigh}]，可能是 SP 偏低或年龄覆盖不全。")
+                logger.warning(f"[FOI] [{dis_key}] R0估计({estimated_r0})显著低于文献参考[{rlow},{rhigh}]")
             elif estimated_r0 > rhigh * 2:
                 notes.append(f"[{dis_key}] 基于 FOI 的 R0 估计（{estimated_r0}）显著高于文献参考区间 [{rlow}, {rhigh}]，可能受年龄分组偏差影响。")
+                logger.warning(f"[FOI] [{dis_key}] R0估计({estimated_r0})显著高于文献参考[{rlow},{rhigh}]")
 
         # --- 4) HIT（群体免疫阈值）两种估计 ---
         # 方案 A：FOI → R0 → HIT
@@ -1093,6 +1361,11 @@ async def get_foi_analysis(
         # 方案 B：文献 R0（typical）→ HIT
         reference_hit = _calc_hit_from_r0(r0_ref[0]) if r0_ref else None
         who_threshold = WHO_THRESHOLDS.get(dis_key)
+
+        logger.info(
+            f"[FOI] [{dis_key}] HIT计算: hit_from_foi={foi_hit_percent}%, "
+            f"hit_from_reference_r0={reference_hit}%, who_threshold={who_threshold}%"
+        )
 
         # --- 5) 群体免疫状态判定 ---
         # 用加权平均 SP 与 HIT（优先 FOI 估计，否则参考 WHO）对比
@@ -1112,6 +1385,12 @@ async def get_foi_analysis(
                 herd_status = "not_reached"    # 未达到
         else:
             herd_status = "undetermined"
+
+        logger.info(
+            f"[FOI] [{dis_key}] 群体免疫判定: overall_sp={overall_sp}%, "
+            f"hit_target={hit_target}% (来源={'foi' if foi_hit_percent else 'who' if who_threshold else 'ref_r0' if reference_hit else 'none'}), "
+            f"herd_status={herd_status}"
+        )
 
         # --- 6) 省份 × 疾病 FOI 矩阵 ---
         prov_map: dict[str, dict] = {}
@@ -1165,6 +1444,13 @@ async def get_foi_analysis(
                 "herd_immunity_status": p_hit,
                 "hit_target_percent": hit_target,
             })
+            logger.info(
+                f"[FOI] [{dis_key}] 省份={prov_name}: dp={pm['dp_count']}, "
+                f"samples={pm['sample_sum']}, w_sp={w_sp}%, foi={prov_foi}/年, "
+                f"herd_status={p_hit}"
+            )
+
+        logger.info(f"[FOI] [{dis_key}] 疾病分析完成: 年龄组数={len(foi_by_age)}, 省份数={len(prov_map)}")
 
         summary_block = {
             "disease": dis_key,
@@ -1260,6 +1546,7 @@ def _split_vax_unvax(rows: list) -> tuple[list, list]:
     _zh_unvax = tuple(k for k in _UNVAXXED_KW if not all(ord(c) < 128 for c in k))
 
     vaxxed, unvaxxed = [], []
+    unclassified_count = 0
     for r in rows:
         pop_orig = getattr(r, "population", None) or ""
         pop = pop_orig.lower()
@@ -1270,6 +1557,8 @@ def _split_vax_unvax(rows: list) -> tuple[list, list]:
         zh_v = any(k in pop_orig for k in _zh_vax)
         zh_u = any(k in pop_orig for k in _zh_unvax)
         if zh_v and zh_u:
+            unclassified_count += 1
+            logger.debug(f"[VE] _split_vax_unvax 冲突跳过: population='{pop_orig}' (同时含已/未接种关键词)")
             continue  # 冲突：如「已接种与未接种人群对比」
 
         # 英文/其余逻辑：先判 unvaxxed
@@ -1294,7 +1583,14 @@ def _split_vax_unvax(rows: list) -> tuple[list, list]:
                 break
         if v_hit:
             vaxxed.append(r)
-        # 其余: 不明确，不参与 VE 计算
+        else:
+            unclassified_count += 1
+            logger.debug(f"[VE] _split_vax_unvax 未分类: population='{pop_orig}' (无匹配关键词)")
+
+    logger.info(
+        f"[VE] _split_vax_unvax 完成: 总数={len(rows)}, "
+        f"已接种={len(vaxxed)}, 未接种={len(unvaxxed)}, 未分类={unclassified_count}"
+    )
     return vaxxed, unvaxxed
 
 
@@ -1306,13 +1602,17 @@ def _calc_ve_from_sp(sp_vax: float, sp_unvax: float) -> Optional[float]:
     说明不是保护性抗体阳转率维度，需返回 None。
     """
     if sp_unvax is None or sp_vax is None or sp_unvax <= 0:
+        logger.info(f"[VE] _calc_ve_from_sp 返回None: sp_vax={sp_vax}, sp_unvax={sp_unvax} (参数无效或sp_unvax≤0)")
         return None
     ratio = sp_vax / sp_unvax
     if ratio >= 1.0:
         # 接种组阳性率 >= 未接种组：通常是疫苗诱导了抗体（这是期望的），
         # 但该公式不能用于计算「保护性 VE」，返回 None 并标注
+        logger.info(f"[VE] _calc_ve_from_sp 返回None: sp_vax={sp_vax}% ≥ sp_unvax={sp_unvax}% (ratio={ratio:.4f}≥1, 疫苗诱导抗体)")
         return None
-    return round((1.0 - ratio) * 100.0, 2)  # 转 %
+    ve = round((1.0 - ratio) * 100.0, 2)  # 转 %
+    logger.info(f"[VE] _calc_ve_from_sp: sp_vax={sp_vax}%, sp_unvax={sp_unvax}%, ratio={ratio:.4f} → VE={ve}%")
+    return ve
 
 
 def _get_reference_coverage(disease: str, province: Optional[str]) -> Optional[float]:
@@ -1321,8 +1621,12 @@ def _get_reference_coverage(disease: str, province: Optional[str]) -> Optional[f
         return None
     dis_map = NIP_COVERAGE_REFERENCE.get(disease, {})
     if province and province in dis_map:
-        return dis_map[province]
-    return dis_map.get("__national__")
+        cov = dis_map[province]
+        logger.debug(f"[VE] _get_reference_coverage: disease={disease}, province={province} → 省级接种率={cov}%")
+        return cov
+    cov = dis_map.get("__national__")
+    logger.debug(f"[VE] _get_reference_coverage: disease={disease}, province={province} → 国家级接种率={cov}%")
+    return cov
 
 
 def _implied_coverage_from_hit(
@@ -1332,8 +1636,10 @@ def _implied_coverage_from_hit(
     则 coverage_implied ≈ overall_sp / hit_target（当整体 SP 被视为疫苗诱导+自然感染的混合时，
     此近似偏保守，仅用于给出参考值）。"""
     if hit_target is None or hit_target <= 0 or overall_sp is None:
+        logger.debug(f"[VE] _implied_coverage_from_hit 返回None: overall_sp={overall_sp}, hit_target={hit_target}")
         return None
     impl = min(100.0, round(overall_sp / hit_target * 100.0, 2))
+    logger.info(f"[VE] _implied_coverage_from_hit: overall_sp={overall_sp}%, hit_target={hit_target}% → implied_coverage={impl}%")
     return impl
 
 
@@ -1364,6 +1670,12 @@ async def get_vaccine_analysis(
     result = await db.execute(query)
     rows: list = result.scalars().all()
 
+    logger.info(
+        f"[VE] get_vaccine_analysis 开始: disease={disease}, province={province}, "
+        f"year_start={year_start}, year_end={year_end}, "
+        f"查询到 {len(rows)} 条已审核 seroprevalence 数据点 (含子估计)"
+    )
+
     notes: list[str] = []
     if not rows:
         return {
@@ -1388,6 +1700,8 @@ async def get_vaccine_analysis(
             disease_rows[key] = []
         disease_rows[key].append(r)
 
+    logger.info(f"[VE] 按疾病分组: {len(disease_rows)} 种疾病 → {list(disease_rows.keys())}")
+
     per_disease_results: list[dict] = []
     province_coverage_matrix: list[dict] = []
 
@@ -1399,6 +1713,8 @@ async def get_vaccine_analysis(
             overall_sp = round(sum(v * w for v, w in sp_list) / wsum, 2) if wsum > 0 else None
         else:
             overall_sp = None
+
+        logger.info(f"[VE] [{dis_key}] 整体SP计算: 有效数据点={len(sp_list)}/{len(dis_rows)}, overall_sp={overall_sp}%")
 
         # ---- VE 计算（接种 vs 未接种拆分）----
         vaxxed, unvaxxed = _split_vax_unvax(dis_rows)
@@ -1412,6 +1728,10 @@ async def get_vaccine_analysis(
                 return round(sum(v * w for v, w in lst) / sw, 2) if sw > 0 else None
             sp_v = _wsp(vaxxed)
             sp_u = _wsp(unvaxxed)
+            logger.info(
+                f"[VE] [{dis_key}] 亚组SP: 已接种组 sp_v={sp_v}% (n={sum(r.sample_size or 0 for r in vaxxed)}), "
+                f"未接种组 sp_u={sp_u}% (n={sum(r.sample_size or 0 for r in unvaxxed)})"
+            )
             ve_percent = _calc_ve_from_sp(sp_v, sp_u)
             total_n = sum(r.sample_size or 0 for r in vaxxed) + sum(r.sample_size or 0 for r in unvaxxed)
             ve_result = {
@@ -1428,12 +1748,18 @@ async def get_vaccine_analysis(
                        else "接种组阳性率≥未接种组，属疫苗诱导抗体（非保护性维度），无法用该公式算 VE")
                 ) if sp_v is not None and sp_u is not None else None,
             }
+            logger.info(f"[VE] [{dis_key}] VE结果: ve_percent={ve_percent}%, total_n={total_n}")
         else:
             if len(vaxxed) == 0 and len(unvaxxed) == 0:
                 notes.append(
                     f"[{dis_key}] 没有找到明确标注「已接种/未接种」亚组的数据点，无法直接计算 VE。"
                     "建议在文献审核时补充人群标签，或通过子估计（estimate_type='subgroup'）拆分接种状态。"
                 )
+                logger.info(f"[VE] [{dis_key}] 未找到接种/未接种亚组数据点，VE无法计算")
+            elif len(vaxxed) == 0:
+                logger.info(f"[VE] [{dis_key}] 仅有未接种组({len(unvaxxed)}条)，缺少已接种组，VE无法计算")
+            elif len(unvaxxed) == 0:
+                logger.info(f"[VE] [{dis_key}] 仅有已接种组({len(vaxxed)}条)，缺少未接种组，VE无法计算")
 
         # ---- 接种率推算 ----
         r0_ref = R0_REFERENCE.get(dis_key)
@@ -1441,6 +1767,12 @@ async def get_vaccine_analysis(
         implied_cov = _implied_coverage_from_hit(overall_sp, hit_percent)
 
         ref_cov = _get_reference_coverage(dis_key, None)  # 国家级先
+
+        logger.info(
+            f"[VE] [{dis_key}] 接种率推算: hit_percent={hit_percent}% "
+            f"(来源={'r0_ref' if r0_ref else 'who'}), "
+            f"implied_cov={implied_cov}%, nip_ref_national={ref_cov}%"
+        )
 
         per_disease_results.append({
             "disease": dis_key,

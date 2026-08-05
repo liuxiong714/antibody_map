@@ -1,5 +1,5 @@
 import api from './api';
-import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData, DataGapAnalysisResult } from '../types';
+import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult } from '../types';
 
 // 拦截器已将 ApiResponse.data 提升到 resp.data，此处解包 AxiosResponse
 
@@ -99,4 +99,16 @@ export async function getReport(id: string) {
 
 export function getDownloadUrl(id: string) {
   return `/api/v1/reports/${id}/download`;
+}
+
+// P0: FOI 感染力 + 群体免疫阈值分析
+export async function getFoiHerdImmunity(params: Record<string, unknown>) {
+  const { data } = await api.get<FoiHerdImmunityResult>('/analysis/foi-herd-immunity', { params });
+  return data;
+}
+
+// P1: 疫苗效果 VE + 接种率综合分析
+export async function getVaccineEffectivenessCoverage(params: Record<string, unknown>) {
+  const { data } = await api.get<VaccineEffectivenessCoverageResult>('/analysis/vaccine-effectiveness-coverage', { params });
+  return data;
 }

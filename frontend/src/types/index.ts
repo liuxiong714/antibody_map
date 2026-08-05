@@ -24,8 +24,42 @@ export interface Literature {
   extraction_status: string;
   extracted_count: number;
   approved_count: number;
+  // LLM 提取的 token 用量与费用统计
+  llm_model_used?: string | null;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  llm_cost_usd?: number | null;
+  llm_call_count?: number;
+  llm_usage_detail?: Record<string, {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    call_count: number;
+  }> | null;
   created_at: string;
   updated_at: string;
+}
+
+// AI 提取状态查询结果（含 token 用量）
+export interface ExtractionStatusWithUsage {
+  literature_id: string;
+  status: string;
+  extracted_count: number;
+  approved_count: number;
+  data_point_count: number;
+  llm_model_used: string | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  llm_cost_usd: number;
+  llm_call_count: number;
+  llm_usage_detail: Record<string, {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    call_count: number;
+  }> | null;
 }
 
 export interface DataPoint {
@@ -130,6 +164,9 @@ export interface MapDataPoint {
   study_count: number;
   total_sample: number;
   weighted_positivity: number | null;
+  /** 城市级坐标（地图下钻散点图用） */
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 export interface YearlyMapData {
@@ -197,9 +234,44 @@ export interface ReportRecord {
 }
 export interface ImmuneBarrierData {
   disease: string;
-  who_threshold: number;
-  summary: { total_data_points: number; total_literatures: number; total_samples: number; weighted_positivity_rate: number | null };
+  who_threshold: number | null;
+  r0_reference?: {
+    typical: number | null;
+    range_low: number | null;
+    range_high: number | null;
+  };
+  summary: {
+    total_data_points: number;
+    total_literatures: number;
+    total_samples: number;
+    weighted_positivity_rate: number | null;
+    weighted_avg_foi_per_year?: number | null;
+    estimated_r0_from_foi?: number | null;
+    hit_from_foi_percent?: number | null;
+    hit_from_reference_r0_percent?: number | null;
+    hit_target_used_percent?: number | null;
+    hit_target_source?: string;
+  };
   yearly_trend: Array<{ year: number; weighted_positivity: number | null; sample_size: number; point_count: number }>;
+  age_groups?: Array<{
+    age_group: string;
+    age_range: [number, number];
+    data_point_count: number;
+    total_samples: number;
+    weighted_positivity_rate: number | null;
+    weighted_avg_foi_per_year: number | null;
+    status: string;
+  }>;
+  province_matrix?: Array<{
+    province: string;
+    data_point_count: number;
+    total_samples: number;
+    weighted_positivity_rate: number | null;
+    weighted_avg_foi_per_year: number | null;
+    estimated_r0_from_foi: number | null;
+    hit_target_percent: number | null;
+    status: string;
+  }>;
   status: string;
   assessment: string;
 }
@@ -349,4 +421,115 @@ export interface ScanResult {
   imported: number;
   skipped: number;
   failed: number;
+}
+
+// ===== FOI（感染力）+ 群体免疫阈值分析 =====
+
+export interface FoiAgeGroupRow {
+  age_group: string;
+  age_mid_approx: number;
+  data_point_count: number;
+  total_samples: number;
+  weighted_positivity_rate: number | null;
+  weighted_avg_foi_per_year: number | null;
+}
+
+export interface FoiDiseaseSummary {
+  disease: string;
+  total_data_points: number;
+  overall_weighted_positivity_rate: number | null;
+  weighted_avg_foi_per_year: number | null;
+  estimated_r0_from_foi: number | null;
+  r0_reference: {
+    typical: number | null;
+    range_low: number | null;
+    range_high: number | null;
+  };
+  hit_from_foi_percent: number | null;
+  hit_from_reference_r0_percent: number | null;
+  who_threshold_percent: number | null;
+  hit_target_used_percent: number | null;
+  herd_immunity_status: 'reached' | 'near' | 'not_reached' | 'undetermined' | 'no_data';
+  life_expectancy_used: number;
+}
+
+export interface FoiProvinceMatrixRow {
+  disease: string;
+  province: string;
+  data_point_count: number;
+  total_samples: number;
+  weighted_positivity_rate: number | null;
+  weighted_avg_foi_per_year: number | null;
+  herd_immunity_status: 'reached' | 'near' | 'not_reached' | 'undetermined';
+  hit_target_percent: number | null;
+}
+
+export interface FoiPerDiseaseResult {
+  disease: string;
+  summary: FoiDiseaseSummary;
+  foi_by_age_group: FoiAgeGroupRow[];
+}
+
+export interface FoiHerdImmunityResult {
+  disease: string | null;
+  total_data_points: number;
+  per_disease_results: FoiPerDiseaseResult[];
+  summary: FoiDiseaseSummary | {
+    num_diseases_analyzed: number;
+    diseases: string[];
+  };
+  province_foi_matrix: FoiProvinceMatrixRow[];
+  notes: string[];
+}
+
+// ===== 疫苗效果 (VE) + 接种率分析 =====
+
+export interface VeResult {
+  vaxxed_points: number;
+  unvaxxed_points: number;
+  vaxxed_total_samples: number;
+  unvaxxed_total_samples: number;
+  vaxxed_weighted_sp: number | null;
+  unvaxxed_weighted_sp: number | null;
+  ve_infection_percent: number | null;
+  interpretation: string | null;
+}
+
+export interface VaccineCoverageInfo {
+  nip_reference_national_percent: number | null;
+  implied_from_seroprevalence_percent: number | null;
+}
+
+export interface VaccinePerDiseaseResult {
+  disease: string;
+  total_data_points: number;
+  overall_weighted_sp: number | null;
+  herd_immunity_target_percent: number | null;
+  reference_r0_typical: number | null;
+  ve_result: VeResult | null;
+  coverage: VaccineCoverageInfo;
+}
+
+export interface VaccineProvinceMatrixRow {
+  disease: string;
+  province: string;
+  data_point_count: number;
+  weighted_sp_percent: number | null;
+  ve_infection_percent: number | null;
+  nip_reference_coverage_percent: number | null;
+  implied_coverage_from_sp_percent: number | null;
+  coverage_status: 'on_track' | 'near' | 'below' | 'undetermined';
+}
+
+export interface VaccineEffectivenessCoverageResult {
+  disease: string | null;
+  province: string | null;
+  total_data_points: number;
+  per_disease_results: VaccinePerDiseaseResult[];
+  province_coverage_matrix: VaccineProvinceMatrixRow[];
+  summary: VaccinePerDiseaseResult | {
+    num_diseases_analyzed: number;
+    diseases: string[];
+  };
+  notes: string[];
 }

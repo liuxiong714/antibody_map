@@ -20,10 +20,12 @@ frontend/tsconfig.tsbuildinfo
 
 # 测试监控文件夹
 backend/data/test_monitor/
+backend/data/
 
 # 日志与临时文件
 *.log
 *.tmp
+*.db
 npm-output.txt
 pip_log.txt
 install_log.txt
@@ -34,4 +36,8 @@ extract_result.txt
 trigger*.txt
 test_output.txt
 out.txt
+
+# 临时开发/测试脚本
+backend/check_*.py
+backend/test_*.py
 

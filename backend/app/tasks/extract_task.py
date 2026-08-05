@@ -485,6 +485,28 @@ async def _process_literature_async(
             if first.get("journal") and not literature.journal:
                 literature.journal = first["journal"]
 
+        # 7b. 记录 LLM token 用量与费用到 literature 表
+        try:
+            usage_summary = extractor.get_usage_summary()
+            literature.llm_model_used = usage_summary.get("primary_model")
+            literature.prompt_tokens = usage_summary.get("total_prompt_tokens", 0)
+            literature.completion_tokens = usage_summary.get("total_completion_tokens", 0)
+            literature.total_tokens = usage_summary.get("total_tokens", 0)
+            literature.llm_cost_usd = usage_summary.get("estimated_cost_usd", 0)
+            literature.llm_call_count = usage_summary.get("total_call_count", 0)
+            literature.llm_usage_detail = usage_summary.get("models")
+            logger.info(
+                f"[TokenUsage] 文献 {literature_id} 提取消耗: "
+                f"model={literature.llm_model_used}, "
+                f"prompt={literature.prompt_tokens}, "
+                f"completion={literature.completion_tokens}, "
+                f"total={literature.total_tokens}, "
+                f"calls={literature.llm_call_count}, "
+                f"cost=${literature.llm_cost_usd}"
+            )
+        except Exception as e:
+            logger.warning(f"记录 token 用量失败（不影响提取结果）: {e}")
+
         # 8. 更新 literature 状态
         if len(all_data_points) > 0:
             literature.extraction_status = "done"

@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
-from sqlalchemy import Boolean, Integer, String, Text, ARRAY, DateTime, CheckConstraint
+from sqlalchemy import Boolean, Integer, String, Text, ARRAY, DateTime, CheckConstraint, Numeric
+from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -31,6 +32,14 @@ class Literature(Base):
     extraction_status: Mapped[str] = mapped_column(String(20), default="pending")
     extracted_count: Mapped[int] = mapped_column(Integer, default=0)
     approved_count: Mapped[int] = mapped_column(Integer, default=0)
+    # LLM 提取的 token 用量与费用统计（AI 提取完成时写入）
+    llm_model_used: Mapped[Optional[str]] = mapped_column(String(100))
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    llm_cost_usd: Mapped[Any] = mapped_column(Numeric(10, 6), default=0)
+    llm_call_count: Mapped[int] = mapped_column(Integer, default=0)
+    llm_usage_detail: Mapped[Optional[dict]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

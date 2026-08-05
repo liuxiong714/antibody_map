@@ -42,6 +42,15 @@ class BaseLLMProvider:
         return False
 
     @classmethod
+    def get_pricing(cls) -> Optional[tuple[float, float]]:
+        """返回模型单价 (input_per_1m, output_per_1m)，单位：美元/百万 token。
+
+        默认 None（无法计价，费用记为 0）。子类可覆盖。
+        价格来源：各厂商官网公开定价（2026 年初参考值），可能随厂商调整而变化。
+        """
+        return None
+
+    @classmethod
     def matches(cls, model: str) -> bool:
         """检查模型名是否匹配此 Provider"""
         model_lower = model.lower()

@@ -1,8 +1,7 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Card, Row, Col, Statistic, Spin, message, Table, Select, InputNumber, Button, Slider, Segmented, Space, Tooltip, Tag } from 'antd';
-import ReactECharts from 'echarts-for-react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { Card, Row, Col, Statistic, Spin, message, Table, Select, InputNumber, Button, Slider, Segmented, Space, Tooltip, Tag, Modal, Descriptions } from 'antd';
 import * as echarts from 'echarts';
-import { SearchOutlined, ReloadOutlined, PlayCircleOutlined, PauseCircleOutlined, StepBackwardOutlined, StepForwardOutlined, CalendarOutlined, SyncOutlined, ArrowLeftOutlined, DownloadOutlined } from '@ant-design/icons';
+import { SearchOutlined, ReloadOutlined, PlayCircleOutlined, PauseCircleOutlined, StepBackwardOutlined, StepForwardOutlined, CalendarOutlined, SyncOutlined, ArrowLeftOutlined, DownloadOutlined, CompassOutlined } from '@ant-design/icons';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import MapSelector from '../components/MapSelector';
@@ -33,6 +32,14 @@ const MapOverview: React.FC = () => {
   const [provinceYearly, setProvinceYearly] = useState<YearlyMapData[]>([]);
   const [provinceCities, setProvinceCities] = useState<MapDataPoint[]>([]);
   const [provinceDetailLoading, setProvinceDetailLoading] = useState(false);
+
+  // 地图下钻状态：drillProvince 不为空时显示该省份的城市级散点图
+  const [drillProvince, setDrillProvince] = useState<string | null>(null);
+  const [drillCityData, setDrillCityData] = useState<MapDataPoint[]>([]);
+
+  // 城市详情弹窗
+  const [cityDetailOpen, setCityDetailOpen] = useState(false);
+  const [cityDetailData, setCityDetailData] = useState<MapDataPoint | null>(null);
 
   // 动态人群（职业）选项——根据文献中实际定义的研究对象自动更新
   const [populationOptions, setPopulationOptions] = useState<string[]>([]);
@@ -69,7 +76,7 @@ const MapOverview: React.FC = () => {
       if (ageMin != null) params.age_min = ageMin;
       if (ageMax != null) params.age_max = ageMax;
       if (gender) params.gender = gender;
-      if (occupation) params.occupation = occupation;
+      if (occupation.length > 0) params.occupation = occupation.join(',');
       const resp = await getProvinceData(params);
       setMapData(Array.isArray(resp) ? resp : []);
     } catch {
@@ -147,7 +154,7 @@ const MapOverview: React.FC = () => {
       if (ageMin != null) params.age_min = ageMin;
       if (ageMax != null) params.age_max = ageMax;
       if (gender) params.gender = gender;
-      if (occupation) params.occupation = occupation;
+      if (occupation.length > 0) params.occupation = occupation.join(',');
       const resp = await getYearlyProvinceData(params);
       const sorted = Array.isArray(resp) ? [...resp].sort((a, b) => a.year - b.year) : [];
       setYearlyData(sorted);
@@ -218,6 +225,7 @@ const MapOverview: React.FC = () => {
   // 点击地图省份，获取该省份的详细数据
   const handleProvinceClick = useCallback(async (provinceName: string) => {
     setSelectedProvince(provinceName);
+    setDrillProvince(provinceName);
     setProvinceDetailLoading(true);
     try {
       const baseParams: Record<string, unknown> = { province: provinceName };
@@ -228,7 +236,7 @@ const MapOverview: React.FC = () => {
       if (ageMin != null) baseParams.age_min = ageMin;
       if (ageMax != null) baseParams.age_max = ageMax;
       if (gender) baseParams.gender = gender;
-      if (occupation) baseParams.occupation = occupation;
+      if (occupation.length > 0) baseParams.occupation = occupation.join(',');
 
       // 并行获取：历年趋势数据 + 城市分布数据
       const [yearlyResp, cityResp] = await Promise.all([
@@ -236,25 +244,102 @@ const MapOverview: React.FC = () => {
         getCityData({ province: provinceName, ...(disease ? { disease } : {}), ...(dataType ? { data_type: dataType } : {}) }),
       ]);
       setProvinceYearly(Array.isArray(yearlyResp) ? [...yearlyResp].sort((a, b) => a.year - b.year) : []);
-      setProvinceCities(Array.isArray(cityResp) ? cityResp : []);
+      const cities = Array.isArray(cityResp) ? cityResp : [];
+      setProvinceCities(cities);
+      setDrillCityData(cities);
     } catch {
       setProvinceYearly([]);
       setProvinceCities([]);
+      setDrillCityData([]);
     } finally {
       setProvinceDetailLoading(false);
     }
   }, [disease, dataType, yearStart, yearEnd, ageMin, ageMax, gender, occupation]);
 
-  // ECharts 地图点击事件
-  const onChartEvents = {
-    click: (params: { name: string; componentType: string }) => {
-      if (params.componentType !== 'series') return;
-      // params.name 是 GeoJSON 全名，需要映射回短名称
+  // 城市散点点击：显示详情弹窗
+  const handleCityScatterClick = useCallback((cityData: MapDataPoint) => {
+    setCityDetailData(cityData);
+    setCityDetailOpen(true);
+  }, []);
+
+  // 返回全国视图（取消地图下钻）
+  const handleBackToNational = useCallback(() => {
+    setDrillProvince(null);
+    setDrillCityData([]);
+    setSelectedProvince(null);
+  }, []);
+
+  // 图表容器 ref
+  const chartContainerRef = useRef<HTMLDivElement | null>(null);
+  const chartInstanceRef = useRef<echarts.ECharts | null>(null);
+  const handleProvinceClickRef = useRef(handleProvinceClick);
+  const handleCityScatterClickRef = useRef(handleCityScatterClick);
+  const drillCityDataRef = useRef(drillCityData);
+  const handleBackToNationalRef = useRef(handleBackToNational);
+  const drillProvinceRef = useRef(drillProvince);
+  // 趋势图容器 ref
+  const trendChartRef = useRef<HTMLDivElement | null>(null);
+  const trendChartInstanceRef = useRef<echarts.ECharts | null>(null);
+
+  // 保持 ref 与最新的回调和数据同步
+  useEffect(() => {
+    handleProvinceClickRef.current = handleProvinceClick;
+    handleCityScatterClickRef.current = handleCityScatterClick;
+    drillCityDataRef.current = drillCityData;
+    handleBackToNationalRef.current = handleBackToNational;
+    drillProvinceRef.current = drillProvince;
+  });
+
+  // 初始化 ECharts 实例并绑定事件（仅在 mapReady 后执行一次）
+  useEffect(() => {
+    if (!mapReady || !chartContainerRef.current) return;
+    // 若已有实例，先销毁
+    if (chartInstanceRef.current) {
+      chartInstanceRef.current.dispose();
+    }
+    const instance = echarts.init(chartContainerRef.current);
+    chartInstanceRef.current = instance;
+    // 确保容器尺寸正确后再渲染
+    requestAnimationFrame(() => {
+      if (chartInstanceRef.current === instance) {
+        instance.resize();
+      }
+    });
+
+    // 绑定点击事件
+    const clickHandler = (params: { name: string; componentType: string; seriesType?: string }) => {
+      console.log('[MapClick] params:', { name: params.name, componentType: params.componentType, seriesType: params.seriesType });
+      // 散点图点击：城市详情
+      if (params.seriesType === 'scatter') {
+        const cityItem = drillCityDataRef.current.find((d) => d.city === params.name);
+        if (cityItem) handleCityScatterClickRef.current(cityItem);
+        return;
+      }
+      // 地图点击：省份详情
       const entry = Object.entries(PROVINCE_GEOJSON_NAME).find(([, geoName]) => geoName === params.name);
       const shortName = entry ? entry[0] : params.name;
-      if (shortName) handleProvinceClick(shortName);
-    },
-  };
+      console.log('[MapClick] shortName:', shortName);
+      if (shortName) {
+        handleProvinceClickRef.current(shortName);
+      } else if (drillProvinceRef.current) {
+        // 点击空白区域（非有效省份）：下钻模式下返回全国视图
+        handleBackToNationalRef.current();
+      }
+    };
+    instance.on('click', clickHandler);
+    // 临时暴露到 window 用于自动化测试（调试用，可删除）
+    (window as any).__mapClickHandler = clickHandler;
+
+    // 窗口大小变化时自适应
+    const handleResize = () => instance.resize();
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      instance.dispose();
+      chartInstanceRef.current = null;
+    };
+  }, [mapReady]); // 只在 mapReady 变化时重新初始化
 
   // 获取当前要展示的数据（静态或时间序列模式）
   const currentData: MapDataPoint[] = dynamicMode === 'timeline' && selectedYear != null
@@ -276,22 +361,118 @@ const MapOverview: React.FC = () => {
 
     // 系列数据：将数据库短名称转换为 GeoJSON 全名
     const seriesData = currentData
-      .filter((d) => d.province && PROVINCE_GEOJSON_NAME[d.province])
+      .filter((d): d is MapDataPoint & { province: string } => !!d.province && !!PROVINCE_GEOJSON_NAME[d.province!])
       .map((d) => ({
         name: PROVINCE_GEOJSON_NAME[d.province],
         value: Number(d.weighted_positivity) || 0,
       }));
 
+    // 地图中心点：下钻到省份时聚焦该省
+    const provinceCenter: Record<string, [number, number]> = {
+      '北京': [116.4, 39.9], '天津': [117.2, 39.1], '河北': [114.5, 38.0],
+      '山西': [112.5, 37.9], '内蒙古': [111.8, 40.8], '辽宁': [123.4, 41.8],
+      '吉林': [125.3, 43.8], '黑龙江': [126.5, 45.8], '上海': [121.5, 31.2],
+      '江苏': [118.8, 32.1], '浙江': [120.2, 30.3], '安徽': [117.2, 31.8],
+      '福建': [119.3, 26.1], '江西': [115.9, 28.7], '山东': [117.1, 36.7],
+      '河南': [113.6, 34.7], '湖北': [114.3, 30.6], '湖南': [112.9, 28.2],
+      '广东': [113.3, 23.1], '广西': [108.4, 22.8], '海南': [110.2, 20.0],
+      '重庆': [106.6, 29.6], '四川': [104.1, 30.6], '贵州': [106.6, 26.6],
+      '云南': [102.8, 24.9], '西藏': [91.2, 29.7], '陕西': [108.9, 34.3],
+      '甘肃': [103.8, 36.1], '青海': [101.8, 36.6], '宁夏': [106.2, 38.5],
+      '新疆': [87.6, 43.8], '台湾': [121.5, 25.0], '香港': [114.2, 22.3],
+      '澳门': [113.5, 22.2],
+    };
+    const center = drillProvince && provinceCenter[drillProvince]
+      ? provinceCenter[drillProvince]
+      : [105.0, 35.0];
+    const zoom = drillProvince ? 6 : 1.2;
+
+    // 城市级散点数据
+    const scatterData = drillCityData
+      .filter((d) => d.longitude != null && d.latitude != null && d.weighted_positivity != null)
+      .map((d) => ({
+        name: d.city,
+        value: [d.longitude, d.latitude, Number(d.weighted_positivity)],
+        point_count: d.point_count,
+        total_sample: d.total_sample,
+      }));
+
+    const valueLabel = dataType === 'gmc' ? 'GMC' : '阳性率';
+    const valueUnit = dataType === 'gmc' ? ' μg/ml' : '%';
+
+    const series: any[] = [
+      {
+        type: 'map',
+        map: 'china',
+        geoIndex: 0,
+        data: seriesData,
+        animationDuration: 500,
+        animationEasing: 'cubicOut',
+      },
+    ];
+
+    // 下钻模式：添加城市散点
+    if (scatterData.length > 0) {
+      series.push({
+        type: 'scatter',
+        coordinateSystem: 'geo',
+        data: scatterData,
+        symbolSize: (val: number[]) => {
+          const rate = val[2] || 0;
+          // 根据阳性率大小决定散点大小（8-28px）
+          return Math.max(8, Math.min(28, rate / 5));
+        },
+        label: {
+          show: true,
+          formatter: (params: { name: string }) => params.name,
+          position: 'right',
+          fontSize: 10,
+          color: '#333',
+          textBorderColor: '#fff',
+          textBorderWidth: 2,
+        },
+        labelLayout: { hideOverlap: true },
+        emphasis: {
+          label: { show: true, fontSize: 12, fontWeight: 'bold' },
+          itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' },
+        },
+        itemStyle: {
+          color: (params: { value: number[] }) => {
+            const rate = params.value[2] || 0;
+            const stops = colorStops;
+            let color = stops[0].color;
+            for (let i = stops.length - 1; i >= 0; i--) {
+              if (rate >= stops[i].min) {
+                color = stops[i].color;
+                break;
+              }
+            }
+            return color;
+          },
+          borderColor: '#fff',
+          borderWidth: 1,
+          opacity: 0.85,
+        },
+        tooltip: {
+          formatter: (params: { name: string; value: number[]; data: { point_count?: number; total_sample?: number } }) => {
+            return `<b>${params.name}</b><br/>
+              ${valueLabel}: ${params.value[2] != null ? (params.value[2] as number).toFixed(2) + valueUnit : '-'}<br/>
+              数据点数: ${params.data.point_count ?? 0}<br/>
+              总样本量: ${(params.data.total_sample ?? 0).toLocaleString()}`;
+          },
+        },
+      });
+    }
+
     return {
       tooltip: {
         trigger: 'item',
-        formatter: (params: { name: string; value?: number }) => {
-          // params.name 是 GeoJSON 全名，映射回短名称查数据
+        formatter: (params: { name: string; value?: number; componentType?: string }) => {
+          // 散点图的 tooltip 由 scatter series 自行处理
+          if (params.componentType === 'series') return undefined as any;
           const shortName = nameMap[params.name] || params.name;
           const item = currentData.find((d) => d.province === shortName);
           if (!item) return `${params.name}<br/>暂无数据`;
-          const valueLabel = dataType === 'gmc' ? 'GMC' : '阳性率';
-          const valueUnit = dataType === 'gmc' ? ' μg/ml' : '%';
           return `<b>${shortName}</b><br/>
             ${valueLabel}: ${item.weighted_positivity != null ? Number(item.weighted_positivity).toFixed(2) + valueUnit : '-'}<br/>
             数据点数: ${item.point_count}<br/>
@@ -303,7 +484,7 @@ const MapOverview: React.FC = () => {
         min: 0,
         max: maxVal,
         seriesIndex: 0,
-        text: [dataType === 'gmc' ? '高' : '高', dataType === 'gmc' ? '低' : '低'],
+        text: ['高', '低'],
         inRange: { color: colorStops.map((s) => s.color) },
         calculable: true,
         left: 'left',
@@ -312,27 +493,87 @@ const MapOverview: React.FC = () => {
       geo: {
         map: 'china',
         roam: true,
-        label: { show: true, fontSize: 10, color: '#333' },
+        center: center as [number, number],
+        zoom: zoom,
+        label: { show: !drillProvince, fontSize: 10, color: '#333' },
         itemStyle: { areaColor: '#f3f3f3', borderColor: '#ccc' },
         emphasis: { itemStyle: { areaColor: '#a6c84c' } },
         regions: currentData
-          .filter((d) => d.province && PROVINCE_GEOJSON_NAME[d.province])
+          .filter((d): d is MapDataPoint & { province: string } => !!d.province && !!PROVINCE_GEOJSON_NAME[d.province!])
           .map((d) => ({
             name: PROVINCE_GEOJSON_NAME[d.province],
           })),
       },
-      series: [
-        {
-          type: 'map',
-          map: 'china',
-          geoIndex: 0,
-          data: seriesData,
-          animationDuration: 500,
-          animationEasing: 'cubicOut',
-        },
-      ],
+      series,
     };
   };
+
+  // 省份历年趋势图配置
+  const getTrendOption = () => {
+    const tableData = provinceYearly.map((y) => {
+      const item = y.data.find((d) => d.province === selectedProvince);
+      return {
+        year: y.year,
+        value: item?.weighted_positivity ?? null,
+      };
+    });
+    if (tableData.length === 0) return {};
+    const valueLabel = dataType === 'gmc' ? 'GMC' : '阳性率';
+    const unit = dataType === 'gmc' ? ' μg/ml' : '%';
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: Array<{ axisValue: string; data: number | null }>) =>
+          `${params[0].axisValue}年<br/>${valueLabel}: ${params[0].data != null ? params[0].data.toFixed(2) + unit : '无数据'}`,
+      },
+      grid: { left: 35, right: 10, top: 10, bottom: 25 },
+      xAxis: {
+        type: 'category',
+        data: tableData.map((d) => String(d.year)),
+        axisLabel: { fontSize: 9, interval: Math.floor(tableData.length / 5) },
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: { fontSize: 9, formatter: (v: number) => v + (dataType === 'gmc' ? '' : '%') },
+        scale: true,
+      },
+      series: [{
+        type: 'line',
+        data: tableData.map((d) => d.value),
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 5,
+        lineStyle: { width: 2, color: '#1890ff' },
+        itemStyle: { color: '#1890ff' },
+        areaStyle: { color: 'rgba(24,144,255,0.1)' },
+      }],
+    };
+  };
+
+  // 当数据变化时更新图表 option
+  useEffect(() => {
+    const instance = chartInstanceRef.current;
+    if (!instance || !mapReady) return;
+    instance.setOption(getOption(), true);
+  }, [mapReady, currentData, drillProvince, drillCityData, dataType, dynamicMode, selectedYear]);
+
+  // 趋势图管理
+  useEffect(() => {
+    if (!trendChartRef.current) return;
+    if (!trendChartInstanceRef.current) {
+      trendChartInstanceRef.current = echarts.init(trendChartRef.current);
+    }
+    const trendOption = getTrendOption();
+    if (Object.keys(trendOption).length > 0) {
+      trendChartInstanceRef.current.setOption(trendOption, true);
+    }
+    return () => {
+      if (trendChartInstanceRef.current) {
+        trendChartInstanceRef.current.dispose();
+        trendChartInstanceRef.current = null;
+      }
+    };
+  }, [provinceYearly, selectedProvince, dataType]);
 
   const totalPoints = currentData.reduce((s, d) => s + d.point_count, 0);
   const totalProvinces = currentData.length;
@@ -354,41 +595,6 @@ const MapOverview: React.FC = () => {
       total_sample: item?.total_sample ?? 0,
     };
   });
-
-  // 省份历年趋势图配置
-  const getTrendOption = () => {
-    if (provinceYearlyTableData.length === 0) return {};
-    const valueLabel = dataType === 'gmc' ? 'GMC' : '阳性率';
-    const unit = dataType === 'gmc' ? ' μg/ml' : '%';
-    return {
-      tooltip: {
-        trigger: 'axis',
-        formatter: (params: Array<{ axisValue: string; data: number | null }>) =>
-          `${params[0].axisValue}年<br/>${valueLabel}: ${params[0].data != null ? params[0].data.toFixed(2) + unit : '无数据'}`,
-      },
-      grid: { left: 35, right: 10, top: 10, bottom: 25 },
-      xAxis: {
-        type: 'category',
-        data: provinceYearlyTableData.map((d) => String(d.year)),
-        axisLabel: { fontSize: 9, interval: Math.floor(provinceYearlyTableData.length / 5) },
-      },
-      yAxis: {
-        type: 'value',
-        axisLabel: { fontSize: 9, formatter: (v: number) => v + (dataType === 'gmc' ? '' : '%') },
-        scale: true,
-      },
-      series: [{
-        type: 'line',
-        data: provinceYearlyTableData.map((d) => d.value),
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 5,
-        lineStyle: { width: 2, color: '#1890ff' },
-        itemStyle: { color: '#1890ff' },
-        areaStyle: { color: 'rgba(24,144,255,0.1)' },
-      }],
-    };
-  };
 
   return (
     <Spin spinning={loading}>
@@ -425,11 +631,20 @@ const MapOverview: React.FC = () => {
               options={GENDER_OPTIONS} />
           </Col>
           <Col>
-            <Select value={occupation} onChange={setOccupation} style={{ width: 130 }} placeholder="职业（人群）" allowClear
-              options={[
-                { value: '', label: '全部职业' },
-                ...populationOptions.map((p) => ({ value: p, label: p })),
-              ]} />
+            <Select
+              mode="multiple"
+              value={occupation}
+              onChange={setOccupation}
+              style={{ width: 180 }}
+              placeholder="搜索职业（人群）"
+              showSearch
+              allowClear
+              maxTagCount={2}
+              filterOption={(input, option) =>
+                (option?.label as string || '').toLowerCase().includes(input.toLowerCase())
+              }
+              options={populationOptions.map((p) => ({ value: p, label: p }))}
+            />
           </Col>
           <Col>
             <InputNumber style={{ width: 90 }} placeholder="起始年" value={yearStart} onChange={(v: number | null) => { yearRangeAutoRef.current = false; setYearRange(v, yearEnd); }} />
@@ -455,7 +670,7 @@ const MapOverview: React.FC = () => {
               if (ageMin != null) params.set('age_min', String(ageMin));
               if (ageMax != null) params.set('age_max', String(ageMax));
               if (gender) params.set('gender', gender);
-              if (occupation) params.set('occupation', occupation);
+              if (occupation.length > 0) params.set('occupation', occupation.join(','));
               window.open(`/api/v1/map/export-data-points?${params.toString()}`);
             }}>
               导出 CSV
@@ -473,15 +688,14 @@ const MapOverview: React.FC = () => {
                 {dynamicMode === 'timeline' && selectedYear != null && (
                   <Tag color="blue">当前年份: {selectedYear}</Tag>
                 )}
+                {drillProvince && (
+                  <Button size="small" type="text" icon={<CompassOutlined />} onClick={handleBackToNational}>重置地图</Button>
+                )}
               </Space>
             }
           >
             {mapReady ? (
-              <ReactECharts
-                option={getOption()}
-                style={{ height: 520 }}
-                onEvents={onChartEvents}
-              />
+              <div ref={chartContainerRef} style={{ height: 520, width: '100%' }} />
             ) : (
               <Spin tip="加载地图数据..." style={{ height: 520, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <div style={{ height: 520 }} />
@@ -619,7 +833,7 @@ const MapOverview: React.FC = () => {
                 {provinceYearlyTableData.length > 0 && (
                   <div style={{ marginBottom: 12 }}>
                     <div style={{ fontSize: 12, fontWeight: 'bold', color: '#666', marginBottom: 4 }}>历年趋势</div>
-                    <ReactECharts option={getTrendOption()} style={{ height: 120 }} />
+                    <div ref={trendChartRef} style={{ height: 120 }} />
                   </div>
                 )}
 
@@ -688,7 +902,7 @@ const MapOverview: React.FC = () => {
                   pagination={false}
                   scroll={{ y: 420 }}
                   onRow={(record) => ({
-                    onClick: () => handleProvinceClick(record.province),
+                    onClick: () => record.province && handleProvinceClick(record.province),
                     style: { cursor: 'pointer' },
                   })}
                   columns={[
@@ -720,6 +934,30 @@ const MapOverview: React.FC = () => {
           <Card><Statistic title="总样本量" value={totalSample} formatter={(v) => (v as number).toLocaleString()} /></Card>
         </Col>
       </Row>
+
+      {/* 城市详情弹窗 */}
+      <Modal
+        title={cityDetailData ? `${cityDetailData.city} 详情` : '城市详情'}
+        open={cityDetailOpen}
+        onCancel={() => setCityDetailOpen(false)}
+        footer={null}
+        width={400}
+      >
+        {cityDetailData && (
+          <Descriptions column={1} bordered size="small">
+            <Descriptions.Item label="城市">{cityDetailData.city}</Descriptions.Item>
+            <Descriptions.Item label="省份">{drillProvince || '-'}</Descriptions.Item>
+            <Descriptions.Item label={dataType === 'gmc' ? 'GMC' : '加权阳性率'}>
+              {cityDetailData.weighted_positivity != null
+                ? Number(cityDetailData.weighted_positivity).toFixed(2) + (dataType === 'gmc' ? ' μg/ml' : '%')
+                : '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="数据点数">{cityDetailData.point_count}</Descriptions.Item>
+            <Descriptions.Item label="研究数">{cityDetailData.study_count}</Descriptions.Item>
+            <Descriptions.Item label="总样本量">{cityDetailData.total_sample.toLocaleString()}</Descriptions.Item>
+          </Descriptions>
+        )}
+      </Modal>
     </Spin>
   );
 };

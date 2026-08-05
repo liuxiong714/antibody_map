@@ -1,14 +1,14 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { Card, Row, Col, Spin, Empty, message, Button, Tabs, Table, Space, Statistic, Alert, Tag, Collapse, Tooltip, Progress } from 'antd';
-import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined, DownloadOutlined } from '@ant-design/icons';
+import { Card, Row, Col, Spin, Empty, message, Button, Tabs, Table, Space, Statistic, Alert, Tag, Collapse, Tooltip, Progress, Select, Slider } from 'antd';
+import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined, DownloadOutlined, ExperimentOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import ReactECharts from 'echarts-for-react';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import MapSelector from '../components/MapSelector';
-import { getTrend, getRegionCompare, getAgeStratify, getApprovedDataPoints, getDataGapAnalysis } from '../services/map';
+import { getTrend, getRegionCompare, getAgeStratify, getApprovedDataPoints, getDataGapAnalysis, getFoiHerdImmunity, getVaccineEffectivenessCoverage } from '../services/map';
 import { useFilterStore } from '../store';
 import type { TableRowSelection } from 'antd/es/table/interface';
-import type { DataGapAnalysisResult, ReviewNeededItem, DataGapItem, ProvinceYearRow } from '../types';
+import type { DataGapAnalysisResult, ReviewNeededItem, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult } from '../types';
 import { DISEASES } from '../utils/constants';
 
 type DataItem = Record<string, unknown>;
@@ -46,6 +46,16 @@ const Analysis: React.FC = () => {
   // 数据覆盖度分析
   const [gapData, setGapData] = useState<DataGapAnalysisResult | null>(null);
   const [gapLoading, setGapLoading] = useState(false);
+
+  // FOI（感染力）+ 群体免疫阈值分析
+  const [foiData, setFoiData] = useState<FoiHerdImmunityResult | null>(null);
+  const [foiLoading, setFoiLoading] = useState(false);
+  const [foiSelectedDisease, setFoiSelectedDisease] = useState<string>('');
+
+  // 疫苗效果 VE + 接种率分析
+  const [vaccineData, setVaccineData] = useState<VaccineEffectivenessCoverageResult | null>(null);
+  const [vaccineLoading, setVaccineLoading] = useState(false);
+  const [vaccineSelectedDisease, setVaccineSelectedDisease] = useState<string>('');
 
   const fetchAll = useCallback(async () => {
     if (!appliedDisease && !appliedDataType && !appliedProvince) return;
@@ -95,6 +105,60 @@ const Analysis: React.FC = () => {
       fetchGapData();
     }
   }, [activeTab, fetchGapData]);
+
+  // 获取 FOI 感染力 + 群体免疫阈值分析
+  const fetchFoiData = useCallback(async () => {
+    setFoiLoading(true);
+    try {
+      const params: Record<string, unknown> = {};
+      if (appliedDisease) params.disease = appliedDisease;
+      if (appliedProvince) params.province = appliedProvince;
+      const data = await getFoiHerdImmunity(params);
+      setFoiData(data);
+      // 默认选中第一个疾病
+      if (data.per_disease_results.length > 0 && !foiSelectedDisease) {
+        setFoiSelectedDisease(data.per_disease_results[0].disease);
+      }
+    } catch (err) {
+      console.error('[Analysis] FOI分析加载失败:', err);
+      message.error('FOI感染力分析加载失败');
+    } finally {
+      setFoiLoading(false);
+    }
+  }, [appliedDisease, appliedProvince]);
+
+  useEffect(() => {
+    if (activeTab === 'foi') {
+      fetchFoiData();
+    }
+  }, [activeTab, fetchFoiData]);
+
+  // 获取 疫苗 VE + 接种率综合分析
+  const fetchVaccineData = useCallback(async () => {
+    setVaccineLoading(true);
+    try {
+      const params: Record<string, unknown> = {};
+      if (appliedDisease) params.disease = appliedDisease;
+      if (appliedProvince) params.province = appliedProvince;
+      const data = await getVaccineEffectivenessCoverage(params);
+      setVaccineData(data);
+      // 默认选中第一个疾病
+      if (data.per_disease_results.length > 0 && !vaccineSelectedDisease) {
+        setVaccineSelectedDisease(data.per_disease_results[0].disease);
+      }
+    } catch (err) {
+      console.error('[Analysis] 疫苗分析加载失败:', err);
+      message.error('疫苗效力与接种率分析加载失败');
+    } finally {
+      setVaccineLoading(false);
+    }
+  }, [appliedDisease, appliedProvince]);
+
+  useEffect(() => {
+    if (activeTab === 'vaccine') {
+      fetchVaccineData();
+    }
+  }, [activeTab, fetchVaccineData]);
 
   // 获取审核通过的数据点
   const fetchApprovedData = useCallback(async (page: number, pageSize: number, sortBy?: string, sortOrder?: string) => {
@@ -863,8 +927,7 @@ const Analysis: React.FC = () => {
             <Collapse
               items={gapData.data_gaps.map((g: DataGapItem) => {
                 const fullyCovered = g.missing_count === 0;
-                const covPct = g.coverage_percent ??
-                  (34 ? Math.round(g.covered_count / 34 * 100) : 100);
+                const covPct = g.coverage_percent ?? Math.round(g.covered_count / 34 * 100);
                 return {
                   key: g.disease,
                   label: (
@@ -980,6 +1043,601 @@ const Analysis: React.FC = () => {
     </Spin>
   );
 
+  // ===================== FOI 感染力 + 群体免疫阈值分析 =====================
+
+  const herdStatusMeta: Record<string, { label: string; color: string }> = {
+    reached: { label: '已达群体免疫', color: '#52c41a' },
+    near: { label: '接近阈值', color: '#faad14' },
+    not_reached: { label: '未达阈值', color: '#f5222d' },
+    undetermined: { label: '数据不足', color: '#8c8c8c' },
+    no_data: { label: '无数据', color: '#bfbfbf' },
+  };
+
+  const foiCurrentDisease: FoiPerDiseaseResult | undefined = foiData?.per_disease_results.find(
+    (d) => d.disease === foiSelectedDisease
+  );
+
+  const foiAgeOption = foiCurrentDisease?.foi_by_age_group.length ? {
+    title: { text: '各年龄组 FOI（感染力）对比', left: 'center' },
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['加权阳性率', '平均FOI/年'], top: 30 },
+    grid: { top: 70, bottom: 50 },
+    xAxis: {
+      type: 'category',
+      data: foiCurrentDisease.foi_by_age_group.map((d) => d.age_group),
+      axisLabel: { rotate: 0 },
+    },
+    yAxis: [
+      { type: 'value', name: '阳性率 (%)', position: 'left' },
+      { type: 'value', name: 'FOI (/年)', position: 'right' },
+    ],
+    series: [
+      {
+        name: '加权阳性率',
+        type: 'bar',
+        yAxisIndex: 0,
+        data: foiCurrentDisease.foi_by_age_group.map((d) => d.weighted_positivity_rate),
+        itemStyle: { color: '#5470c6' },
+        label: {
+          show: true,
+          position: 'top',
+          formatter: (p: { value: number | null }) => p.value != null ? `${p.value}%` : '-',
+        },
+      },
+      {
+        name: '平均FOI/年',
+        type: 'line',
+        yAxisIndex: 1,
+        data: foiCurrentDisease.foi_by_age_group.map((d) => d.weighted_avg_foi_per_year),
+        smooth: true,
+        itemStyle: { color: '#ee6666' },
+        lineStyle: { width: 3 },
+        symbol: 'circle',
+        symbolSize: 8,
+      },
+    ],
+  } : null;
+
+  // 省份 FOI 热力矩阵
+  const foiProvinceMatrixForDisease: FoiProvinceMatrixRow[] =
+    foiData?.province_foi_matrix.filter((r) => !foiSelectedDisease || r.disease === foiSelectedDisease) || [];
+
+  const foiProvinceColumns = [
+    { title: '省份', dataIndex: 'province', key: 'province', width: 100, sorter: (a: FoiProvinceMatrixRow, b: FoiProvinceMatrixRow) => a.province.localeCompare(b.province) },
+    { title: '数据点', dataIndex: 'data_point_count', key: 'data_point_count', width: 80, sorter: (a: FoiProvinceMatrixRow, b: FoiProvinceMatrixRow) => a.data_point_count - b.data_point_count },
+    { title: '样本量', dataIndex: 'total_samples', key: 'total_samples', width: 80, sorter: (a: FoiProvinceMatrixRow, b: FoiProvinceMatrixRow) => a.total_samples - b.total_samples },
+    { title: '加权阳性率', dataIndex: 'weighted_positivity_rate', key: 'weighted_positivity_rate', width: 110, sorter: (a: FoiProvinceMatrixRow, b: FoiProvinceMatrixRow) => (a.weighted_positivity_rate ?? 0) - (b.weighted_positivity_rate ?? 0),
+      render: (v: number | null) => v != null ? `${v}%` : '-' },
+    { title: 'FOI(/年)', dataIndex: 'weighted_avg_foi_per_year', key: 'weighted_avg_foi_per_year', width: 110, sorter: (a: FoiProvinceMatrixRow, b: FoiProvinceMatrixRow) => (a.weighted_avg_foi_per_year ?? 0) - (b.weighted_avg_foi_per_year ?? 0),
+      render: (v: number | null) => v != null ? v.toFixed(5) : '-' },
+    { title: '群体免疫状态', dataIndex: 'herd_immunity_status', key: 'herd_immunity_status', width: 130,
+      render: (status: string) => {
+        const meta = herdStatusMeta[status] || herdStatusMeta.undetermined;
+        return <Tag color={meta.color}>{meta.label}</Tag>;
+      }
+    },
+    { title: 'HIT目标', dataIndex: 'hit_target_percent', key: 'hit_target_percent', width: 90,
+      render: (v: number | null) => v != null ? `${v}%` : '-' },
+  ];
+
+  const foiContent = (
+    <Spin spinning={foiLoading}>
+      {foiData ? (
+        <>
+          {/* 疾病选择器 */}
+          {foiData.per_disease_results.length > 1 && (
+            <Card style={{ marginBottom: 16 }}>
+              <Space>
+                <span style={{ fontWeight: 'bold' }}>选择分析疾病：</span>
+                <Select
+                  value={foiSelectedDisease || undefined}
+                  style={{ minWidth: 200 }}
+                  onChange={setFoiSelectedDisease}
+                  options={foiData.per_disease_results.map((d) => ({
+                    label: `${diseaseNameMap[d.disease] || d.disease} (${d.summary.total_data_points}条数据)`,
+                    value: d.disease,
+                  }))}
+                />
+              </Space>
+            </Card>
+          )}
+
+          {/* 概览统计卡片 */}
+          {foiCurrentDisease && (
+            <Row gutter={16} style={{ marginBottom: 16 }}>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title={<span><ExperimentOutlined style={{ color: '#1677ff' }} /> 加权平均FOI (/年)</span>}
+                    value={foiCurrentDisease.summary.weighted_avg_foi_per_year ?? undefined}
+                    precision={5}
+                    valueStyle={{ color: '#1677ff' }}
+                  />
+                </Card>
+              </Col>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title="R0（FOI反推）"
+                    value={foiCurrentDisease.summary.estimated_r0_from_foi ?? undefined}
+                    precision={2}
+                    suffix={foiCurrentDisease.summary.r0_reference?.typical ? `(典型${foiCurrentDisease.summary.r0_reference.typical})` : ''}
+                    valueStyle={{ color: '#722ed1' }}
+                  />
+                </Card>
+              </Col>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title="HIT(FOI→R0)"
+                    value={foiCurrentDisease.summary.hit_from_foi_percent ?? undefined}
+                    suffix="%"
+                    valueStyle={{ color: '#13c2c2' }}
+                  />
+                </Card>
+              </Col>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title="HIT(参考R0)"
+                    value={foiCurrentDisease.summary.hit_from_reference_r0_percent ?? undefined}
+                    suffix="%"
+                    valueStyle={{ color: '#eb2f96' }}
+                  />
+                </Card>
+              </Col>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title="WHO阈值"
+                    value={foiCurrentDisease.summary.who_threshold_percent ?? undefined}
+                    suffix="%"
+                    valueStyle={{ color: '#fa8c16' }}
+                  />
+                </Card>
+              </Col>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title={
+                      <span>
+                        群体免疫状态
+                        <Tooltip title="基于加权阳性率 vs HIT目标（优先FOI估算，其次WHO阈值）">
+                          <WarningOutlined style={{ color: '#8c8c8c', marginLeft: 4 }} />
+                        </Tooltip>
+                      </span>
+                    }
+                    value={herdStatusMeta[foiCurrentDisease.summary.herd_immunity_status]?.label || '-'}
+                    valueStyle={{ color: herdStatusMeta[foiCurrentDisease.summary.herd_immunity_status]?.color }}
+                  />
+                </Card>
+              </Col>
+            </Row>
+          )}
+
+          {/* 备注说明 */}
+          {foiData.notes.length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {foiData.notes.map((n, i) => <li key={i}>{n}</li>)}
+                </ul>
+              }
+            />
+          )}
+
+          {/* 方法学说明 */}
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={
+              <>
+                <strong>FOI（感染力）计算方法</strong>：催化模型（Catalytic Model）λ = -ln(1-SP) / age，其中 SP 为血清阳性率（0-1比例），age 为年龄组中点年龄。
+                <br />
+                <strong>R0估算</strong>：R0 ≈ λ × L（L=预期寿命，默认 {foiCurrentDisease?.summary.life_expectancy_used || 75} 年）。
+                <br />
+                <strong>群体免疫阈值 HIT</strong>：HIT = 1 - 1/R0（转成百分比），并与WHO推荐阈值对比。
+              </>
+            }
+          />
+
+          {/* 年龄组FOI图表 */}
+          {foiCurrentDisease && (
+            <Row gutter={16} style={{ marginBottom: 16 }}>
+              <Col span={24}>
+                <Card
+                  title={
+                    <Space>
+                      <span>年龄组 FOI 分析</span>
+                      <Tag color="blue">{foiCurrentDisease.foi_by_age_group.length} 个年龄组</Tag>
+                    </Space>
+                  }
+                >
+                  {foiAgeOption ? (
+                    <ReactECharts option={foiAgeOption} style={{ height: 400 }} />
+                  ) : (
+                    <Empty description="暂无足够年龄组数据进行FOI分析" />
+                  )}
+                </Card>
+              </Col>
+            </Row>
+          )}
+
+          {/* 省份 FOI 矩阵表格 */}
+          <Card
+            title={
+              <Space>
+                <span>省份 × FOI 热力矩阵</span>
+                <Tag color="green">{foiProvinceMatrixForDisease.length} 个省份</Tag>
+              </Space>
+            }
+            extra={
+              <Space wrap>
+                {Object.entries(herdStatusMeta).filter(([k]) => ['reached', 'near', 'not_reached', 'undetermined'].includes(k)).map(([k, v]) => (
+                  <Tag key={k} color={v.color}>{v.label}</Tag>
+                ))}
+              </Space>
+            }
+            style={{ marginBottom: 16 }}
+          >
+            {foiProvinceMatrixForDisease.length > 0 ? (
+              <Table<FoiProvinceMatrixRow>
+                rowKey={(r) => `${r.disease}-${r.province}`}
+                columns={foiProvinceColumns}
+                dataSource={foiProvinceMatrixForDisease}
+                size="small"
+                pagination={{ pageSize: 15, showSizeChanger: true, pageSizeOptions: [15, 30, 50] }}
+                scroll={{ x: 750 }}
+              />
+            ) : (
+              <Empty description="暂无省份FOI数据" />
+            )}
+          </Card>
+        </>
+      ) : (
+        <Empty description="正在加载..." />
+      )}
+    </Spin>
+  );
+
+  // ===================== 疫苗效果 VE + 接种率分析 =====================
+
+  const coverageStatusMeta: Record<string, { label: string; color: string }> = {
+    on_track: { label: '达标', color: '#52c41a' },
+    near: { label: '接近达标', color: '#faad14' },
+    below: { label: '偏低', color: '#f5222d' },
+    undetermined: { label: '数据不足', color: '#8c8c8c' },
+  };
+
+  const vaccineCurrentDisease: VaccinePerDiseaseResult | undefined = vaccineData?.per_disease_results.find(
+    (d) => d.disease === vaccineSelectedDisease
+  );
+
+  // VE 亚组对比图表
+  const veCompareOption = vaccineCurrentDisease?.ve_result
+    && vaccineCurrentDisease.ve_result.vaxxed_weighted_sp != null
+    && vaccineCurrentDisease.ve_result.unvaxxed_weighted_sp != null ? {
+    title: { text: '已接种 vs 未接种 阳性率对比', left: 'center' },
+    tooltip: { trigger: 'axis' },
+    xAxis: {
+      type: 'category',
+      data: ['已接种组', '未接种组'],
+    },
+    yAxis: { type: 'value', name: '阳性率 (%)' },
+    series: [{
+      type: 'bar',
+      data: [
+        {
+          value: vaccineCurrentDisease.ve_result.vaxxed_weighted_sp,
+          itemStyle: { color: '#52c41a' },
+          label: { show: true, position: 'top', formatter: '{c}%' },
+        },
+        {
+          value: vaccineCurrentDisease.ve_result.unvaxxed_weighted_sp,
+          itemStyle: { color: '#f5222d' },
+          label: { show: true, position: 'top', formatter: '{c}%' },
+        },
+      ],
+      barWidth: '50%',
+    }],
+  } : null;
+
+  // 接种率双轨对比图表
+  const vaccineCoverageBarOption = vaccineCurrentDisease ? {
+    title: { text: '接种率双轨分析：NIP参考 vs 血清阳性率反推', left: 'center' },
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['NIP参考接种率', '隐含接种率(SP反推)', '整体血清阳性率'], top: 30 },
+    grid: { top: 70, bottom: 40 },
+    xAxis: {
+      type: 'category',
+      data: [diseaseNameMap[vaccineCurrentDisease.disease] || vaccineCurrentDisease.disease],
+    },
+    yAxis: { type: 'value', name: '%', max: 100 },
+    series: [
+      {
+        name: 'NIP参考接种率',
+        type: 'bar',
+        data: [vaccineCurrentDisease.coverage.nip_reference_national_percent],
+        itemStyle: { color: '#1677ff' },
+        label: { show: true, position: 'top', formatter: (p: { value: number | null }) => p.value != null ? `${p.value}%` : '-' },
+      },
+      {
+        name: '隐含接种率(SP反推)',
+        type: 'bar',
+        data: [vaccineCurrentDisease.coverage.implied_from_seroprevalence_percent],
+        itemStyle: { color: '#722ed1' },
+        label: { show: true, position: 'top', formatter: (p: { value: number | null }) => p.value != null ? `${p.value}%` : '-' },
+      },
+      {
+        name: '整体血清阳性率',
+        type: 'bar',
+        data: [vaccineCurrentDisease.overall_weighted_sp],
+        itemStyle: { color: '#13c2c2' },
+        label: { show: true, position: 'top', formatter: (p: { value: number | null }) => p.value != null ? `${p.value}%` : '-' },
+      },
+    ],
+  } : null;
+
+  // 省份覆盖率矩阵表格
+  const vaccineProvinceForDisease: VaccineProvinceMatrixRow[] =
+    vaccineData?.province_coverage_matrix.filter((r) => !vaccineSelectedDisease || r.disease === vaccineSelectedDisease) || [];
+
+  const vaccineProvinceColumns = [
+    { title: '省份', dataIndex: 'province', key: 'province', width: 100, sorter: (a: VaccineProvinceMatrixRow, b: VaccineProvinceMatrixRow) => a.province.localeCompare(b.province) },
+    { title: '数据点', dataIndex: 'data_point_count', key: 'data_point_count', width: 80, sorter: (a: VaccineProvinceMatrixRow, b: VaccineProvinceMatrixRow) => a.data_point_count - b.data_point_count },
+    { title: '加权阳性率', dataIndex: 'weighted_sp_percent', key: 'weighted_sp_percent', width: 100,
+      sorter: (a: VaccineProvinceMatrixRow, b: VaccineProvinceMatrixRow) => (a.weighted_sp_percent ?? 0) - (b.weighted_sp_percent ?? 0),
+      render: (v: number | null) => v != null ? `${v}%` : '-' },
+    { title: 'VE(感染%)', dataIndex: 've_infection_percent', key: 've_infection_percent', width: 100,
+      sorter: (a: VaccineProvinceMatrixRow, b: VaccineProvinceMatrixRow) => (a.ve_infection_percent ?? -999) - (b.ve_infection_percent ?? -999),
+      render: (v: number | null) => v != null ? `${v}%` : <Tag color="default">无亚组</Tag> },
+    { title: 'NIP参考接种率', dataIndex: 'nip_reference_coverage_percent', key: 'nip_reference_coverage_percent', width: 130,
+      sorter: (a: VaccineProvinceMatrixRow, b: VaccineProvinceMatrixRow) => (a.nip_reference_coverage_percent ?? 0) - (b.nip_reference_coverage_percent ?? 0),
+      render: (v: number | null) => v != null ? `${v}%` : '-' },
+    { title: '隐含接种率(SP反推)', dataIndex: 'implied_coverage_from_sp_percent', key: 'implied_coverage_from_sp_percent', width: 150,
+      sorter: (a: VaccineProvinceMatrixRow, b: VaccineProvinceMatrixRow) => (a.implied_coverage_from_sp_percent ?? 0) - (b.implied_coverage_from_sp_percent ?? 0),
+      render: (v: number | null) => v != null ? `${v}%` : '-' },
+    { title: '覆盖率状态', dataIndex: 'coverage_status', key: 'coverage_status', width: 110,
+      render: (status: string) => {
+        const meta = coverageStatusMeta[status] || coverageStatusMeta.undetermined;
+        return <Tag color={meta.color}>{meta.label}</Tag>;
+      }
+    },
+  ];
+
+  const vaccineContent = (
+    <Spin spinning={vaccineLoading}>
+      {vaccineData ? (
+        <>
+          {/* 疾病选择器 */}
+          {vaccineData.per_disease_results.length > 1 && (
+            <Card style={{ marginBottom: 16 }}>
+              <Space>
+                <span style={{ fontWeight: 'bold' }}>选择分析疾病：</span>
+                <Select
+                  value={vaccineSelectedDisease || undefined}
+                  style={{ minWidth: 200 }}
+                  onChange={setVaccineSelectedDisease}
+                  options={vaccineData.per_disease_results.map((d) => ({
+                    label: `${diseaseNameMap[d.disease] || d.disease} (${d.total_data_points}条数据)`,
+                    value: d.disease,
+                  }))}
+                />
+              </Space>
+            </Card>
+          )}
+
+          {/* 概览统计卡片 */}
+          {vaccineCurrentDisease && (
+            <Row gutter={16} style={{ marginBottom: 16 }}>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title={<span><SafetyCertificateOutlined style={{ color: '#52c41a' }} /> 整体血清阳性率</span>}
+                    value={vaccineCurrentDisease.overall_weighted_sp ?? undefined}
+                    suffix="%"
+                    valueStyle={{ color: '#13c2c2' }}
+                  />
+                </Card>
+              </Col>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title="群体免疫目标(HIT)"
+                    value={vaccineCurrentDisease.herd_immunity_target_percent ?? undefined}
+                    suffix="%"
+                    valueStyle={{ color: '#1677ff' }}
+                  />
+                </Card>
+              </Col>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title={
+                      <span>
+                        VE(抗感染)
+                        <Tooltip title="VE=1-SP_vax/SP_unvax；当接种组阳性率更高(疫苗诱导抗体)时返回None">
+                          <WarningOutlined style={{ color: '#8c8c8c', marginLeft: 4 }} />
+                        </Tooltip>
+                      </span>
+                    }
+                    value={vaccineCurrentDisease.ve_result?.ve_infection_percent ?? undefined}
+                    suffix={vaccineCurrentDisease.ve_result?.ve_infection_percent != null ? '%' : ''}
+                    valueStyle={{ color: vaccineCurrentDisease.ve_result?.ve_infection_percent != null ? '#52c41a' : '#8c8c8c' }}
+                  />
+                </Card>
+              </Col>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title="NIP参考接种率(全国)"
+                    value={vaccineCurrentDisease.coverage.nip_reference_national_percent ?? undefined}
+                    suffix="%"
+                    valueStyle={{ color: '#1677ff' }}
+                  />
+                </Card>
+              </Col>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title={
+                      <span>
+                        隐含接种率(SP反推)
+                        <Tooltip title="隐含接种率 ≈ 整体SP / HIT；保守近似，仅作参考">
+                          <WarningOutlined style={{ color: '#8c8c8c', marginLeft: 4 }} />
+                        </Tooltip>
+                      </span>
+                    }
+                    value={vaccineCurrentDisease.coverage.implied_from_seroprevalence_percent ?? undefined}
+                    suffix="%"
+                    valueStyle={{ color: '#722ed1' }}
+                  />
+                </Card>
+              </Col>
+              <Col span={4}>
+                <Card>
+                  <Statistic
+                    title="亚组拆分情况"
+                    value={vaccineCurrentDisease.ve_result ? '已拆分' : '未找到亚组'}
+                    valueStyle={{ color: vaccineCurrentDisease.ve_result ? '#52c41a' : '#fa8c16' }}
+                  />
+                </Card>
+              </Col>
+            </Row>
+          )}
+
+          {/* 备注说明 */}
+          {vaccineData.notes.length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {vaccineData.notes.map((n, i) => <li key={i}>{n}</li>)}
+                </ul>
+              }
+            />
+          )}
+
+          {/* 方法学说明 */}
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={
+              <>
+                <strong>疫苗效力 VE 计算</strong>：尝试根据 DataPoint.population 字段中「已接种/未接种」关键词自动拆分亚组，VE = 1 - SP_vax / SP_unvax。
+                <br />
+                <strong>若 SP_vax ≥ SP_unvax</strong>（如疫苗诱导了抗体，接种组阳性率反而更高），则 VE 不适用，返回 None 并标注解读。
+                <br />
+                <strong>接种率双轨分析</strong>：NIP 参考接种率（国家免疫规划预设表）vs 隐含接种率（从整体 SP 反推，≈ SP / HIT），两者对照帮助发现接种盲区。
+              </>
+            }
+          />
+
+          {/* 上半部分：VE亚组对比 + 接种率双轨 */}
+          <Row gutter={16} style={{ marginBottom: 16 }}>
+            <Col span={veCompareOption ? 12 : 24}>
+              <Card
+                title={
+                  <Space>
+                    <span>接种率双轨分析</span>
+                    <Tag color="blue">NIP参考 vs 隐含接种率 vs 阳性率</Tag>
+                  </Space>
+                }
+              >
+                {vaccineCoverageBarOption ? (
+                  <ReactECharts option={vaccineCoverageBarOption} style={{ height: 380 }} />
+                ) : (
+                  <Empty description="暂无接种率数据" />
+                )}
+              </Card>
+            </Col>
+            {veCompareOption && (
+              <Col span={12}>
+                <Card
+                  title={
+                    <Space>
+                      <span>亚组VE分析</span>
+                      <Tag color="green">已接种 vs 未接种</Tag>
+                    </Space>
+                  }
+                >
+                  <ReactECharts option={veCompareOption} style={{ height: 380 }} />
+                  {vaccineCurrentDisease?.ve_result?.interpretation && (
+                    <Alert
+                      style={{ marginTop: 12 }}
+                      type={vaccineCurrentDisease.ve_result.ve_infection_percent != null ? 'success' : 'info'}
+                      showIcon
+                      message={vaccineCurrentDisease.ve_result.interpretation}
+                    />
+                  )}
+                  {vaccineCurrentDisease?.ve_result && (
+                    <Row gutter={8} style={{ marginTop: 12 }}>
+                      <Col span={12}>
+                        <Card size="small" title="已接种组">
+                          <Space direction="vertical">
+                            <span>数据点：<strong>{vaccineCurrentDisease.ve_result.vaxxed_points}</strong></span>
+                            <span>样本量：<strong>{vaccineCurrentDisease.ve_result.vaxxed_total_samples}</strong></span>
+                          </Space>
+                        </Card>
+                      </Col>
+                      <Col span={12}>
+                        <Card size="small" title="未接种组">
+                          <Space direction="vertical">
+                            <span>数据点：<strong>{vaccineCurrentDisease.ve_result.unvaxxed_points}</strong></span>
+                            <span>样本量：<strong>{vaccineCurrentDisease.ve_result.unvaxxed_total_samples}</strong></span>
+                          </Space>
+                        </Card>
+                      </Col>
+                    </Row>
+                  )}
+                </Card>
+              </Col>
+            )}
+          </Row>
+
+          {/* 省份覆盖率矩阵 */}
+          <Card
+            title={
+              <Space>
+                <span>省份 × 疫苗覆盖率矩阵（双轨）</span>
+                <Tag color="green">{vaccineProvinceForDisease.length} 个省份</Tag>
+              </Space>
+            }
+            extra={
+              <Space wrap>
+                {Object.entries(coverageStatusMeta).map(([k, v]) => (
+                  <Tag key={k} color={v.color}>{v.label}</Tag>
+                ))}
+              </Space>
+            }
+          >
+            {vaccineProvinceForDisease.length > 0 ? (
+              <Table<VaccineProvinceMatrixRow>
+                rowKey={(r) => `${r.disease}-${r.province}`}
+                columns={vaccineProvinceColumns}
+                dataSource={vaccineProvinceForDisease}
+                size="small"
+                pagination={{ pageSize: 15, showSizeChanger: true, pageSizeOptions: [15, 30, 50] }}
+                scroll={{ x: 900 }}
+              />
+            ) : (
+              <Empty description="暂无省份疫苗数据" />
+            )}
+          </Card>
+        </>
+      ) : (
+        <Empty description="正在加载..." />
+      )}
+    </Spin>
+  );
+
   return (
     <>
       {filterPanel}
@@ -1001,6 +1659,26 @@ const Analysis: React.FC = () => {
             key: 'coverage',
             label: '数据覆盖度',
             children: coverageContent,
+          },
+          {
+            key: 'foi',
+            label: (
+              <span>
+                <ExperimentOutlined />
+                FOI感染力分析
+              </span>
+            ),
+            children: foiContent,
+          },
+          {
+            key: 'vaccine',
+            label: (
+              <span>
+                <SafetyCertificateOutlined />
+                疫苗效力与接种率
+              </span>
+            ),
+            children: vaccineContent,
           },
         ]}
       />

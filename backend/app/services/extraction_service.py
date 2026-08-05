@@ -100,6 +100,14 @@ async def get_extraction_status(
         "extracted_count": literature.extracted_count,
         "approved_count": literature.approved_count,
         "data_point_count": data_point_count,
+        # LLM token 用量与费用（提取完成时写入，未提取时为默认值）
+        "llm_model_used": literature.llm_model_used,
+        "prompt_tokens": literature.prompt_tokens or 0,
+        "completion_tokens": literature.completion_tokens or 0,
+        "total_tokens": literature.total_tokens or 0,
+        "llm_cost_usd": float(literature.llm_cost_usd) if literature.llm_cost_usd is not None else 0.0,
+        "llm_call_count": literature.llm_call_count or 0,
+        "llm_usage_detail": literature.llm_usage_detail,
     }
 
 

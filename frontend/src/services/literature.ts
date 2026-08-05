@@ -1,6 +1,7 @@
 import api from './api';
 import type {
   Literature,
+  ExtractionStatusWithUsage,
   CheckDuplicateResult,
   ScanDuplicatesResult,
   MergePreviewResult,
@@ -64,6 +65,11 @@ export async function triggerExtraction(literatureId: string, options?: Extracti
     base_url: options.baseUrl,
   } : {};
   const { data } = await api.post(`/literatures/${literatureId}/extraction`, body);
+  return data;
+}
+
+export async function getExtractionStatus(literatureId: string) {
+  const { data } = await api.get<ExtractionStatusWithUsage>(`/literatures/${literatureId}/extraction/status`);
   return data;
 }
 

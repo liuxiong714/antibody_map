@@ -8,12 +8,12 @@ import type { ColumnsType } from 'antd/es/table';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
 import {
-  getLiterature, getExtractionResults, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText,
+  getLiterature, getExtractionResults, getExtractionStatus, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText,
 } from '../services/literature';
 import PdfViewer from '../components/PdfViewer';
 import FilePreview from '../components/FilePreview';
 import { DATA_TYPE_LABEL, DISEASES, PROVINCES, MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
-import type { Literature, DataPoint } from '../types';
+import type { Literature, DataPoint, ExtractionStatusWithUsage } from '../types';
 import dayjs from 'dayjs';
 
 const LiteratureDetail: React.FC = () => {
@@ -33,6 +33,12 @@ const LiteratureDetail: React.FC = () => {
   const [extractModel, setExtractModel] = useState<string | undefined>(undefined);
   const [extractApiKey, setExtractApiKey] = useState('');
   const [extractBaseUrl, setExtractBaseUrl] = useState('');
+  // 是否在本次提取完成后显示 token/费用/模型信息
+  const [showUsageOnComplete, setShowUsageOnComplete] = useState<boolean>(() => {
+    try { return localStorage.getItem('lit_show_usage_on_complete') === '1'; } catch { return false; }
+  });
+  // 最近一次提取的 token 用量摘要（来自 extraction/status 接口）
+  const [lastUsage, setLastUsage] = useState<ExtractionStatusWithUsage | null>(null);
 
   // 面板大小状态
   const [topHeightPercent, setTopHeightPercent] = useState(30);
@@ -351,6 +357,7 @@ const LiteratureDetail: React.FC = () => {
     if (!id) return;
     setExtracting(true);
     setExtractModalOpen(false);
+    setLastUsage(null);
     try {
       if (extractModel && extractModel !== '') {
         await triggerExtraction(id, {
@@ -363,14 +370,27 @@ const LiteratureDetail: React.FC = () => {
       }
       message.success('AI 提取任务已提交，正在轮询进度...');
       const interval = window.setInterval(() => {
-        fetchData().then(() => {
+        fetchData().then(async () => {
           if (literature?.extraction_status !== 'processing') {
             if (pollingInterval) {
               clearInterval(pollingInterval);
               setPollingInterval(null);
             }
             if (literature?.extraction_status === 'done') {
-              message.success(`提取完成，共提取 ${literature.extracted_count} 个数据点`);
+              // 若启用了"显示提取消耗"，拉取 token 用量并展示
+              let usageSuffix = '';
+              if (showUsageOnComplete) {
+                try {
+                  const status = await getExtractionStatus(id);
+                  setLastUsage(status);
+                  if (status && status.total_tokens > 0) {
+                    usageSuffix = `，消耗 ${status.total_tokens.toLocaleString()} tokens (${status.llm_model_used || '未知模型'}，约 $${status.llm_cost_usd.toFixed(4)})`;
+                  }
+                } catch (e) {
+                  console.warn('[LiteratureDetail] 获取 token 用量失败:', e);
+                }
+              }
+              message.success(`提取完成，共提取 ${literature.extracted_count} 个数据点${usageSuffix}`);
               // 提取完成后自动同步年份和省份
               setTimeout(() => {
                 syncMetadataFromDataPoints(false).then((updates) => {
@@ -397,6 +417,12 @@ const LiteratureDetail: React.FC = () => {
     } finally {
       setExtracting(false);
     }
+  };
+
+  // 切换"显示提取消耗"开关时持久化到 localStorage
+  const toggleShowUsage = (checked: boolean) => {
+    setShowUsageOnComplete(checked);
+    try { localStorage.setItem('lit_show_usage_on_complete', checked ? '1' : '0'); } catch { /* ignore */ }
   };
 
   useEffect(() => {
@@ -837,6 +863,26 @@ const LiteratureDetail: React.FC = () => {
                       <Descriptions.Item label="审核进度">
                         {literature?.approved_count || 0} / {literature?.extracted_count || 0} 已通过
                       </Descriptions.Item>
+                      <Descriptions.Item label="提取模型">
+                        {literature?.llm_model_used || '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="Token 用量">
+                        {literature && (literature.total_tokens ?? 0) > 0 ? (
+                          <Tooltip title={
+                            `输入: ${literature.prompt_tokens ?? 0} / 输出: ${literature.completion_tokens ?? 0} / 调用次数: ${literature.llm_call_count ?? 0}` +
+                            (literature.llm_usage_detail
+                              ? '\n按模型明细:\n' + Object.entries(literature.llm_usage_detail).map(([m, u]) => `  ${m}: ${u.total_tokens} tokens (${u.call_count}次)`).join('\n')
+                              : '')
+                          }>
+                            <Tag color="blue">{(literature.total_tokens ?? 0).toLocaleString()} tokens</Tag>
+                          </Tooltip>
+                        ) : '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="估算费用">
+                        {literature && Number(literature.llm_cost_usd ?? 0) > 0 ? (
+                          <Tag color="gold">${Number(literature.llm_cost_usd).toFixed(4)}</Tag>
+                        ) : '-'}
+                      </Descriptions.Item>
                     </Descriptions>
                     {literature?.abstract && (
                       <p style={{ color: '#666', marginTop: 12 }}>{literature.abstract}</p>
@@ -1142,10 +1188,19 @@ const LiteratureDetail: React.FC = () => {
                 placeholder={info.baseUrlLabel}
                 value={extractBaseUrl}
                 onChange={(e) => setExtractBaseUrl(e.target.value)}
+                style={{ marginBottom: 12 }}
               />
             </>
           );
         })()}
+        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+          <Checkbox
+            checked={showUsageOnComplete}
+            onChange={(e) => toggleShowUsage(e.target.checked)}
+          >
+            提取完成后显示 Token 用量、费用和模型信息
+          </Checkbox>
+        </div>
       </Modal>
 
       <Modal
