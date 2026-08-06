@@ -477,13 +477,40 @@ async def _process_literature_async(
             f"primary: {stats_primary}, subgroup: {stats_subgroup})"
         )
 
-        # 7. 更新文献元信息（从第一个数据点中提取）
-        if extract_results:
+        # 7. 更新文献元信息（从所有提取数据点中聚合）
+        if extract_results and all_data_points:
             first = extract_results[0]
             if first.get("authors") and not literature.authors:
                 literature.authors = first["authors"]
             if first.get("journal") and not literature.journal:
                 literature.journal = first["journal"]
+
+            # 从数据点聚合 pub_year（取最新/最大的 sample_year 或 study_end_year）
+            if not literature.pub_year:
+                years = []
+                for dp in all_data_points:
+                    if getattr(dp, "sample_year", None):
+                        years.append(dp.sample_year)
+                    if getattr(dp, "study_end_year", None):
+                        years.append(dp.study_end_year)
+                    if getattr(dp, "study_start_year", None):
+                        years.append(dp.study_start_year)
+                if years:
+                    literature.pub_year = max(set(years), key=years.count)  # 取众数
+                    logger.info(f"[MetadataSync] 文献 {literature_id} 聚合更新 pub_year={literature.pub_year}")
+
+            # 从数据点聚合 province（取出现频率最高的省份）
+            if not literature.province:
+                provinces = [
+                    dp.province for dp in all_data_points
+                    if getattr(dp, "province", None) and dp.province in CHINA_PROVINCE_NAMES
+                ]
+                if provinces:
+                    literature.province = max(set(provinces), key=provinces.count)  # 取众数
+                    logger.info(
+                        f"[MetadataSync] 文献 {literature_id} 聚合更新 province={literature.province} "
+                        f"(覆盖{len(set(provinces))}省)"
+                    )
 
         # 7b. 记录 LLM token 用量与费用到 literature 表
         try:
