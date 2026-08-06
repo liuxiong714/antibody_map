@@ -18,6 +18,35 @@ import dayjs from 'dayjs';
 
 const { Text } = Typography;
 
+// ===== 默认模型持久化（localStorage）=====
+const DEFAULT_MODEL_KEY = 'antibody-default-model';
+
+interface SavedModelConfig {
+  model: string;
+  apiKey?: string;
+  baseUrl?: string;
+  customModel?: string;
+}
+
+function loadSavedDefaultModel(): SavedModelConfig | null {
+  try {
+    const raw = localStorage.getItem(DEFAULT_MODEL_KEY);
+    return raw ? JSON.parse(raw) as SavedModelConfig : null;
+  } catch { return null; }
+}
+
+function saveDefaultModel(config: SavedModelConfig) {
+  try {
+    localStorage.setItem(DEFAULT_MODEL_KEY, JSON.stringify(config));
+  } catch { /* ignore */ }
+}
+
+function clearDefaultModel() {
+  try {
+    localStorage.removeItem(DEFAULT_MODEL_KEY);
+  } catch { /* ignore */ }
+}
+
 // 保存/恢复列表状态的 sessionStorage key
 const LIST_STATE_KEY = 'literature_list_back_state';
 
@@ -88,6 +117,10 @@ const LiteraturePage: React.FC = () => {
   const [extractApiKey, setExtractApiKey] = useState('');
   const [extractBaseUrl, setExtractBaseUrl] = useState('');
   const [extractCustomModel, setExtractCustomModel] = useState('');
+  // 是否将当前选择的模型保存为默认
+  const [saveAsDefault, setSaveAsDefault] = useState(false);
+  // 当前已保存的默认模型（用于显示提示）
+  const [savedDefault, setSavedDefault] = useState<SavedModelConfig | null>(() => loadSavedDefaultModel());
 
   // PDF 预览
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -173,6 +206,19 @@ const LiteraturePage: React.FC = () => {
       // ollama: 前缀的模型去掉前缀后传递给后端
       model = model.substring('ollama:'.length);
     }
+
+    // 保存为默认模型
+    if (saveAsDefault) {
+      const configToSave: SavedModelConfig = {
+        model: values.model || '',
+        apiKey: apiKey,
+        baseUrl: baseUrl,
+        customModel: values.customModel || '',
+      };
+      saveDefaultModel(configToSave);
+      setSavedDefault(configToSave);
+      message.info(`已将「${MODEL_OPTIONS.find((o) => o.value === values.model)?.label || '自定义模型'}」设为默认模型`);
+    }
     const autoExtract = values.autoExtract !== false; // 默认 true
     const dupResults: { litId: string; litTitle: string; duplicates: DuplicateMatchItem[] }[] = [];
 
@@ -244,10 +290,20 @@ const LiteraturePage: React.FC = () => {
 
   const handleExtract = (id: string) => {
     setExtractLitId(id);
-    setExtractModel(undefined);
-    setExtractApiKey('');
-    setExtractBaseUrl('');
-    setExtractCustomModel('');
+    // 预填充已保存的默认模型
+    const saved = loadSavedDefaultModel();
+    if (saved && saved.model) {
+      setExtractModel(saved.model);
+      const vendor = MODEL_OPTIONS.find((o) => o.value === saved.model)?.vendor || '';
+      setExtractBaseUrl(saved.baseUrl || VENDOR_INFO[vendor]?.defaultBaseUrl || '');
+      setExtractApiKey(saved.apiKey || '');
+      setExtractCustomModel(saved.customModel || '');
+    } else {
+      setExtractModel(undefined);
+      setExtractApiKey('');
+      setExtractBaseUrl('');
+      setExtractCustomModel('');
+    }
     setExtractModalOpen(true);
   };
 
@@ -267,6 +323,20 @@ const LiteraturePage: React.FC = () => {
         // ollama: 前缀的模型去掉前缀后传递给后端
         model = model.substring('ollama:'.length);
       }
+
+      // 保存为默认模型
+      if (saveAsDefault) {
+        const configToSave: SavedModelConfig = {
+          model: extractModel || '',
+          apiKey: extractApiKey || undefined,
+          baseUrl: extractBaseUrl || undefined,
+          customModel: extractCustomModel || '',
+        };
+        saveDefaultModel(configToSave);
+        setSavedDefault(configToSave);
+        message.info(`已将「${MODEL_OPTIONS.find((o) => o.value === extractModel)?.label || '自定义模型'}」设为默认模型`);
+      }
+
       if (model && model !== '') {
         await triggerExtraction(extractLitId, {
           model,
@@ -281,6 +351,7 @@ const LiteraturePage: React.FC = () => {
       message.success(`已使用 ${modelLabel} 启动 AI 提取`);
       setExtractModalOpen(false);
       setExtractCustomModel('');
+      setSaveAsDefault(false);
       fetchList();
     } catch (err) {
       console.error('[Literature] 提取失败:', err);
@@ -560,7 +631,20 @@ const LiteraturePage: React.FC = () => {
             setSortInfo({ field: 'created_at', order: 'descend' });
           }}>重置筛选</Button>
           <Button type="primary" icon={<SearchOutlined />} onClick={fetchList}>查询</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => {
+            // 打开上传弹窗时，预填充已保存的默认模型
+            const saved = loadSavedDefaultModel();
+            if (saved && saved.model) {
+              form.setFieldsValue({
+                model: saved.model,
+                apiKey: saved.apiKey || '',
+                baseUrl: saved.baseUrl || '',
+                customModel: saved.customModel || '',
+              });
+            }
+            setSaveAsDefault(false);
+            setUploadOpen(true);
+          }}>
             上传文献
           </Button>
           <Button icon={<LinkOutlined />} onClick={() => {
@@ -613,7 +697,7 @@ const LiteraturePage: React.FC = () => {
       <Modal
         title="上传文献"
         open={uploadOpen}
-        onCancel={() => { setUploadOpen(false); form.resetFields(); setBatchProgress({ current: 0, total: 0, fileName: '' }); }}
+        onCancel={() => { setUploadOpen(false); form.resetFields(); setSaveAsDefault(false); setBatchProgress({ current: 0, total: 0, fileName: '' }); }}
         onOk={handleUpload}
         confirmLoading={uploading}
         okText={uploading ? `上传中 (${batchProgress.current}/${batchProgress.total})` : '上传'}
@@ -670,6 +754,31 @@ const LiteraturePage: React.FC = () => {
           <Form.Item name="autoExtract" valuePropName="checked" initialValue={true}>
             <Checkbox disabled={uploading}>上传后自动启动 AI 提取（取消则仅上传文件，后续可手动提取）</Checkbox>
           </Form.Item>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <Checkbox
+              disabled={uploading}
+              checked={saveAsDefault}
+              onChange={(e) => setSaveAsDefault(e.target.checked)}
+            >
+              将当前选择的模型设为默认
+            </Checkbox>
+            {savedDefault && (
+              <>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  当前默认：{MODEL_OPTIONS.find((o) => o.value === savedDefault.model)?.label || savedDefault.model || '后端配置'}
+                </Text>
+                <Button
+                  type="link"
+                  size="small"
+                  danger
+                  disabled={uploading}
+                  onClick={() => { clearDefaultModel(); setSavedDefault(null); message.info('已清除自定义默认模型，将使用后端配置'); }}
+                >
+                  清除
+                </Button>
+              </>
+            )}
+          </div>
           <Form.Item noStyle dependencies={['model']}>
             {({ getFieldValue }) => {
               const model = getFieldValue('model');
@@ -839,6 +948,29 @@ const LiteraturePage: React.FC = () => {
             </>
           );
         })()}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
+          <Checkbox
+            checked={saveAsDefault}
+            onChange={(e) => setSaveAsDefault(e.target.checked)}
+          >
+            将当前选择的模型设为默认
+          </Checkbox>
+          {savedDefault && (
+            <>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                当前默认：{MODEL_OPTIONS.find((o) => o.value === savedDefault.model)?.label || savedDefault.model || '后端配置'}
+              </Text>
+              <Button
+                type="link"
+                size="small"
+                danger
+                onClick={() => { clearDefaultModel(); setSavedDefault(null); message.info('已清除自定义默认模型'); }}
+              >
+                清除
+              </Button>
+            </>
+          )}
+        </div>
       </Modal>
 
       <PdfPreviewModal
