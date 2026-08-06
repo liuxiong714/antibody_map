@@ -116,8 +116,9 @@ const Analysis: React.FC = () => {
       const data = await getFoiHerdImmunity(params);
       setFoiData(data);
       // 默认选中第一个疾病
-      if (data.per_disease_results.length > 0 && !foiSelectedDisease) {
-        setFoiSelectedDisease(data.per_disease_results[0].disease);
+      const results = data.per_disease_results || [];
+      if (results.length > 0 && !foiSelectedDisease) {
+        setFoiSelectedDisease(results[0].disease);
       }
     } catch (err) {
       console.error('[Analysis] FOI分析加载失败:', err);
@@ -1053,7 +1054,7 @@ const Analysis: React.FC = () => {
     no_data: { label: '无数据', color: '#bfbfbf' },
   };
 
-  const foiCurrentDisease: FoiPerDiseaseResult | undefined = foiData?.per_disease_results.find(
+  const foiCurrentDisease: FoiPerDiseaseResult | undefined = (foiData?.per_disease_results || []).find(
     (d) => d.disease === foiSelectedDisease
   );
 
@@ -1125,7 +1126,7 @@ const Analysis: React.FC = () => {
       {foiData ? (
         <>
           {/* 疾病选择器 */}
-          {foiData.per_disease_results.length > 1 && (
+          {(() => { const dr = foiData.per_disease_results || []; return dr.length > 1; })() && (
             <Card style={{ marginBottom: 16 }}>
               <Space>
                 <span style={{ fontWeight: 'bold' }}>选择分析疾病：</span>
@@ -1133,7 +1134,7 @@ const Analysis: React.FC = () => {
                   value={foiSelectedDisease || undefined}
                   style={{ minWidth: 200 }}
                   onChange={setFoiSelectedDisease}
-                  options={foiData.per_disease_results.map((d) => ({
+                  options={(foiData.per_disease_results || []).map((d) => ({
                     label: `${diseaseNameMap[d.disease] || d.disease} (${d.summary.total_data_points}条数据)`,
                     value: d.disease,
                   }))}

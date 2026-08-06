@@ -52,22 +52,28 @@ export const EXTRACTION_STATUS_META: Record<string, { color: string; label: stri
 export interface ModelOption {
   value: string;
   label: string;
-  vendor: 'deepseek' | 'openai' | 'qwen' | '';
+  vendor: 'deepseek' | 'openai' | 'qwen' | 'ollama' | '';
+  description?: string;
 }
 
 export const MODEL_OPTIONS: ModelOption[] = [
-  { value: '', label: '默认配置', vendor: '' },
-  { value: 'deepseek-chat', label: 'DeepSeek Chat（推荐）', vendor: 'deepseek' },
-  { value: 'deepseek-reasoner', label: 'DeepSeek R1', vendor: 'deepseek' },
-  { value: 'gpt-4o-mini', label: 'GPT-4o-mini', vendor: 'openai' },
-  { value: 'gpt-4o', label: 'GPT-4o', vendor: 'openai' },
-  { value: 'qwen2.5-7b', label: 'Qwen2.5-7B', vendor: 'qwen' },
+  { value: '', label: '默认配置（后端配置的模型）', vendor: '', description: '使用后端 .env 中 LLM_MODEL 配置的默认模型，当前为 DeepSeek Chat（远程 API），无需额外填写 API Key' },
+  { value: 'deepseek-chat', label: 'DeepSeek Chat（推荐·远程API）', vendor: 'deepseek', description: 'DeepSeek 远程 API，性价比高，需填写 DeepSeek API Key' },
+  { value: 'deepseek-reasoner', label: 'DeepSeek R1（远程API）', vendor: 'deepseek', description: 'DeepSeek R1 推理模型，适合复杂表格，速度较慢，需填写 API Key' },
+  { value: 'gpt-4o-mini', label: 'GPT-4o-mini（远程API）', vendor: 'openai', description: 'OpenAI GPT-4o-mini，速度快成本低，需填写 OpenAI API Key' },
+  { value: 'gpt-4o', label: 'GPT-4o（远程API）', vendor: 'openai', description: 'OpenAI GPT-4o，提取精度最高，成本较高，需填写 OpenAI API Key' },
+  { value: 'qwen2.5-7b', label: 'Qwen2.5-7B（远程API）', vendor: 'qwen', description: '阿里通义千问远程 API，需填写 DashScope API Key' },
+  { value: 'ollama:qwen3:32b', label: 'Qwen3:32B（本地·Ollama）', vendor: 'ollama', description: '通过 Ollama 本地部署的 Qwen3:32B 模型，无需 API Key，需先在本地运行 ollama serve' },
+  { value: 'ollama:qwen2.5:14b', label: 'Qwen2.5:14B（本地·Ollama）', vendor: 'ollama', description: '通过 Ollama 本地部署的 Qwen2.5:14B 模型，无需 API Key，需先在本地运行 ollama serve' },
+  { value: 'ollama:llama3.1:8b', label: 'Llama3.1:8B（本地·Ollama）', vendor: 'ollama', description: '通过 Ollama 本地部署的 Llama3.1:8B 模型，无需 API Key，需先在本地运行 ollama serve' },
+  { value: 'ollama:custom', label: '自定义本地模型（Ollama）', vendor: 'ollama', description: '手动输入 Ollama 模型名称，如 glm4:9b、phi3:14b 等，需先在本地 ollama pull 该模型' },
 ];
 
-export const VENDOR_INFO: Record<string, { name: string; apiKeyLabel: string; baseUrlLabel: string; defaultBaseUrl: string }> = {
+export const VENDOR_INFO: Record<string, { name: string; apiKeyLabel: string; baseUrlLabel: string; defaultBaseUrl: string; isLocal?: boolean }> = {
   deepseek: { name: 'DeepSeek', apiKeyLabel: 'DeepSeek API Key', baseUrlLabel: 'API Base URL', defaultBaseUrl: 'https://api.deepseek.com' },
   openai: { name: 'OpenAI', apiKeyLabel: 'OpenAI API Key', baseUrlLabel: 'API Base URL', defaultBaseUrl: 'https://api.openai.com/v1' },
-  qwen: { name: 'Qwen', apiKeyLabel: 'Qwen API Key', baseUrlLabel: 'API Base URL', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  qwen: { name: 'Qwen', apiKeyLabel: 'Qwen API Key（DashScope）', baseUrlLabel: 'API Base URL', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  ollama: { name: 'Ollama（本地）', apiKeyLabel: 'API Key（本地部署通常无需填写）', baseUrlLabel: 'Ollama 服务地址', defaultBaseUrl: 'http://localhost:11434/v1', isLocal: true },
   '': { name: '', apiKeyLabel: '', baseUrlLabel: '', defaultBaseUrl: '' },
 };
 

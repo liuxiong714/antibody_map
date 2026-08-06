@@ -87,6 +87,7 @@ const LiteraturePage: React.FC = () => {
   const [extracting, setExtracting] = useState(false);
   const [extractApiKey, setExtractApiKey] = useState('');
   const [extractBaseUrl, setExtractBaseUrl] = useState('');
+  const [extractCustomModel, setExtractCustomModel] = useState('');
 
   // PDF 预览
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -158,9 +159,17 @@ const LiteraturePage: React.FC = () => {
 
     let successCount = 0;
     let failCount = 0;
-    const model = values.model;
+    let model = values.model;
     const apiKey = values.apiKey || undefined;
     const baseUrl = values.baseUrl || undefined;
+    // 处理自定义 Ollama 模型名称
+    if (model === 'ollama:custom' && values.customModel) {
+      model = `ollama:${values.customModel.trim()}`;
+    }
+    // ollama: 前缀的模型需要传递实际模型名给后端（去掉 ollama: 前缀）
+    if (model && model.startsWith('ollama:')) {
+      model = model.substring('ollama:'.length);
+    }
     const autoExtract = values.autoExtract !== false; // 默认 true
     const dupResults: { litId: string; litTitle: string; duplicates: DuplicateMatchItem[] }[] = [];
 
@@ -235,6 +244,7 @@ const LiteraturePage: React.FC = () => {
     setExtractModel(undefined);
     setExtractApiKey('');
     setExtractBaseUrl('');
+    setExtractCustomModel('');
     setExtractModalOpen(true);
   };
 
@@ -242,17 +252,29 @@ const LiteraturePage: React.FC = () => {
     if (!extractLitId) return;
     setExtracting(true);
     try {
-      if (extractModel && extractModel !== '') {
+      let model = extractModel;
+      // 处理自定义 Ollama 模型名称
+      if (model === 'ollama:custom' && extractCustomModel) {
+        model = `ollama:${extractCustomModel.trim()}`;
+      }
+      // ollama: 前缀的模型去掉前缀后传递给后端
+      if (model && model.startsWith('ollama:')) {
+        model = model.substring('ollama:'.length);
+      }
+      if (model && model !== '') {
         await triggerExtraction(extractLitId, {
-          model: extractModel,
+          model,
           apiKey: extractApiKey || undefined,
           baseUrl: extractBaseUrl || undefined,
         });
       } else {
         await triggerExtraction(extractLitId);
       }
-      message.success(`已使用 ${MODEL_OPTIONS.find((o) => o.value === extractModel)?.label || '默认模型'} 启动 AI 提取`);
+      const modelLabel = MODEL_OPTIONS.find((o) => o.value === extractModel)?.label
+        || (extractCustomModel ? `Ollama:${extractCustomModel}` : '默认模型');
+      message.success(`已使用 ${modelLabel} 启动 AI 提取`);
       setExtractModalOpen(false);
+      setExtractCustomModel('');
       fetchList();
     } catch (err) {
       console.error('[Literature] 提取失败:', err);
@@ -607,8 +629,32 @@ const LiteraturePage: React.FC = () => {
           <Form.Item name="province" label="省份（选填，批量上传时忽略）">
             <Input placeholder="如 北京" disabled={uploading} />
           </Form.Item>
-          <Form.Item name="model" label="AI 提取模型">
-            <Select placeholder="默认配置" allowClear options={MODEL_OPTIONS} disabled={uploading} />
+          <Form.Item name="model" label="AI 提取模型" tooltip="选择用于 AI 数据提取的大语言模型。默认配置使用后端 .env 中 LLM_MODEL 设定的模型（当前为 DeepSeek Chat 远程 API）。本地 Ollama 模型无需 API Key，但需先在本地安装并运行 Ollama 服务。">
+            <Select placeholder="默认配置（后端配置的模型）" allowClear disabled={uploading}>
+              {MODEL_OPTIONS.map((opt) => (
+                <Select.Option key={opt.value || '__default__'} value={opt.value}>
+                  <Space direction="vertical" size={0}>
+                    <span>{opt.label}</span>
+                    {opt.description && (
+                      <span style={{ fontSize: 11, color: '#999' }}>{opt.description}</span>
+                    )}
+                  </Space>
+                </Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+          <Form.Item noStyle dependencies={['model']}>
+            {({ getFieldValue }) => {
+              const model = getFieldValue('model');
+              if (model === 'ollama:custom') {
+                return (
+                  <Form.Item name="customModel" label="自定义模型名称" tooltip="输入 Ollama 中已安装的模型名称，如 qwen3:32b、glm4:9b 等">
+                    <Input placeholder="如 qwen3:32b" disabled={uploading} />
+                  </Form.Item>
+                );
+              }
+              return null;
+            }}
           </Form.Item>
           <Form.Item name="autoExtract" valuePropName="checked" initialValue={true}>
             <Checkbox disabled={uploading}>上传后自动启动 AI 提取（取消则仅上传文件，后续可手动提取）</Checkbox>
@@ -619,6 +665,13 @@ const LiteraturePage: React.FC = () => {
               const vendor = MODEL_OPTIONS.find((o) => o.value === model)?.vendor || '';
               const info = VENDOR_INFO[vendor];
               if (!vendor || !info.name) return null;
+              if (info.isLocal) {
+                return (
+                  <Form.Item name="baseUrl" label="Ollama 服务地址（选填）" tooltip="Ollama 默认运行在 localhost:11434，如有自定义端口请修改">
+                    <Input placeholder={info.baseUrlLabel} defaultValue={info.defaultBaseUrl} disabled={uploading} />
+                  </Form.Item>
+                );
+              }
               return (
                 <Form.Item name="apiKey" label="API Key（选填）">
                   <Input.Password placeholder={info.apiKeyLabel} disabled={uploading} />
@@ -631,7 +684,7 @@ const LiteraturePage: React.FC = () => {
               const model = getFieldValue('model');
               const vendor = MODEL_OPTIONS.find((o) => o.value === model)?.vendor || '';
               const info = VENDOR_INFO[vendor];
-              if (!vendor || !info.name) return null;
+              if (!vendor || !info.name || info.isLocal) return null;
               return (
                 <Form.Item name="baseUrl" label="API Base URL（选填）">
                   <Input placeholder={info.baseUrlLabel} defaultValue={info.defaultBaseUrl} disabled={uploading} />
@@ -713,11 +766,14 @@ const LiteraturePage: React.FC = () => {
         onOk={confirmExtract}
         confirmLoading={extracting}
         okText="开始提取"
-        width={520}
+        width={560}
       >
-        <p style={{ marginBottom: 16, color: '#888' }}>选择用于 AI 数据提取的大语言模型。不同模型的提取精度和速度可能有所差异。</p>
+        <p style={{ marginBottom: 12, color: '#888' }}>
+          选择用于 AI 数据提取的大语言模型。<strong>默认配置</strong>使用后端 .env 中 LLM_MODEL 设定的模型（当前为 DeepSeek Chat 远程 API）。
+          本地 Ollama 模型无需 API Key，但需先在本地运行 <code>ollama serve</code>。
+        </p>
         <Select
-          placeholder="默认模型"
+          placeholder="默认配置（后端配置的模型）"
           allowClear
           style={{ width: '100%', marginBottom: 16 }}
           value={extractModel}
@@ -726,12 +782,39 @@ const LiteraturePage: React.FC = () => {
             const vendor = MODEL_OPTIONS.find((o) => o.value === v)?.vendor || '';
             setExtractBaseUrl(VENDOR_INFO[vendor]?.defaultBaseUrl || '');
           }}
-          options={MODEL_OPTIONS}
-        />
+        >
+          {MODEL_OPTIONS.map((opt) => (
+            <Select.Option key={opt.value || '__default__'} value={opt.value}>
+              <Space direction="vertical" size={0}>
+                <span>{opt.label}</span>
+                {opt.description && (
+                  <span style={{ fontSize: 11, color: '#999' }}>{opt.description}</span>
+                )}
+              </Space>
+            </Select.Option>
+          ))}
+        </Select>
+        {extractModel === 'ollama:custom' && (
+          <Input
+            placeholder="输入 Ollama 模型名称，如 qwen3:32b"
+            style={{ marginBottom: 12 }}
+            onChange={(e) => setExtractCustomModel(e.target.value)}
+          />
+        )}
         {extractModel && extractModel !== '' && (() => {
           const vendor = MODEL_OPTIONS.find((o) => o.value === extractModel)?.vendor || '';
           const info = VENDOR_INFO[vendor];
           if (!vendor || !info.name) return null;
+          if (info.isLocal) {
+            return (
+              <Input
+                placeholder={info.baseUrlLabel}
+                value={extractBaseUrl}
+                onChange={(e) => setExtractBaseUrl(e.target.value)}
+                style={{ marginBottom: 12 }}
+              />
+            );
+          }
           return (
             <>
               <Input.Password

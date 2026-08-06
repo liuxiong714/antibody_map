@@ -1210,6 +1210,7 @@ async def get_foi_analysis(
         return {
             "disease": disease,
             "total_data_points": 0,
+            "per_disease_results": [],
             "foi_by_age_group": [],
             "summary": {
                 "weighted_avg_foi": None,

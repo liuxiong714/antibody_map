@@ -15,6 +15,17 @@ class QwenProvider(BaseLLMProvider):
     model_prefixes = ["qwen"]
 
     @classmethod
+    def matches(cls, model: str) -> bool:
+        """检查模型名是否匹配此 Provider。
+
+        排除 Ollama 风格的模型名（包含冒号，如 qwen3:32b），
+        这些应由 OllamaProvider 处理。
+        """
+        if ':' in model.lower():
+            return False
+        return super().matches(model)
+
+    @classmethod
     def get_config(cls) -> tuple[str, str]:
         api_key = settings.QWEN_API_KEY or settings.LLM_API_KEY
         base_url = settings.QWEN_BASE_URL or settings.LLM_BASE_URL
