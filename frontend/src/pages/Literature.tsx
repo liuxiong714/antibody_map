@@ -630,18 +630,23 @@ const LiteraturePage: React.FC = () => {
             <Input placeholder="如 北京" disabled={uploading} />
           </Form.Item>
           <Form.Item name="model" label="AI 提取模型" tooltip="选择用于 AI 数据提取的大语言模型。默认配置使用后端 .env 中 LLM_MODEL 设定的模型（当前为 DeepSeek Chat 远程 API）。本地 Ollama 模型无需 API Key，但需先在本地安装并运行 Ollama 服务。">
-            <Select placeholder="默认配置（后端配置的模型）" allowClear disabled={uploading}>
+            <Select placeholder="默认配置（后端配置的模型）" allowClear disabled={uploading} style={{ width: '100%' }}>
               {MODEL_OPTIONS.map((opt) => (
-                <Select.Option key={opt.value || '__default__'} value={opt.value}>
-                  <Space direction="vertical" size={0}>
-                    <span>{opt.label}</span>
-                    {opt.description && (
-                      <span style={{ fontSize: 11, color: '#999' }}>{opt.description}</span>
-                    )}
-                  </Space>
-                </Select.Option>
+                <Select.Option key={opt.value || '__default__'} value={opt.value}>{opt.label}</Select.Option>
               ))}
             </Select>
+          </Form.Item>
+          <Form.Item noStyle dependencies={['model']}>
+            {({ getFieldValue }) => {
+              const m = getFieldValue('model');
+              const desc = MODEL_OPTIONS.find((o) => o.value === m)?.description;
+              if (!desc) return null;
+              return (
+                <div style={{ color: '#888', fontSize: 12, marginTop: -8, marginBottom: 8, paddingLeft: 2, paddingRight: 2 }}>
+                  {desc}
+                </div>
+              );
+            }}
           </Form.Item>
           <Form.Item noStyle dependencies={['model']}>
             {({ getFieldValue }) => {
@@ -775,7 +780,7 @@ const LiteraturePage: React.FC = () => {
         <Select
           placeholder="默认配置（后端配置的模型）"
           allowClear
-          style={{ width: '100%', marginBottom: 16 }}
+          style={{ width: '100%', marginBottom: 8 }}
           value={extractModel}
           onChange={(v) => {
             setExtractModel(v);
@@ -784,16 +789,13 @@ const LiteraturePage: React.FC = () => {
           }}
         >
           {MODEL_OPTIONS.map((opt) => (
-            <Select.Option key={opt.value || '__default__'} value={opt.value}>
-              <Space direction="vertical" size={0}>
-                <span>{opt.label}</span>
-                {opt.description && (
-                  <span style={{ fontSize: 11, color: '#999' }}>{opt.description}</span>
-                )}
-              </Space>
-            </Select.Option>
+            <Select.Option key={opt.value || '__default__'} value={opt.value}>{opt.label}</Select.Option>
           ))}
         </Select>
+        {extractModel && (() => {
+          const desc = MODEL_OPTIONS.find((o) => o.value === extractModel)?.description;
+          return desc ? <div style={{ color: '#888', fontSize: 12, marginBottom: 12 }}>{desc}</div> : null;
+        })()}
         {extractModel === 'ollama:custom' && (
           <Input
             placeholder="输入 Ollama 模型名称，如 qwen3:32b"

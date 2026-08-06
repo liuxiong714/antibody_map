@@ -1134,6 +1134,8 @@ const Analysis: React.FC = () => {
                   value={foiSelectedDisease || undefined}
                   style={{ minWidth: 200 }}
                   onChange={setFoiSelectedDisease}
+                  allowClear
+                  placeholder="全部疾病（汇总视图）"
                   options={(foiData.per_disease_results || []).map((d) => ({
                     label: `${diseaseNameMap[d.disease] || d.disease} (${d.summary.total_data_points}条数据)`,
                     value: d.disease,
