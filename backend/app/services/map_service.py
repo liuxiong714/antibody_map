@@ -540,26 +540,36 @@ async def get_city_data(
     result = await db.execute(base)
     rows = result.scalars().all()
 
+    # 分组键：指定疾病时仅按城市分组，未指定时按城市+疾病分组
     city_map: dict[str, dict] = {}
 
     for dp in rows:
         city = dp.city or "unknown"
-        if city not in city_map:
-            city_map[city] = {"data_points": [], "literature_ids": set()}
+        disease_name = dp.disease or "未知"
+        group_key = f"{city}||{disease_name}" if not disease else city
 
-        city_map[city]["data_points"].append(dp)
-        city_map[city]["literature_ids"].add(str(dp.literature_id) if dp.literature_id else "")
+        if group_key not in city_map:
+            city_map[group_key] = {
+                "data_points": [],
+                "literature_ids": set(),
+                "city": city,
+                "disease": disease_name,
+            }
+
+        city_map[group_key]["data_points"].append(dp)
+        city_map[group_key]["literature_ids"].add(str(dp.literature_id) if dp.literature_id else "")
 
     result_list = []
-    for city, group in city_map.items():
+    for key, group in city_map.items():
         dps = group["data_points"]
         weighted_rate, total_sample = _calc_weighted_rate(dps, data_type)
 
         # 获取城市坐标
-        lat, lng = _get_city_coords(province, city)
+        lat, lng = _get_city_coords(province, group["city"])
 
         result_list.append({
-            "city": city,
+            "city": group["city"],
+            "disease": group["disease"],
             "point_count": len(dps),
             "study_count": len(group["literature_ids"]),
             "total_sample": total_sample,
@@ -568,7 +578,8 @@ async def get_city_data(
             "longitude": lng,
         })
 
-    result_list.sort(key=lambda x: x["city"])
+    # 按城市+疾病排序
+    result_list.sort(key=lambda x: (x["city"], x["disease"]))
     return result_list
 
 
@@ -661,7 +672,8 @@ async def get_province_yearly_data(
     result = await db.execute(base)
     rows = result.scalars().all()
 
-    # 按年份分组: year -> { province_key -> aggregate }
+    # 按年份分组: year -> { (province||disease) -> aggregate }
+    # 指定疾病时仅按省份分组，未指定时按省份+疾病分组
     year_map: dict[int, dict[str, dict]] = {}
 
     for dp in rows:
@@ -669,16 +681,19 @@ async def get_province_yearly_data(
         if year not in year_map:
             year_map[year] = {}
 
+        disease_name = dp.disease or "未知"
         provinces = _parse_provinces(dp.province)
         for key in provinces:
-            if key not in year_map[year]:
-                year_map[year][key] = {
+            group_key = f"{key}||{disease_name}" if not disease else key
+            if group_key not in year_map[year]:
+                year_map[year][group_key] = {
                     "province": key,
+                    "disease": disease_name,
                     "literature_ids": set(),
                     "data_points": [],
                 }
-            year_map[year][key]["literature_ids"].add(str(dp.literature_id) if dp.literature_id else "")
-            year_map[year][key]["data_points"].append(dp)
+            year_map[year][group_key]["literature_ids"].add(str(dp.literature_id) if dp.literature_id else "")
+            year_map[year][group_key]["data_points"].append(dp)
 
     result_list = []
     for year in sorted(year_map.keys()):
@@ -687,17 +702,19 @@ async def get_province_yearly_data(
             dps = group["data_points"]
             weighted_rate, total_sample = _calc_weighted_rate(dps, data_type)
 
-            year_data.append({
-                "province": key,
+            entry = {
+                "province": group["province"],
                 "point_count": len(dps),
                 "study_count": len(group["literature_ids"]),
                 "total_sample": total_sample,
                 "weighted_positivity": weighted_rate,
-            })
+                "disease": group["disease"],
+            }
+            year_data.append(entry)
 
         result_list.append({
             "year": year,
-            "data": sorted(year_data, key=lambda x: x["province"]),
+            "data": sorted(year_data, key=lambda x: (x["province"], x["disease"])),
         })
 
     return result_list

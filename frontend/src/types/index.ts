@@ -160,6 +160,8 @@ export interface MergeResult {
 export interface MapDataPoint {
   province?: string;
   city?: string;
+  /** 疾病名称（未指定疾病筛选时返回，用于区分不同疾病的聚合数据） */
+  disease?: string;
   point_count: number;
   study_count: number;
   total_sample: number;

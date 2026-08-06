@@ -485,19 +485,19 @@ async def _process_literature_async(
             if first.get("journal") and not literature.journal:
                 literature.journal = first["journal"]
 
-            # 从数据点聚合 pub_year（取最新/最大的 sample_year 或 study_end_year）
+            # 从数据点聚合 pub_year（取出现频率最高的 collection_year）
             if not literature.pub_year:
                 years = []
                 for dp in all_data_points:
-                    if getattr(dp, "sample_year", None):
-                        years.append(dp.sample_year)
-                    if getattr(dp, "study_end_year", None):
-                        years.append(dp.study_end_year)
-                    if getattr(dp, "study_start_year", None):
-                        years.append(dp.study_start_year)
+                    y = getattr(dp, "collection_year", None)
+                    if y:
+                        years.append(y)
                 if years:
-                    literature.pub_year = max(set(years), key=years.count)  # 取众数
-                    logger.info(f"[MetadataSync] 文献 {literature_id} 聚合更新 pub_year={literature.pub_year}")
+                    literature.pub_year = max(set(years), key=years.count)
+                    logger.info(
+                        f"[MetadataSync] 文献 {literature_id} 聚合更新 pub_year={literature.pub_year} "
+                        f"(来自 {len(all_data_points)} 个数据点)"
+                    )
 
             # 从数据点聚合 province（取出现频率最高的省份）
             if not literature.province:

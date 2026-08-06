@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import DiseaseSelector from '../components/DiseaseSelector';
@@ -10,7 +10,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, checkDuplicate, createLiteratureFromUrl } from '../services/literature';
+import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
 import { formatAuthors, truncate } from '../utils/format';
@@ -176,6 +176,43 @@ const LiteraturePage: React.FC = () => {
     } catch (err) {
       console.error('[Literature] 删除文献失败:', err);
       message.error('删除失败');
+    }
+  };
+
+  const handleSyncMetadata = async (id: string) => {
+    try {
+      const result = await syncMetadata(id);
+      if (result.pub_year_updated || result.province_updated) {
+        const parts: string[] = [];
+        if (result.pub_year_updated) parts.push(`年份 → ${result.pub_year}`);
+        if (result.province_updated) parts.push(`省份 → ${result.province}`);
+        message.success(`元数据已更新：${parts.join('，')}`);
+      } else {
+        message.info('该文献的元数据已是最新，无需更新');
+      }
+      fetchList();
+    } catch (err) {
+      console.error('[Literature] 同步元数据失败:', err);
+      message.error('同步元数据失败');
+    }
+  };
+
+  const [batchSyncing, setBatchSyncing] = useState(false);
+  const handleSyncMetadataBatch = async () => {
+    setBatchSyncing(true);
+    try {
+      const result = await syncMetadataBatch();
+      if (result.synced > 0) {
+        message.success(`批量同步完成：${result.synced} 篇已更新，${result.skipped} 篇无需更新`);
+      } else {
+        message.info(`没有需要同步的文献（共检查 ${result.total} 篇）`);
+      }
+      fetchList();
+    } catch (err) {
+      console.error('[Literature] 批量同步元数据失败:', err);
+      message.error('批量同步元数据失败');
+    } finally {
+      setBatchSyncing(false);
     }
   };
 
@@ -496,7 +533,7 @@ const LiteraturePage: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 270,
+      width: 310,
       render: (_: unknown, r: Literature) => (
         <Space size="small">
           <Tooltip title="AI 提取">
@@ -508,6 +545,15 @@ const LiteraturePage: React.FC = () => {
               disabled={r.extraction_status === 'processing'}
             />
           </Tooltip>
+          {r.extraction_status === 'done' && (!r.pub_year || !r.province) && (
+            <Tooltip title="同步元数据（从数据点聚合年份/省份）">
+              <Button
+                size="small"
+                icon={<SyncOutlined />}
+                onClick={() => handleSyncMetadata(r.id)}
+              />
+            </Tooltip>
+          )}
           <Tooltip title="预览">
             <Button
               size="small"
@@ -658,6 +704,16 @@ const LiteraturePage: React.FC = () => {
           <Button icon={<CopyOutlined />} onClick={() => setScanOpen(true)}>
             扫描重复
           </Button>
+          <Popconfirm
+            title="批量同步元数据"
+            description="将所有提取完成但缺少年份/省份的文献，从数据点自动聚合元数据。确定继续？"
+            onConfirm={handleSyncMetadataBatch}
+            disabled={batchSyncing}
+          >
+            <Button icon={<SyncOutlined />} loading={batchSyncing}>
+              批量同步元数据
+            </Button>
+          </Popconfirm>
           <Button icon={<ExportOutlined />} onClick={() => {
             const params = new URLSearchParams();
             if (keyword) params.set('keyword', keyword);

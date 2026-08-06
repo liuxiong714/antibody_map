@@ -28,6 +28,8 @@ from app.core.traceability_html import (
     datapoint_dict_to_trace,
 )
 
+from app.core.term_normalizer import CHINA_PROVINCE_NAMES
+
 router = APIRouter()
 logger = logging.getLogger("uvicorn")
 
@@ -422,4 +424,167 @@ async def _sync_approved_count(db: AsyncSession, literature_id: uuid.UUID):
         update(Literature)
         .where(Literature.id == literature_id)
         .values(approved_count=approved, updated_at=datetime.now(timezone.utc))
+    )
+
+
+@router.post("/literatures/{literature_id}/sync-metadata", response_model=ApiResponse)
+async def sync_literature_metadata(
+    literature_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """从数据点聚合同步文献的 pub_year 和 province 元数据"""
+    lit_result = await db.execute(
+        select(Literature).where(Literature.id == literature_id)
+    )
+    literature = lit_result.scalar_one_or_none()
+    if not literature:
+        raise HTTPException(status_code=404, detail="文献不存在")
+
+    # 查询该文献的所有数据点
+    dp_result = await db.execute(
+        select(DataPoint).where(DataPoint.literature_id == literature_id)
+    )
+    all_data_points = dp_result.scalars().all()
+
+    if not all_data_points:
+        return ApiResponse(message="无需同步：该文献暂无数据点", data={
+            "pub_year_updated": False,
+            "province_updated": False,
+            "data_point_count": 0,
+        })
+
+    pub_year_updated = False
+    province_updated = False
+
+    # 聚合 pub_year
+    if not literature.pub_year:
+        years = []
+        for dp in all_data_points:
+            y = dp.collection_year
+            if y:
+                years.append(y)
+        if years:
+            literature.pub_year = max(set(years), key=years.count)
+            pub_year_updated = True
+            logger.info(f"[MetadataSync] 文献 {literature_id} 聚合更新 pub_year={literature.pub_year}")
+
+    # 聚合 province
+    if not literature.province:
+        provinces = [
+            dp.province for dp in all_data_points
+            if dp.province and dp.province in CHINA_PROVINCE_NAMES
+        ]
+        if provinces:
+            literature.province = max(set(provinces), key=provinces.count)
+            province_updated = True
+            logger.info(
+                f"[MetadataSync] 文献 {literature_id} 聚合更新 province={literature.province} "
+                f"(覆盖{len(set(provinces))}省)"
+            )
+
+    if pub_year_updated or province_updated:
+        literature.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(literature)
+
+    return ApiResponse(
+        message="元数据同步完成",
+        data={
+            "id": str(literature.id),
+            "pub_year": literature.pub_year,
+            "province": literature.province,
+            "pub_year_updated": pub_year_updated,
+            "province_updated": province_updated,
+            "data_point_count": len(all_data_points),
+        },
+    )
+
+
+@router.post("/literatures/sync-metadata-batch", response_model=ApiResponse)
+async def sync_metadata_batch(db: AsyncSession = Depends(get_db)):
+    """批量同步所有提取完成但缺少年份/省份的文献元数据"""
+    # 查询所有 extraction_status='done' 且 pub_year 或 province 为空的文献
+    result = await db.execute(
+        select(Literature).where(
+            Literature.extraction_status == "done",
+            (Literature.pub_year.is_(None)) | (Literature.province.is_(None)),
+        )
+    )
+    literatures = result.scalars().all()
+
+    if not literatures:
+        return ApiResponse(message="无需同步：没有缺少元数据的已完成文献", data={
+            "total": 0, "synced": 0, "skipped": 0, "details": [],
+        })
+
+    # 查询这些文献的所有数据点
+    lit_ids = [lit.id for lit in literatures]
+    dp_result = await db.execute(
+        select(DataPoint).where(DataPoint.literature_id.in_(lit_ids))
+    )
+    all_dps = dp_result.scalars().all()
+
+    # 按 literature_id 分组
+    dp_map: dict[uuid.UUID, list[DataPoint]] = {}
+    for dp in all_dps:
+        dp_map.setdefault(dp.literature_id, []).append(dp)
+
+    synced_count = 0
+    skipped_count = 0
+    details = []
+
+    for literature in literatures:
+        dps = dp_map.get(literature.id, [])
+        if not dps:
+            skipped_count += 1
+            continue
+
+        pub_year_updated = False
+        province_updated = False
+
+        if not literature.pub_year:
+            years = [dp.collection_year for dp in dps if dp.collection_year]
+            if years:
+                literature.pub_year = max(set(years), key=years.count)
+                pub_year_updated = True
+
+        if not literature.province:
+            provinces = [
+                dp.province for dp in dps
+                if dp.province and dp.province in CHINA_PROVINCE_NAMES
+            ]
+            if provinces:
+                literature.province = max(set(provinces), key=provinces.count)
+                province_updated = True
+
+        if pub_year_updated or province_updated:
+            literature.updated_at = datetime.now(timezone.utc)
+            synced_count += 1
+            details.append({
+                "id": str(literature.id),
+                "title": literature.title,
+                "pub_year": literature.pub_year,
+                "province": literature.province,
+                "pub_year_updated": pub_year_updated,
+                "province_updated": province_updated,
+            })
+        else:
+            skipped_count += 1
+
+    if synced_count > 0:
+        await db.commit()
+
+    logger.info(
+        f"[MetadataSync-Batch] 批量同步完成: 共{len(literatures)}篇, "
+        f"同步{synced_count}篇, 跳过{skipped_count}篇"
+    )
+
+    return ApiResponse(
+        message=f"批量同步完成：{synced_count}篇已更新，{skipped_count}篇无需更新",
+        data={
+            "total": len(literatures),
+            "synced": synced_count,
+            "skipped": skipped_count,
+            "details": details,
+        },
     )

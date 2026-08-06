@@ -8,7 +8,16 @@ import MapSelector from '../components/MapSelector';
 import { useFilterStore } from '../store';
 import { getProvinceData, getYearlyProvinceData, getAvailableYears, getCityData, getPopulationOptions } from '../services/map';
 import { MapDataPoint, YearlyMapData } from '../types';
-import { SERO_COLOR_STOPS, GMC_COLOR_STOPS, GENDER_OPTIONS, PROVINCE_GEOJSON_NAME } from '../utils/constants';
+import { SERO_COLOR_STOPS, GMC_COLOR_STOPS, GENDER_OPTIONS, PROVINCE_GEOJSON_NAME, DISEASES } from '../utils/constants';
+
+// 英文 disease key → 中文名称
+const DISEASE_CN_MAP: Record<string, string> = Object.fromEntries(
+  DISEASES.map((d) => [d.key, d.name_cn])
+);
+const diseaseToCn = (key?: string): string => {
+  if (!key) return '';
+  return DISEASE_CN_MAP[key] || key;
+};
 
 const MapOverview: React.FC = () => {
   const { disease, dataType, province, yearStart, yearEnd, ageMin, ageMax, gender, occupation,
@@ -307,17 +316,23 @@ const MapOverview: React.FC = () => {
     });
 
     // 绑定点击事件
-    const clickHandler = (params: { name: string; componentType: string; seriesType?: string }) => {
-      console.log('[MapClick] params:', { name: params.name, componentType: params.componentType, seriesType: params.seriesType });
+    const clickHandler = (params: any) => {
+      const name: string = params.name;
+      const seriesType: string = params.seriesType;
+      const data: { disease?: string } | undefined = params.data;
+      console.log('[MapClick] params:', { name, componentType: params.componentType, seriesType });
       // 散点图点击：城市详情
-      if (params.seriesType === 'scatter') {
-        const cityItem = drillCityDataRef.current.find((d) => d.city === params.name);
+      if (seriesType === 'scatter') {
+        const clickedDisease = data?.disease || '';
+        const cityItem = drillCityDataRef.current.find(
+          (d) => d.city === name && (d.disease || '') === clickedDisease
+        );
         if (cityItem) handleCityScatterClickRef.current(cityItem);
         return;
       }
       // 地图点击：省份详情
-      const entry = Object.entries(PROVINCE_GEOJSON_NAME).find(([, geoName]) => geoName === params.name);
-      const shortName = entry ? entry[0] : params.name;
+      const entry = Object.entries(PROVINCE_GEOJSON_NAME).find(([, geoName]) => geoName === name);
+      const shortName = entry ? entry[0] : name;
       console.log('[MapClick] shortName:', shortName);
       if (shortName) {
         handleProvinceClickRef.current(shortName);
@@ -392,6 +407,7 @@ const MapOverview: React.FC = () => {
       .filter((d) => d.longitude != null && d.latitude != null && d.weighted_positivity != null)
       .map((d) => ({
         name: d.city,
+        disease: d.disease || '',
         value: [d.longitude, d.latitude, Number(d.weighted_positivity)],
         point_count: d.point_count,
         total_sample: d.total_sample,
@@ -454,8 +470,9 @@ const MapOverview: React.FC = () => {
           opacity: 0.85,
         },
         tooltip: {
-          formatter: (params: { name: string; value: number[]; data: { point_count?: number; total_sample?: number } }) => {
-            return `<b>${params.name}</b><br/>
+          formatter: (params: { name: string; value: number[]; data: { point_count?: number; total_sample?: number; disease?: string } }) => {
+            const diseaseLabel = params.data.disease ? `<br/>疾病: ${diseaseToCn(params.data.disease)}` : '';
+            return `<b>${params.name}</b>${diseaseLabel}<br/>
               ${valueLabel}: ${params.value[2] != null ? (params.value[2] as number).toFixed(2) + valueUnit : '-'}<br/>
               数据点数: ${params.data.point_count ?? 0}<br/>
               总样本量: ${(params.data.total_sample ?? 0).toLocaleString()}`;
@@ -588,8 +605,9 @@ const MapOverview: React.FC = () => {
   const provinceYearlyTableData = provinceYearly.map((y) => {
     const item = y.data.find((d) => d.province === selectedProvince);
     return {
-      key: y.year,
+      key: `${y.year}-${item?.disease || ''}`,
       year: y.year,
+      disease: diseaseToCn(item?.disease || disease),
       value: item?.weighted_positivity ?? null,
       point_count: item?.point_count ?? 0,
       total_sample: item?.total_sample ?? 0,
@@ -850,20 +868,21 @@ const MapOverview: React.FC = () => {
                     <div style={{ fontSize: 12, fontWeight: 'bold', color: '#666', marginBottom: 4 }}>历年数据</div>
                     <Table
                       dataSource={provinceYearlyTableData}
-                      rowKey="year"
+                      rowKey="key"
                       size="small"
                       pagination={false}
                       scroll={{ y: 120 }}
                       columns={[
-                        { title: '年份', dataIndex: 'year', key: 'year', width: 55 },
+                        { title: '年份', dataIndex: 'year', key: 'year', width: 50 },
+                        { title: '疾病', dataIndex: 'disease', key: 'disease', width: 80, ellipsis: true },
                         {
                           title: dataType === 'gmc' ? 'GMC' : '阳性率',
                           dataIndex: 'value',
                           key: 'value',
-                          width: 75,
+                          width: 70,
                           render: (v: number | null) => (v != null ? Number(v).toFixed(2) + (dataType === 'gmc' ? '' : '%') : '-'),
                         },
-                        { title: '样本', dataIndex: 'total_sample', key: 'total_sample', width: 60 },
+                        { title: '样本', dataIndex: 'total_sample', key: 'total_sample', width: 55 },
                       ]}
                     />
                   </div>
@@ -875,17 +894,18 @@ const MapOverview: React.FC = () => {
                     <div style={{ fontSize: 12, fontWeight: 'bold', color: '#666', marginBottom: 4 }}>城市分布</div>
                     <Table
                       dataSource={provinceCities}
-                      rowKey="city"
+                      rowKey={(r: MapDataPoint) => `${r.city}-${r.disease || ''}`}
                       size="small"
                       pagination={false}
                       scroll={{ y: 120 }}
                       columns={[
                         { title: '城市', dataIndex: 'city', key: 'city', width: 70 },
+                        { title: '疾病', dataIndex: 'disease', key: 'disease', width: 80, ellipsis: true, render: (v: string) => diseaseToCn(v) },
                         {
                           title: dataType === 'gmc' ? 'GMC' : '阳性率',
                           dataIndex: 'weighted_positivity',
                           key: 'wp',
-                          width: 70,
+                          width: 65,
                           render: (v: number | null) => (v != null ? Number(v).toFixed(2) + (dataType === 'gmc' ? '' : '%') : '-'),
                         },
                         { title: '数据点', dataIndex: 'point_count', key: 'pc', width: 50 },
@@ -953,6 +973,7 @@ const MapOverview: React.FC = () => {
         {cityDetailData && (
           <Descriptions column={1} bordered size="small">
             <Descriptions.Item label="城市">{cityDetailData.city}</Descriptions.Item>
+            <Descriptions.Item label="疾病">{diseaseToCn(cityDetailData.disease || disease) || '-'}</Descriptions.Item>
             <Descriptions.Item label="省份">{drillProvince || '-'}</Descriptions.Item>
             <Descriptions.Item label={dataType === 'gmc' ? 'GMC' : '加权阳性率'}>
               {cityDetailData.weighted_positivity != null

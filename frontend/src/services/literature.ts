@@ -68,6 +68,39 @@ export async function triggerExtraction(literatureId: string, options?: Extracti
   return data;
 }
 
+export interface SyncMetadataResult {
+  id: string;
+  pub_year: number | null;
+  province: string | null;
+  pub_year_updated: boolean;
+  province_updated: boolean;
+  data_point_count: number;
+}
+
+export async function syncMetadata(literatureId: string): Promise<SyncMetadataResult> {
+  const { data } = await api.post(`/literatures/${literatureId}/sync-metadata`);
+  return data;
+}
+
+export interface BatchSyncMetadataResult {
+  total: number;
+  synced: number;
+  skipped: number;
+  details: Array<{
+    id: string;
+    title: string;
+    pub_year: number | null;
+    province: string | null;
+    pub_year_updated: boolean;
+    province_updated: boolean;
+  }>;
+}
+
+export async function syncMetadataBatch(): Promise<BatchSyncMetadataResult> {
+  const { data } = await api.post('/literatures/sync-metadata-batch');
+  return data;
+}
+
 export async function getExtractionStatus(literatureId: string) {
   const { data } = await api.get<ExtractionStatusWithUsage>(`/literatures/${literatureId}/extraction/status`);
   return data;
