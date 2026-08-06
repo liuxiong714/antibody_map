@@ -177,11 +177,11 @@ async def export_map_data_points(
     for dp in rows:
         writer.writerow([
             dp.disease, dp.province, dp.city, dp.data_type,
-            float(dp.value) if dp.value else None, dp.unit, dp.sample_size,
+            float(dp.value) if dp.value is not None else None, dp.unit, dp.sample_size,
             dp.age_min, dp.age_max, dp.collection_year, dp.confidence,
             dp.population, dp.method, dp.assay,
-            float(dp.ci_lower) if dp.ci_lower else None,
-            float(dp.ci_upper) if dp.ci_upper else None,
+            float(dp.ci_lower) if dp.ci_lower is not None else None,
+            float(dp.ci_upper) if dp.ci_upper is not None else None,
             dp.review_status,
         ])
 

@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { Card, Row, Col, Spin, Empty, message, Button, Tabs, Table, Space, Statistic, Alert, Tag, Collapse, Tooltip, Progress, Select, Slider } from 'antd';
+import { Card, Row, Col, Spin, Empty, message, Button, Tabs, Table, Space, Statistic, Alert, Tag, Collapse, Tooltip, Progress, Select } from 'antd';
 import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined, DownloadOutlined, ExperimentOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import ReactECharts from 'echarts-for-react';
 import DiseaseSelector from '../components/DiseaseSelector';
@@ -8,7 +8,7 @@ import MapSelector from '../components/MapSelector';
 import { getTrend, getRegionCompare, getAgeStratify, getApprovedDataPoints, getDataGapAnalysis, getFoiHerdImmunity, getVaccineEffectivenessCoverage } from '../services/map';
 import { useFilterStore } from '../store';
 import type { TableRowSelection } from 'antd/es/table/interface';
-import type { DataGapAnalysisResult, ReviewNeededItem, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult } from '../types';
+import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult } from '../types';
 import { DISEASES } from '../utils/constants';
 
 type DataItem = Record<string, unknown>;
@@ -144,8 +144,9 @@ const Analysis: React.FC = () => {
       const data = await getVaccineEffectivenessCoverage(params);
       setVaccineData(data);
       // 默认选中第一个疾病
-      if (data.per_disease_results.length > 0 && !vaccineSelectedDisease) {
-        setVaccineSelectedDisease(data.per_disease_results[0].disease);
+      const veResults = data.per_disease_results || [];
+      if (veResults.length > 0 && !vaccineSelectedDisease) {
+        setVaccineSelectedDisease(veResults[0].disease);
       }
     } catch (err) {
       console.error('[Analysis] 疫苗分析加载失败:', err);
@@ -191,7 +192,8 @@ const Analysis: React.FC = () => {
     if (activeTab === 'datapoints') {
       fetchApprovedData(dpPage, dpPageSize, dpSortBy, dpSortOrder);
     }
-  }, [activeTab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, fetchApprovedData, dpPage, dpPageSize, dpSortBy, dpSortOrder]);
 
   // 确认筛选
   const handleConfirm = () => {
@@ -935,7 +937,7 @@ const Analysis: React.FC = () => {
                     <Space>
                       <span style={{ fontWeight: 'bold' }}>{diseaseNameMap[g.disease] || g.disease}</span>
                       {fullyCovered ? (
-                        <Tag color="gold">✅ 覆盖完整 {g.covered_count}/{g.covered_count} 省</Tag>
+                        <Tag color="gold">✅ 覆盖完整 {g.covered_count}/34 省</Tag>
                       ) : (
                         <>
                           <Tag color="green">已覆盖 {g.covered_count} 省</Tag>
@@ -1101,7 +1103,7 @@ const Analysis: React.FC = () => {
 
   // 省份 FOI 热力矩阵
   const foiProvinceMatrixForDisease: FoiProvinceMatrixRow[] =
-    foiData?.province_foi_matrix.filter((r) => !foiSelectedDisease || r.disease === foiSelectedDisease) || [];
+    (foiData?.province_foi_matrix || []).filter((r) => !foiSelectedDisease || r.disease === foiSelectedDisease);
 
   const foiProvinceColumns = [
     { title: '省份', dataIndex: 'province', key: 'province', width: 100, sorter: (a: FoiProvinceMatrixRow, b: FoiProvinceMatrixRow) => a.province.localeCompare(b.province) },
@@ -1316,7 +1318,7 @@ const Analysis: React.FC = () => {
     undetermined: { label: '数据不足', color: '#8c8c8c' },
   };
 
-  const vaccineCurrentDisease: VaccinePerDiseaseResult | undefined = vaccineData?.per_disease_results.find(
+  const vaccineCurrentDisease: VaccinePerDiseaseResult | undefined = (vaccineData?.per_disease_results || []).find(
     (d) => d.disease === vaccineSelectedDisease
   );
 
@@ -1387,7 +1389,7 @@ const Analysis: React.FC = () => {
 
   // 省份覆盖率矩阵表格
   const vaccineProvinceForDisease: VaccineProvinceMatrixRow[] =
-    vaccineData?.province_coverage_matrix.filter((r) => !vaccineSelectedDisease || r.disease === vaccineSelectedDisease) || [];
+    (vaccineData?.province_coverage_matrix || []).filter((r) => !vaccineSelectedDisease || r.disease === vaccineSelectedDisease);
 
   const vaccineProvinceColumns = [
     { title: '省份', dataIndex: 'province', key: 'province', width: 100, sorter: (a: VaccineProvinceMatrixRow, b: VaccineProvinceMatrixRow) => a.province.localeCompare(b.province) },
@@ -1417,7 +1419,7 @@ const Analysis: React.FC = () => {
       {vaccineData ? (
         <>
           {/* 疾病选择器 */}
-          {vaccineData.per_disease_results.length > 1 && (
+          {(() => { const vdr = vaccineData.per_disease_results || []; return vdr.length > 1; })() && (
             <Card style={{ marginBottom: 16 }}>
               <Space>
                 <span style={{ fontWeight: 'bold' }}>选择分析疾病：</span>
@@ -1425,7 +1427,9 @@ const Analysis: React.FC = () => {
                   value={vaccineSelectedDisease || undefined}
                   style={{ minWidth: 200 }}
                   onChange={setVaccineSelectedDisease}
-                  options={vaccineData.per_disease_results.map((d) => ({
+                  allowClear
+                  placeholder="全部疾病（汇总视图）"
+                  options={(vaccineData.per_disease_results || []).map((d) => ({
                     label: `${diseaseNameMap[d.disease] || d.disease} (${d.total_data_points}条数据)`,
                     value: d.disease,
                   }))}

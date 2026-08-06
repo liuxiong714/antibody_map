@@ -460,7 +460,7 @@ export interface FoiProvinceMatrixRow {
   total_samples: number;
   weighted_positivity_rate: number | null;
   weighted_avg_foi_per_year: number | null;
-  herd_immunity_status: 'reached' | 'near' | 'not_reached' | 'undetermined';
+  herd_immunity_status: 'reached' | 'near' | 'not_reached' | 'undetermined' | 'no_data';
   hit_target_percent: number | null;
 }
 

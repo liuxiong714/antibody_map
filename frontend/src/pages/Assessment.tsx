@@ -262,7 +262,7 @@ const Assessment: React.FC = () => {
               </Row>
               {result?.r0_reference && result.r0_reference.typical != null && (
                 <div style={{ marginTop: 8, color: '#888', fontSize: 12 }}>
-                  文献 R0 参考：典型 {result.r0_reference.typical}（区间 {result.r0_reference.range_low} ~ {result.r0_reference.range_high}）
+                  文献 R0 参考：典型 {result.r0_reference.typical}（区间 {result.r0_reference.range_low ?? '—'} ~ {result.r0_reference.range_high ?? '—'}）
                 </div>
               )}
             </Card>

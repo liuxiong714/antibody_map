@@ -11,7 +11,7 @@ import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
 import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, checkDuplicate, createLiteratureFromUrl } from '../services/literature';
-import { Literature, DuplicateMatchItem, MergeResult } from '../types';
+import { Literature, DuplicateMatchItem } from '../types';
 import { MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
 import { formatAuthors, truncate } from '../utils/format';
 import dayjs from 'dayjs';
@@ -163,11 +163,14 @@ const LiteraturePage: React.FC = () => {
     const apiKey = values.apiKey || undefined;
     const baseUrl = values.baseUrl || undefined;
     // 处理自定义 Ollama 模型名称
-    if (model === 'ollama:custom' && values.customModel) {
-      model = `ollama:${values.customModel.trim()}`;
-    }
-    // ollama: 前缀的模型需要传递实际模型名给后端（去掉 ollama: 前缀）
-    if (model && model.startsWith('ollama:')) {
+    if (model === 'ollama:custom') {
+      if (values.customModel && values.customModel.trim()) {
+        model = values.customModel.trim();
+      } else {
+        model = ''; // 未填写自定义模型名，回退到默认配置
+      }
+    } else if (model && model.startsWith('ollama:')) {
+      // ollama: 前缀的模型去掉前缀后传递给后端
       model = model.substring('ollama:'.length);
     }
     const autoExtract = values.autoExtract !== false; // 默认 true
@@ -254,11 +257,14 @@ const LiteraturePage: React.FC = () => {
     try {
       let model = extractModel;
       // 处理自定义 Ollama 模型名称
-      if (model === 'ollama:custom' && extractCustomModel) {
-        model = `ollama:${extractCustomModel.trim()}`;
-      }
-      // ollama: 前缀的模型去掉前缀后传递给后端
-      if (model && model.startsWith('ollama:')) {
+      if (model === 'ollama:custom') {
+        if (extractCustomModel && extractCustomModel.trim()) {
+          model = extractCustomModel.trim();
+        } else {
+          model = ''; // 未填写自定义模型名，回退到默认配置
+        }
+      } else if (model && model.startsWith('ollama:')) {
+        // ollama: 前缀的模型去掉前缀后传递给后端
         model = model.substring('ollama:'.length);
       }
       if (model && model !== '') {

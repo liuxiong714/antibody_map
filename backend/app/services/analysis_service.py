@@ -104,8 +104,8 @@ async def get_trend(
         group_rows = year_groups[year]
         wpr, total_sample = _calc_weighted_positivity(group_rows)
 
-        gmc_rows = [r for r in group_rows if r.data_type == "gmc"]
-        avg_gmc = round(sum(r.value for r in gmc_rows if r.value) / len(gmc_rows), 2) if gmc_rows else None
+        gmc_rows = [r for r in group_rows if r.data_type == "gmc" and r.value is not None]
+        avg_gmc = round(sum(r.value for r in gmc_rows) / len(gmc_rows), 2) if gmc_rows else None
 
         trend.append({
             "year": year,
@@ -1211,14 +1211,19 @@ async def get_foi_analysis(
             "disease": disease,
             "total_data_points": 0,
             "per_disease_results": [],
-            "foi_by_age_group": [],
             "summary": {
-                "weighted_avg_foi": None,
-                "estimated_r0": None,
-                "r0_reference": None,
-                "foi_hit_percent": None,
-                "who_threshold": None,
+                "disease": disease,
+                "total_data_points": 0,
+                "overall_weighted_positivity_rate": None,
+                "weighted_avg_foi_per_year": None,
+                "estimated_r0_from_foi": None,
+                "r0_reference": {"typical": None, "range_low": None, "range_high": None},
+                "hit_from_foi_percent": None,
+                "hit_from_reference_r0_percent": None,
+                "who_threshold_percent": None,
+                "hit_target_used_percent": None,
                 "herd_immunity_status": "no_data",
+                "life_expectancy_used": DEFAULT_LIFE_EXPECTANCY,
             },
             "province_foi_matrix": [],
             "notes": ["无已审核通过的 seroprevalence 数据，无法进行 FOI 分析"],
@@ -1681,8 +1686,13 @@ async def get_vaccine_analysis(
     if not rows:
         return {
             "disease": disease,
+            "province": province,
             "total_data_points": 0,
             "per_disease_results": [],
+            "summary": {
+                "num_diseases_analyzed": 0,
+                "diseases": [],
+            },
             "province_coverage_matrix": [],
             "notes": ["无已审核通过的数据点，无法进行疫苗分析"],
         }
