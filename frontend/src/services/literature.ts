@@ -68,6 +68,31 @@ export async function triggerExtraction(literatureId: string, options?: Extracti
   return data;
 }
 
+export interface BatchExtractionResult {
+  submitted: Array<{ id: string; title: string }>;
+  skipped: Array<{ id: string; title?: string; reason: string }>;
+  errors: Array<{ id: string; reason: string }>;
+  submitted_count: number;
+  skipped_count: number;
+  error_count: number;
+}
+
+export async function triggerBatchExtraction(
+  literatureIds: string[],
+  options?: ExtractionOptions,
+): Promise<BatchExtractionResult> {
+  const body: Record<string, unknown> = {
+    literature_ids: literatureIds,
+  };
+  if (options) {
+    body.model = options.model;
+    body.api_key = options.apiKey;
+    body.base_url = options.baseUrl;
+  }
+  const { data } = await api.post('/literatures/extraction/batch', body);
+  return data;
+}
+
 export interface SyncMetadataResult {
   id: string;
   pub_year: number | null;
@@ -228,5 +253,27 @@ export async function previewMerge(sourceId: string, targetId: string): Promise<
 
 export async function mergeLiteratures(payload: MergeRequestPayload): Promise<MergeResult> {
   const { data } = await api.post<MergeResult>('/literatures/merge', payload);
+  return data;
+}
+
+// ===== 导入 =====
+
+export interface ImportResult {
+  imported_count: number;
+  skipped_count: number;
+  data_point_count: number;
+  error_count: number;
+  errors: Array<{ index: number; title?: string; reason: string }>;
+  imported_titles: string[];
+}
+
+export async function importLiteratures(
+  file: File,
+  skipDuplicates: boolean = true,
+): Promise<ImportResult> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('skip_duplicates', String(skipDuplicates));
+  const { data } = await api.post<ImportResult>('/literatures/import', formData);
   return data;
 }

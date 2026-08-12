@@ -78,6 +78,14 @@ class ExtractionRequest(BaseModel):
     base_url: Optional[str] = None
 
 
+class BatchExtractionRequest(BaseModel):
+    """批量重新提取请求"""
+    literature_ids: list[str]
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+
+
 class CreateDataPointRequest(BaseModel):
     """手动新增数据点"""
     disease: Optional[str] = None
@@ -119,6 +127,72 @@ async def start_extraction(
         return ApiResponse(message="提取任务已提交", data=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/literatures/extraction/batch", response_model=ApiResponse)
+async def start_batch_extraction(
+    req: BatchExtractionRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """批量触发文献 AI 数据提取任务"""
+    if not req.literature_ids:
+        raise HTTPException(status_code=400, detail="请选择至少一个文献")
+
+    submitted: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[dict] = []
+
+    for lit_id_str in req.literature_ids:
+        try:
+            lit_id = uuid.UUID(lit_id_str)
+            # 检查文献存在且状态非 processing
+            result = await db.execute(
+                select(Literature).where(Literature.id == lit_id)
+            )
+            literature = result.scalar_one_or_none()
+            if not literature:
+                errors.append({"id": lit_id_str, "reason": "文献不存在"})
+                continue
+            if not literature.file_path:
+                skipped.append({"id": lit_id_str, "title": literature.title, "reason": "无关联文件，无法提取"})
+                continue
+            if literature.extraction_status == "processing":
+                skipped.append({"id": lit_id_str, "title": literature.title, "reason": "正在提取中，跳过"})
+                continue
+
+            # 触发提取
+            await trigger_extraction(
+                db, lit_id,
+                model=req.model,
+                api_key=req.api_key,
+                base_url=req.base_url,
+            )
+            submitted.append({
+                "id": str(lit_id),
+                "title": literature.title,
+            })
+        except ValueError as e:
+            errors.append({"id": lit_id_str, "reason": str(e)})
+        except Exception as e:
+            logger.error(f"[BatchExtract] 提交文献 {lit_id_str} 失败: {e}", exc_info=True)
+            errors.append({"id": lit_id_str, "reason": str(e)})
+
+    logger.info(
+        f"[BatchExtract] 批量提取提交完成: 提交{len(submitted)}篇, "
+        f"跳过{len(skipped)}篇, 失败{len(errors)}篇"
+    )
+
+    return ApiResponse(
+        message=f"批量提取提交完成：成功 {len(submitted)} 篇，跳过 {len(skipped)} 篇，失败 {len(errors)} 篇",
+        data={
+            "submitted": submitted,
+            "skipped": skipped,
+            "errors": errors,
+            "submitted_count": len(submitted),
+            "skipped_count": len(skipped),
+            "error_count": len(errors),
+        },
+    )
 
 
 @router.get("/literatures/{literature_id}/extraction/status", response_model=ApiResponse)

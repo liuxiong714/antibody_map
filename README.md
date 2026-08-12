@@ -12,13 +12,13 @@
 
 | 模块 | 功能 |
 |------|------|
-| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**文献列表/数据点导出 CSV**、**元数据批量同步**（从数据点自动聚合年份/省份） |
-| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取**、**上传/提取时可重新选定默认模型**；提取完成后可选显示**Token 用量、费用估算及使用的大模型** |
+| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**多格式导入导出**（CSV/Excel/JSON，JSON 含数据点可跨电脑迁移导入、支持仅导出选中文献）、**元数据批量同步**（从数据点自动聚合年份/省份） |
+| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取**、**上传/提取时可重新选定默认模型**、**批量AI提取**（多选文献后统一设置模型重新提取，自动跳过 processing 中的文献）；提取完成后可选显示**Token 用量、费用估算及使用的大模型** |
 | **精确字符溯源** | 每个数据点锚定到原文的精确字符区间（`source_char_start/end`），采用精确/模糊/关键短语三级匹配，未匹配自动降级置信度并红色高亮待审 |
 | **长文档分块并行提取** | 超过 2 万字符的文献按段落边界分块、并行调用 LLM 提取，结果自动合并去重 |
 | **强 Schema 约束** | LLM 输出经 JSON Schema 校验（省份枚举、阳性率 0-100% 范围、GMC 正值等），字段违规自动降级置信度 |
 | **数据审核与编辑** | 人工审核（通过/驳回）、行内编辑（疾病、地区、年龄段、数值、**原文依据、溯源字符区间**等字段）、**手动新增数据点**（提取失败时补录） |
-| **地图可视化** | 全国/省级/市级交互式抗体水平热力地图，点击省份钻取市级数据、**时间序列动画自动年份范围** |
+| **地图可视化** | 全国/省级/市级交互式抗体水平热力地图，点击省份钻取市级数据、**时间序列动画自动年份范围**、底部统计区分**已审核通过**（绿色）与**未审核**（橙色）两组数据点/覆盖省份/样本量 |
 | **数据分析** | 逐年趋势、区域对比、年龄分层、**免疫屏障评估**（复用 FOI 模块 R0/HIT 计算，新增年龄分层分析与省份对比矩阵，HIT 阈值优先级：FOI 估算>WHO 建议>文献 R0）、**数据覆盖度分析**、**多表单 Excel 数据导出**、**FOI 感染力分析**（催化模型 + R0 估算 + 群体免疫阈值 HIT，支持不选择疾病进行全量分析）、**疫苗效果 VE 分析**（已接种/未接种亚组拆分 + 保护率估算）、**接种率双轨分析**（NIP 参考表 + 血清阳性率反推隐含接种率） |
 | **报告生成** | LLM 生成抗体分析报告和疫苗接种策略研判报告，支持在线编辑和下载 |
 | **文件夹监控** | 定期监测指定文件夹，自动导入新文件并触发信息提取 |
@@ -27,7 +27,7 @@
 
 ### 支持的疾病
 
-麻疹、腮腺炎、风疹、百日咳、白喉、破伤风、乙肝、甲肝、脊髓灰质炎、流感、新冠、流行性脑脊髓膜炎、水痘、手足口病、轮状病毒（15 种疫苗可预防 / 重点传染病）
+麻疹、腮腺炎、风疹、百日咳、白喉、破伤风、乙肝（乙型病毒性肝炎）、甲肝、丙肝、丁肝（丁型肝炎/丁型病毒性肝炎）、戊肝、脊髓灰质炎、流感、新冠、流行性脑脊髓膜炎、水痘、手足口病、轮状病毒（疫苗可预防/重点传染病）；肾综合征出血热、登革热、寨卡病毒、黄热病毒、乙脑、马尔尼菲篮状菌、李斯特菌、弓形虫、疟疾、血吸虫、华支睾吸虫、蛔虫、钩虫、丝虫、包虫、囊虫（法定传染病和常见血清流行病学研究病种）。**疾病名称自动标准化**：麻腮风/MMR→麻疹、丁型病毒性肝炎→丁型肝炎、丙肝（丙型病毒性肝炎）→丙肝、戊型病毒性肝炎→戊肝、乙型脑炎→乙脑等，自动合并同一疾病的不同名称。
 
 ### 支持的文件格式
 
@@ -35,12 +35,13 @@ PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文
 
 ### 智能特性
 
-- **疾病名称标准化**：自动合并同一疾病的不同名称（如乙肝/乙型病毒性肝炎、甲肝/甲型病毒性肝炎、乙脑/流行性乙型脑炎）
+- **疾病名称标准化**：自动合并同一疾病的不同名称（如乙肝/乙型病毒性肝炎、甲肝/甲型病毒性肝炎、乙脑/流行性乙型脑炎、丙肝/丙型病毒性肝炎、戊肝/戊型病毒性肝炎、丁肝/丁型病毒性肝炎、麻腮风/MMR→麻疹、流行性出血热/汉坦病毒→肾综合征出血热等）；含 40+ 法定传染病及常见血清流行病学病种映射（登革热、寨卡、疟疾、血吸虫、包虫、囊虫等）；提供 `backend/scripts/normalize_diseases.py` 迁移脚本，一键规范化数据库中已有的历史非标准疾病名称
 - **文献重复检测**：基于 DOI、标题、作者、PDF 哈希等多维度自动检测重复文献
 - **文件夹自动监控**：配置本地文件夹后，系统自动监测新文件并导入提取
 - **扫描件 OCR 兜底**：文字层缺失或损坏的扫描 PDF 自动触发 Tesseract OCR（中文+英文），失败可回退云端 OCR
 - **交互式溯源查看**：点击数据点可查看原文上下文并高亮定位字符区间，方便人工核验 LLM 提取结果
 - **元数据自动聚合**：AI 提取完成后自动从数据点聚合文献的年份（取众数）和省份信息，同步到文献列表；支持批量同步历史文献的缺失元数据
+- **多格式导入导出与跨电脑迁移**：文献列表支持 CSV / Excel / JSON 三种格式导出；JSON 格式可完整包含数据点（含审核状态、estimate_type、溯源字段），在另一台电脑通过「导入文献」按钮一键导入，自动保留审核状态并在地图、分析模块中正常展示；支持仅导出选中的文献数据
 
 ## 技术栈
 
@@ -322,7 +323,8 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | POST | `/literatures/upload` | 上传文献（支持 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML） |
 | POST | `/literatures/from-url` | 从 URL 抓取 HTML 网页创建文献 |
 | GET | `/literatures` | 文献列表 (分页 + 关键词/疾病筛选) |
-| GET | `/literatures/export` | 导出文献列表 CSV（跟随当前筛选条件） |
+| GET | `/literatures/export` | 导出文献列表，支持 `format=csv/xlsx/json`、`include_data_points=true`（含数据点）、`literature_ids=id1,id2`（仅导出指定文献） |
+| POST | `/literatures/import` | 从 JSON 导出文件批量导入文献和数据点（支持跳过重复/更新已有） |
 | GET | `/literatures/{id}` | 文献详情 |
 | PUT | `/literatures/{id}` | 更新文献元信息 |
 | DELETE | `/literatures/{id}` | 删除文献 |
@@ -339,6 +341,7 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/literatures/{id}/extraction` | 触发 AI 数据提取 (可指定模型/API Key/Base URL) |
+| POST | `/literatures/extraction/batch` | 批量触发 AI 数据提取（多选文献、统一模型、自动跳过 processing 中的文献） |
 | GET | `/literatures/{id}/extraction/status` | 查询提取任务状态 |
 | GET | `/literatures/{id}/extraction` | 获取提取的数据点列表 |
 | GET | `/literatures/{id}/extraction/export` | 导出数据点 CSV |
@@ -355,7 +358,7 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 |------|------|------|
 | GET | `/map/province-data` | 省级抗体水平地图数据 |
 | GET | `/map/city-data` | 市级抗体水平数据 |
-| GET | `/map/summary` | 全国汇总统计 |
+| GET | `/map/summary` | 全国汇总统计（含已审核通过与未审核两组：`point_count/study_count/province_count/total_sample` 以及 `unapproved_point_count/unapproved_province_count/unapproved_total_sample`） |
 | GET | `/map/yearly-data` | 逐年地图数据（时间序列动画） |
 | GET | `/map/available-years` | 可用年份列表 |
 | GET | `/map/export-data-points` | 导出已审核数据点 CSV（跟随地图筛选条件） |
@@ -554,6 +557,39 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.6.4 (2026-08-12)
+
+#### 新功能
+
+- **地图总览底部统计区分已审核/未审核**：三个统计卡片（总数据点数、覆盖省份数、总样本量）主数字改为绿色「已审核通过」值，下方新增橙色「未审核」小字（含对应数量和样本量），0 时自动隐藏；筛选条件（疾病、年份、年龄等）改变时两组数字同步刷新。
+- **疾病名称统一化**：在 `term_normalizer.py` 新增 40+ 法定传染病及常见血清流行病学病种的映射，覆盖「麻腮风/MMR → 麻疹」「丁型病毒性肝炎 → 丁型肝炎」「流行性出血热/汉坦病毒 → 肾综合征出血热」「登革热/登革病毒/DEN → 登革热」「寨卡/Zika → 寨卡病毒」「马尔尼菲青霉菌 → 马尔尼菲篮状菌」以及乙肝/丙肝/戊肝/乙脑/疟疾/血吸虫/包虫/囊虫/丝虫/华支睾吸虫/蛔虫/钩虫等常见别名；提供 `backend/scripts/normalize_diseases.py` 迁移脚本一键规范化数据库历史数据。
+
+#### 新增接口
+
+- `GET /map/summary` 新增未审核字段：`unapproved_point_count`、`unapproved_province_count`、`unapproved_study_count`、`unapproved_total_sample`（跟随 disease / data_type 筛选参数）
+
+#### 新增脚本
+
+- `backend/scripts/normalize_diseases.py`：遍历 `data_points` 表所有疾病名称并通过 `normalize_disease()` 规范化，自动打印变更前后对照和影响行数，幂等可重复执行。
+
+### v1.6.3 (2026-08-12)
+
+#### 新功能
+
+- **失败文献批量AI重新提取**：文献列表新增多选（复选框），工具栏新增「批量AI提取」按钮，多选失败/待提取的文献后可统一选择模型进行批量重新提取；对话框顶部显示已选数量，并对正在 `processing` 中的文献自动跳过避免重复提交。
+- **多格式文献导出**：原有「导出 CSV」扩展为下拉菜单，支持 7 种导出选项：导出全部 CSV / Excel（仅文献元信息）、导出全部 JSON / Excel（含数据点）、导出选中 CSV / JSON / Excel（含数据点，未选中时禁用）。JSON 格式包含 `export_version`、时间戳、文献数、数据点数等头信息，便于版本化管理。
+- **文献+数据点跨电脑导入**：新增「导入文献」按钮，上传 `导出 JSON（含数据点）` 生成的 `.json` 文件，系统会自动创建文献记录及其所有数据点，完整保留 `review_status`（approved/pending）、`estimate_type`（primary/subgroup）、置信度、溯源字符区间等关键字段；支持「跳过重复」开关（按 DOI / 标题匹配，可切换为更新已有记录）。导入后，审核通过的数据点自动在地图热力图、时间序列动画、FOI/VE 分析、免疫屏障评估等所有模块中正常展示，满足本地审核后迁移到新笔记本的需求。
+
+#### 新增接口
+
+- `GET /literatures/export` 新增参数：`format`（csv/xlsx/json）、`include_data_points`（bool）、`literature_ids`（逗号分隔UUID，仅导出指定文献）
+- `POST /literatures/import`：JSON 文件上传 + 数据点批量导入，返回 imported_count / skipped_count / data_point_count / errors
+- `POST /literatures/extraction/batch`：批量触发AI提取，返回 submitted / skipped / errors 明细
+
+#### 测试
+
+- 新增 `tests/test_export_import.py` 测试套件，6项测试全部通过：JSON结构验证、27字段数据点字段映射、默认值处理、2篇文献+5个数据点 round-trip（麻疹2approved+1pending、腮腺炎2approved）、地图/分析模块兼容性（`approved + primary` 筛选）、重复检测逻辑。
 
 ### v1.6.2 (2026-08-06)
 

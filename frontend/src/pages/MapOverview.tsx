@@ -6,7 +6,7 @@ import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import MapSelector from '../components/MapSelector';
 import { useFilterStore } from '../store';
-import { getProvinceData, getYearlyProvinceData, getAvailableYears, getCityData, getPopulationOptions } from '../services/map';
+import { getProvinceData, getYearlyProvinceData, getAvailableYears, getCityData, getPopulationOptions, getSummary } from '../services/map';
 import { MapDataPoint, YearlyMapData } from '../types';
 import { SERO_COLOR_STOPS, GMC_COLOR_STOPS, GENDER_OPTIONS, PROVINCE_GEOJSON_NAME, DISEASES } from '../utils/constants';
 
@@ -53,6 +53,16 @@ const MapOverview: React.FC = () => {
   // 动态人群（职业）选项——根据文献中实际定义的研究对象自动更新
   const [populationOptions, setPopulationOptions] = useState<string[]>([]);
 
+  // 汇总统计（含已审核/未审核区分）
+  const [summaryData, setSummaryData] = useState<{
+    point_count: number;
+    province_count: number;
+    total_sample: number;
+    unapproved_point_count: number;
+    unapproved_province_count: number;
+    unapproved_total_sample: number;
+  } | null>(null);
+
   // Load GeoJSON — register map synchronously BEFORE triggering render
   useEffect(() => {
     fetch('/china.json')
@@ -88,6 +98,12 @@ const MapOverview: React.FC = () => {
       if (occupation.length > 0) params.occupation = occupation.join(',');
       const resp = await getProvinceData(params);
       setMapData(Array.isArray(resp) ? resp : []);
+
+      // 同时获取汇总统计（含已审核/未审核区分）
+      const summaryParams: Record<string, unknown> = {};
+      if (disease) summaryParams.disease = disease;
+      if (dataType) summaryParams.data_type = dataType;
+      getSummary(summaryParams).then(setSummaryData).catch(() => {});
     } catch {
       message.error('数据加载失败');
     } finally {
@@ -952,13 +968,47 @@ const MapOverview: React.FC = () => {
 
       <Row gutter={16} style={{ marginTop: 16 }}>
         <Col span={8}>
-          <Card><Statistic title="总数据点数" value={totalPoints} /></Card>
+          <Card>
+            <Statistic
+              title="总数据点数"
+              value={summaryData?.point_count ?? totalPoints}
+              valueStyle={{ color: '#52c41a' }}
+            />
+            {summaryData && summaryData.unapproved_point_count > 0 && (
+              <div style={{ fontSize: 13, color: '#fa8c16', marginTop: 4 }}>
+                未审核：{summaryData.unapproved_point_count}
+              </div>
+            )}
+          </Card>
         </Col>
         <Col span={8}>
-          <Card><Statistic title="覆盖省份数" value={totalProvinces} /></Card>
+          <Card>
+            <Statistic
+              title="覆盖省份数"
+              value={summaryData?.province_count ?? totalProvinces}
+              valueStyle={{ color: '#52c41a' }}
+            />
+            {summaryData && summaryData.unapproved_province_count > 0 && (
+              <div style={{ fontSize: 13, color: '#fa8c16', marginTop: 4 }}>
+                未审核覆盖：{summaryData.unapproved_province_count}
+              </div>
+            )}
+          </Card>
         </Col>
         <Col span={8}>
-          <Card><Statistic title="总样本量" value={totalSample} formatter={(v) => (v as number).toLocaleString()} /></Card>
+          <Card>
+            <Statistic
+              title="总样本量"
+              value={summaryData?.total_sample ?? totalSample}
+              formatter={(v) => Number(v).toLocaleString()}
+              valueStyle={{ color: '#52c41a' }}
+            />
+            {summaryData && summaryData.unapproved_total_sample > 0 && (
+              <div style={{ fontSize: 13, color: '#fa8c16', marginTop: 4 }}>
+                未审核：{summaryData.unapproved_total_sample.toLocaleString()}
+              </div>
+            )}
+          </Card>
         </Col>
       </Row>
 

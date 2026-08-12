@@ -588,46 +588,71 @@ async def get_summary(
     disease: Optional[str] = None,
     data_type: Optional[str] = None,
 ) -> dict:
-    """get national summary (P1-1: primary estimates by default)"""
-    base = select(DataPoint).where(
+    """get national summary (P1-1: primary estimates by default)
+
+    返回已审核 (approved + primary) 和未审核 (非 approved 或非 primary) 两组统计。
+    """
+    # ---- 已审核数据（approved + primary）----
+    base_approved = select(DataPoint).where(
         DataPoint.review_status == "approved",
         DataPoint.estimate_type == "primary",
     )
+    # ---- 全部数据（含未审核）----
+    base_all = select(DataPoint)
+
     if disease:
-        base = base.where(DataPoint.disease == disease)
+        base_approved = base_approved.where(DataPoint.disease == disease)
+        base_all = base_all.where(DataPoint.disease == disease)
     if data_type:
-        base = base.where(DataPoint.data_type == data_type)
+        base_approved = base_approved.where(DataPoint.data_type == data_type)
+        base_all = base_all.where(DataPoint.data_type == data_type)
 
-    result = await db.execute(base)
-    rows = result.scalars().all()
+    result_approved = await db.execute(base_approved)
+    rows_approved = result_approved.scalars().all()
 
-    if not rows:
+    result_all = await db.execute(base_all)
+    rows_all = result_all.scalars().all()
+
+    # 未审核 = 全部 - 已审核
+    approved_ids = {dp.id for dp in rows_approved}
+    rows_unapproved = [dp for dp in rows_all if dp.id not in approved_ids]
+
+    def _aggregate(rows: list[DataPoint]) -> dict:
+        if not rows:
+            return {"province_count": 0, "point_count": 0, "study_count": 0, "total_sample": 0}
+        provinces = set()
+        lit_ids = set()
+        for dp in rows:
+            for p in (dp.province or "").split(";"):
+                p = p.strip()
+                if p:
+                    provinces.add(p)
+            if dp.literature_id:
+                lit_ids.add(str(dp.literature_id))
+        _, total_sample = _calc_weighted_rate(rows, data_type)
         return {
-            "province_count": 0,
-            "point_count": 0,
-            "study_count": 0,
-            "total_sample": 0,
-            "national_weighted_rate": None,
+            "province_count": len(provinces),
+            "point_count": len(rows),
+            "study_count": len(lit_ids),
+            "total_sample": total_sample,
         }
 
-    provinces = set()
-    lit_ids = set()
-    for dp in rows:
-        for p in (dp.province or "").split(";"):
-            p = p.strip()
-            if p:
-                provinces.add(p)
-        if dp.literature_id:
-            lit_ids.add(str(dp.literature_id))
+    approved_stats = _aggregate(rows_approved)
+    unapproved_stats = _aggregate(rows_unapproved)
 
-    national_rate, total_sample = _calc_weighted_rate(rows, data_type)
+    national_rate, total_sample = _calc_weighted_rate(rows_approved, data_type)
 
     return {
-        "province_count": len(provinces),
-        "point_count": len(rows),
-        "study_count": len(lit_ids),
+        "province_count": approved_stats["province_count"],
+        "point_count": approved_stats["point_count"],
+        "study_count": approved_stats["study_count"],
         "total_sample": total_sample,
         "national_weighted_rate": national_rate,
+        # 未审核统计
+        "unapproved_province_count": unapproved_stats["province_count"],
+        "unapproved_point_count": unapproved_stats["point_count"],
+        "unapproved_study_count": unapproved_stats["study_count"],
+        "unapproved_total_sample": unapproved_stats["total_sample"],
     }
 
 

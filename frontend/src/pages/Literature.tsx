@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox,
+  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Dropdown, Switch,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FileExcelOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import DiseaseSelector from '../components/DiseaseSelector';
@@ -10,7 +10,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch } from '../services/literature';
+import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
 import { formatAuthors, truncate } from '../utils/format';
@@ -121,6 +121,11 @@ const LiteraturePage: React.FC = () => {
   const [saveAsDefault, setSaveAsDefault] = useState(false);
   // 当前已保存的默认模型（用于显示提示）
   const [savedDefault, setSavedDefault] = useState<SavedModelConfig | null>(() => loadSavedDefaultModel());
+  // 批量提取模式
+  const [batchExtractMode, setBatchExtractMode] = useState(false);
+  // 表格多选
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [selectedRows, setSelectedRows] = useState<Literature[]>([]);
 
   // PDF 预览
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -141,6 +146,12 @@ const LiteraturePage: React.FC = () => {
   const [urlTitle, setUrlTitle] = useState('');
   const [urlProvince, setUrlProvince] = useState('');
   const [urlImporting, setUrlImporting] = useState(false);
+
+  // 文件导入
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importSkipDuplicates, setImportSkipDuplicates] = useState(true);
+  const [importing, setImporting] = useState(false);
 
   const fetchList = useCallback(async () => {
     setLoading(true);
@@ -325,7 +336,36 @@ const LiteraturePage: React.FC = () => {
     fetchList();
   };
 
+  const handleImport = async () => {
+    if (!importFile) { message.warning('请选择要导入的 JSON 文件'); return; }
+    setImporting(true);
+    try {
+      const result = await importLiteratures(importFile, importSkipDuplicates);
+      const parts: string[] = [];
+      if (result.imported_count > 0) parts.push(`导入 ${result.imported_count} 篇文献`);
+      if (result.data_point_count > 0) parts.push(`${result.data_point_count} 个数据点`);
+      if (result.skipped_count > 0) parts.push(`跳过 ${result.skipped_count} 篇重复`);
+      if (result.error_count > 0) parts.push(`失败 ${result.error_count} 条`);
+      if (result.imported_count > 0) {
+        message.success(`导入完成：${parts.join('，')}`);
+      } else if (result.skipped_count > 0) {
+        message.info(`所有文献均已存在，跳过 ${result.skipped_count} 篇`);
+      } else {
+        message.warning(`导入未成功：${parts.join('，')}`);
+      }
+      setImportModalOpen(false);
+      setImportFile(null);
+      fetchList();
+    } catch (err) {
+      console.error('[Literature] 导入失败:', err);
+      message.error('导入失败，请检查文件格式是否正确');
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const handleExtract = (id: string) => {
+    setBatchExtractMode(false);
     setExtractLitId(id);
     // 预填充已保存的默认模型
     const saved = loadSavedDefaultModel();
@@ -344,8 +384,31 @@ const LiteraturePage: React.FC = () => {
     setExtractModalOpen(true);
   };
 
+  const handleBatchExtract = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要重新提取的文献');
+      return;
+    }
+    setBatchExtractMode(true);
+    setExtractLitId(null);
+    // 预填充已保存的默认模型
+    const saved = loadSavedDefaultModel();
+    if (saved && saved.model) {
+      setExtractModel(saved.model);
+      const vendor = MODEL_OPTIONS.find((o) => o.value === saved.model)?.vendor || '';
+      setExtractBaseUrl(saved.baseUrl || VENDOR_INFO[vendor]?.defaultBaseUrl || '');
+      setExtractApiKey(saved.apiKey || '');
+      setExtractCustomModel(saved.customModel || '');
+    } else {
+      setExtractModel(undefined);
+      setExtractApiKey('');
+      setExtractBaseUrl('');
+      setExtractCustomModel('');
+    }
+    setExtractModalOpen(true);
+  };
+
   const confirmExtract = async () => {
-    if (!extractLitId) return;
     setExtracting(true);
     try {
       let model = extractModel;
@@ -374,25 +437,47 @@ const LiteraturePage: React.FC = () => {
         message.info(`已将「${MODEL_OPTIONS.find((o) => o.value === extractModel)?.label || '自定义模型'}」设为默认模型`);
       }
 
-      if (model && model !== '') {
-        await triggerExtraction(extractLitId, {
-          model,
-          apiKey: extractApiKey || undefined,
-          baseUrl: extractBaseUrl || undefined,
-        });
-      } else {
-        await triggerExtraction(extractLitId);
-      }
       const modelLabel = MODEL_OPTIONS.find((o) => o.value === extractModel)?.label
         || (extractCustomModel ? `Ollama:${extractCustomModel}` : '默认模型');
-      message.success(`已使用 ${modelLabel} 启动 AI 提取`);
+      const options = (model && model !== '') ? {
+        model,
+        apiKey: extractApiKey || undefined,
+        baseUrl: extractBaseUrl || undefined,
+      } : undefined;
+
+      if (batchExtractMode) {
+        // 批量提取模式
+        const ids = selectedRowKeys.map((k) => String(k));
+        const result = await triggerBatchExtraction(ids, options);
+        const parts: string[] = [];
+        if (result.submitted_count > 0) parts.push(`成功提交 ${result.submitted_count} 篇`);
+        if (result.skipped_count > 0) parts.push(`跳过 ${result.skipped_count} 篇`);
+        if (result.error_count > 0) parts.push(`失败 ${result.error_count} 篇`);
+        if (result.submitted_count > 0) {
+          message.success(`批量提取已使用 ${modelLabel} 启动：${parts.join('，')}`);
+        } else {
+          message.warning(`批量提取未提交任何文献：${parts.join('，')}`);
+        }
+      } else {
+        // 单篇提取模式
+        if (!extractLitId) return;
+        if (options) {
+          await triggerExtraction(extractLitId, options);
+        } else {
+          await triggerExtraction(extractLitId);
+        }
+        message.success(`已使用 ${modelLabel} 启动 AI 提取`);
+      }
+
       setExtractModalOpen(false);
       setExtractCustomModel('');
       setSaveAsDefault(false);
+      setSelectedRowKeys([]);
+      setSelectedRows([]);
       fetchList();
     } catch (err) {
       console.error('[Literature] 提取失败:', err);
-      message.error('提取失败，请检查后端服务是否正常');
+      message.error(batchExtractMode ? '批量提取失败，请检查后端服务是否正常' : '提取失败，请检查后端服务是否正常');
     } finally {
       setExtracting(false);
     }
@@ -704,6 +789,13 @@ const LiteraturePage: React.FC = () => {
           <Button icon={<CopyOutlined />} onClick={() => setScanOpen(true)}>
             扫描重复
           </Button>
+          <Button
+            icon={<ExperimentOutlined />}
+            onClick={handleBatchExtract}
+            disabled={selectedRowKeys.length === 0}
+          >
+            批量AI提取 {selectedRowKeys.length > 0 ? `(${selectedRowKeys.length})` : ''}
+          </Button>
           <Popconfirm
             title="批量同步元数据"
             description="将所有提取完成但缺少年份/省份的文献，从数据点自动聚合元数据。确定继续？"
@@ -714,18 +806,50 @@ const LiteraturePage: React.FC = () => {
               批量同步元数据
             </Button>
           </Popconfirm>
-          <Button icon={<ExportOutlined />} onClick={() => {
-            const params = new URLSearchParams();
-            if (keyword) params.set('keyword', keyword);
-            if (disease) params.set('disease', disease);
-            if (province) params.set('province', province);
-            if (yearStart) params.set('year_start', String(yearStart));
-            if (yearEnd) params.set('year_end', String(yearEnd));
-            if (journal) params.set('journal', journal);
-            if (reviewStatus) params.set('review_status', reviewStatus);
-            window.open(`/api/v1/literatures/export?${params.toString()}`);
+          <Dropdown menu={{
+            items: [
+              { key: 'all_csv', icon: <FileTextOutlined />, label: '导出全部 CSV（仅文献信息）' },
+              { key: 'all_xlsx', icon: <FileExcelOutlined />, label: '导出全部 Excel（仅文献信息）' },
+              { type: 'divider' },
+              { key: 'all_json_dp', icon: <TableOutlined />, label: '导出全部 JSON（含数据点，可导入）' },
+              { key: 'all_xlsx_dp', icon: <FileExcelOutlined />, label: '导出全部 Excel（含数据点）' },
+              { type: 'divider' },
+              { key: 'sel_json_dp', icon: <TableOutlined />, label: `导出选中 JSON（含数据点）${selectedRowKeys.length > 0 ? ` (${selectedRowKeys.length}篇)` : ''}`, disabled: selectedRowKeys.length === 0 },
+              { key: 'sel_xlsx_dp', icon: <FileExcelOutlined />, label: `导出选中 Excel（含数据点）${selectedRowKeys.length > 0 ? ` (${selectedRowKeys.length}篇)` : ''}`, disabled: selectedRowKeys.length === 0 },
+              { key: 'sel_csv', icon: <FileTextOutlined />, label: `导出选中 CSV${selectedRowKeys.length > 0 ? ` (${selectedRowKeys.length}篇)` : ''}`, disabled: selectedRowKeys.length === 0 },
+            ],
+            onClick: ({ key }) => {
+              const idsParam = selectedRowKeys.map((k) => String(k)).join(',');
+              const buildUrl = (extra: Record<string, string>) => {
+                const params = new URLSearchParams(extra);
+                if (keyword) params.set('keyword', keyword);
+                if (disease) params.set('disease', disease);
+                if (province) params.set('province', province);
+                if (yearStart) params.set('year_start', String(yearStart));
+                if (yearEnd) params.set('year_end', String(yearEnd));
+                if (journal) params.set('journal', journal);
+                if (reviewStatus) params.set('review_status', reviewStatus);
+                return params;
+              };
+              const urls: Record<string, string> = {
+                all_csv: buildUrl({}).toString(),
+                all_xlsx: buildUrl({ format: 'xlsx' }).toString(),
+                all_json_dp: buildUrl({ format: 'json', include_data_points: 'true' }).toString(),
+                all_xlsx_dp: buildUrl({ format: 'xlsx', include_data_points: 'true' }).toString(),
+                sel_csv: buildUrl({ literature_ids: idsParam }).toString(),
+                sel_json_dp: buildUrl({ format: 'json', include_data_points: 'true', literature_ids: idsParam }).toString(),
+                sel_xlsx_dp: buildUrl({ format: 'xlsx', include_data_points: 'true', literature_ids: idsParam }).toString(),
+              };
+              const url = urls[key];
+              if (url) window.open(`/api/v1/literatures/export?${url}`);
+            },
           }}>
-            导出 CSV
+            <Button icon={<ExportOutlined />}>
+              导出文献 <ExportOutlined />
+            </Button>
+          </Dropdown>
+          <Button icon={<ImportOutlined />} onClick={() => { setImportFile(null); setImportSkipDuplicates(true); setImportModalOpen(true); }}>
+            导入文献
           </Button>
         </Space>
       </Card>
@@ -737,13 +861,21 @@ const LiteraturePage: React.FC = () => {
           columns={columns}
           loading={loading}
           onChange={handleTableChange}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (keys, rows) => {
+              setSelectedRowKeys(keys);
+              setSelectedRows(rows as Literature[]);
+            },
+            preserveSelectedRowKeys: true,
+          }}
           pagination={{
             current: page,
             total: loading ? items.length : total,
             pageSize,
             pageSizeOptions: [10, 20, 50, 100],
             showSizeChanger: true,
-            showTotal: (t) => `共 ${t} 条`,
+            showTotal: (t) => `共 ${t} 条${selectedRowKeys.length > 0 ? `，已选 ${selectedRowKeys.length} 条` : ''}`,
           }}
           scroll={{ x: 1100 }}
           size="middle"
@@ -935,15 +1067,80 @@ const LiteraturePage: React.FC = () => {
         </Space>
       </Modal>
 
+      {/* 文件导入对话框 */}
       <Modal
-        title={<><RobotOutlined /> 选择提取模型</>}
+        title={<><ImportOutlined /> 导入文献及数据点</>}
+        open={importModalOpen}
+        onCancel={() => { setImportModalOpen(false); setImportFile(null); }}
+        onOk={handleImport}
+        confirmLoading={importing}
+        okText="开始导入"
+        okButtonProps={{ disabled: !importFile }}
+        width={520}
+      >
+        <div style={{ marginBottom: 12, color: '#888' }}>
+          从 JSON 导出文件导入文献及数据点。导入后数据点保留原有审核状态，可在地图、分析等模块中正常展示。
+          <br />
+          请使用「导出文献 → 导出 JSON（含数据点）」生成的文件。
+        </div>
+        <Upload
+          beforeUpload={(file) => {
+            if (!file.name.toLowerCase().endsWith('.json')) {
+              message.error('请上传 JSON 格式文件');
+              return Upload.LIST_IGNORE;
+            }
+            setImportFile(file);
+            return false;
+          }}
+          accept=".json"
+          maxCount={1}
+          onRemove={() => setImportFile(null)}
+          fileList={importFile ? [{ uid: '-1', name: importFile.name, status: 'done' }] : []}
+        >
+          <Button icon={<UploadOutlined />}>选择 JSON 文件</Button>
+        </Upload>
+        {importFile && (
+          <div style={{ marginTop: 12, padding: '8px 12px', background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 6 }}>
+            <Text style={{ fontSize: 13 }}>
+              已选择文件：{importFile.name}（{(importFile.size / 1024).toFixed(1)} KB）
+            </Text>
+          </div>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+          <Switch checked={importSkipDuplicates} onChange={setImportSkipDuplicates} size="small" />
+          <Text style={{ fontSize: 13 }}>
+            {importSkipDuplicates ? '跳过重复文献（按 DOI/标题匹配）' : '更新已有文献的数据'}
+          </Text>
+        </div>
+      </Modal>
+
+      <Modal
+        title={batchExtractMode ? (<><RobotOutlined /> 批量选择提取模型</>) : (<><RobotOutlined /> 选择提取模型</>)}
         open={extractModalOpen}
         onCancel={() => setExtractModalOpen(false)}
         onOk={confirmExtract}
         confirmLoading={extracting}
-        okText="开始提取"
+        okText={batchExtractMode ? '开始批量提取' : '开始提取'}
         width={560}
       >
+        {batchExtractMode && (
+          <div style={{
+            marginBottom: 12,
+            padding: '10px 12px',
+            background: '#e6f4ff',
+            border: '1px solid #91caff',
+            borderRadius: 6,
+          }}>
+            <Text strong style={{ color: '#1677ff' }}>
+              已选择 {selectedRowKeys.length} 篇文献进行批量重新提取
+            </Text>
+            {selectedRows.filter((r) => r.extraction_status === 'processing').length > 0 && (
+              <div style={{ fontSize: 12, color: '#d46b08', marginTop: 4 }}>
+                提示：正在提取中的文献将被自动跳过
+              </div>
+            )}
+          </div>
+        )}
         <p style={{ marginBottom: 12, color: '#888' }}>
           选择用于 AI 数据提取的大语言模型。<strong>默认配置</strong>使用后端 .env 中 LLM_MODEL 设定的模型（当前为 DeepSeek Chat 远程 API）。
           本地 Ollama 模型无需 API Key，但需先在本地运行 <code>ollama serve</code>。

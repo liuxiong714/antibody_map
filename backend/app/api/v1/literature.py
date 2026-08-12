@@ -1,7 +1,9 @@
 import csv
 import io
+import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -10,10 +12,13 @@ logger = logging.getLogger("uvicorn")
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
 from app.config import settings
+from app.models.data_point import DataPoint
+from app.models.literature import Literature
 from app.schemas.common import ApiResponse, PagedResponse
 from app.schemas.literature import (
     LiteratureCreate, LiteratureResponse, LiteratureUpdate,
@@ -179,32 +184,357 @@ async def export_literatures(
     year_end: Optional[int] = Query(None, description="结束年份"),
     journal: Optional[str] = Query(None, description="期刊名称"),
     review_status: Optional[str] = Query(None, description="审核状态: none, pending, partial, approved"),
+    format: str = Query("csv", description="导出格式: csv, xlsx, json"),
+    include_data_points: bool = Query(False, description="是否包含数据点（JSON/Excel有效）"),
+    literature_ids: Optional[str] = Query(None, description="逗号分隔的文献ID列表，指定时仅导出这些文献"),
     db: AsyncSession = Depends(get_db),
 ):
-    """导出文献列表为 CSV"""
-    items, _ = await list_literature(
-        db, keyword, disease, province, year_start, year_end, journal,
-        sort_by=None, sort_order=None, review_status=review_status,
-        page=1, page_size=10000,
+    """导出文献列表，支持 CSV / Excel / JSON 格式，可选包含数据点
+
+    当 literature_ids 参数提供时，仅导出指定的文献及其数据点（忽略筛选条件）。
+    """
+    if literature_ids:
+        # 按指定 ID 查询
+        ids = [uuid.UUID(s.strip()) for s in literature_ids.split(",") if s.strip()]
+        result = await db.execute(
+            select(Literature).where(Literature.id.in_(ids))
+        )
+        items = list(result.scalars().all())
+    else:
+        items, _ = await list_literature(
+            db, keyword, disease, province, year_start, year_end, journal,
+            sort_by=None, sort_order=None, review_status=review_status,
+            page=1, page_size=10000,
+        )
+
+    # ── CSV 格式（仅文献元信息）──
+    if format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            "标题", "英文标题", "作者", "期刊", "出版年份", "DOI", "PMID",
+            "省份", "提取状态", "审核通过数", "数据点总数", "创建时间",
+        ])
+        for lit in items:
+            writer.writerow([
+                lit.title, lit.title_en, lit.authors, lit.journal, lit.pub_year,
+                lit.doi, lit.pmid, lit.province, lit.extraction_status,
+                lit.approved_count, lit.extracted_count, lit.created_at,
+            ])
+
+        return Response(
+            content=output.getvalue().encode("utf-8-sig"),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": "attachment; filename*=UTF-8''literatures.csv"},
+        )
+
+    # ── JSON 格式（可含数据点，用于 round-trip 导入）──
+    if format == "json":
+        # 如果需要数据点，批量查询
+        dp_map: dict[str, list] = {}
+        if include_data_points:
+            lit_ids = [lit.id for lit in items]
+            if lit_ids:
+                dp_result = await db.execute(
+                    select(DataPoint).where(DataPoint.literature_id.in_(lit_ids))
+                    .order_by(DataPoint.created_at)
+                )
+                for dp in dp_result.scalars().all():
+                    dp_map.setdefault(str(dp.literature_id), []).append({
+                        "disease": dp.disease,
+                        "region": dp.region,
+                        "province": dp.province,
+                        "city": dp.city,
+                        "latitude": float(dp.latitude) if dp.latitude else None,
+                        "longitude": float(dp.longitude) if dp.longitude else None,
+                        "age_group": dp.age_group,
+                        "age_min": dp.age_min,
+                        "age_max": dp.age_max,
+                        "sample_size": dp.sample_size,
+                        "data_type": dp.data_type,
+                        "value": float(dp.value) if dp.value is not None else None,
+                        "unit": dp.unit,
+                        "ci_lower": float(dp.ci_lower) if dp.ci_lower else None,
+                        "ci_upper": float(dp.ci_upper) if dp.ci_upper else None,
+                        "method": dp.method,
+                        "assay": dp.assay,
+                        "population": dp.population,
+                        "collection_year": dp.collection_year,
+                        "source_page": dp.source_page,
+                        "source_context": dp.source_context,
+                        "source_char_start": dp.source_char_start,
+                        "source_char_end": dp.source_char_end,
+                        "is_grounded": bool(dp.is_grounded) if dp.is_grounded else False,
+                        "estimate_type": dp.estimate_type or "primary",
+                        "confidence": dp.confidence or "medium",
+                        "review_status": dp.review_status or "pending",
+                    })
+
+        literatures_json = []
+        for lit in items:
+            entry = {
+                "title": lit.title,
+                "title_en": lit.title_en,
+                "authors": lit.authors,
+                "journal": lit.journal,
+                "pub_year": lit.pub_year,
+                "doi": lit.doi,
+                "pmid": lit.pmid,
+                "abstract": lit.abstract,
+                "keywords": lit.keywords if lit.keywords else [],
+                "region": lit.region,
+                "province": lit.province,
+                "publication_types": lit.publication_types if lit.publication_types else [],
+                "source_db": lit.source_db,
+                "extraction_status": lit.extraction_status or "pending",
+                "extracted_count": lit.extracted_count or 0,
+                "approved_count": lit.approved_count or 0,
+            }
+            if include_data_points:
+                entry["data_points"] = dp_map.get(str(lit.id), [])
+            literatures_json.append(entry)
+
+        export_data = {
+            "export_version": "1.0",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "include_data_points": include_data_points,
+            "literature_count": len(literatures_json),
+            "data_point_count": sum(len(dps) for dps in dp_map.values()) if include_data_points else 0,
+            "literatures": literatures_json,
+        }
+
+        content = json.dumps(export_data, ensure_ascii=False, indent=2, default=str)
+        return Response(
+            content=content.encode("utf-8"),
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": "attachment; filename*=UTF-8''literatures_export.json"},
+        )
+
+    # ── Excel 格式（两个 sheet：文献 + 数据点）──
+    if format == "xlsx":
+        from openpyxl import Workbook
+
+        wb = Workbook()
+
+        # Sheet 1: 文献列表
+        ws1 = wb.active
+        ws1.title = "文献列表"
+        ws1.append([
+            "标题", "英文标题", "作者", "期刊", "出版年份", "DOI", "PMID",
+            "省份", "提取状态", "审核通过数", "数据点总数", "创建时间",
+        ])
+        for lit in items:
+            ws1.append([
+                lit.title, lit.title_en, lit.authors, lit.journal, lit.pub_year,
+                lit.doi, lit.pmid, lit.province, lit.extraction_status,
+                lit.approved_count, lit.extracted_count,
+                lit.created_at.strftime("%Y-%m-%d %H:%M") if lit.created_at else "",
+            ])
+
+        # Sheet 2: 数据点（如果请求包含）
+        if include_data_points:
+            ws2 = wb.create_sheet("数据点")
+            ws2.append([
+                "文献标题", "疾病", "省份", "城市", "数据类型", "数值", "单位",
+                "CI下限", "CI上限", "样本量", "年龄下限", "年龄上限", "采集年份",
+                "人群", "检测方法", "assay", "置信度", "审核状态", "估计类型",
+            ])
+            lit_ids = [lit.id for lit in items]
+            if lit_ids:
+                dp_result = await db.execute(
+                    select(DataPoint).where(DataPoint.literature_id.in_(lit_ids))
+                    .order_by(DataPoint.created_at)
+                )
+                # 构建标题查找表
+                title_map = {str(lit.id): lit.title for lit in items}
+                for dp in dp_result.scalars().all():
+                    ws2.append([
+                        title_map.get(str(dp.literature_id), ""),
+                        dp.disease, dp.province, dp.city, dp.data_type,
+                        float(dp.value) if dp.value is not None else None,
+                        dp.unit,
+                        float(dp.ci_lower) if dp.ci_lower else None,
+                        float(dp.ci_upper) if dp.ci_upper else None,
+                        dp.sample_size, dp.age_min, dp.age_max,
+                        dp.collection_year, dp.population, dp.method, dp.assay,
+                        dp.confidence, dp.review_status, dp.estimate_type,
+                    ])
+
+        output = io.BytesIO()
+        wb.save(output)
+        return Response(
+            content=output.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename*=UTF-8''literatures_export.xlsx"},
+        )
+
+    raise HTTPException(status_code=400, detail=f"不支持的导出格式: {format}")
+
+
+@router.post("/literatures/import", response_model=ApiResponse)
+async def import_literatures(
+    file: UploadFile = File(..., description="导入文件（JSON 格式）"),
+    skip_duplicates: bool = Form(True, description="跳过重复文献"),
+    db: AsyncSession = Depends(get_db),
+):
+    """导入文献及数据点（从 JSON 导出文件）
+
+    支持从 export?format=json&include_data_points=true 导出的 JSON 文件导入。
+    会自动检测重复文献（按 DOI/标题匹配），可选择跳过或创建。
+    导入的文献和数据点会保留原有的审核状态，确保在地图、分析等模块正常展示。
+    """
+    if not file.filename or not file.filename.lower().endswith(".json"):
+        raise HTTPException(status_code=400, detail="请上传 JSON 格式的导入文件")
+
+    try:
+        content = await file.read()
+        data = json.loads(content.decode("utf-8"))
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"JSON 解析失败: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"文件读取失败: {e}")
+
+    literatures = data.get("literatures", [])
+    if not literatures:
+        raise HTTPException(status_code=400, detail="文件中未找到文献数据")
+
+    imported_count = 0
+    skipped_count = 0
+    dp_imported_count = 0
+    errors: list[dict] = []
+    imported_titles: list[str] = []
+
+    for idx, lit_data in enumerate(literatures):
+        try:
+            title = lit_data.get("title", "").strip()
+            if not title:
+                errors.append({"index": idx, "reason": "标题为空"})
+                continue
+
+            doi = lit_data.get("doi") or None
+            if doi:
+                doi = doi.strip() or None
+
+            # 重复检测
+            existing = None
+            if doi:
+                result = await db.execute(
+                    select(Literature).where(Literature.doi == doi)
+                )
+                existing = result.scalar_one_or_none()
+
+            if not existing:
+                result = await db.execute(
+                    select(Literature).where(Literature.title == title)
+                )
+                existing = result.scalar_one_or_none()
+
+            if existing:
+                if skip_duplicates:
+                    skipped_count += 1
+                    logger.info(f"[Import] 跳过重复文献: title={title}")
+                    continue
+                # 不跳过则更新已有记录的元数据
+                existing.pub_year = lit_data.get("pub_year") or existing.pub_year
+                existing.province = lit_data.get("province") or existing.province
+                existing.journal = lit_data.get("journal") or existing.journal
+                existing.authors = lit_data.get("authors") or existing.authors
+                existing.abstract = lit_data.get("abstract") or existing.abstract
+                existing.extraction_status = lit_data.get("extraction_status") or existing.extraction_status
+                existing.extracted_count = lit_data.get("extracted_count") or existing.extracted_count
+                existing.approved_count = lit_data.get("approved_count") or existing.approved_count
+                existing.updated_at = datetime.now(timezone.utc)
+                await db.flush()
+                lit_id = existing.id
+                imported_count += 1
+                imported_titles.append(title)
+            else:
+                # 创建新文献记录
+                literature = Literature(
+                    title=title,
+                    title_en=lit_data.get("title_en"),
+                    authors=lit_data.get("authors"),
+                    journal=lit_data.get("journal"),
+                    pub_year=lit_data.get("pub_year"),
+                    doi=doi,
+                    pmid=lit_data.get("pmid"),
+                    abstract=lit_data.get("abstract"),
+                    keywords=lit_data.get("keywords") if lit_data.get("keywords") else None,
+                    region=lit_data.get("region"),
+                    province=lit_data.get("province"),
+                    publication_types=lit_data.get("publication_types") if lit_data.get("publication_types") else None,
+                    source_db=lit_data.get("source_db") or "import",
+                    file_path=None,
+                    extraction_status=lit_data.get("extraction_status") or "done",
+                    extracted_count=lit_data.get("extracted_count") or 0,
+                    approved_count=lit_data.get("approved_count") or 0,
+                )
+                db.add(literature)
+                await db.flush()
+                lit_id = literature.id
+                imported_count += 1
+                imported_titles.append(title)
+
+            # 导入数据点
+            data_points = lit_data.get("data_points", [])
+            for dp_data in data_points:
+                dp = DataPoint(
+                    literature_id=lit_id,
+                    disease=dp_data.get("disease"),
+                    region=dp_data.get("region"),
+                    province=dp_data.get("province"),
+                    city=dp_data.get("city"),
+                    latitude=dp_data.get("latitude"),
+                    longitude=dp_data.get("longitude"),
+                    age_group=dp_data.get("age_group"),
+                    age_min=dp_data.get("age_min"),
+                    age_max=dp_data.get("age_max"),
+                    sample_size=dp_data.get("sample_size"),
+                    data_type=dp_data.get("data_type"),
+                    value=dp_data.get("value"),
+                    unit=dp_data.get("unit"),
+                    ci_lower=dp_data.get("ci_lower"),
+                    ci_upper=dp_data.get("ci_upper"),
+                    method=dp_data.get("method"),
+                    assay=dp_data.get("assay"),
+                    population=dp_data.get("population"),
+                    collection_year=dp_data.get("collection_year"),
+                    source_page=dp_data.get("source_page"),
+                    source_context=dp_data.get("source_context"),
+                    source_char_start=dp_data.get("source_char_start"),
+                    source_char_end=dp_data.get("source_char_end"),
+                    is_grounded=dp_data.get("is_grounded", False),
+                    estimate_type=dp_data.get("estimate_type") or "primary",
+                    confidence=dp_data.get("confidence") or "medium",
+                    review_status=dp_data.get("review_status") or "pending",
+                )
+                db.add(dp)
+                dp_imported_count += 1
+
+            await db.flush()
+
+        except Exception as e:
+            logger.error(f"[Import] 导入第 {idx} 条文献失败: {e}", exc_info=True)
+            errors.append({"index": idx, "title": lit_data.get("title", ""), "reason": str(e)[:200]})
+            await db.rollback()
+
+    await db.commit()
+
+    logger.info(
+        f"[Import] 导入完成: 文献 {imported_count} 篇, 跳过 {skipped_count} 篇, "
+        f"数据点 {dp_imported_count} 个, 失败 {len(errors)} 条"
     )
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        "标题", "英文标题", "作者", "期刊", "出版年份", "DOI", "PMID",
-        "省份", "提取状态", "审核通过数", "数据点总数", "创建时间",
-    ])
-    for lit in items:
-        writer.writerow([
-            lit.title, lit.title_en, lit.authors, lit.journal, lit.pub_year,
-            lit.doi, lit.pmid, lit.province, lit.extraction_status,
-            lit.approved_count, lit.extracted_count, lit.created_at,
-        ])
-
-    return Response(
-        content=output.getvalue().encode("utf-8-sig"),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename*=UTF-8''literatures.csv"},
+    return ApiResponse(
+        message=f"导入完成：成功 {imported_count} 篇文献，{dp_imported_count} 个数据点，跳过 {skipped_count} 篇重复",
+        data={
+            "imported_count": imported_count,
+            "skipped_count": skipped_count,
+            "data_point_count": dp_imported_count,
+            "error_count": len(errors),
+            "errors": errors[:20],
+            "imported_titles": imported_titles[:20],
+        },
     )
 
 
