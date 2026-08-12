@@ -2,6 +2,8 @@ import logging
 import re
 from typing import Optional
 
+from app.config import settings
+
 logger = logging.getLogger("uvicorn")
 
 
@@ -54,8 +56,14 @@ def detect_language(text: str) -> str:
     return "en"
 
 
-def truncate(text: str, max_chars: int = 12000) -> str:
-    """截断文本到 LLM 上下文窗口以内"""
+def truncate(text: str, max_chars: Optional[int] = None) -> str:
+    """截断文本到指定字符数以内。
+
+    默认使用 settings.TEXT_PREPROCESS_MAX_CHARS（60000），须 > LLM_CHUNK_THRESHOLD(20000)，
+    否则 llm_extractor 的分块并发逻辑永不触发。
+    """
+    if max_chars is None:
+        max_chars = getattr(settings, "TEXT_PREPROCESS_MAX_CHARS", 60000)
     if len(text) <= max_chars:
         return text
     # 尽量在段落边界截断

@@ -20,7 +20,7 @@
 | **数据审核与编辑** | 人工审核（通过/驳回）、行内编辑（疾病、地区、年龄段、数值、**原文依据、溯源字符区间**等字段）、**手动新增数据点**（提取失败时补录） |
 | **地图可视化** | 全国/省级/市级交互式抗体水平热力地图，点击省份钻取市级数据、**时间序列动画自动年份范围**、底部统计区分**已审核通过**（绿色）与**未审核**（橙色）两组数据点/覆盖省份/样本量 |
 | **数据分析** | 逐年趋势、区域对比、年龄分层、**免疫屏障评估**（复用 FOI 模块 R0/HIT 计算，新增年龄分层分析与省份对比矩阵，HIT 阈值优先级：FOI 估算>WHO 建议>文献 R0）、**数据覆盖度分析**、**多表单 Excel 数据导出**、**FOI 感染力分析**（催化模型 + R0 估算 + 群体免疫阈值 HIT，支持不选择疾病进行全量分析）、**疫苗效果 VE 分析**（已接种/未接种亚组拆分 + 保护率估算）、**接种率双轨分析**（NIP 参考表 + 血清阳性率反推隐含接种率） |
-| **报告生成** | LLM 生成抗体分析报告和疫苗接种策略研判报告，支持在线编辑和下载 |
+| **报告生成** | LLM 生成抗体分析报告和疫苗接种策略研判报告，支持在线编辑和下载；**报告生成时可选模型**（本地 Ollama 模型 / 远程 API 模型，支持自定义 API Key 和 Base URL） |
 | **文件夹监控** | 定期监测指定文件夹，自动导入新文件并触发信息提取 |
 | **Edge 浏览器插件** | 参考 Mendeley 设计，在浏览器中一键将文献添加到数据库并触发 AI 提取；支持 15+ 学术站点元数据自动识别、PDF 智能抓取上传、URL 网页导入、右键菜单、桌面通知 |
 | **多格式预览** | PDF 使用 pdf.js 渲染；TXT/HTML/DOCX/PPTX/XLSX/EPUB 显示解析后文本；CAJ 提示下载，支持分栏布局、面板折叠/展开 |
@@ -51,7 +51,7 @@ PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文
 | **后端** | Python 3.10+, FastAPI + Uvicorn, SQLAlchemy 2.0 (async), Celery + Redis, Pydantic 2.0 |
 | **数据库** | PostgreSQL 15 |
 | **存储** | MinIO 对象存储 / 本地文件系统双模式 |
-| **AI/LLM** | OpenAI SDK 兼容协议，支持 DeepSeek / OpenAI / 通义千问 (Qwen) 多厂商；JSON Schema 强约束 + 精确字符级溯源 |
+| **AI/LLM** | OpenAI SDK 兼容协议，支持 DeepSeek / OpenAI / 通义千问 (Qwen) / **本地 Ollama** 多厂商；JSON Schema 强约束 + 精确字符级溯源；**报告生成支持模型选择**（本地 + 远程 API，可配置 API Key/Base URL） |
 | **文档解析** | 策略模式解析器注册表：PyMuPDF (fitz) + pdfplumber、python-docx、python-pptx、openpyxl、ebooklib、BeautifulSoup、caj2pdf |
 | **OCR** | Tesseract OCR (中文/英文，自动探测安装路径) + 百度 OCR 云端回退 |
 | **运维** | Docker Compose (PostgreSQL + Redis + MinIO), start.sh / start.ps1 一键启动 |

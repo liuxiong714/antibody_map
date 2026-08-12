@@ -1,12 +1,14 @@
 import logging
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import UUID
 
 from openai import AsyncOpenAI
 from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.models.api_model_config import ApiModelConfig
 from app.models.data_point import DataPoint
 from app.models.report import Report
 
@@ -135,6 +137,21 @@ def _calc_weighted_rate(rows: list[DataPoint]) -> tuple[float, int]:
     return round(weighted_sum / total_sample, 2), total_sample
 
 
+async def _resolve_model_name(db: AsyncSession, model: Optional[str] = None) -> str:
+    """解析模型显示名称"""
+    if not model:
+        return settings.LLM_MODEL
+    try:
+        uid = UUID(model)
+        result = await db.execute(select(ApiModelConfig).where(ApiModelConfig.id == uid))
+        config = result.scalar_one_or_none()
+        if config:
+            return f"{config.name} ({config.model_name})"
+    except (ValueError, AttributeError):
+        pass
+    return model
+
+
 async def generate_report(
     db: AsyncSession,
     disease: Optional[str] = None,
@@ -142,6 +159,7 @@ async def generate_report(
     data_type: Optional[str] = None,
     language: str = "zh",
     title: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> dict:
     """生成报告"""
     # 1. 查询审核通过的数据点
@@ -274,8 +292,10 @@ async def generate_report(
             age_distribution=age_distribution,
         )
 
-    content = await _call_llm(prompt)
+    content = await _call_llm(db, prompt, model=model)
 
+    # 解析模型显示名称
+    llm_model_name = await _resolve_model_name(db, model)
 
     # 9. Save to database
     try:
@@ -289,6 +309,7 @@ async def generate_report(
             language=language,
             literature_count=len(lit_ids),
             data_point_count=len(rows),
+            llm_model=llm_model_name,
         )
         db.add(report)
         await db.commit()
@@ -304,6 +325,7 @@ async def generate_report(
         "literature_count": len(lit_ids),
         "data_point_count": len(rows),
         "language": language,
+        "llm_model": report.llm_model,
         "generated_at": report.generated_at.isoformat(),
     }
 
@@ -417,7 +439,7 @@ async def generate_vaccination_strategy_report(
         epidemic_data=epidemic_data,
     )
 
-    content = await _call_llm(prompt)
+    content = await _call_llm(db, prompt)
 
     # 5. Save to database
     try:
@@ -460,22 +482,46 @@ async def generate_vaccination_strategy_report(
     }
 
 
-async def _call_llm(prompt: str) -> str:
+async def _call_llm(db: AsyncSession, prompt: str, model: Optional[str] = None) -> str:
     """调用 LLM 生成报告"""
+    llm_model = model or settings.LLM_MODEL
+    api_key = settings.LLM_API_KEY
+    base_url = settings.LLM_BASE_URL
+
+    # 如果 model 是远程模型配置的 UUID，查找对应的 API 配置
+    if model:
+        try:
+            uid = UUID(model)
+            result = await db.execute(select(ApiModelConfig).where(ApiModelConfig.id == uid))
+            config = result.scalar_one_or_none()
+            if config:
+                llm_model = config.model_name
+                api_key = config.api_key
+                base_url = config.base_url
+        except (ValueError, AttributeError):
+            # 不是 UUID，当作普通模型名直接使用
+            pass
+
     client = AsyncOpenAI(
-        api_key=settings.LLM_API_KEY,
-        base_url=settings.LLM_BASE_URL,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=settings.LLM_REQUEST_TIMEOUT,
     )
     try:
+        extra_kwargs = {}
+        # 本地 Ollama 模型：禁用 thinking 模式
+        if ":" in llm_model or llm_model.startswith("qwen"):
+            extra_kwargs["extra_body"] = {"think": False}
         response = await client.chat.completions.create(
-            model=settings.LLM_MODEL,
+            model=llm_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            timeout=120,
+            timeout=settings.LLM_REQUEST_TIMEOUT,
+            **extra_kwargs,
         )
         return response.choices[0].message.content or ""
     except Exception as e:
-        logger.warning(f"LLM API 调用失败: {e}")
+        logger.warning(f"LLM API 调用失败 (model={llm_model}): {e}", exc_info=True)
         raise RuntimeError(f"报告生成失败: {e}")
 
 
@@ -496,6 +542,7 @@ async def get_reports(db: AsyncSession, page: int = 1, page_size: int = 20):
             "province": r.province,
             "data_type": r.data_type,
             "language": r.language,
+            "llm_model": r.llm_model,
             "literature_count": r.literature_count,
             "data_point_count": r.data_point_count,
             "task_type": r.task_type,
@@ -523,6 +570,7 @@ async def get_report_by_id(db: AsyncSession, report_id):
         "province": r.province,
         "data_type": r.data_type,
         "language": r.language,
+        "llm_model": r.llm_model,
         "literature_count": r.literature_count,
         "data_point_count": r.data_point_count,
         "task_type": r.task_type,

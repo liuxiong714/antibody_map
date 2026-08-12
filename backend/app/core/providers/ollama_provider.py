@@ -32,6 +32,8 @@ class OllamaProvider(BaseLLMProvider):
 
         Ollama 模型名通常包含冒号（如 qwen3:32b、qwen2.5:14b），
         以此区分远程 API 的同名模型（如 qwen2.5-7b）。
+
+        前端可能带 vendor 前缀（如 ollama:qwen3:32b），需正确识别。
         """
         model_lower = model.lower()
         # 先检查标准前缀
@@ -39,10 +41,19 @@ class OllamaProvider(BaseLLMProvider):
             return True
         # 检查带冒号的 Ollama 风格模型名（如 qwen3:32b, qwen2.5:14b）
         if ':' in model_lower:
+            parts = model_lower.split(':')
+            # 处理 "ollama:qwen3:32b" 这种带 vendor 前缀的格式
+            if parts[0] == 'ollama' and len(parts) >= 2:
+                return True
             # 提取冒号前的部分，检查是否是已知 Ollama 模型族
-            model_family = model_lower.split(':')[0]
+            # 注意：模型名可能包含次级版本号，如 qwen2.5:14b 分割后为 ['qwen2.5', '14b']
+            # 需要检查 model_family 是否以某个已知族开头（如 qwen2.5 匹配 qwen2）
+            model_family = parts[0]
             ollama_families = {'qwen', 'qwen2', 'qwen3', 'llama', 'mistral', 'gemma', 'glm4', 'phi', 'deepseek'}
             if model_family in ollama_families:
+                return True
+            # 处理次级版本号：qwen2.5 → qwen2, qwen2.7 → qwen2 等
+            if any(model_family.startswith(f) for f in ollama_families):
                 return True
         return False
 

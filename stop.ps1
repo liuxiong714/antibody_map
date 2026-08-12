@@ -1,9 +1,9 @@
-﻿# ============================================================
+# ============================================================
 # Antibody Map 停止脚本 (Windows PowerShell)
 # 用法: .\stop.ps1
 # ============================================================
 
-$BackendPort = 8080
+$BackendPort = 8000
 $FrontendPort = 3000
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 

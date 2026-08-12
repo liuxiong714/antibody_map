@@ -14,6 +14,7 @@ const Report: React.FC = () => {
   const [dataType, setDataType] = useState('');
   const [province, setProvince] = useState('');
   const [language, setLanguage] = useState('zh');
+  const [model, setModel] = useState('');
   const [title, setTitle] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -67,11 +68,16 @@ const Report: React.FC = () => {
       if (dataType) params.data_type = dataType;
       if (province) params.province = province;
       if (title) params.title = title;
+      if (model) params.model = model;
       const resp = await generateReport(params);
       setReport(resp);
       message.success('报告生成成功');
       fetchHistory();
-    } catch (err) { console.error('[Report] 抗体报告生成失败:', err); message.error('报告生成失败'); }
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err?.message || '未知错误';
+      console.error('[Report] 抗体报告生成失败:', err);
+      message.error(`报告生成失败: ${detail}`);
+    }
     finally { setLoading(false); }
   };
 
@@ -170,6 +176,7 @@ const Report: React.FC = () => {
     { title: '任务地点', dataIndex: 'task_location', key: 'tl', width: 100, ellipsis: true, render: (v: string) => v || '-' },
     { title: '人数', dataIndex: 'personnel_count', key: 'pc', width: 60, render: (v: number) => v || '-' },
     { title: '语言', dataIndex: 'language', key: 'language', width: 60, render: (v: string) => v === 'zh' ? '中文' : 'EN' },
+    { title: '模型', dataIndex: 'llm_model', key: 'llm', width: 140, ellipsis: true, render: (v: string) => v ? <Tag>{v}</Tag> : '-' },
     { title: '文献数', dataIndex: 'literature_count', key: 'lc', width: 70 },
     { title: '数据点', dataIndex: 'data_point_count', key: 'dc', width: 70 },
     { title: '生成时间', dataIndex: 'generated_at', key: 'ga', width: 160, render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm') },
@@ -211,10 +218,11 @@ const Report: React.FC = () => {
             children: (
               <AntibodyReportForm
                 disease={disease} dataType={dataType} province={province}
-                language={language} title={title} loading={loading}
+                language={language} title={title} model={model} loading={loading}
                 onDiseaseChange={setDisease} onDataTypeChange={setDataType}
                 onProvinceChange={setProvince} onLanguageChange={setLanguage}
-                onTitleChange={setTitle} onGenerate={handleGenerateAntibody}
+                onTitleChange={setTitle} onModelChange={setModel}
+                onGenerate={handleGenerateAntibody}
               />
             ),
           },
@@ -291,6 +299,7 @@ const Report: React.FC = () => {
               {report.task_location && <Tag>任务地点: {report.task_location}</Tag>}
               {report.personnel_count && <Tag>人员: {report.personnel_count}人</Tag>}
               {report.language && <Tag>语言: {report.language === 'zh' ? '中文' : 'English'}</Tag>}
+              <Tag>模型: {report.llm_model || '默认'}</Tag>
               <Tag>生成时间: {dayjs(report.generated_at).format('YYYY-MM-DD HH:mm')}</Tag>
             </div>
             <Divider />

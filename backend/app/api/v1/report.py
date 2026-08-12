@@ -36,6 +36,7 @@ async def generate_report(
     data_type: Optional[str] = Query(None, description="数据类型"),
     language: str = Query("zh", description="报告语言：zh | en"),
     title: Optional[str] = Query(None, description="自定义报告标题"),
+    model: Optional[str] = Query(None, description="LLM 模型名，默认使用 .env 配置"),
     db: AsyncSession = Depends(get_db),
 ):
     """生成免疫学参考意见报告"""
@@ -47,6 +48,7 @@ async def generate_report(
             data_type=data_type,
             language=language,
             title=title,
+            model=model,
         )
         return ApiResponse(message="报告生成成功", data=data)
     except ValueError as e:

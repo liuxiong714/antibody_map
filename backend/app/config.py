@@ -1,9 +1,13 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# .env 文件位于项目根目录（backend/ 的父目录）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -11,7 +15,7 @@ class Settings(BaseSettings):
     # LLM — 默认配置（向后兼容）
     LLM_API_KEY: str = ""  # 必须通过环境变量或 .env 文件配置
     LLM_BASE_URL: str = "https://api.deepseek.com"
-    LLM_MODEL: str = "deepseek-chat"
+    LLM_MODEL: str = "qwen3:32b"
 
     # LLM — 按模型厂商独立配置（可选，未配置时回退到 LLM_API_KEY / LLM_BASE_URL）
     DEEPSEEK_API_KEY: str = ""
@@ -29,6 +33,27 @@ class Settings(BaseSettings):
     # P0-2：多趟提取趟数（1=单趟，2=双趟查漏补缺，3=三趟）
     # 趟数越多召回率越高但 API 调用成本线性增加，推荐 2
     LLM_EXTRACTION_PASSES: int = 2
+
+    # 本地大模型（如 32B/70B）推理慢，请求超时需放宽，单位：秒
+    LLM_REQUEST_TIMEOUT: int = 600
+
+    # P2-B1：LLM 并发提取配置
+    # 并发请求数上限，需与 Ollama 的 OLLAMA_NUM_PARALLEL 环境变量对齐
+    # RTX 4090/5090 实测 4 并发为吞吐与延迟最优拐点（参考 2026 基准测试）
+    LLM_CONCURRENCY: int = 4
+
+    # P2：长文档分块阈值（字符数），超过此值触发分块并发提取
+    LLM_CHUNK_THRESHOLD: int = 20000
+    # P2：单块最大字符数
+    LLM_CHUNK_SIZE: int = 15000
+    # P2：分块重叠字符数（保持上下文连贯）
+    LLM_CHUNK_OVERLAP: int = 500
+
+    # 文本预处理最大保留字符数（须 > LLM_CHUNK_THRESHOLD，否则分块逻辑永不触发）
+    TEXT_PREPROCESS_MAX_CHARS: int = 60000
+
+    # MinerU 增强 PDF 解析（需安装 PyTorch + mineru 包，首次使用会自动下载模型约 2-3GB）
+    ENABLE_MINERU_PDF_PARSER: bool = False
 
     # ===== 提取准确度 & 性价比优化配置 =====
     # A3：grounding 模糊匹配阈值（0-1，越高越严格）

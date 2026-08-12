@@ -29,6 +29,8 @@ class Report(Base):
     personnel_gender: Mapped[Optional[str]] = mapped_column(String(100))
     personnel_age: Mapped[Optional[str]] = mapped_column(String(100))
     personnel_vaccination_history: Mapped[Optional[str]] = mapped_column(Text)
+    # 生成报告使用的 LLM 模型
+    llm_model: Mapped[Optional[str]] = mapped_column(String(100))
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -18,6 +18,7 @@ import app.models.literature  # noqa: F401
 import app.models.data_point  # noqa: F401
 import app.models.report     # noqa: F401
 import app.models.disease_dict  # noqa: F401
+import app.models.api_model_config  # noqa: F401
 
 config = context.config
 

@@ -8,6 +8,7 @@ from app.api.v1.search import router as search_router
 from app.api.v1.analysis import router as analysis_router
 from app.api.v1.report import router as report_router
 from app.api.v1.folder_monitor import router as folder_monitor_router
+from app.api.v1.model_config import router as model_config_router
 
 router = APIRouter()
 
@@ -20,6 +21,7 @@ router.include_router(search_router, tags=["search"])
 router.include_router(analysis_router, tags=["analysis"])
 router.include_router(report_router, tags=["report"])
 router.include_router(folder_monitor_router, tags=["folder_monitor"])
+router.include_router(model_config_router, tags=["models"])
 
 
 @router.get("/health")

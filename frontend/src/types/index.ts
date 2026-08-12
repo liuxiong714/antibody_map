@@ -207,6 +207,7 @@ export interface ReportData {
   literature_count: number;
   data_point_count: number;
   language: string;
+  llm_model?: string;
   task_type?: string;
   task_time?: string;
   task_location?: string;
@@ -226,14 +227,39 @@ export interface ReportRecord {
   province: string | null;
   data_type: string | null;
   language: string;
-  literature_count: number;
-  data_point_count: number;
+  llm_model?: string;
   task_type?: string;
   task_time?: string;
   task_location?: string;
   personnel_count?: number;
   generated_at: string;
   content?: string;
+}
+
+// ===== 远程模型配置 =====
+
+export interface ApiModelConfig {
+  id: string;
+  name: string;
+  model_name: string;
+  api_key: string;
+  base_url: string;
+  description: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelOption {
+  value: string;
+  label: string;
+  group: 'local' | 'remote';
+  is_default?: boolean;
+}
+
+export interface ModelsListData {
+  local: ModelOption[];
+  remote: ModelOption[];
 }
 export interface ImmuneBarrierData {
   disease: string;

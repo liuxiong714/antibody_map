@@ -536,6 +536,8 @@ const LiteraturePage: React.FC = () => {
         province: 'province',
         created_at: 'created',
         extraction_status: 'status',
+        review_status: 'review_status',
+        file_format: 'file_format',
       };
       const backendField = fieldMap[s.field as string] || (s.field as string);
       const order = s.order as 'ascend' | 'descend' | null;
@@ -596,8 +598,11 @@ const LiteraturePage: React.FC = () => {
     },
     {
       title: '文档',
+      dataIndex: 'file_format',
       key: 'file_format',
       width: 90,
+      sorter: true,
+      sortOrder: sortInfo.field === 'file_format' ? sortInfo.order : null,
       render: (_: unknown, r: Literature) => {
         const fmt = r.file_format;
         const hasFile = !!fmt;
@@ -681,6 +686,8 @@ const LiteraturePage: React.FC = () => {
       title: '审核状态',
       key: 'review_status',
       width: 140,
+      sorter: true,
+      sortOrder: sortInfo.field === 'review_status' ? sortInfo.order : null,
       render: (_: unknown, r: Literature) => {
         const total = r.extracted_count || 0;
         const approved = r.approved_count || 0;
@@ -850,7 +857,7 @@ const LiteraturePage: React.FC = () => {
           />
           <Select
             value={sortBy}
-            onChange={(v) => { setSortBy(v); const fieldMap: Record<string, string | null> = { created: 'created_at', title: 'title', authors: 'authors', year: 'pub_year', journal: 'journal', province: 'province', status: 'extraction_status' }; setSortInfo({ field: fieldMap[v] || 'created_at', order: sortOrder === 'asc' ? 'ascend' : 'descend' }); }}
+            onChange={(v) => { setSortBy(v); const fieldMap: Record<string, string | null> = { created: 'created_at', title: 'title', authors: 'authors', year: 'pub_year', journal: 'journal', province: 'province', status: 'extraction_status', review_status: 'review_status', file_format: 'file_format' }; setSortInfo({ field: fieldMap[v] || 'created_at', order: sortOrder === 'asc' ? 'ascend' : 'descend' }); }}
             style={{ width: 100 }}
             options={[
               { value: 'created', label: '创建时间' },
@@ -859,7 +866,9 @@ const LiteraturePage: React.FC = () => {
               { value: 'year', label: '年份' },
               { value: 'journal', label: '期刊' },
               { value: 'province', label: '省份' },
-              { value: 'status', label: '状态' },
+              { value: 'status', label: '提取状态' },
+              { value: 'review_status', label: '审核状态' },
+              { value: 'file_format', label: '文档' },
             ]}
           />
           <Select

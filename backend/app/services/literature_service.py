@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 from datetime import datetime, timezone
 
-from sqlalchemy import select, func
+from sqlalchemy import case, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.literature import Literature
@@ -144,11 +144,11 @@ async def list_literature(
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    sort_column = Literature.created_at
+    sort_column: Any = Literature.created_at
     sort_desc = True
 
     if sort_by:
-        sort_map = {
+        sort_map: dict[str, Any] = {
             "title": Literature.title,
             "authors": Literature.authors,
             "journal": Literature.journal,
@@ -156,8 +156,19 @@ async def list_literature(
             "province": Literature.province,
             "created": Literature.created_at,
             "status": Literature.extraction_status,
+            "file_format": Literature.file_path,
         }
-        sort_column = sort_map.get(sort_by, Literature.created_at)
+        if sort_by == "review_status":
+            # 审核状态排序：提取总数为 0 → 排最后；按审核比例 approved/extracted 从小到大；
+            # 使用 case when 计算一个排序键：0(无数据) < 1(部分审核)，而区间内部用比例区分
+            ratio = case(
+                (Literature.extracted_count == None, 0),
+                (Literature.extracted_count == 0, 0),
+                else_=func.coalesce(Literature.approved_count, 0) * 1.0 / Literature.extracted_count,
+            )
+            sort_column = ratio
+        else:
+            sort_column = sort_map.get(sort_by, Literature.created_at)
 
     if sort_order:
         sort_desc = sort_order.lower() == "desc"

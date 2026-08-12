@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # Antibody Map 一键启动脚本 (Windows PowerShell)
 # 用法: 右键 -> 使用 PowerShell 运行，或在终端执行 .\start.ps1
 # ============================================================
@@ -6,7 +6,7 @@
 $ErrorActionPreference = "Stop"
 
 # ---- 配置 ----
-$BackendPort = 8080
+$BackendPort = 8000
 $FrontendPort = 3000
 $FrontendUrl = "http://localhost:$FrontendPort"
 

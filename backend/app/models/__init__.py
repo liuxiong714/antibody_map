@@ -3,8 +3,11 @@ from app.models.literature import Literature
 from app.models.data_point import DataPoint
 from app.models.report import Report
 from app.models.disease_dict import DiseaseDict
+from app.models.monitored_folder import MonitoredFolder, MonitoredFile
+from app.models.api_model_config import ApiModelConfig
 
 __all__ = [
     "Base", "engine", "async_session", "get_async_session",
-    "Literature", "DataPoint", "DiseaseDict",
+    "Literature", "DataPoint", "Report", "DiseaseDict",
+    "MonitoredFolder", "MonitoredFile", "ApiModelConfig",
 ]

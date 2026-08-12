@@ -64,7 +64,8 @@ export async function triggerExtraction(literatureId: string, options?: Extracti
     api_key: options.apiKey,
     base_url: options.baseUrl,
   } : {};
-  const { data } = await api.post(`/literatures/${literatureId}/extraction`, body);
+  // AI 提取启动接口本身是"提交任务"式的（后端通过 SSE/轮询查进度），超时时间给 60s 保障启动阶段稳定
+  const { data } = await api.post(`/literatures/${literatureId}/extraction`, body, { timeout: 60_000 });
   return data;
 }
 
@@ -89,7 +90,7 @@ export async function triggerBatchExtraction(
     body.api_key = options.apiKey;
     body.base_url = options.baseUrl;
   }
-  const { data } = await api.post('/literatures/extraction/batch', body);
+  const { data } = await api.post('/literatures/extraction/batch', body, { timeout: 60_000 });
   return data;
 }
 

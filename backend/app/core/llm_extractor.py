@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -154,6 +155,13 @@ PROVINCE_LIST_EN = "Beijing, Tianjin, Shanghai, Chongqing, Hebei, Shanxi, Inner 
 
 SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家。请仔细阅读用户提供的文献文本，提取所有抗体血清学数据点。一篇文献可能包含多个数据点（不同地区、不同人群、不同时间、不同检测指标），请全部提取。
 
+**【最高优先级】输出格式要求**：
+- 你的回复必须是**纯 JSON**，以 `{{` 开头、以 `}}` 结尾。
+- **禁止**输出任何推理过程、解释文字、`<think>` 标签或 markdown 代码块标记（```json）。
+- **禁止**在 JSON 前后添加任何内容。如果你需要思考，请在 JSON 内部完成后直接输出最终结果。
+- 所有字段名和字符串值必须使用双引号。数值不要加引号。null 使用小写。
+- 如果文中有多个数据点，全部放入 `data_points` 数组。
+
 **【重要】每条数据必须标注原文出处**：包括来源页码（如能判断）和原文片段（20-50字），方便后续人工核对。
 
 {PROVINCE_LIST_TIP}
@@ -287,6 +295,11 @@ class LLMExtractor:
         model_lower = model.lower()
         return "deepseek" in model_lower or "gpt-" in model_lower
 
+    def _is_ollama_model(self) -> bool:
+        """判断当前是否使用 Ollama 本地模型（用于决定是否透传 think=False 等参数）。"""
+        base_url = (self._resolved_url or "").lower()
+        return "localhost:11434" in base_url or "127.0.0.1:11434" in base_url
+
     def __init__(
         self,
         model: Optional[str] = None,
@@ -297,9 +310,14 @@ class LLMExtractor:
         resolved_key, resolved_url = self._resolve_api_config(self.model)
         self._resolved_key = api_key or resolved_key
         self._resolved_url = base_url or resolved_url
+        # 本地大模型（如 qwen3:32b）推理较慢，给足 10 分钟超时
+        self._llm_timeout = float(getattr(settings, "LLM_REQUEST_TIMEOUT", 600))
+        # 剥离 vendor 前缀（如 ollama:qwen3:32b → qwen3:32b），用于实际 API 调用
+        self._api_model = self._strip_vendor_prefix(self.model)
         self.client = AsyncOpenAI(
             api_key=self._resolved_key,
             base_url=self._resolved_url,
+            timeout=self._llm_timeout,
         )
         # B6：表格 Markdown 哈希缓存（进程级，避免同一文献重抽时重复提取）
         self._table_cache: dict[str, str] = {}
@@ -307,6 +325,15 @@ class LLMExtractor:
         self._feedback_examples: list[str] = []
         # Token 用量累加器：{model_name: {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int, "call_count": int}}
         self._usage_accumulator: dict[str, dict] = {}
+
+    @staticmethod
+    def _strip_vendor_prefix(model: str) -> str:
+        """剥离模型名中的 vendor 前缀（如 ollama:qwen3:32b → qwen3:32b）。"""
+        if ':' in model:
+            parts = model.split(':')
+            if parts[0] in ('ollama', 'deepseek', 'qwen', 'openai'):
+                return ':'.join(parts[1:])
+        return model
 
     # ===== B5：分级模型策略 =====
 
@@ -481,15 +508,27 @@ class LLMExtractor:
 
             # 构建请求参数
             kwargs = dict(
-                model=self.model,
+                model=self._api_model,
                 messages=messages,
                 temperature=0.1,
                 max_tokens=16384,
-                timeout=120,
+                timeout=self._llm_timeout,
             )
             # P2-2：通过 provider 注册中心查询是否支持 response_format
             if self._supports_response_format(self.model):
                 kwargs["response_format"] = {"type": "json_object"}
+
+            # 本地 Ollama 模型优化：
+            # 1. 禁用 thinking 模式（避免生成思考链 token，推理时间 3-5 倍增加）
+            # 2. 通过 Ollama 原生 num_predict 参数解除默认 512/2048 tokens 的生成上限（OpenAI SDK 的 max_tokens 对 Ollama 可能被忽略）
+            # 3. 降低 temperature 让输出更稳定
+            if self._is_ollama_model():
+                kwargs["extra_body"] = {
+                    "think": False,
+                    "num_predict": 16384,
+                }
+                kwargs["max_tokens"] = 16384
+                kwargs["temperature"] = 0.05
 
             response = await self.client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content
@@ -523,7 +562,7 @@ class LLMExtractor:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
             payload = {
-                "model": self.model,
+                "model": self._api_model,
                 "messages": messages,
                 "temperature": 0.1,
                 "max_tokens": 16384,
@@ -532,7 +571,14 @@ class LLMExtractor:
             if self._supports_response_format(self.model):
                 payload["response_format"] = {"type": "json_object"}
 
-            async with httpx.AsyncClient(timeout=120) as client:
+            # 同步 Ollama 原生参数（兜底路径）
+            if self._is_ollama_model():
+                payload["max_tokens"] = 16384
+                payload["temperature"] = 0.05
+                payload["think"] = False
+                payload["num_predict"] = 16384
+
+            async with httpx.AsyncClient(timeout=self._llm_timeout) as client:
                 resp = await client.post(
                     f"{base_url}/chat/completions",
                     headers={
@@ -559,12 +605,129 @@ class LLMExtractor:
             logger.error(f"HTTP 兜底调用失败: {e}")
             raise
 
+    @staticmethod
+    def _smart_truncate_and_close(content: str) -> str:
+        """智能截断被 LLM 截断的半截 JSON，并补齐闭合括号。
+
+        处理场景：LLM 生成到中途（如 `"gmc_u` 字段名没写完）就停止，
+        导致 JSON 出现半截字段/值，同时对象和数组括号未闭合。
+
+        算法：
+        1. 逐字符扫描，维护 in_string / escape / 括号栈状态；
+        2. 每当解析到"栈稳定"且不在字符串中间时，记录为一个合法 checkpoint；
+        3. 如果处于字符串中间遇到非法截断（或解析到末尾栈未闭合），
+           回退到最近一个 checkpoint；
+        4. 根据 checkpoint 时剩余的括号栈，逆序补 `}` 或 `]`，并补齐对象尾部可能
+           遗留的尾逗号。
+        """
+        if not content:
+            return ""
+
+        n = len(content)
+        stack: list[str] = []  # 存放 '{' 或 '['
+        in_string = False
+        escape_next = False
+        # 每个元素：(i位置, 当前栈副本)
+        checkpoints: list[tuple[int, list[str]]] = []
+
+        i = 0
+        while i < n:
+            ch = content[i]
+
+            if in_string:
+                if escape_next:
+                    escape_next = False
+                elif ch == '\\':
+                    escape_next = True
+                elif ch == '"':
+                    in_string = False
+                # 其他字符：字符串内容，继续
+                i += 1
+                continue
+
+            # 不在字符串中
+            if ch == '"':
+                in_string = True
+            elif ch == '{':
+                stack.append('{')
+            elif ch == '[':
+                stack.append('[')
+            elif ch == '}':
+                if stack and stack[-1] == '{':
+                    stack.pop()
+                else:
+                    # 不匹配：回退到上一个 checkpoint，不要再继续
+                    break
+            elif ch == ']':
+                if stack and stack[-1] == '[':
+                    stack.pop()
+                else:
+                    break
+            elif ch in (':', ',', ' ', '\t', '\n', '\r'):
+                # 结构分隔符或空白
+                pass
+            else:
+                # 普通字符（数字、null、true、false 的一部分）—— 非关键
+                pass
+
+            # 判断是否为一个可以"回退"的稳定 checkpoint：
+            # 不在字符串里，并且当前位置字符是结构分隔符或之前刚完整闭合了一个值
+            # 保守策略：只有在遇到 , : 空白或闭合括号后才记录 checkpoint
+            checkpoint_chars = set(',:}]\n\r\t ')
+            if ch in checkpoint_chars or i == 0:
+                checkpoints.append((i, list(stack)))
+
+            i += 1
+
+        # 处理到末尾仍未闭合，或中途 break 了：
+        # 尝试先直接补全括号，如果此时在字符串中则需要回退 checkpoint
+        if in_string or stack:
+            # 如果在字符串中途，直接把该字符串截断闭合，并回退到最近 checkpoint
+            if in_string:
+                # 找最近 checkpoint
+                if checkpoints:
+                    last_i, last_stack = checkpoints[-1]
+                    prefix = content[:last_i + 1]
+                    # 回补括号
+                    suffix = ""
+                    for b in reversed(last_stack):
+                        suffix += '}' if b == '{' else ']'
+                    candidate = prefix.rstrip().rstrip(',') + suffix
+                    # 去掉数据点数组最后一条对象后若出现 ",]" 或 ",}"
+                    candidate = re.sub(r",(\s*[}\]])", r"\1", candidate)
+                    return candidate
+                else:
+                    # 没有 checkpoint，丢弃字符串开头前面的半截，补一个空对象
+                    return "{}"
+
+            # 不在字符串中，但栈未闭合：尝试直接补括号
+            suffix = ""
+            for b in reversed(stack):
+                suffix += '}' if b == '{' else ']'
+            candidate = content.rstrip().rstrip(',') + suffix
+            # 清洗尾逗号
+            candidate = re.sub(r",(\s*[}\]])", r"\1", candidate)
+            return candidate
+
+        # 没有问题就原样返回
+        return content
+
     def _parse_json(self, content: str) -> dict:
         """解析 LLM 返回的 JSON"""
         if not content:
             return {}
 
         content_clean = content.strip()
+
+        # 剥离 qwen3 等本地模型的 thinking 标签
+        think_open = "<" + "think" + ">"
+        think_close = "</" + "think" + ">"
+        if think_close in content_clean:
+            idx = content_clean.find(think_close)
+            content_clean = content_clean[idx + len(think_close):].strip()
+        if content_clean.startswith(think_open):
+            content_clean = content_clean[len(think_open):].strip()
+
         if content_clean.startswith("```json"):
             content_clean = content_clean[7:]
         if content_clean.startswith("```"):
@@ -603,6 +766,15 @@ class LLMExtractor:
                 return json.loads(fixed_json)
         except json.JSONDecodeError as e:
             logger.warning(f"修复未闭合 JSON 失败: {e}")
+
+        # 策略：智能截断 + 补齐括号（应对被 LLM 截断的半截 JSON）
+        # 逐字符扫描，记录括号栈，找到最后一个可合法解析的前缀，然后补齐闭合括号
+        try:
+            fixed_json = self._smart_truncate_and_close(content_clean)
+            if fixed_json and fixed_json != content_clean:
+                return json.loads(fixed_json)
+        except json.JSONDecodeError as e:
+            logger.warning(f"智能截断+补齐解析失败: {e}")
 
         # 尝试使用 json.JSONDecoder 宽松模式
         try:
@@ -938,6 +1110,14 @@ class LLMExtractor:
         else:
             user_content = meta + tables_section + complement_prefix + feedback_section + text
 
+        # 本地模型（不支持 response_format）在 user 内容末尾追加 JSON 强制提醒
+        if not self._supports_response_format(self.model):
+            user_content += (
+                "\n\n===== 输出提醒 =====\n"
+                "请直接输出 JSON 对象，以 {\"data_points\": [...]} 格式返回。"
+                "不要输出任何推理过程、解释或 markdown 标记。"
+            )
+
         # 调用 LLM（B6：system prompt 分离）
         content = await self._call_llm_api(user_content, system_prompt=system_prompt)
         data = self._parse_json(content)
@@ -1048,11 +1228,15 @@ class LLMExtractor:
         picked_model = self._pick_model(len(text), has_tables)
         if picked_model != self.model:
             self.model = picked_model
-            # 重新初始化 client 以匹配新模型
+            # 重新初始化 client 以匹配新模型（必须传入 timeout，否则回退到 SDK 默认 10s）
             resolved_key, resolved_url = self._resolve_api_config(self.model)
             self._resolved_key = self._resolved_key or resolved_key
             self._resolved_url = self._resolved_url or resolved_url
-            self.client = AsyncOpenAI(api_key=self._resolved_key, base_url=self._resolved_url)
+            self.client = AsyncOpenAI(
+                api_key=self._resolved_key,
+                base_url=self._resolved_url,
+                timeout=self._llm_timeout,
+            )
 
         try:
             # A2：两阶段提取（默认关闭，开启时替代常规流程）
@@ -1071,26 +1255,45 @@ class LLMExtractor:
             # B7：表格边界感知分块
             table_boundaries = self._find_table_boundaries(text, tables_md) if has_tables else None
 
-            # P2：长文档分块判断
-            CHUNK_THRESHOLD = 20000
-            if len(text) > CHUNK_THRESHOLD:
-                logger.info(f"P2 长文档分块提取: 文本长度={len(text)} > 阈值={CHUNK_THRESHOLD}")
-                chunks = self._chunk_text(text, table_boundaries=table_boundaries)
+            # P2-B1：长文档分块并发提取
+            chunk_threshold = getattr(settings, "LLM_CHUNK_THRESHOLD", 20000)
+            if len(text) > chunk_threshold:
+                chunk_size = getattr(settings, "LLM_CHUNK_SIZE", 15000)
+                chunk_overlap = getattr(settings, "LLM_CHUNK_OVERLAP", 500)
+                logger.info(f"P2-B1 长文档分块并发提取: 文本长度={len(text)} > 阈值={chunk_threshold}")
+                chunks = self._chunk_text(
+                    text,
+                    chunk_size=chunk_size,
+                    overlap=chunk_overlap,
+                    table_boundaries=table_boundaries,
+                )
 
-                for idx, (chunk_offset, chunk_text) in enumerate(chunks):
-                    logger.info(f"分块 {idx + 1}/{len(chunks)}: offset={chunk_offset}, len={len(chunk_text)}")
-                    # B5：每个分块也可以按复杂度选模型
-                    chunk_model = self._pick_model(len(chunk_text), has_tables)
-                    if chunk_model != self.model:
-                        self.model = chunk_model
-                    chunk_result = await self._extract_single_chunk_with_retry(
-                        chunk_text, language, title, journal, pub_year, max_retries,
-                        tables_md=tables_md if idx == 0 else "",  # 表格只在第一块注入
-                        extraction_passes=extraction_passes,
-                    )
-                    all_points.extend(chunk_result)
+                # B1：并发提取各分块（信号量限流，避免压垮本地 LLM）
+                concurrency = max(1, getattr(settings, "LLM_CONCURRENCY", 4))
+                sem = asyncio.Semaphore(concurrency)
 
-                logger.info(f"所有分块提取完成，共 {len(all_points)} 个数据点，开始去重...")
+                async def _guarded_chunk_extract(idx: int, chunk_text: str) -> list[dict]:
+                    async with sem:
+                        logger.info(f"分块 {idx + 1}/{len(chunks)}: len={len(chunk_text)} 开始提取")
+                        # 表格只在第一块注入（避免重复，A1 已单独提取过表格）
+                        return await self._extract_single_chunk_with_retry(
+                            chunk_text, language, title, journal, pub_year, max_retries,
+                            tables_md=tables_md if idx == 0 else "",
+                            extraction_passes=extraction_passes,
+                        )
+
+                chunk_results = await asyncio.gather(
+                    *[_guarded_chunk_extract(i, c) for i, (_, c) in enumerate(chunks)],
+                    return_exceptions=True,
+                )
+
+                for idx, result in enumerate(chunk_results):
+                    if isinstance(result, Exception):
+                        logger.error(f"分块 {idx + 1} 提取失败（不阻塞其他块）: {result}")
+                        continue
+                    all_points.extend(result)
+
+                logger.info(f"所有分块并发提取完成，共 {len(all_points)} 个数据点，开始去重...")
                 deduped = self._deduplicate_points(all_points)
                 return deduped
 
