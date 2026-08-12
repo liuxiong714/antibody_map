@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.api.v1.auth import router as auth_router
 from app.api.v1.dictionary import router as dictionary_router
 from app.api.v1.extraction import router as extraction_router
 from app.api.v1.literature import router as literature_router
@@ -13,6 +14,7 @@ from app.api.v1.model_config import router as model_config_router
 router = APIRouter()
 
 # 注册子路由
+router.include_router(auth_router, tags=["auth"])
 router.include_router(dictionary_router, tags=["dictionary"])
 router.include_router(literature_router, tags=["literature"])
 router.include_router(extraction_router, tags=["extraction"])

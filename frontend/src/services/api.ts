@@ -5,6 +5,15 @@ const api = axios.create({
   timeout: 30000,
 });
 
+// 请求拦截器：自动携带 JWT 令牌
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 // 响应拦截器：自动解包 ApiResponse.data 到 resp.data，统一错误提示
 api.interceptors.response.use(
   (resp) => {
@@ -17,6 +26,18 @@ api.interceptors.response.use(
     return resp;
   },
   (error) => {
+    // 401 未授权：清除 token 并跳转登录页
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('username');
+      localStorage.removeItem('is_admin');
+      sessionStorage.removeItem('token');
+      sessionStorage.removeItem('username');
+      sessionStorage.removeItem('is_admin');
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+    }
     const msg = error.response?.data?.detail || error.message || '请求失败';
     console.error('[API Error]', msg);
     return Promise.reject(error);

@@ -13,11 +13,12 @@ class DataPoint(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     literature_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        ForeignKey("literature.id", ondelete="CASCADE")
+        ForeignKey("literature.id", ondelete="CASCADE"),
+        index=True,
     )
-    disease: Mapped[Optional[str]] = mapped_column(String(100))
+    disease: Mapped[Optional[str]] = mapped_column(String(100), index=True)
     region: Mapped[Optional[str]] = mapped_column(String(100))
-    province: Mapped[Optional[str]] = mapped_column(String(100))
+    province: Mapped[Optional[str]] = mapped_column(String(100), index=True)
     city: Mapped[Optional[str]] = mapped_column(String(100))
     latitude: Mapped[Optional[float]] = mapped_column(Numeric(10, 7))
     longitude: Mapped[Optional[float]] = mapped_column(Numeric(10, 7))
@@ -25,7 +26,7 @@ class DataPoint(Base):
     age_min: Mapped[Optional[int]]
     age_max: Mapped[Optional[int]]
     sample_size: Mapped[Optional[int]]
-    data_type: Mapped[Optional[str]] = mapped_column(String(20))
+    data_type: Mapped[Optional[str]] = mapped_column(String(20), index=True)
     value: Mapped[Optional[float]] = mapped_column(Numeric(10, 4))
     unit: Mapped[Optional[str]] = mapped_column(String(50))
     ci_lower: Mapped[Optional[float]] = mapped_column(Numeric(10, 4))
@@ -33,7 +34,7 @@ class DataPoint(Base):
     method: Mapped[Optional[str]] = mapped_column(String(200))
     assay: Mapped[Optional[str]] = mapped_column(String(200))
     population: Mapped[Optional[str]] = mapped_column(String(200))
-    collection_year: Mapped[Optional[int]]
+    collection_year: Mapped[Optional[int]] = mapped_column(index=True)
     # 数据来源追踪（引用溯源）
     source_page: Mapped[Optional[int]]  # 来源页码
     source_context: Mapped[Optional[str]] = mapped_column(Text)  # 原文片段
@@ -44,12 +45,12 @@ class DataPoint(Base):
     # P1-1：主估计/子估计层级（参考 SeroTracker）
     # estimate_type: primary=主估计（如全省汇总），subgroup=子估计（如按年龄/地区/免疫史分组）
     # parent_id: 子估计指向其主估计的 id；主估计该字段为 None
-    estimate_type: Mapped[str] = mapped_column(String(20), default="primary")
+    estimate_type: Mapped[str] = mapped_column(String(20), default="primary", index=True)
     parent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("data_point.id", ondelete="SET NULL"), nullable=True
     )
     confidence: Mapped[str] = mapped_column(String(10), default="medium")
-    review_status: Mapped[str] = mapped_column(String(20), default="pending")
+    review_status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -560,6 +560,43 @@ MIT
 
 ## 更新日志
 
+### v1.6.7 (2026-08-12)
+
+#### 新功能
+
+- **用户认证与登录系统**：新增完整用户认证体系，基于 JWT 令牌 + bcrypt 密码哈希。所有页面（除 `/login` 外）均需登录才能访问，未登录用户自动跳转登录页。登录后右上角显示当前账户名称和角色（管理员/普通用户），提供「修改密码」和「退出登录」下拉菜单。Token 过期或无效时自动跳转至登录页。
+- **用户管理（仅管理员）**：管理员可在侧边栏「用户管理」页面创建、编辑、删除用户，编辑用户可修改显示名、启用/禁用账号、调整管理员权限。新用户默认密码为 `myk123456`，管理员也可在「重置密码」弹窗中为任意用户设置新密码。
+- **修改密码**：所有用户登录后可在右上角下拉菜单「修改密码」弹窗中自行修改登录密码，需验证原密码，新密码至少 6 个字符。
+- **路由守卫**：前端新增 `RequireAuth` 组件，包装所有需要登录的路由，未登录时自动重定向到 `/login`；API 响应拦截器检测到 401 状态码时自动清除 Token 并跳转登录页。
+
+#### 新增接口
+
+- `POST /api/v1/auth/login`：用户登录，返回 JWT 令牌 + 用户名/显示名/管理员标识。
+- `GET /api/v1/auth/me`：获取当前登录用户信息（含 ID、用户名、角色、状态等）。
+- `POST /api/v1/auth/change-password`：当前用户修改自己的密码，需验证原密码。
+- `GET /api/v1/auth/users`：管理员获取所有用户列表。
+- `POST /api/v1/auth/users`：管理员创建新用户（默认密码 `myk123456`）。
+- `PUT /api/v1/auth/users/{user_id}`：管理员更新用户信息或重置密码。
+- `DELETE /api/v1/auth/users/{user_id}`：管理员删除用户（不能删除自己）。
+
+#### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `backend/app/core/security.py` | bcrypt 密码哈希 + JWT 令牌签发/验证 |
+| `backend/app/models/user.py` | User 数据模型 |
+| `backend/app/api/v1/auth.py` | 认证 API（登录/用户管理/修改密码） |
+| `frontend/src/components/RequireAuth.tsx` | 路由守卫组件 |
+| `frontend/src/pages/UserManagement.tsx` | 用户管理页面 |
+| `frontend/src/pages/LoginPage.css` | 登录页样式 |
+| `frontend/src/pages/LoginPage.tsx` | 登录页面 |
+
+#### 优化
+
+- 左侧菜单布局调整：管理员用户额外显示「用户管理」菜单项，普通用户不可见。
+- API 响应拦截器增强：401 状态码自动清除 Token 并跳转登录页，提升安全性。
+- 登录页左侧品牌区展示抗体 Y 形分子 SVG 和数据点阵背景，右侧卡片式表单。
+
 ### v1.6.6 (2026-08-12)
 
 #### 新功能

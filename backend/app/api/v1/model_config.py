@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
 from app.config import settings
+from app.core.crypto import mask
 from app.models.api_model_config import ApiModelConfig
 from app.schemas.common import ApiResponse
 from app.schemas.model_config import (
@@ -103,7 +104,8 @@ async def update_remote_model(
         config.name = req.name
     if req.model_name is not None:
         config.model_name = req.model_name
-    if req.api_key is not None:
+    # 仅当提供非空且非掩码的 api_key 时才更新（避免掩码覆盖真实 key）
+    if req.api_key is not None and req.api_key.strip() and "***" not in req.api_key:
         config.api_key = req.api_key
     if req.base_url is not None:
         config.base_url = req.base_url
@@ -135,11 +137,13 @@ async def delete_remote_model(
 
 
 def _config_to_dict(c: ApiModelConfig) -> dict:
+    """将配置对象转为字典，api_key 返回掩码形式（不泄露明文）"""
     return {
         "id": str(c.id),
         "name": c.name,
         "model_name": c.model_name,
-        "api_key": c.api_key,
+        # 对外响应只返回掩码（如 "sk-***890"），真实 key 仅在后端调用 LLM 时读取
+        "api_key": mask(c.api_key),
         "base_url": c.base_url,
         "description": c.description,
         "is_active": c.is_active,

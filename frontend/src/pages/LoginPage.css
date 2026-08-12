@@ -1,0 +1,286 @@
+/* ============================================================
+   LoginPage.css — 科研学术气质登录页
+   设计规范：
+   - 主色   : #16305C（藏青）→ #0E7490（青）渐变，学术冷静
+   - 强调色 : #3B82F6（科研蓝）
+   - 背景   : #F6F8FB（暖灰白）+ 极淡坐标网格
+   - 字体   : 中文系统栈 + Inter 风格数字
+   ============================================================ */
+
+.login-page {
+  display: flex;
+  min-height: 100vh;
+  background: #f6f8fb;
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    sans-serif;
+}
+
+/* ============ 左侧品牌区 ============ */
+.login-brand {
+  position: relative;
+  flex: 1.1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 64px 72px;
+  overflow: hidden;
+  background:
+    linear-gradient(
+      160deg,
+      rgba(22, 48, 92, 0.98) 0%,
+      rgba(26, 66, 118, 0.96) 45%,
+      rgba(14, 116, 144, 0.9) 100%
+    );
+}
+
+/* 数据点阵背景 */
+.brand-dots {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* 抗体 Y 形结构 */
+.brand-antibody {
+  width: 200px;
+  height: 160px;
+  margin-bottom: 28px;
+  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.25));
+  animation: abFadeIn 1.2s ease-out both;
+}
+
+.brand-text {
+  position: relative;
+  z-index: 1;
+  color: #ffffff;
+}
+
+.brand-title {
+  margin: 0 0 14px;
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1.2;
+}
+
+.brand-title span {
+  color: #7dd3fc;
+  font-weight: 600;
+}
+
+.brand-slogan {
+  margin: 0 0 36px;
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.78);
+  letter-spacing: 1.5px;
+}
+
+.brand-features {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.brand-features li {
+  position: relative;
+  padding: 9px 0 9px 22px;
+  font-size: 13.5px;
+  color: rgba(255, 255, 255, 0.66);
+  letter-spacing: 0.3px;
+}
+
+.brand-features li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #38bdf8;
+  transform: translateY(-50%);
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.8);
+}
+
+/* ============ 右侧登录区 ============ */
+.login-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  padding: 48px 32px;
+  background-image:
+    linear-gradient(rgba(22, 48, 92, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(22, 48, 92, 0.035) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 48px 44px 40px;
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow:
+    0 1px 2px rgba(16, 38, 76, 0.04),
+    0 12px 40px rgba(16, 38, 76, 0.08);
+  animation: cardUp 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 登录头部 */
+.login-header {
+  text-align: center;
+  margin-bottom: 36px;
+}
+
+.login-logo {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #16305c, #0e7490);
+  color: #ffffff;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  box-shadow: 0 8px 20px rgba(22, 48, 92, 0.28);
+}
+
+.login-header h2 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 600;
+  color: #1a2b4a;
+}
+
+.login-header p {
+  margin: 0;
+  font-size: 13.5px;
+  color: #8492a6;
+  letter-spacing: 0.3px;
+}
+
+/* 表单元素 */
+.input-icon {
+  color: #9aa8bc;
+}
+
+.login-options {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: -6px 0 26px;
+}
+
+.login-link {
+  font-size: 13px;
+  color: #3b82f6;
+}
+
+.login-link:hover {
+  color: #2563eb;
+}
+
+.login-submit {
+  height: 46px;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #16305c 0%, #0e7490 100%);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 6px;
+  box-shadow: 0 6px 16px rgba(22, 48, 92, 0.28);
+  transition: all 0.25s ease;
+}
+
+.login-submit:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(22, 48, 92, 0.36);
+  opacity: 0.95;
+}
+
+/* 分隔线 & 安全提示 */
+.login-divider {
+  margin: 10px 0 18px;
+}
+
+.divider-text {
+  font-size: 12px;
+  color: #a0aec0;
+  letter-spacing: 1px;
+}
+
+.login-security {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: #94a3b8;
+}
+
+.login-security .anticon {
+  color: #10b981;
+}
+
+/* 页脚 */
+.login-footer {
+  margin-top: 40px;
+  font-size: 12px;
+  color: #a0aec0;
+  letter-spacing: 0.5px;
+}
+
+/* ============ 动画 ============ */
+@keyframes abFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cardUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ============ 响应式 ============ */
+@media (max-width: 900px) {
+  .login-brand {
+    display: none;
+  }
+  .login-panel {
+    background-image: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .login-card {
+    padding: 36px 28px 30px;
+  }
+}

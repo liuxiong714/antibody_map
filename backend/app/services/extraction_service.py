@@ -14,6 +14,9 @@ from app.models.base import async_session
 
 logger = logging.getLogger("uvicorn")
 
+# 持有后台提取任务的引用，防止被 GC 回收（Python asyncio 已知陷阱）
+_background_tasks: set[asyncio.Task] = set()
+
 
 async def trigger_extraction(
     db: AsyncSession,
@@ -34,6 +37,10 @@ async def trigger_extraction(
     if not literature.file_path:
         raise ValueError("文献无关联 PDF 文件，无法提取")
 
+    # == 竞态防护：检查当前状态，防止重复触发提取 ==
+    if literature.extraction_status == "processing":
+        raise ValueError(f"文献正在提取中（当前状态: processing），请等待完成后再试")
+
     # 更新状态为 processing
     literature.extraction_status = "processing"
     literature.updated_at = datetime.now(timezone.utc)
@@ -41,7 +48,10 @@ async def trigger_extraction(
 
     # 后台异步执行提取（不阻塞响应）
     lit_id_str = str(literature_id)
-    asyncio.create_task(_run_extraction_background(lit_id_str, model, api_key, base_url))
+    task = asyncio.create_task(_run_extraction_background(lit_id_str, model, api_key, base_url))
+    # 持有引用防止 GC 回收
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     return {
         "literature_id": lit_id_str,

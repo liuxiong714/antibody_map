@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 
 from app.config import settings
 from app.core.llm_extractor import LLMExtractor
@@ -442,6 +442,18 @@ async def _process_literature_async(
             extraction_passes=passes,
         )
         logger.info(f"LLM 提取完成: {len(extract_results)} 个数据点")
+
+        # 5b. 清除该文献下已有的旧数据点（防止重新提取时新旧叠加）
+        # 使用 ORM delete 确保 cascade 正确处理
+        old_dp_result = await db.execute(
+            select(DataPoint.id).where(DataPoint.literature_id == literature_id)
+        )
+        old_ids = old_dp_result.scalars().all()
+        if old_ids:
+            await db.execute(
+                delete(DataPoint).where(DataPoint.literature_id == literature_id)
+            )
+            logger.info(f"已清除 {len(old_ids)} 个旧数据点（文献 {literature_id}）")
 
         # 6. 为每个提取数据点创建 DataPoint 记录（含 grounding + schema 校验）
         all_data_points = []

@@ -37,7 +37,9 @@ const ModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
 
   const handleEdit = (config: ApiModelConfig) => {
     setEditing(config);
-    form.setFieldsValue(config);
+    // 编辑时不预填 api_key（后端返回的是掩码，预填会导致提交时用掩码覆盖真实 key）
+    // api_key 字段留空，placeholder 显示当前掩码，用户不输入则保持不变
+    form.setFieldsValue({ ...config, api_key: undefined });
     setFormVisible(true);
   };
 
@@ -127,8 +129,13 @@ const ModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
           <Form.Item name="model_name" label="模型名" rules={[{ required: true, message: '请输入模型名' }]}>
             <Input placeholder="例如: deepseek-chat" />
           </Form.Item>
-          <Form.Item name="api_key" label="API Key" rules={[{ required: true, message: '请输入 API Key' }]}>
-            <Input.Password placeholder="sk-..." />
+          <Form.Item
+            name="api_key"
+            label="API Key"
+            rules={editing ? [] : [{ required: true, message: '请输入 API Key' }]}
+            extra={editing ? '留空表示不修改当前 API Key' : undefined}
+          >
+            <Input.Password placeholder={editing ? `${editing.api_key || 'sk-...'}（留空不修改）` : 'sk-...'} />
           </Form.Item>
           <Form.Item name="base_url" label="API 地址" rules={[{ required: true, message: '请输入 API 地址' }]}>
             <Input placeholder="例如: https://api.deepseek.com/v1" />

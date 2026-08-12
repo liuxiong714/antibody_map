@@ -24,8 +24,13 @@ openai>=1.30.0
 httpx>=0.27.0
 jinja2>=3.1.0
 alembic>=1.14.0
+# API Key 加密存储（Fernet 对称加密）
+cryptography>=42.0.0
 openpyxl>=3.1.0
 # OCR 依赖（Tesseract 本地 OCR + 百度云 OCR 兜底）
 pytesseract>=0.3.10
 Pillow>=10.0.0
 requests>=2.31.0
+# 认证：JWT 令牌 + 密码哈希
+pyjwt>=2.8.0
+bcrypt>=4.0.0
