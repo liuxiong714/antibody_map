@@ -560,6 +560,43 @@ MIT
 
 ## 更新日志
 
+### v1.6.6 (2026-08-12)
+
+#### 新功能
+
+- **报告生成模型选择**：报告生成时支持选择 LLM 模型，区分「本地 Ollama 模型」和「远程 API 模型」两种类型；远程模型支持自定义 API Key 和 Base URL，可在新增的「模型管理」弹窗中添加/编辑/删除常用远程模型配置（DeepSeek、OpenAI、Qwen 等），生成的报告会记录所用模型（`report.llm_model` 字段）并在报告列表/详情中展示。
+- **MinerU PDF 解析器集成**：新增 `ENABLE_MINERU_PDF_PARSER` 配置项，开启后优先使用 MinerU 解析 PDF（对复杂排版、表格、扫描件效果更好），失败自动回退到 PyMuPDF；首次使用会自动下载模型（约 2-3GB）。
+- **LLM 并发提取配置**：新增 `LLM_CONCURRENCY`（并发请求数上限，需与 Ollama 的 `OLLAMA_NUM_PARALLEL` 对齐）、`LLM_CHUNK_THRESHOLD`/`LLM_CHUNK_SIZE`/`LLM_CHUNK_OVERLAP`（长文档分块参数）、`LLM_REQUEST_TIMEOUT`（本地模型推理超时，默认 600 秒）、`TEXT_PREPROCESS_MAX_CHARS`（预处理截断上限）等配置项，提升本地大模型的提取吞吐量。
+- **文献列表「文档」列排序**：文献列表「文档」列支持表头点击排序，前端配置 `sorter`/`sortOrder` 并在排序下拉菜单新增「文档」选项，后端 `sort_map` 映射到 `Literature.file_path` 字段（空值排最后）。
+
+#### 优化
+
+- **本地 Ollama 模型默认改用 qwen2.5:14b**：相比 qwen3:32b，在 24GB VRAM 下显存占用从 ~29GB（超显存触发 CPU 交换）降至 ~15GB（完全 fit），GPU 利用率从 79% 提升至 100%，单篇文献提取耗时从 >10 分钟降至约 1.8 分钟，Token 用量从 39,462（3 次重试）降至 14,466（1 次成功），数据点提取从 0 个提升至 10 个。
+- **禁用 qwen3 系列的 thinking 模式**：通过 `extra_body={"think": False}` 关闭推理链输出，避免推理时间增加 3 倍且输出被思考链 token 截断。
+- **解除 Ollama `num_predict` 上限**：本地模型调用时显式设置 `num_predict=16384`，避免服务端默认上限覆盖 SDK 的 `max_tokens` 导致输出被截断。
+- **OllamaProvider 次级版本号匹配**：`matches()` 支持 `qwen2.5` 匹配 `qwen2` 这类次级版本号场景，避免模型识别失败。
+- **智能 JSON 解析兜底**：新增 `_smart_truncate_and_close` 函数，对 LLM 返回的截断 JSON 采用逐字符扫描 + 维护字符串/括号状态 + 回退最近 checkpoint + 按括号栈逆序补齐的策略，显著提升结构化字段解析成功率。
+- **模型切换 timeout 透传**：AsyncOpenAI 客户端在模型切换时显式传递 `timeout` 参数，避免使用默认超时导致本地模型调用被提前中断。
+
+#### 新增接口
+
+- `GET /api/v1/model-configs`：获取所有远程 API 模型配置列表。
+- `POST /api/v1/model-configs`：新增远程 API 模型配置（含名称、厂商、API Key、Base URL）。
+- `PUT /api/v1/model-configs/{id}`：更新指定远程模型配置。
+- `DELETE /api/v1/model-configs/{id}`：删除指定远程模型配置。
+- `POST /api/v1/reports/generate` 新增 `model` 查询参数：指定报告生成所用的模型名称（本地 Ollama 模型名或远程模型配置 ID）。
+
+#### 数据库迁移
+
+- `add_api_model_config`：新增 `api_model_config` 表，存储远程 API 模型配置（名称、厂商、API Key 加密存储、Base URL、是否默认等）。
+- `add_report_llm_model`：为 `report` 表新增 `llm_model` 字段，记录每份报告生成时所用的 LLM 模型。
+
+#### 文档与配置
+
+- 更新 README「核心功能」和「技术栈」，补充报告生成模型选择和本地 Ollama 支持的描述。
+- `.env.example` 新增 LLM 并发提取相关配置项的注释说明。
+- `backend/app/config.py` 的 `.env` 文件路径改为基于项目根目录的绝对路径，避免从 backend 子目录启动时读取失败。
+
 ### v1.6.5 (2026-08-12)
 
 #### 新功能
