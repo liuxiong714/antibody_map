@@ -21,6 +21,7 @@ export interface Literature {
   file_path: string | null;
   pdf_hash: string | null;
   has_fulltext: boolean;
+  file_format: string | null;
   extraction_status: string;
   extracted_count: number;
   approved_count: number;

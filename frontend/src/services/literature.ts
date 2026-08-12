@@ -93,6 +93,18 @@ export async function triggerBatchExtraction(
   return data;
 }
 
+// ── 提取状态修复与手动停止 ──
+
+export async function stopExtraction(literatureId: string): Promise<{ literature_id: string; status: string }> {
+  const { data } = await api.post(`/literatures/${literatureId}/extraction/stop`);
+  return data;
+}
+
+export async function resetStuckExtractions(): Promise<{ reset_count: number; literature_ids?: string[] }> {
+  const { data } = await api.post('/literatures/extraction/reset-stuck');
+  return data;
+}
+
 export interface SyncMetadataResult {
   id: string;
   pub_year: number | null;

@@ -662,3 +662,70 @@ async def sync_metadata_batch(db: AsyncSession = Depends(get_db)):
             "details": details,
         },
     )
+
+
+# ── 提取状态修复与手动停止 ──────────────────────────────────
+
+@router.post("/literatures/{literature_id}/extraction/stop", response_model=ApiResponse)
+async def stop_extraction(
+    literature_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """手动停止/重置文献提取状态。
+
+    将 extraction_status='processing' 的文献强制重置为 'failed'，
+    用于处理服务器重启或任务异常退出导致的永久「提取中」状态。
+    """
+    result = await db.execute(
+        select(Literature).where(Literature.id == literature_id)
+    )
+    literature = result.scalar_one_or_none()
+    if not literature:
+        raise HTTPException(status_code=404, detail="文献不存在")
+
+    if literature.extraction_status != "processing":
+        return ApiResponse(
+            message=f"当前状态为 {literature.extraction_status}，无需停止",
+            data={"literature_id": str(literature_id), "status": literature.extraction_status},
+        )
+
+    literature.extraction_status = "failed"
+    literature.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    logger.warning(f"文献 {literature_id} 提取已被手动停止，状态重置为 failed")
+    return ApiResponse(
+        message="提取已停止，状态重置为失败",
+        data={"literature_id": str(literature_id), "status": "failed"},
+    )
+
+
+@router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse)
+async def reset_stuck_extractions(db: AsyncSession = Depends(get_db)):
+    """批量重置所有卡在 'processing' 状态的文献为 'failed'。
+
+    典型场景：服务器重启后，之前的异步提取任务已丢失但状态未更新。
+    """
+    result = await db.execute(
+        select(Literature).where(Literature.extraction_status == "processing")
+    )
+    stuck_list = result.scalars().all()
+
+    if not stuck_list:
+        return ApiResponse(message="没有卡住的提取任务", data={"reset_count": 0})
+
+    reset_ids = []
+    for lit in stuck_list:
+        lit.extraction_status = "failed"
+        lit.updated_at = datetime.now(timezone.utc)
+        reset_ids.append(str(lit.id))
+
+    await db.commit()
+
+    logger.warning(
+        f"[ResetStuck] 批量重置 {len(stuck_list)} 篇卡住的提取状态为 failed: {reset_ids}"
+    )
+    return ApiResponse(
+        message=f"已重置 {len(stuck_list)} 篇卡住的提取状态为失败",
+        data={"reset_count": len(stuck_list), "literature_ids": reset_ids},
+    )

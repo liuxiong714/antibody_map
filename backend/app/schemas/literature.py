@@ -62,6 +62,7 @@ class LiteratureResponse(BaseModel):
     file_path: Optional[str] = None
     pdf_hash: Optional[str] = None
     has_fulltext: bool = False
+    file_format: Optional[str] = None
     extraction_status: str
     extracted_count: int
     approved_count: int

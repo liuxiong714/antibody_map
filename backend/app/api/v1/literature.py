@@ -167,8 +167,48 @@ async def list_literatures(
     items, total = await list_literature(
         db, keyword, disease, province, year_start, year_end, journal, sort_by, sort_order, review_status, page, page_size
     )
+
+    def _derive_file_format(lit) -> Optional[str]:
+        """根据 file_path / title / source_db 推导文献文件格式，大写后缀，None 表示无本地文件。"""
+        path = getattr(lit, "file_path", None) or ""
+        if path:
+            low = path.lower()
+            # query string 带 ?att=xxx 情况（from-URL 存的是网页 URL）
+            if low.startswith("http://") or low.startswith("https://"):
+                if ".pdf" in low:
+                    return "PDF"
+                if ".caj" in low:
+                    return "CAJ"
+                if ".epub" in low:
+                    return "EPUB"
+                if ".docx" in low:
+                    return "DOCX"
+                if ".pptx" in low:
+                    return "PPTX"
+                if ".xlsx" in low:
+                    return "XLSX"
+                # URL 不带后缀，默认是 HTML (网页) 来源
+                if low.endswith(".html") or low.endswith(".htm"):
+                    return "HTML"
+                return "URL"
+            # 本地文件路径：按扩展名
+            ext = low.rsplit(".", 1)[-1] if "." in low else ""
+            ext = ext.split("?", 1)[0]
+            if ext in {"pdf", "caj", "epub", "docx", "pptx", "xlsx", "txt", "html", "htm"}:
+                return ext.upper() if ext != "htm" else "HTML"
+        # 没有本地文件：根据 source_db 判断是否是纯元数据（PubMed/CNKI等）
+        if getattr(lit, "source_db", None):
+            return None
+        return None
+
+    serialized = []
+    for item in items:
+        data = LiteratureResponse.model_validate(item).model_dump()
+        data["file_format"] = _derive_file_format(item)
+        serialized.append(data)
+
     return PagedResponse(
-        items=[LiteratureResponse.model_validate(item).model_dump() for item in items],
+        items=serialized,
         total=total,
         page=page,
         page_size=page_size,

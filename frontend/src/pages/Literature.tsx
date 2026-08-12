@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Dropdown, Switch,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FileExcelOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import DiseaseSelector from '../components/DiseaseSelector';
@@ -10,7 +10,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures } from '../services/literature';
+import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
 import { formatAuthors, truncate } from '../utils/format';
@@ -364,6 +364,42 @@ const LiteraturePage: React.FC = () => {
     }
   };
 
+  // 停止单篇文献提取（重置卡住的 processing 状态为 failed）
+  const [stoppingIds, setStoppingIds] = useState<Set<string>>(new Set());
+  const handleStopExtraction = async (id: string) => {
+    setStoppingIds((prev) => { const n = new Set(prev); n.add(id); return n; });
+    try {
+      const result = await stopExtraction(id);
+      message.success(`已停止提取，状态重置为失败（当前状态：${result.status}）`);
+      fetchList();
+    } catch (err) {
+      console.error('[Literature] 停止提取失败:', err);
+      message.error('停止提取失败，请检查后端服务是否正常');
+    } finally {
+      setStoppingIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
+    }
+  };
+
+  // 批量重置所有卡在 processing 状态的文献为 failed
+  const [resettingStuck, setResettingStuck] = useState(false);
+  const handleResetStuck = async () => {
+    setResettingStuck(true);
+    try {
+      const result = await resetStuckExtractions();
+      if (result.reset_count > 0) {
+        message.success(`已重置 ${result.reset_count} 篇卡住的提取状态为失败`);
+      } else {
+        message.info('当前没有卡住的提取任务');
+      }
+      fetchList();
+    } catch (err) {
+      console.error('[Literature] 重置卡住提取失败:', err);
+      message.error('重置卡住提取失败，请检查后端服务是否正常');
+    } finally {
+      setResettingStuck(false);
+    }
+  };
+
   const handleExtract = (id: string) => {
     setBatchExtractMode(false);
     setExtractLitId(id);
@@ -559,6 +595,80 @@ const LiteraturePage: React.FC = () => {
       render: (v: string) => v || '-',
     },
     {
+      title: '文档',
+      key: 'file_format',
+      width: 90,
+      render: (_: unknown, r: Literature) => {
+        const fmt = r.file_format;
+        const hasFile = !!fmt;
+        // 各格式对应的颜色与图标
+        const formatColorMap: Record<string, string> = {
+          PDF: '#f5222d',
+          CAJ: '#722ed1',
+          EPUB: '#fa8c16',
+          DOCX: '#1677ff',
+          PPTX: '#d46b08',
+          XLSX: '#389e0d',
+          TXT: '#8c8c8c',
+          HTML: '#13c2c2',
+          URL: '#2f54eb',
+        };
+        if (!hasFile) {
+          return (
+            <Tooltip title="暂无本地文档（仅元数据）">
+              <Tag color="default" style={{ border: '1px dashed #d9d9d9' }}>
+                <FileUnknownOutlined style={{ marginRight: 2 }} />
+                无
+              </Tag>
+            </Tooltip>
+          );
+        }
+        const color = formatColorMap[fmt!] || '#595959';
+        const formatIconMap: Record<string, React.ReactNode> = {
+          PDF: <FilePdfOutlined />,
+          CAJ: <FileTextOutlined />,
+          EPUB: <BookOutlined />,
+          DOCX: <FileWordOutlined />,
+          PPTX: <FilePptOutlined />,
+          XLSX: <FileExcelOutlined />,
+          TXT: <FileTextOutlined />,
+          HTML: <LinkOutlined />,
+          URL: <GlobalOutlined />,
+        };
+        const icon = formatIconMap[fmt!] || <FileOutlined />;
+        // 点击预览：HTML 直接新标签页打开，其它格式走内部预览弹窗
+        const handlePreview = () => {
+          const ext = (r.file_path || '').split('.').pop()?.toLowerCase();
+          if (ext === 'html' || ext === 'htm') {
+            window.open(`/api/v1/literatures/${r.id}/file`, '_blank');
+          } else {
+            setPreviewLitId(r.id);
+            setPreviewLitTitle(r.title);
+            setPreviewOpen(true);
+          }
+        };
+        return (
+          <Tooltip title={`点击预览 ${fmt!} 文档`}>
+            <Tag
+              onClick={handlePreview}
+              color={color}
+              style={{
+                cursor: 'pointer',
+                fontWeight: 600,
+                fontSize: 12,
+                paddingLeft: 8,
+                paddingRight: 8,
+                borderRadius: 4,
+              }}
+            >
+              <span style={{ marginRight: 3 }}>{icon}</span>
+              {fmt}
+            </Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: '提取状态',
       dataIndex: 'extraction_status',
       key: 'status',
@@ -630,6 +740,25 @@ const LiteraturePage: React.FC = () => {
               disabled={r.extraction_status === 'processing'}
             />
           </Tooltip>
+          {r.extraction_status === 'processing' && (
+            <Tooltip title="手动停止提取（状态异常时使用）">
+              <Popconfirm
+                title="确定停止该文献的提取？"
+                description="停止后状态将重置为失败，可重新触发提取。"
+                onConfirm={() => handleStopExtraction(r.id)}
+                okText="停止"
+                cancelText="取消"
+                okButtonProps={{ danger: true }}
+              >
+                <Button
+                  size="small"
+                  danger
+                  icon={<StopOutlined />}
+                  loading={stoppingIds.has(r.id)}
+                />
+              </Popconfirm>
+            </Tooltip>
+          )}
           {r.extraction_status === 'done' && (!r.pub_year || !r.province) && (
             <Tooltip title="同步元数据（从数据点聚合年份/省份）">
               <Button
@@ -804,6 +933,16 @@ const LiteraturePage: React.FC = () => {
           >
             <Button icon={<SyncOutlined />} loading={batchSyncing}>
               批量同步元数据
+            </Button>
+          </Popconfirm>
+          <Popconfirm
+            title="重置卡住的提取状态"
+            description="将所有状态为「提取中」的文献重置为「失败」（适用于服务器重启后状态卡住的情况）。确定继续？"
+            onConfirm={handleResetStuck}
+            disabled={resettingStuck}
+          >
+            <Button icon={<StopOutlined />} loading={resettingStuck} danger>
+              重置卡住的提取
             </Button>
           </Popconfirm>
           <Dropdown menu={{

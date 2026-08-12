@@ -12,8 +12,8 @@
 
 | 模块 | 功能 |
 |------|------|
-| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**多格式导入导出**（CSV/Excel/JSON，JSON 含数据点可跨电脑迁移导入、支持仅导出选中文献）、**元数据批量同步**（从数据点自动聚合年份/省份） |
-| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取**、**上传/提取时可重新选定默认模型**、**批量AI提取**（多选文献后统一设置模型重新提取，自动跳过 processing 中的文献）；提取完成后可选显示**Token 用量、费用估算及使用的大模型** |
+| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**多格式导入导出**（CSV/Excel/JSON，JSON 含数据点可跨电脑迁移导入、支持仅导出选中文献）、**元数据批量同步**（从数据点自动聚合年份/省份）、**文档格式标识列**（彩色 Tag 显示 PDF/CAJ/DOCX/HTML 等格式，点击即可预览） |
+| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取**、**上传/提取时可重新选定默认模型**、**批量AI提取**（多选文献后统一设置模型重新提取，自动跳过 processing 中的文献）、**手动停止提取**（单篇卡住的 processing 强制重置为 failed）、**一键重置所有卡住的提取状态**（适用于服务器重启后任务丢失的场景）；提取完成后可选显示**Token 用量、费用估算及使用的大模型** |
 | **精确字符溯源** | 每个数据点锚定到原文的精确字符区间（`source_char_start/end`），采用精确/模糊/关键短语三级匹配，未匹配自动降级置信度并红色高亮待审 |
 | **长文档分块并行提取** | 超过 2 万字符的文献按段落边界分块、并行调用 LLM 提取，结果自动合并去重 |
 | **强 Schema 约束** | LLM 输出经 JSON Schema 校验（省份枚举、阳性率 0-100% 范围、GMC 正值等），字段违规自动降级置信度 |
@@ -342,6 +342,8 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 |------|------|------|
 | POST | `/literatures/{id}/extraction` | 触发 AI 数据提取 (可指定模型/API Key/Base URL) |
 | POST | `/literatures/extraction/batch` | 批量触发 AI 数据提取（多选文献、统一模型、自动跳过 processing 中的文献） |
+| POST | `/literatures/{id}/extraction/stop` | **手动停止单篇文献提取**（强制将 `processing` 重置为 `failed`，适用于任务卡住场景） |
+| POST | `/literatures/extraction/reset-stuck` | **一键批量重置所有卡在 `processing` 状态的文献为 `failed`**（适用于服务器重启后任务丢失场景） |
 | GET | `/literatures/{id}/extraction/status` | 查询提取任务状态 |
 | GET | `/literatures/{id}/extraction` | 获取提取的数据点列表 |
 | GET | `/literatures/{id}/extraction/export` | 导出数据点 CSV |
@@ -557,6 +559,23 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.6.5 (2026-08-12)
+
+#### 新功能
+
+- **文献格式标识列**：文献列表新增「文档」列，使用彩色 Tag 显示文献的本地文档格式（PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML/URL），不同格式对应独立颜色和图标；无本地文档的文献显示「无」灰色虚线 Tag。点击 Tag 可直接预览：HTML 在新标签页打开，其它格式走内置预览弹窗，便于快速识别文献来源类型并预览/下载。
+- **手动停止单篇提取**：文献列表操作列在文献状态为 `processing` 时新增红色「停止提取」按钮（带二次确认弹窗），点击后调用接口强制将该文献状态重置为 `failed`，可立即重新触发提取。适用于单篇文献卡住的场景，避免无限等待。
+- **一键重置所有卡住的提取状态**：文献管理工具栏新增「重置卡住的提取」按钮（带二次确认弹窗），点击后批量将所有 `processing` 状态的文献重置为 `failed`。典型场景：服务器重启导致异步提取任务丢失但状态未更新，文献永久显示「提取中」。重置后可在文献列表使用「批量AI提取」统一重新触发。
+
+#### 新增接口
+
+- `POST /literatures/{id}/extraction/stop`：手动停止单篇文献提取，将 `processing` 强制重置为 `failed`，返回最新状态；若当前状态非 `processing` 则返回无需停止提示。
+- `POST /literatures/extraction/reset-stuck`：批量重置所有 `processing` 状态文献为 `failed`，返回 `reset_count` 和重置的 `literature_ids` 列表；无卡住任务时返回 `reset_count=0`。
+
+#### 修复
+
+- **提取状态永久「提取中」**：修复服务器重启或任务异常退出后，异步提取任务丢失但 `extraction_status` 未更新的问题，新增上述两个接口手动恢复状态。
 
 ### v1.6.4 (2026-08-12)
 
