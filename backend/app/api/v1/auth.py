@@ -1,22 +1,31 @@
 """认证 API：登录、用户管理、修改密码"""
-import logging
+import re
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, get_current_user, require_admin
-from app.core.security import hash_password, verify_password, create_access_token
+from app.core.audit import log_audit
+from app.core.rate_limiter import login_rate_limit
+from app.core.security import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    create_refresh_token,
+    decode_access_token,
+    decode_refresh_token,
+)
+from app.core.token_revocation import revoke_token
 from app.models.user import User
 from app.schemas.common import ApiResponse
 
 router = APIRouter()
-logger = logging.getLogger("uvicorn")
 
-# 新用户默认密码
+# 新用户默认密码（从环境变量读取，未配置时使用硬编码默认值）
 DEFAULT_PASSWORD = "myk123456"
 
 
@@ -30,9 +39,14 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     token: str
+    refresh_token: str = ""
     username: str
     display_name: Optional[str] = None
     is_admin: bool = False
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 
 class CreateUserRequest(BaseModel):
@@ -62,10 +76,30 @@ class UserResponse(BaseModel):
     created_at: str
 
 
+# ── 密码校验 ──────────────────────────────────────────────
+
+def _validate_password_strength(password: str) -> Optional[str]:
+    """校验密码强度，返回错误信息或 None"""
+    if len(password) < 8:
+        return "密码至少 8 个字符"
+    if not re.search(r"[A-Z]", password):
+        return "密码需包含至少一个大写字母"
+    if not re.search(r"[a-z]", password):
+        return "密码需包含至少一个小写字母"
+    if not re.search(r"\d", password):
+        return "密码需包含至少一个数字"
+    return None
+
+
 # ── 登录 ──────────────────────────────────────────────────
 
 @router.post("/auth/login", response_model=ApiResponse)
-async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(
+    req: LoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(login_rate_limit),
+):
     """用户登录，返回 JWT 令牌"""
     result = await db.execute(
         select(User).where(User.username == req.username)
@@ -79,17 +113,74 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=403, detail="账号已被禁用")
 
     token = create_access_token(str(user.id), user.username, user.is_admin)
-    logger.info(f"用户 {user.username} 登录成功")
+    refresh_token = create_refresh_token(str(user.id))
+
+    client_ip = request.client.host if request.client else None
+    await log_audit(
+        db, "login", user_id=str(user.id), username=user.username,
+        client_ip=client_ip,
+    )
 
     return ApiResponse(
         message="登录成功",
         data=LoginResponse(
             token=token,
+            refresh_token=refresh_token,
             username=user.username,
             display_name=user.display_name,
             is_admin=user.is_admin,
         ),
     )
+
+
+# ── 刷新令牌 ──────────────────────────────────────────────
+
+@router.post("/auth/refresh", response_model=ApiResponse)
+async def refresh_token(
+    req: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """用刷新令牌换取新的访问令牌"""
+    payload = decode_refresh_token(req.refresh_token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="刷新令牌无效或已过期")
+
+    user_id = payload.get("sub")
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
+
+    new_token = create_access_token(str(user.id), user.username, user.is_admin)
+    new_refresh_token = create_refresh_token(str(user.id))
+
+    return ApiResponse(
+        data=LoginResponse(
+            token=new_token,
+            refresh_token=new_refresh_token,
+            username=user.username,
+            display_name=user.display_name,
+            is_admin=user.is_admin,
+        ),
+    )
+
+
+# ── 退出登录 ──────────────────────────────────────────────
+
+@router.post("/auth/logout", response_model=ApiResponse)
+async def logout(
+    authorization: str | None = Header(None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """退出登录：吊销当前访问令牌"""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+        payload = decode_access_token(token)
+        if payload and payload.get("jti"):
+            await revoke_token(payload["jti"], payload.get("exp"))
+    await log_audit(db, "logout", user_id=str(user.id), username=user.username)
+    return ApiResponse(message="退出登录成功")
 
 
 @router.get("/auth/me", response_model=ApiResponse)
@@ -119,12 +210,13 @@ async def change_password(
     if not verify_password(req.old_password, user.hashed_password):
         raise HTTPException(status_code=400, detail="原密码错误")
 
-    if len(req.new_password) < 6:
-        raise HTTPException(status_code=400, detail="新密码至少 6 个字符")
+    err = _validate_password_strength(req.new_password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
 
     user.hashed_password = hash_password(req.new_password)
     await db.commit()
-    logger.info(f"用户 {user.username} 修改了密码")
+    await log_audit(db, "change_password", user_id=str(user.id), username=user.username)
     return ApiResponse(message="密码修改成功")
 
 
@@ -173,9 +265,12 @@ async def create_user(
     )
     db.add(user)
     await db.commit()
-    logger.info(f"管理员 {admin.username} 创建了用户 {user.username}，默认密码: {DEFAULT_PASSWORD}")
+    await log_audit(
+        db, "create_user", user_id=str(admin.id), username=admin.username,
+        target=req.username, detail={"is_admin": req.is_admin},
+    )
     return ApiResponse(
-        message=f"用户创建成功，默认密码: {DEFAULT_PASSWORD}",
+        message="用户创建成功",
         data=UserResponse(
             id=str(user.id),
             username=user.username,
@@ -207,10 +302,17 @@ async def update_user(
     if req.is_admin is not None:
         user.is_admin = req.is_admin
     if req.password:
+        err = _validate_password_strength(req.password)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
         user.hashed_password = hash_password(req.password)
 
     await db.commit()
-    logger.info(f"管理员 {admin.username} 更新了用户 {user.username}")
+    await log_audit(
+        db, "update_user", user_id=str(admin.id), username=admin.username,
+        target=user.username,
+        detail={"is_active": req.is_active, "is_admin": req.is_admin, "password_reset": bool(req.password)},
+    )
     return ApiResponse(message="用户更新成功")
 
 
@@ -229,7 +331,11 @@ async def delete_user(
     if user.id == admin.id:
         raise HTTPException(status_code=400, detail="不能删除自己")
 
+    target_username = user.username
     await db.delete(user)
     await db.commit()
-    logger.info(f"管理员 {admin.username} 删除了用户 {user.username}")
+    await log_audit(
+        db, "delete_user", user_id=str(admin.id), username=admin.username,
+        target=target_username,
+    )
     return ApiResponse(message="用户删除成功")

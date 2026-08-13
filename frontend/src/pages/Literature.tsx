@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Dropdown, Switch,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import DiseaseSelector from '../components/DiseaseSelector';
@@ -10,7 +10,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions } from '../services/literature';
+import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
 import { formatAuthors, truncate } from '../utils/format';
@@ -152,6 +152,39 @@ const LiteraturePage: React.FC = () => {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importSkipDuplicates, setImportSkipDuplicates] = useState(true);
   const [importing, setImporting] = useState(false);
+
+  // 从本地文件夹批量导入
+  const [folderImportOpen, setFolderImportOpen] = useState(false);
+  const [folderFiles, setFolderFiles] = useState<File[]>([]);
+  const [folderImporting, setFolderImporting] = useState(false);
+  const [folderImportResult, setFolderImportResult] = useState<BatchImportResult | null>(null);
+  const [folderImportTriggerExtraction, setFolderImportTriggerExtraction] = useState(true);
+
+  const handleFolderImport = async () => {
+    if (folderFiles.length === 0) {
+      message.warning('请先选择文件夹');
+      return;
+    }
+    setFolderImporting(true);
+    try {
+      const result = await batchUploadFiles(folderFiles, folderImportTriggerExtraction);
+      setFolderImportResult(result);
+      const parts: string[] = [];
+      if (result.matched > 0) parts.push(`关联 ${result.matched} 篇`);
+      if (result.imported > 0) parts.push(`新建 ${result.imported} 篇`);
+      if (result.skipped > 0) parts.push(`跳过 ${result.skipped} 篇`);
+      if (result.failed > 0) parts.push(`失败 ${result.failed} 个`);
+      let msg = '批量导入完成：' + parts.join('，');
+      if (result.extraction_triggered > 0) msg += `，已触发 ${result.extraction_triggered} 篇 AI 提取`;
+      message.success(msg);
+      fetchList();
+    } catch (err: any) {
+      console.error('[Literature] 批量导入失败:', err);
+      message.error(err.response?.data?.detail || '批量导入失败');
+    } finally {
+      setFolderImporting(false);
+    }
+  };
 
   const fetchList = useCallback(async () => {
     setLoading(true);
@@ -916,6 +949,13 @@ const LiteraturePage: React.FC = () => {
           }}>
             上传文献
           </Button>
+          <Button icon={<FolderOpenOutlined />} onClick={() => {
+            setFolderFiles([]);
+            setFolderImportResult(null);
+            setFolderImportOpen(true);
+          }}>
+            从本地文件夹导入
+          </Button>
           <Button icon={<LinkOutlined />} onClick={() => {
             setUrlInput('');
             setUrlTitle('');
@@ -933,6 +973,27 @@ const LiteraturePage: React.FC = () => {
             disabled={selectedRowKeys.length === 0}
           >
             批量AI提取 {selectedRowKeys.length > 0 ? `(${selectedRowKeys.length})` : ''}
+          </Button>
+          <Button
+            icon={<ShrinkOutlined />}
+            onClick={() => {
+              if (selectedRows.length !== 2) {
+                message.warning('请先选择 2 篇文献进行合并（在表格左侧勾选）');
+                return;
+              }
+              // 默认以第一行选中的为源文献，第二行为目标文献
+              const [src, tgt] = selectedRows;
+              setMergeState({
+                open: true,
+                sourceId: src.id,
+                targetId: tgt.id,
+                sourceTitle: src.title,
+                targetTitle: tgt.title,
+              });
+            }}
+            disabled={selectedRowKeys.length === 0}
+          >
+            合并选中 {selectedRowKeys.length > 0 ? `(${selectedRowKeys.length})` : ''}
           </Button>
           <Popconfirm
             title="批量同步元数据"
@@ -1213,6 +1274,108 @@ const LiteraturePage: React.FC = () => {
             onChange={(e) => setUrlProvince(e.target.value)}
           />
         </Space>
+      </Modal>
+
+      {/* 从本地文件夹批量导入对话框 */}
+      <Modal
+        title={<><FolderOpenOutlined /> 从本地文件夹批量导入</>}
+        open={folderImportOpen}
+        onCancel={() => { setFolderImportOpen(false); setFolderFiles([]); setFolderImportResult(null); }}
+        onOk={handleFolderImport}
+        confirmLoading={folderImporting}
+        okText={folderImporting ? `上传中 (${folderFiles.length} 个文件)...` : '开始导入'}
+        okButtonProps={{ disabled: folderFiles.length === 0 }}
+        width={680}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <p>选择本地文件夹，批量导入其中的文献文件，自动匹配已有文献或创建新记录。</p>
+        </div>
+
+        {!folderImportResult && (
+          <>
+            <div style={{
+              border: '2px dashed #d9d9d9', borderRadius: 8, padding: 32,
+              textAlign: 'center', cursor: 'pointer', background: '#fafafa',
+              marginBottom: 16,
+            }}>
+              <input
+                type="file"
+                {...({ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>)}
+                multiple
+                style={{ display: 'none' }}
+                id="folder-picker"
+                onChange={(e) => {
+                  const fileList = e.target.files;
+                  if (fileList) {
+                    setFolderFiles(Array.from(fileList));
+                  }
+                }}
+              />
+              <label htmlFor="folder-picker" style={{ cursor: 'pointer', display: 'block' }}>
+                <FolderOpenOutlined style={{ fontSize: 48, color: '#1677ff', marginBottom: 12 }} />
+                <div style={{ fontSize: 16, fontWeight: 500, marginBottom: 4 }}>
+                  {folderFiles.length > 0
+                    ? `已选择 ${folderFiles.length} 个文件`
+                    : '点击选择文件夹'}
+                </div>
+                <div style={{ color: '#999', fontSize: 13 }}>
+                  {folderFiles.length > 0
+                    ? `共 ${(folderFiles.reduce((s, f) => s + f.size, 0) / 1024 / 1024).toFixed(1)} MB`
+                    : '支持 PDF、CAJ、DOCX、TXT 等格式'}
+                </div>
+              </label>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+              <Switch
+                checked={folderImportTriggerExtraction}
+                onChange={setFolderImportTriggerExtraction}
+                size="small"
+              />
+              <Text style={{ fontSize: 13 }}>
+                对新导入的文献自动触发 AI 提取
+              </Text>
+            </div>
+          </>
+        )}
+
+        {folderImportResult && (
+          <>
+            <div style={{
+              padding: '8px 12px', borderRadius: 6, marginBottom: 12,
+              background: folderImportResult.failed > 0 ? '#fff2f0' : '#f6ffed',
+              border: `1px solid ${folderImportResult.failed > 0 ? '#ffccc7' : '#b7eb8f'}`,
+            }}>
+              <Text strong>
+                关联 {folderImportResult.matched} 篇
+                {' | '}新建 {folderImportResult.imported} 篇
+                {' | '}跳过 {folderImportResult.skipped} 篇
+                {' | '}失败 {folderImportResult.failed} 个
+              </Text>
+            </div>
+            <div style={{ maxHeight: 320, overflow: 'auto' }}>
+              <Table
+                dataSource={folderImportResult.details}
+                columns={[
+                  { title: '文件名', dataIndex: 'filename', key: 'filename', width: 200 },
+                  { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (s: string) => {
+                    switch(s) {
+                      case 'matched': return <Tag color="green">已关联</Tag>;
+                      case 'imported': return <Tag color="blue">已新建</Tag>;
+                      case 'skipped_has_file': return <Tag color="orange">已跳过</Tag>;
+                      default: return <Tag color="red">失败</Tag>;
+                    }
+                  }},
+                  { title: '文献标题', dataIndex: 'title', key: 'title', render: (t: string | undefined) => t || '-' },
+                  { title: '错误信息', dataIndex: 'error', key: 'error', width: 150, render: (e: string | undefined) => e || '-' },
+                ]}
+                rowKey="filename"
+                pagination={false}
+                size="small"
+              />
+            </div>
+          </>
+        )}
       </Modal>
 
       {/* 文件导入对话框 */}

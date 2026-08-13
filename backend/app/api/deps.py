@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_access_token
+from app.core.token_revocation import is_token_revoked
 from app.models.base import async_session
 from app.models.user import User
 
@@ -30,6 +31,11 @@ async def get_current_user(
     payload = decode_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
+
+    # 检查 Token 是否已被吊销（退出登录后）
+    jti = payload.get("jti")
+    if jti and await is_token_revoked(jti):
+        raise HTTPException(status_code=401, detail="令牌已被吊销，请重新登录")
 
     user_id = payload.get("sub")
     result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))

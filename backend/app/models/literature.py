@@ -49,7 +49,7 @@ class Literature(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "extraction_status IN ('pending','processing','done','failed')",
+            "extraction_status IN ('pending','processing','done','done_no_data','failed')",
             name="lit_extraction_status_check",
         ),
     )

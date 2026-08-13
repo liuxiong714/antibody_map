@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.literature import Literature
 from app.models.data_point import DataPoint
+from app.models.extraction_history import ExtractionHistory
 from app.tasks.extract_task import _process_literature_async
 from app.models.base import async_session
 
@@ -79,6 +80,17 @@ async def _run_extraction_background(
                 if lit:
                     lit.extraction_status = "failed"
                     lit.updated_at = datetime.now(timezone.utc)
+                    # 写入失败历史记录
+                    try:
+                        history = ExtractionHistory(
+                            literature_id=lit.id,
+                            status="failed",
+                            data_point_count=0,
+                            error_message=str(e)[:2000],
+                        )
+                        fail_db.add(history)
+                    except Exception as he:
+                        logger.error(f"写入失败历史记录出错: {he}", exc_info=True)
                     await fail_db.commit()
         except Exception as mark_err:
             logger.error(f"标记失败状态时出错: {mark_err}", exc_info=True)
@@ -164,4 +176,35 @@ async def get_extraction_results(
             "updated_at": dp.updated_at.isoformat() if dp.updated_at else None,
         }
         for dp in data_points
+    ]
+
+
+async def get_extraction_history(
+    db: AsyncSession,
+    literature_id: uuid.UUID,
+) -> list[dict]:
+    """获取文献的 AI 提取历史记录"""
+    result = await db.execute(
+        select(ExtractionHistory).where(
+            ExtractionHistory.literature_id == literature_id
+        ).order_by(ExtractionHistory.extracted_at.desc())
+    )
+    history_list = result.scalars().all()
+
+    return [
+        {
+            "id": str(h.id),
+            "extracted_at": h.extracted_at.isoformat() if h.extracted_at else None,
+            "model": h.model,
+            "status": h.status,
+            "data_point_count": h.data_point_count,
+            "error_message": h.error_message,
+            "prompt_tokens": h.prompt_tokens,
+            "completion_tokens": h.completion_tokens,
+            "total_tokens": h.total_tokens,
+            "llm_cost_usd": float(h.llm_cost_usd) if h.llm_cost_usd is not None else 0.0,
+            "llm_call_count": h.llm_call_count,
+            "llm_usage_detail": h.llm_usage_detail,
+        }
+        for h in history_list
     ]

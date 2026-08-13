@@ -30,10 +30,11 @@ def compute_pdf_hash(file_bytes: bytes) -> str:
 
 
 def normalize_title(title: Optional[str]) -> str:
-    """标题归一化：小写 + 去标点 + 压缩空格"""
+    """标题归一化：小写 + 替换连字符为空格 + 去标点 + 压缩空格"""
     if not title:
         return ""
     t = title.lower().strip()
+    t = re.sub(r"[-–—]", " ", t)  # 连字符统一替换为空格
     t = re.sub(r"[^\w\s]", "", t)
     t = re.sub(r"\s+", " ", t)
     return t
@@ -261,6 +262,74 @@ async def delete_literature(db: AsyncSession, literature_id: uuid.UUID) -> bool:
     return True
 
 
+# 文件扩展名正则，用于从文件名中提取标题
+_TITLE_EXT_PATTERN = re.compile(r"\.(pdf|caj|doc|docx|txt|epub|pptx|xlsx|ps|wps|md)$", re.IGNORECASE)
+# 年份前缀正则，用于从文件名中去除年份前缀（含 YYYY_、YYYY-MM-DD_ 等格式）
+_TITLE_YEAR_PREFIX = re.compile(
+    r"^("
+    r"(?:19\d{2}|20\d{2})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"  # YYYY-MM-DD
+    r"|"
+    r"(?:19\d{2}|20\d{2})"  # YYYY
+    r")\s*[ _\-\.,;:]\s*"
+)
+# 序号后缀如 (1)、_副本 等
+_TITLE_SUFFIX = re.compile(r"\s*\([0-9]+\)\s*$|_副本\s*$")
+
+
+def _clean_filename_title(filename: str) -> str:
+    """从文件名中提取干净标题：去除文件后缀、年份/日期前缀和序号后缀"""
+    t = filename.strip()
+    t = _TITLE_EXT_PATTERN.sub("", t).strip()
+    # 去除序号后缀
+    t = _TITLE_SUFFIX.sub("", t).strip()
+    # 循环去除年份/日期前缀（处理 YYYY_MM_DD_ 等复合前缀）
+    while True:
+        new_t = _TITLE_YEAR_PREFIX.sub("", t).strip()
+        if new_t == t:
+            break
+        t = new_t
+    t = t.strip(" ._-,;:()")
+    return t if t else filename
+
+
+async def _find_existing_by_title(db: AsyncSession, clean_title: str) -> Optional[Literature]:
+    """按归一化标题查找已存在的文献。
+    先精确匹配，失败时用模糊匹配（Jaccard 相似度 >= 0.7）作为回退。
+    """
+    if not clean_title:
+        return None
+    norm = normalize_title(clean_title)
+    if not norm:
+        return None
+    result = await db.execute(select(Literature))
+    all_lits = list(result.scalars())
+
+    # 1. 精确匹配
+    for lit in all_lits:
+        if normalize_title(lit.title) == norm:
+            return lit
+
+    # 2. 模糊匹配回退
+    norm_words = set(norm.split())
+    if not norm_words:
+        return None
+    best_match = None
+    best_score = 0.0
+    for lit in all_lits:
+        nm = normalize_title(lit.title)
+        if not nm:
+            continue
+        words = set(nm.split())
+        score = len(norm_words & words) / len(norm_words | words) if (norm_words | words) else 0.0
+        if score > best_score:
+            best_score = score
+            best_match = lit
+    if best_score >= 0.7:
+        logger.info(f"[_find_existing_by_title] 模糊匹配命中: clean_title='{clean_title}' -> id={best_match.id}, title='{best_match.title}', score={best_score:.2f}")
+        return best_match
+    return None
+
+
 async def upload_literature(
     db: AsyncSession,
     file_bytes: bytes,
@@ -268,12 +337,33 @@ async def upload_literature(
     title: Optional[str] = None,
     doi: Optional[str] = None,
     province: Optional[str] = None,
-) -> Optional[Literature]:
+) -> tuple[Optional[Literature], str]:
+    """上传/导入文献文件。
+
+    返回值: (Literature 对象 or None, 状态标记)
+        - "new": 新建文献记录
+        - "matched": 匹配到已有文献并关联文件
+        - "skipped": 匹配到已有文献且已有文件，跳过
+        - "error": 处理失败
+    """
     logger.info(f"[upload_literature] 开始: filename={filename}, size={len(file_bytes)} bytes, title={title or '(无)'}")
     ext = filename.rsplit(".", 1)[-1] if "." in filename else "pdf"
     logger.info(f"[upload_literature] 解析扩展名: ext={ext}")
 
-    # 1. 始终保存到本地文件系统（确保提取时能找到文件）
+    # 1. 提取干净标题，查找是否已存在该标题的文献
+    clean_title = title or _clean_filename_title(filename)
+    existing = await _find_existing_by_title(db, clean_title)
+    if existing:
+        if existing.has_fulltext:
+            logger.info(f"[upload_literature] 文献已存在且已有文件: id={existing.id}, title={existing.title}，跳过导入")
+            return existing, "skipped"
+        else:
+            logger.info(f"[upload_literature] 找到已存在文献（无文件）: id={existing.id}, title={existing.title}，关联文件")
+            # 保存文件，直接关联到已有文献
+            lit = await _save_and_associate(db, existing, file_bytes, filename, ext, doi, province, clean_title)
+            return lit, "matched"
+
+    # 2. 始终保存到本地文件系统（确保提取时能找到文件）
     LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     local_filename = f"{uuid.uuid4()}.{ext}"
     local_path = LOCAL_STORAGE_DIR / local_filename
@@ -285,7 +375,7 @@ async def upload_literature(
         logger.error(f"[upload_literature] 本地保存失败: path={local_path}, error={e}", exc_info=True)
         return None
 
-    # 2. 尝试上传到 MinIO（仅用于分布式/备份场景，失败不阻塞）
+    # 3. 尝试上传到 MinIO（仅用于分布式/备份场景，失败不阻塞）
     object_name = f"literature/{uuid.uuid4()}.{ext}"
     minio_path = upload_file(file_bytes, object_name, content_type=get_mime_type(ext))
     if minio_path is None:
@@ -293,16 +383,16 @@ async def upload_literature(
     else:
         logger.info(f"[upload_literature] MinIO 上传成功: object_name={object_name}")
 
-    # 3. 数据库记录使用本地路径（_download_pdf 会优先匹配本地文件）
+    # 4. 数据库记录使用本地路径（_download_pdf 会优先匹配本地文件）
     stored_path = str(local_path)
 
-    # 4. 计算文件哈希用于查重
+    # 5. 计算文件哈希用于查重
     pdf_hash = compute_pdf_hash(file_bytes)
     logger.info(f"[upload_literature] 哈希计算完成: hash={pdf_hash[:16]}..., filename={filename}")
 
     # 创建文献记录
     literature = Literature(
-        title=title or filename,
+        title=clean_title,
         doi=doi,
         province=province,
         file_path=stored_path,
@@ -323,6 +413,132 @@ async def upload_literature(
             logger.info(f"[upload_literature] 已清理本地文件: {local_path}")
         except Exception as cleanup_err:
             logger.warning(f"[upload_literature] 清理本地文件失败: {local_path}, {cleanup_err}")
+        return None, "error"
+    return literature, "new"
+
+
+async def _save_and_associate(
+    db: AsyncSession,
+    literature: Literature,
+    file_bytes: bytes,
+    filename: str,
+    ext: str,
+    doi: Optional[str] = None,
+    province: Optional[str] = None,
+    clean_title: Optional[str] = None,
+) -> Literature:
+    """保存文件并关联到已有文献（仅替换文件，不新建记录）。"""
+    # 保存文件
+    LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    local_filename = f"{uuid.uuid4()}.{ext}"
+    local_path = LOCAL_STORAGE_DIR / local_filename
+    try:
+        with open(local_path, "wb") as f:
+            f.write(file_bytes)
+        logger.info(f"[upload_literature] 关联文件保存成功: path={local_path}")
+    except Exception as e:
+        logger.error(f"[upload_literature] 关联文件保存失败: path={local_path}, error={e}", exc_info=True)
+        return literature
+
+    # 尝试上传 MinIO
+    object_name = f"literature/{uuid.uuid4()}.{ext}"
+    minio_path = upload_file(file_bytes, object_name, content_type=get_mime_type(ext))
+    if minio_path is None:
+        logger.warning(f"[upload_literature] 关联文件 MinIO 不可用，仅保存本地副本: filename={filename}")
+    else:
+        logger.info(f"[upload_literature] 关联文件 MinIO 上传成功: object_name={object_name}")
+
+    stored_path = str(local_path)
+    pdf_hash = compute_pdf_hash(file_bytes)
+
+    # 更新已有文献的文件关联
+    if clean_title and literature.title != clean_title:
+        literature.title = clean_title
+    literature.file_path = stored_path
+    literature.pdf_hash = pdf_hash
+    literature.has_fulltext = True
+    if doi:
+        literature.doi = doi
+    if province:
+        literature.province = province
+    literature.updated_at = datetime.now(timezone.utc)
+
+    try:
+        await db.commit()
+        await db.refresh(literature)
+        logger.info(f"[upload_literature] 文献文件关联更新成功: id={literature.id}, title={literature.title}, path={stored_path}")
+    except Exception as e:
+        logger.error(f"[upload_literature] 关联文件数据库提交失败: id={literature.id}, error={e}", exc_info=True)
+        try:
+            os.remove(local_path)
+        except Exception:
+            pass
+    return literature
+
+
+async def upload_literature_file(
+    db: AsyncSession,
+    literature_id: uuid.UUID,
+    file_bytes: bytes,
+    filename: str,
+) -> Optional[Literature]:
+    """为已有文献关联上传文件（替换原有文件）。"""
+    logger.info(f"[upload_literature_file] 开始: literature_id={literature_id}, filename={filename}, size={len(file_bytes)} bytes")
+
+    literature = await get_literature(db, literature_id)
+    if not literature:
+        logger.warning(f"[upload_literature_file] 文献不存在: id={literature_id}")
+        return None
+
+    ext = filename.rsplit(".", 1)[-1] if "." in filename else "pdf"
+
+    # 1. 保存到本地文件系统
+    LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    local_filename = f"{uuid.uuid4()}.{ext}"
+    local_path = LOCAL_STORAGE_DIR / local_filename
+    try:
+        with open(local_path, "wb") as f:
+            f.write(file_bytes)
+        logger.info(f"[upload_literature_file] 本地保存成功: path={local_path}")
+    except Exception as e:
+        logger.error(f"[upload_literature_file] 本地保存失败: path={local_path}, error={e}", exc_info=True)
+        return None
+
+    # 2. 尝试上传到 MinIO
+    object_name = f"literature/{uuid.uuid4()}.{ext}"
+    minio_path = upload_file(file_bytes, object_name, content_type=get_mime_type(ext))
+    if minio_path is None:
+        logger.warning(f"[upload_literature_file] MinIO 不可用，仅保存本地副本: filename={filename}")
+    else:
+        logger.info(f"[upload_literature_file] MinIO 上传成功: object_name={object_name}")
+
+    stored_path = str(local_path)
+    pdf_hash = compute_pdf_hash(file_bytes)
+
+    # 3. 删除旧文件（如果存在）
+    if literature.file_path:
+        old_path = Path(literature.file_path)
+        if old_path.exists():
+            try:
+                os.remove(old_path)
+                logger.info(f"[upload_literature_file] 已删除旧文件: {old_path}")
+            except Exception as e:
+                logger.warning(f"[upload_literature_file] 删除旧文件失败: {old_path}, {e}")
+
+    # 4. 更新文献记录
+    literature.file_path = stored_path
+    literature.pdf_hash = pdf_hash
+    literature.has_fulltext = True
+    try:
+        await db.commit()
+        await db.refresh(literature)
+        logger.info(f"[upload_literature_file] 文献文件关联成功: id={literature.id}, path={stored_path}")
+    except Exception as e:
+        logger.error(f"[upload_literature_file] 数据库提交失败: id={literature_id}, error={e}", exc_info=True)
+        try:
+            os.remove(local_path)
+        except Exception:
+            pass
         return None
     return literature
 

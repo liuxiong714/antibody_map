@@ -33,11 +33,14 @@ from app.services.literature_service import (
     update_literature,
     delete_literature,
     upload_literature,
+    upload_literature_file,
     check_duplicates,
     scan_duplicates,
     preview_merge,
     merge_literatures,
+    _clean_filename_title,
 )
+from app.services.extraction_service import trigger_extraction
 
 router = APIRouter()
 
@@ -83,7 +86,7 @@ async def upload(
         raise HTTPException(status_code=400, detail="文件大小超过限制")
 
     try:
-        literature = await upload_literature(db, file_bytes, file.filename, title, doi, province)
+        literature, _action = await upload_literature(db, file_bytes, file.filename, title, doi, province)
     except Exception as e:
         logger.error(f"[上传] upload_literature 抛出异常: filename={file.filename}, error={e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)[:200]}")
@@ -137,7 +140,7 @@ async def create_from_url(
     filename = f"{domain}.html"
     logger.info(f"[URL 导入] 准备保存: filename={filename}, title={lit_title[:80]}{'...' if len(lit_title) > 80 else ''}")
 
-    literature = await upload_literature(db, content, filename, lit_title, province=province)
+    literature, _action = await upload_literature(db, content, filename, lit_title, province=province)
     if literature is None:
         logger.error(f"[URL 导入] 创建文献记录失败: {url}")
         raise HTTPException(status_code=500, detail="创建文献失败")
@@ -578,6 +581,244 @@ async def import_literatures(
     )
 
 
+@router.post("/literatures/batch-import-from-folder", response_model=ApiResponse)
+async def batch_import_from_folder(
+    folder_path: str = Form(..., description="服务器上的文件夹路径，包含要导入的 PDF 等文件"),
+    trigger_extraction_after: bool = Form(True, description="新导入的文献是否自动触发 AI 提取"),
+    db: AsyncSession = Depends(get_db),
+):
+    """从服务器本地文件夹批量导入文件，自动匹配已有文献或新建文献记录。
+
+    - 匹配策略：按文件名清洗后精确/模糊匹配已有文献标题
+    - 已存在且无文件的文献 → 关联文件（不新建）
+    - 已存在且有文件的文献 → 跳过
+    - 不存在的文献 → 新建记录 + 可选 AI 提取
+    """
+    folder = Path(folder_path)
+    if not folder.exists() or not folder.is_dir():
+        raise HTTPException(status_code=400, detail=f"文件夹不存在: {folder_path}")
+
+    # 收集所有支持的文件
+    supported_exts = {".pdf", ".caj", ".doc", ".docx", ".txt", ".epub", ".pptx", ".xlsx", ".ps", ".wps", ".md"}
+    all_files = [f for f in sorted(folder.iterdir()) if f.is_file() and f.suffix.lower() in supported_exts]
+    if not all_files:
+        raise HTTPException(status_code=400, detail=f"文件夹中未找到支持的文件类型（{', '.join(sorted(supported_exts))}）")
+
+    logger.info(f"[batch-import] 开始批量导入: folder={folder_path}, total={len(all_files)} files")
+
+    matched = 0       # 匹配到已有文献且关联文件
+    imported = 0      # 新建文献记录
+    skipped = 0       # 已有文献且已有文件
+    failed = 0        # 导入失败
+    extraction_triggered = 0
+    details: list[dict] = []
+
+    for file_path in all_files:
+        filename = file_path.name
+        try:
+            file_bytes = file_path.read_bytes()
+        except Exception as e:
+            logger.error(f"[batch-import] 读取文件失败: {filename}, error={e}")
+            failed += 1
+            details.append({"filename": filename, "status": "read_error", "error": str(e)})
+            continue
+
+        # 判断是否已匹配——先查标题
+        clean_title = _clean_filename_title(filename)
+
+        # 查询已有文献（返回 tuple: (Literature, action)）
+        try:
+            lit, action = await upload_literature(db, file_bytes, filename)
+        except Exception as e:
+            logger.error(f"[batch-import] 导入出错: {filename}, error={e}", exc_info=True)
+            failed += 1
+            details.append({"filename": filename, "status": "import_error", "error": str(e)[:200]})
+            continue
+
+        if lit is None:
+            failed += 1
+            details.append({"filename": filename, "status": "import_failed", "reason": "upload_literature 返回 None"})
+            continue
+
+        # 根据 action 判断处理结果
+        if action == "new":
+            imported += 1
+            details.append({
+                "filename": filename, "status": "imported", "literature_id": str(lit.id),
+                "title": lit.title,
+            })
+            if trigger_extraction_after:
+                try:
+                    await trigger_extraction(db, lit.id)
+                    extraction_triggered += 1
+                except Exception as e:
+                    logger.warning(f"[batch-import] 触发提取失败: id={lit.id}, error={e}")
+        elif action == "matched":
+            matched += 1
+            details.append({
+                "filename": filename, "status": "matched", "literature_id": str(lit.id),
+                "title": lit.title,
+            })
+        elif action == "skipped":
+            skipped += 1
+            details.append({
+                "filename": filename, "status": "skipped_has_file", "literature_id": str(lit.id),
+                "title": lit.title,
+            })
+        else:
+            failed += 1
+            details.append({
+                "filename": filename, "status": "unknown", "literature_id": str(lit.id),
+                "error": f"未知 action: {action}",
+            })
+
+    await db.commit()
+
+    parts = []
+    if matched:
+        parts.append(f"关联 {matched} 篇")
+    if imported:
+        parts.append(f"新建 {imported} 篇")
+    if skipped:
+        parts.append(f"跳过 {skipped} 篇（已有文件）")
+    if failed:
+        parts.append(f"失败 {failed} 个")
+    message = "批量导入完成：" + "，".join(parts)
+    if extraction_triggered:
+        message += f"，已触发 {extraction_triggered} 篇 AI 提取"
+
+    logger.info(f"[batch-import] {message}")
+
+    return ApiResponse(
+        message=message,
+        data={
+            "matched": matched,
+            "imported": imported,
+            "skipped": skipped,
+            "failed": failed,
+            "extraction_triggered": extraction_triggered,
+            "total": len(all_files),
+            "details": details[:100],
+        },
+    )
+
+
+@router.post("/literatures/batch-upload-files", response_model=ApiResponse)
+async def batch_upload_files(
+    files: list[UploadFile] = File(..., description="从浏览器上传的文件列表"),
+    trigger_extraction_after: bool = Form(True),
+    db: AsyncSession = Depends(get_db),
+):
+    """从浏览器上传文件批量导入，自动匹配已有文献或新建文献记录。
+
+    与 batch_import_from_folder 逻辑相同，但文件从浏览器上传而非服务器本地路径。
+    """
+    all_files = [f for f in files if f.filename]
+    supported_exts = {".pdf", ".caj", ".doc", ".docx", ".txt", ".epub", ".pptx", ".xlsx", ".ps", ".wps", ".md"}
+    valid_files = [f for f in all_files if Path(f.filename or "").suffix.lower() in supported_exts]
+    if not valid_files:
+        raise HTTPException(status_code=400, detail="未找到支持的文件类型")
+
+    logger.info(f"[batch-upload-files] 开始批量上传: total_received={len(all_files)}, valid={len(valid_files)}")
+
+    matched = 0
+    imported = 0
+    skipped = 0
+    failed = 0
+    extraction_triggered = 0
+    details: list[dict] = []
+
+    for file in valid_files:
+        filename = file.filename or "unknown"
+        try:
+            file_bytes = await file.read()
+        except Exception as e:
+            logger.error(f"[batch-upload-files] 读取文件失败: {filename}, error={e}")
+            failed += 1
+            details.append({"filename": filename, "status": "read_error", "error": str(e)})
+            continue
+
+        if len(file_bytes) > settings.MAX_UPLOAD_SIZE:
+            logger.warning(f"[batch-upload-files] 文件超限: {filename}, size={len(file_bytes)}")
+            failed += 1
+            details.append({"filename": filename, "status": "file_too_large", "error": f"文件超过大小限制"})
+            continue
+
+        try:
+            lit, action = await upload_literature(db, file_bytes, filename)
+        except Exception as e:
+            logger.error(f"[batch-upload-files] 导入出错: {filename}, error={e}", exc_info=True)
+            failed += 1
+            details.append({"filename": filename, "status": "import_error", "error": str(e)[:200]})
+            continue
+
+        if lit is None:
+            failed += 1
+            details.append({"filename": filename, "status": "import_failed", "reason": "upload_literature 返回 None"})
+            continue
+
+        if action == "new":
+            imported += 1
+            details.append({
+                "filename": filename, "status": "imported", "literature_id": str(lit.id),
+                "title": lit.title,
+            })
+            if trigger_extraction_after:
+                try:
+                    await trigger_extraction(db, lit.id)
+                    extraction_triggered += 1
+                except Exception as e:
+                    logger.warning(f"[batch-upload-files] 触发提取失败: id={lit.id}, error={e}")
+        elif action == "matched":
+            matched += 1
+            details.append({
+                "filename": filename, "status": "matched", "literature_id": str(lit.id),
+                "title": lit.title,
+            })
+        elif action == "skipped":
+            skipped += 1
+            details.append({
+                "filename": filename, "status": "skipped_has_file", "literature_id": str(lit.id),
+                "title": lit.title,
+            })
+        else:
+            failed += 1
+            details.append({
+                "filename": filename, "status": "unknown", "literature_id": str(lit.id),
+                "error": f"未知 action: {action}",
+            })
+
+    await db.commit()
+
+    parts = []
+    if matched:
+        parts.append(f"关联 {matched} 篇")
+    if imported:
+        parts.append(f"新建 {imported} 篇")
+    if skipped:
+        parts.append(f"跳过 {skipped} 篇（已有文件）")
+    if failed:
+        parts.append(f"失败 {failed} 个")
+    message = "批量导入完成：" + "，".join(parts)
+    if extraction_triggered:
+        message += f"，已触发 {extraction_triggered} 篇 AI 提取"
+
+    logger.info(f"[batch-upload-files] {message}")
+
+    return ApiResponse(
+        message=message,
+        data={
+            "matched": matched,
+            "imported": imported,
+            "skipped": skipped,
+            "failed": failed,
+            "extraction_triggered": extraction_triggered,
+            "total": len(valid_files),
+            "details": details[:100],
+        },
+    )
+
+
 @router.get("/literatures/{literature_id}", response_model=ApiResponse)
 async def get_one(
     literature_id: uuid.UUID,
@@ -599,6 +840,43 @@ async def update(
     if not literature:
         raise HTTPException(status_code=404, detail="文献不存在")
     return ApiResponse(message="更新成功", data=LiteratureResponse.model_validate(literature).model_dump())
+
+
+@router.post("/literatures/{literature_id}/file", response_model=ApiResponse)
+async def upload_file(
+    literature_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """为已有文献关联上传文件（替换原有文件）。"""
+    ext = Path(file.filename or "").suffix.lower() if file.filename else ""
+    logger.info(f"[关联文件] 收到文件: literature_id={literature_id}, filename={file.filename}, ext={ext or '(未知)'}")
+    if ext not in ALLOWED_EXTS:
+        logger.warning(f"[关联文件] 格式被拒绝: filename={file.filename}, ext={ext}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: {ext or '未知'}，支持 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML",
+        )
+
+    file_bytes = await file.read()
+    if len(file_bytes) > settings.MAX_UPLOAD_SIZE:
+        logger.warning(f"[关联文件] 文件超限: filename={file.filename}, size={len(file_bytes)}, limit={settings.MAX_UPLOAD_SIZE}")
+        raise HTTPException(status_code=400, detail="文件大小超过限制")
+
+    try:
+        literature = await upload_literature_file(db, literature_id, file_bytes, file.filename)
+    except Exception as e:
+        logger.error(f"[关联文件] upload_literature_file 抛出异常: id={literature_id}, error={e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"文件关联失败: {str(e)[:200]}")
+
+    if literature is None:
+        raise HTTPException(status_code=404, detail="文献不存在")
+
+    logger.info(f"[关联文件] 成功: id={literature.id}, path={literature.file_path}")
+    return ApiResponse(
+        message="文件关联成功",
+        data=LiteratureResponse.model_validate(literature).model_dump(),
+    )
 
 
 @router.delete("/literatures/{literature_id}", response_model=ApiResponse)

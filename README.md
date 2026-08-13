@@ -499,7 +499,7 @@ LLM 生成免疫学报告 + 疫苗接种策略报告
 | pub_year | INT | 出版年份 |
 | doi / pmid | TEXT | DOI / PubMed ID |
 | province | TEXT | 研究所在省份 |
-| extraction_status | ENUM | pending / processing / done / failed |
+| extraction_status | ENUM | pending / processing / done / done_no_data / failed |
 | extracted_count | INT | 已提取数据点数量 |
 | approved_count | INT | 已审核通过数量 |
 | llm_model_used | TEXT | 提取使用的大模型名称 |
@@ -559,6 +559,41 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.7.0 (2026-08-13)
+
+#### 新功能
+
+- **AI 提取历史记录**：每次 AI 提取完成后自动记录完整历史（提取时间、使用模型、状态、数据点数量、Token 用量、费用、错误信息），文献详情页新增「提取历史」按钮，弹窗表格展示历次提取记录，便于追溯每次提取的详细结果。
+- **提取状态精细化**：新增 `done_no_data` 提取状态，区分「解读成功但未提取到数据点」（橙色/完成（无数据））和「解读成功且提取到数据点」（绿色/已完成），状态显式区分为三种情况：
+  - `failed` — 文献无法阅读或解读失败（红色）
+  - `done_no_data` — 解读成功但未提取到相关数据（橙色）
+  - `done` — 解读成功且提取到抗体数据点（绿色）
+- **手动合并文献**：文献列表工具栏新增「合并选中」按钮，支持用户手动勾选 2 篇文献后弹出合并对话框，逐字段选择保留源/目标文献的数据，处理数据点冲突，合并后自动迁移数据点并删除源文献。
+
+#### 新增接口
+
+- `GET /literatures/{literature_id}/extraction/history`：获取文献的历次 AI 提取历史记录（含模型、状态、数据点数、Token 用量、费用、错误信息等）。
+
+#### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `backend/app/models/extraction_history.py` | ExtractionHistory 数据模型（记录历次提取历史） |
+| `backend/alembic/versions/e1c07278aa97_add_extraction_history_and_done_no_data.py` | 数据库迁移：创建 extraction_history 表 + 更新 extraction_status 约束 |
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/models/literature.py` | extraction_status 新增 `done_no_data` 枚举值，扩展 CheckConstraint |
+| `backend/app/tasks/extract_task.py` | 提取完成后根据数据点数量设置 `done`/`done_no_data`/`failed`，并写入提取历史记录 |
+| `backend/app/services/extraction_service.py` | 新增 `get_extraction_history()` 服务函数 |
+| `backend/app/api/v1/extraction.py` | 新增提取历史查询 API 端点 |
+| `frontend/src/utils/constants.ts` | `EXTRACTION_STATUS_META` 新增 `done_no_data` 状态（橙色/完成（无数据）） |
+| `frontend/src/services/literature.ts` | 新增 `ExtractionHistoryItem` 类型和 `getExtractionHistory()` API 函数 |
+| `frontend/src/pages/LiteratureDetail.tsx` | 新增「提取历史」按钮和弹窗，以表格展示历次提取记录 |
+| `frontend/src/pages/Literature.tsx` | 工具栏新增「合并选中」按钮，支持手动勾选 2 篇文献合并 |
 
 ### v1.6.9 (2026-08-13)
 

@@ -3,17 +3,18 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip,
 } from 'antd';
-import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined, DownloadOutlined, PlusOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined, DownloadOutlined, PlusOutlined, HistoryOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
 import {
-  getLiterature, getExtractionResults, getExtractionStatus, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText,
+  getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText,
 } from '../services/literature';
 import PdfViewer from '../components/PdfViewer';
 import FilePreview from '../components/FilePreview';
 import { DATA_TYPE_LABEL, DISEASES, PROVINCES, MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
 import type { Literature, DataPoint, ExtractionStatusWithUsage } from '../types';
+import type { ExtractionHistoryItem } from '../services/literature';
 import dayjs from 'dayjs';
 
 const LiteratureDetail: React.FC = () => {
@@ -39,6 +40,11 @@ const LiteratureDetail: React.FC = () => {
   });
   // 最近一次提取的 token 用量摘要（来自 extraction/status 接口）
   const [lastUsage, setLastUsage] = useState<ExtractionStatusWithUsage | null>(null);
+
+  // 提取历史弹窗
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [historyList, setHistoryList] = useState<ExtractionHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   // 面板大小状态
   const [topHeightPercent, setTopHeightPercent] = useState(30);
@@ -423,6 +429,30 @@ const LiteratureDetail: React.FC = () => {
   const toggleShowUsage = (checked: boolean) => {
     setShowUsageOnComplete(checked);
     try { localStorage.setItem('lit_show_usage_on_complete', checked ? '1' : '0'); } catch { /* ignore */ }
+  };
+
+  // 加载提取历史
+  const loadExtractionHistory = async () => {
+    if (!id) return;
+    setHistoryLoading(true);
+    setHistoryModalOpen(true);
+    try {
+      const history = await getExtractionHistory(id);
+      setHistoryList(history);
+    } catch (err) {
+      console.error('[LiteratureDetail] 加载提取历史失败:', err);
+      message.error('加载提取历史失败');
+      setHistoryList([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // 提取历史状态映射
+  const HISTORY_STATUS_META: Record<string, { color: string; label: string }> = {
+    success: { color: 'green', label: '成功' },
+    no_data: { color: 'orange', label: '无数据' },
+    failed: { color: 'red', label: '失败' },
   };
 
   useEffect(() => {
@@ -891,6 +921,9 @@ const LiteratureDetail: React.FC = () => {
                       <Button icon={<ExperimentOutlined />} onClick={handleExtract} loading={extracting}>
                         AI 提取
                       </Button>
+                      <Button icon={<HistoryOutlined />} onClick={loadExtractionHistory}>
+                        提取历史
+                      </Button>
                       <Tooltip title="从已提取的数据点中同步年份和省份信息">
                         <Button
                           icon={<SyncOutlined spin={syncing} />}
@@ -1119,6 +1152,7 @@ const LiteratureDetail: React.FC = () => {
                     filePath={literature?.file_path || null}
                     defaultScale={0.8}
                     maxHeight="100%"
+                    onFileUploaded={fetchData}
                   />
                 ) : (
                   <div style={{ textAlign: 'center', paddingTop: 100, color: '#999' }}>
@@ -1513,6 +1547,96 @@ const LiteratureDetail: React.FC = () => {
             未能获取溯源文本。该文献可能尚未提取，或溯源文本缓存不存在，请重新提取该文献。
           </div>
         )}
+      </Modal>
+
+      {/* 提取历史弹窗 */}
+      <Modal
+        title={<><HistoryOutlined /> 历次 AI 提取历史</>}
+        open={historyModalOpen}
+        onCancel={() => { setHistoryModalOpen(false); setHistoryList([]); }}
+        footer={null}
+        width={800}
+      >
+        <Spin spinning={historyLoading}>
+          {historyList.length === 0 && !historyLoading ? (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+              <ClockCircleOutlined style={{ fontSize: 36, display: 'block', marginBottom: 12 }} />
+              暂无提取历史记录
+            </div>
+          ) : (
+            <Table
+              rowKey="id"
+              dataSource={historyList}
+              pagination={false}
+              size="small"
+              columns={[
+                {
+                  title: '提取时间',
+                  dataIndex: 'extracted_at',
+                  key: 'time',
+                  width: 160,
+                  render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
+                },
+                {
+                  title: '使用模型',
+                  dataIndex: 'model',
+                  key: 'model',
+                  width: 160,
+                  render: (v: string | null) => v || '-',
+                },
+                {
+                  title: '状态',
+                  dataIndex: 'status',
+                  key: 'status',
+                  width: 100,
+                  render: (s: string) => {
+                    const meta = HISTORY_STATUS_META[s] || { color: 'default', label: s };
+                    return <Tag color={meta.color}>{meta.label}</Tag>;
+                  },
+                },
+                {
+                  title: '数据点数',
+                  dataIndex: 'data_point_count',
+                  key: 'count',
+                  width: 80,
+                  render: (v: number) => v || 0,
+                },
+                {
+                  title: 'Token 用量',
+                  key: 'tokens',
+                  width: 120,
+                  render: (_: unknown, r: ExtractionHistoryItem) =>
+                    r.total_tokens > 0
+                      ? <Tag color="blue">{r.total_tokens.toLocaleString()} tokens</Tag>
+                      : '-',
+                },
+                {
+                  title: '调用次数',
+                  dataIndex: 'llm_call_count',
+                  key: 'calls',
+                  width: 80,
+                  render: (v: number) => v || 0,
+                },
+                {
+                  title: '费用',
+                  key: 'cost',
+                  width: 100,
+                  render: (_: unknown, r: ExtractionHistoryItem) =>
+                    r.llm_cost_usd > 0
+                      ? <Tag color="gold">${r.llm_cost_usd.toFixed(4)}</Tag>
+                      : '-',
+                },
+                {
+                  title: '错误信息',
+                  dataIndex: 'error_message',
+                  key: 'error',
+                  render: (v: string | null) =>
+                    v ? <Tooltip title={v}><Tag color="red" style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}>{v}</Tag></Tooltip> : '-',
+                },
+              ]}
+            />
+          )}
+        </Spin>
       </Modal>
     </>
   );

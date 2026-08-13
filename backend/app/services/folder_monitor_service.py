@@ -175,7 +175,7 @@ async def scan_folder(db: AsyncSession, folder: MonitoredFolder) -> dict:
                 skipped += 1
             else:
                 # 导入文献
-                literature = await upload_literature(
+                literature, _action = await upload_literature(
                     db, file_bytes, file_path.name,
                     title=file_path.stem,
                 )

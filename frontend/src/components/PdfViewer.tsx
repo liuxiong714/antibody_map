@@ -8,13 +8,10 @@ import {
 } from '@ant-design/icons';
 import * as pdfjsLib from 'pdfjs-dist/build/pdf';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.js',
-  import.meta.url,
-).toString();
-
-const CMAKE_URL = '/cmaps/';
-const STANDARD_FONTS_URL = '/standard_fonts/';
+// 使用 CDN 加载 worker，本地 cmaps（CDN 缺少 GBK 等中文 cmap 文件）
+const PDFJS_VERSION = pdfjsLib.version;
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.worker.min.js`;
+const CMAP_URL = '/cmaps/';
 
 interface PdfViewerProps {
   literatureId: string | null;
@@ -80,10 +77,18 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     canvas.style.boxShadow = '0 2px 12px rgba(0,0,0,0.12)';
     canvas.setAttribute('data-page', String(pageNum));
 
-    const ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error(`canvas.getContext('2d') 返回 null (canvas=${canvas.width}x${canvas.height})`);
+    }
     const renderTask = pdfPage.render({ canvasContext: ctx, viewport });
     renderTasksRef.current.set(pageNum, renderTask);
-    await renderTask.promise;
+    try {
+      await renderTask.promise;
+    } catch (renderErr) {
+      console.error(`[PdfViewer] renderTask.promise 拒绝: page=${pageNum}, canvas=${canvas.width}x${canvas.height}, scale=${currentScale}, pixelRatio=${pixelRatio}, error=${(renderErr as any)?.message || renderErr || 'unknown'}`);
+      throw renderErr;
+    }
     renderTasksRef.current.delete(pageNum);
 
     return canvas;
@@ -139,7 +144,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         if (r.status === 'fulfilled' && r.value) {
           mountCanvas(batch[idx], r.value);
         } else if (r.status === 'rejected') {
-          console.error(`[PdfViewer] 页面渲染失败: page=${batch[idx]}`, r.reason);
+          console.error(`[PdfViewer] 页面渲染失败: page=${batch[idx]}, scale=${scale}, batch=[${batch.join(',')}]`, r.reason);
         }
       });
     }
@@ -209,7 +214,12 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       console.log(`[PdfViewer] 预检请求: ${url}`);
 
       // 预检：先 fetch 检查文件是否存在，避免 PDF.js 内部抛出 ERR_ABORTED 控制台错误
-      const response = await fetch(url);
+      const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const response = await fetch(url, { headers });
       console.log(`[PdfViewer] 预检响应: status=${response.status}, ok=${response.ok}`);
       if (!response.ok) {
         if (mountedRef.current) {
@@ -233,10 +243,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
 
       const loadingTask = pdfjsLib.getDocument({
         url: blobUrl,
-        cMapUrl: CMAKE_URL,
+        cMapUrl: CMAP_URL,
         cMapPacked: true,
         useSystemFonts: true,
-        standardFontDataUrl: STANDARD_FONTS_URL,
       });
       console.log(`[PdfViewer] 调用 pdfjsLib.getDocument 解析 PDF...`);
       const pdf = await loadingTask.promise;

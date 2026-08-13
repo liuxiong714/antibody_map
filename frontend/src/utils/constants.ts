@@ -46,6 +46,7 @@ export const EXTRACTION_STATUS_META: Record<string, { color: string; label: stri
   pending: { color: 'default', label: '待处理' },
   processing: { color: 'processing', label: '提取中' },
   done: { color: 'green', label: '已完成' },
+  done_no_data: { color: 'orange', label: '完成（无数据）' },
   failed: { color: 'red', label: '失败' },
 };
 

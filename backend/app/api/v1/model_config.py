@@ -6,10 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import get_db, require_admin
 from app.config import settings
 from app.core.crypto import mask
 from app.models.api_model_config import ApiModelConfig
+from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.schemas.model_config import (
     ApiModelConfigCreate,
@@ -71,6 +72,7 @@ async def list_remote_models(db: AsyncSession = Depends(get_db)):
 @router.post("/models/remote", response_model=ApiResponse)
 async def create_remote_model(
     req: ApiModelConfigCreate,
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """新增远程模型配置"""
@@ -91,6 +93,7 @@ async def create_remote_model(
 async def update_remote_model(
     config_id: str,
     req: ApiModelConfigUpdate,
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """更新远程模型配置"""
@@ -122,6 +125,7 @@ async def update_remote_model(
 @router.delete("/models/remote/{config_id}", response_model=ApiResponse)
 async def delete_remote_model(
     config_id: str,
+    admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """删除远程模型配置"""

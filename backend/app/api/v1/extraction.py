@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 import csv
 import io
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -22,6 +23,7 @@ from app.services.extraction_service import (
     trigger_extraction,
     get_extraction_status,
     get_extraction_results,
+    get_extraction_history,
 )
 from app.core.traceability_html import (
     generate_traceability_html,
@@ -32,6 +34,31 @@ from app.core.term_normalizer import CHINA_PROVINCE_NAMES
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn")
+
+# 文件扩展名列表，用于从标题中去除
+_EXTENSIONS_PATTERN = re.compile(r"\.(pdf|caj|doc|docx|txt|epub|pptx|xlsx|ps|wps|md)$", re.IGNORECASE)
+# 年份前缀，如 "2025 ", "2024_", "2025-", "2025." 等
+_YEAR_PREFIX_PATTERN = re.compile(r"^(19\d{2}|20\d{2})\s*[ _\-\.,;:]\s*")
+
+
+def clean_literature_title(title: str) -> str:
+    """清洗文献标题：去除文件后缀和年份前缀"""
+    if not title:
+        return title
+    t = title.strip()
+    # 1. 去除文件扩展名
+    # 只去除末尾的扩展名，确保不是真正的标题中的点
+    t = _EXTENSIONS_PATTERN.sub("", t).strip()
+    # 2. 去除年份前缀
+    # 重复应用以处理 "2025 2024 Title" 这种多重前缀
+    while True:
+        new_t = _YEAR_PREFIX_PATTERN.sub("", t).strip()
+        if new_t == t:
+            break
+        t = new_t
+    # 3. 去除末尾多余的空格/标点
+    t = t.strip(" ._-,;:")
+    return t if t else title  # 如果清洗后为空则保留原标题
 
 
 # ── 请求体模型 ──────────────────────────────────────────
@@ -506,13 +533,22 @@ async def sync_literature_metadata(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    """从数据点聚合同步文献的 pub_year 和 province 元数据"""
+    """从数据点聚合同步文献的 pub_year 和 province 元数据，并清洗标题"""
     lit_result = await db.execute(
         select(Literature).where(Literature.id == literature_id)
     )
     literature = lit_result.scalar_one_or_none()
     if not literature:
         raise HTTPException(status_code=404, detail="文献不存在")
+
+    # 清洗标题
+    title_updated = False
+    original_title = literature.title
+    cleaned_title = clean_literature_title(original_title)
+    if cleaned_title != original_title:
+        literature.title = cleaned_title
+        title_updated = True
+        logger.info(f"[MetadataSync] 文献 {literature_id} 清洗标题: '{original_title}' -> '{cleaned_title}'")
 
     # 查询该文献的所有数据点
     dp_result = await db.execute(
@@ -521,7 +557,12 @@ async def sync_literature_metadata(
     all_data_points = dp_result.scalars().all()
 
     if not all_data_points:
-        return ApiResponse(message="无需同步：该文献暂无数据点", data={
+        if title_updated:
+            literature.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+            await db.refresh(literature)
+        return ApiResponse(message="元数据同步完成（标题已清洗）" if title_updated else "无需同步：该文献暂无数据点", data={
+            "title_updated": title_updated,
             "pub_year_updated": False,
             "province_updated": False,
             "data_point_count": 0,
@@ -556,7 +597,7 @@ async def sync_literature_metadata(
                 f"(覆盖{len(set(provinces))}省)"
             )
 
-    if pub_year_updated or province_updated:
+    if pub_year_updated or province_updated or title_updated:
         literature.updated_at = datetime.now(timezone.utc)
         await db.commit()
         await db.refresh(literature)
@@ -565,6 +606,8 @@ async def sync_literature_metadata(
         message="元数据同步完成",
         data={
             "id": str(literature.id),
+            "title": literature.title,
+            "title_updated": title_updated,
             "pub_year": literature.pub_year,
             "province": literature.province,
             "pub_year_updated": pub_year_updated,
@@ -576,18 +619,18 @@ async def sync_literature_metadata(
 
 @router.post("/literatures/sync-metadata-batch", response_model=ApiResponse)
 async def sync_metadata_batch(db: AsyncSession = Depends(get_db)):
-    """批量同步所有提取完成但缺少年份/省份的文献元数据"""
-    # 查询所有 extraction_status='done' 且 pub_year 或 province 为空的文献
+    """批量同步所有提取完成的文献元数据，包括：
+    - 清洗标题：去除文件后缀（.pdf/.caj等）和年份前缀（2025、2024等）
+    - 从数据点聚合 pub_year 和 province
+    """
+    # 查询所有 extraction_status='done' 的文献
     result = await db.execute(
-        select(Literature).where(
-            Literature.extraction_status == "done",
-            (Literature.pub_year.is_(None)) | (Literature.province.is_(None)),
-        )
+        select(Literature).where(Literature.extraction_status == "done")
     )
     literatures = result.scalars().all()
 
     if not literatures:
-        return ApiResponse(message="无需同步：没有缺少元数据的已完成文献", data={
+        return ApiResponse(message="无需同步：没有已提取完成的文献", data={
             "total": 0, "synced": 0, "skipped": 0, "details": [],
         })
 
@@ -615,6 +658,18 @@ async def sync_metadata_batch(db: AsyncSession = Depends(get_db)):
 
         pub_year_updated = False
         province_updated = False
+        title_updated = False
+
+        # 清洗标题：去除文件后缀和年份前缀
+        original_title = literature.title
+        cleaned_title = clean_literature_title(original_title)
+        if cleaned_title != original_title:
+            literature.title = cleaned_title
+            title_updated = True
+            logger.info(
+                f"[MetadataSync-Batch] 文献 {literature.id} 清洗标题: "
+                f"'{original_title}' -> '{cleaned_title}'"
+            )
 
         if not literature.pub_year:
             years = [dp.collection_year for dp in dps if dp.collection_year]
@@ -631,12 +686,13 @@ async def sync_metadata_batch(db: AsyncSession = Depends(get_db)):
                 literature.province = max(set(provinces), key=provinces.count)
                 province_updated = True
 
-        if pub_year_updated or province_updated:
+        if pub_year_updated or province_updated or title_updated:
             literature.updated_at = datetime.now(timezone.utc)
             synced_count += 1
             details.append({
                 "id": str(literature.id),
                 "title": literature.title,
+                "title_updated": title_updated,
                 "pub_year": literature.pub_year,
                 "province": literature.province,
                 "pub_year_updated": pub_year_updated,
@@ -698,6 +754,19 @@ async def stop_extraction(
         message="提取已停止，状态重置为失败",
         data={"literature_id": str(literature_id), "status": "failed"},
     )
+
+
+@router.get("/literatures/{literature_id}/extraction/history", response_model=ApiResponse)
+async def get_history(
+    literature_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取文献的历次 AI 提取历史"""
+    try:
+        history = await get_extraction_history(db, literature_id)
+        return ApiResponse(data=history)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse)

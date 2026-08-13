@@ -15,6 +15,7 @@ from app.core.text_preprocessor import preprocess
 from app.models.base import async_session
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
+from app.models.extraction_history import ExtractionHistory
 from app.tasks.celery_app import celery_app
 from app.core.minio_client import get_minio_client
 from app.core.term_normalizer import normalize_province, CHINA_PROVINCE_NAMES
@@ -547,13 +548,35 @@ async def _process_literature_async(
             logger.warning(f"记录 token 用量失败（不影响提取结果）: {e}")
 
         # 8. 更新 literature 状态
+        usage_summary = extractor.get_usage_summary() if extract_results else {}
+        history_status = "success"
         if len(all_data_points) > 0:
             literature.extraction_status = "done"
             literature.extracted_count = len(all_data_points)
+            history_status = "success"
         else:
-            literature.extraction_status = "failed"
+            literature.extraction_status = "done_no_data"
             literature.extracted_count = 0
-            logger.warning(f"文献 {literature_id} 提取结果为空，状态标记为 failed")
+            history_status = "no_data"
+            logger.warning(f"文献 {literature_id} 提取结果为空，状态标记为 done_no_data")
+
+        # 8b. 写入提取历史记录
+        try:
+            history = ExtractionHistory(
+                literature_id=literature_id,
+                model=literature.llm_model_used,
+                status=history_status,
+                data_point_count=len(all_data_points),
+                prompt_tokens=usage_summary.get("total_prompt_tokens", 0),
+                completion_tokens=usage_summary.get("total_completion_tokens", 0),
+                total_tokens=usage_summary.get("total_tokens", 0),
+                llm_cost_usd=usage_summary.get("estimated_cost_usd", 0),
+                llm_call_count=usage_summary.get("total_call_count", 0),
+                llm_usage_detail=usage_summary.get("models"),
+            )
+            db.add(history)
+        except Exception as e:
+            logger.warning(f"写入提取历史记录失败（不影响提取结果）: {e}")
 
         await db.commit()
 
@@ -590,6 +613,18 @@ def process_literature(
                 lit = result.scalar_one_or_none()
                 if lit:
                     lit.extraction_status = "failed"
+                    # 写入失败历史记录
+                    try:
+                        history = ExtractionHistory(
+                            literature_id=lit.id,
+                            model=lit.llm_model_used,
+                            status="failed",
+                            data_point_count=0,
+                            error_message=str(e)[:2000],
+                        )
+                        db.add(history)
+                    except Exception as he:
+                        logger.warning(f"写入失败历史记录出错: {he}")
                     await db.commit()
 
         try:

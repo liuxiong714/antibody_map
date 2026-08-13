@@ -243,7 +243,7 @@ const LoginPage: React.FC = () => {
           <form onSubmit={handleLogin}>
             <div className="form-group">
               <div className="input-wrap">
-                <span className="input-icon">&#128100;</span>
+                <span className="input-icon">👤</span>
                 <input
                   type="text"
                   placeholder="用户名 / 邮箱"
@@ -255,7 +255,7 @@ const LoginPage: React.FC = () => {
             </div>
             <div className="form-group">
               <div className="input-wrap">
-                <span className="input-icon">&#128274;</span>
+                <span className="input-icon">🔒</span>
                 <input
                   type={showPassword ? "text" : "password"}
                   placeholder="密码"
@@ -264,7 +264,7 @@ const LoginPage: React.FC = () => {
                   autoComplete="current-password"
                 />
                 <span className="eye-icon" onClick={() => setShowPassword(!showPassword)}>
-                  {showPassword ? "&#128064;" : "&#128065;"}
+                  {showPassword ? "👁️" : "👁️‍🗨️"}
                 </span>
               </div>
             </div>
@@ -295,7 +295,7 @@ const LoginPage: React.FC = () => {
             <span className="divider-text">安 全 提 示</span>
           </div>
           <div className="login-security">
-            <span className="shield">&#128737;</span>
+            <span className="shield">🛡️</span>
             <span>数据加密传输 · 仅限授权人员访问</span>
           </div>
         </div>

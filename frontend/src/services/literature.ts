@@ -149,6 +149,27 @@ export async function getExtractionResults(literatureId: string) {
   return data;
 }
 
+/** 获取文献的历次 AI 提取历史 */
+export interface ExtractionHistoryItem {
+  id: string;
+  extracted_at: string;
+  model: string | null;
+  status: string;
+  data_point_count: number;
+  error_message: string | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  llm_cost_usd: number;
+  llm_call_count: number;
+  llm_usage_detail: Record<string, { prompt_tokens: number; completion_tokens: number; total_tokens: number; call_count: number }> | null;
+}
+
+export async function getExtractionHistory(literatureId: string): Promise<ExtractionHistoryItem[]> {
+  const { data } = await api.get<ExtractionHistoryItem[]>(`/literatures/${literatureId}/extraction/history`);
+  return data;
+}
+
 export async function updateDataPoints(
   literatureId: string,
   dataPoints: Array<{
@@ -269,6 +290,18 @@ export async function mergeLiteratures(payload: MergeRequestPayload): Promise<Me
   return data;
 }
 
+// ===== 关联文件上传 =====
+
+export async function uploadLiteratureFile(
+  literatureId: string,
+  file: File,
+) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const { data } = await api.post(`/literatures/${literatureId}/file`, formData);
+  return data;
+}
+
 // ===== 导入 =====
 
 export interface ImportResult {
@@ -288,5 +321,52 @@ export async function importLiteratures(
   formData.append('file', file);
   formData.append('skip_duplicates', String(skipDuplicates));
   const { data } = await api.post<ImportResult>('/literatures/import', formData);
+  return data;
+}
+
+// ===== 批量从本地文件夹导入 =====
+
+export interface BatchImportResult {
+  matched: number;
+  imported: number;
+  skipped: number;
+  failed: number;
+  extraction_triggered: number;
+  total: number;
+  details: Array<{
+    filename: string;
+    status: string;
+    literature_id?: string;
+    title?: string;
+    error?: string;
+    reason?: string;
+  }>;
+}
+
+export async function batchImportFromFolder(
+  folderPath: string,
+  triggerExtraction: boolean = true,
+): Promise<BatchImportResult> {
+  const formData = new FormData();
+  formData.append('folder_path', folderPath);
+  formData.append('trigger_extraction_after', String(triggerExtraction));
+  const { data } = await api.post<BatchImportResult>('/literatures/batch-import-from-folder', formData);
+  return data;
+}
+
+/** 从浏览器批量上传文件（使用 webkitdirectory 选择文件夹） */
+export async function batchUploadFiles(
+  files: File[],
+  triggerExtraction: boolean = true,
+): Promise<BatchImportResult> {
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append('files', file);
+  }
+  formData.append('trigger_extraction_after', String(triggerExtraction));
+  const { data } = await api.post<BatchImportResult>('/literatures/batch-upload-files', formData, {
+    timeout: 300_000, // 大文件上传给 5 分钟超时
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
   return data;
 }
