@@ -20,12 +20,12 @@ const Analysis: React.FC = () => {
   // 本地筛选状态
   const [localDisease, setLocalDisease] = useState(globalDisease);
   const [localDataType, setLocalDataType] = useState(globalDataType);
-  const [province, setProvince] = useState('');
+  const [province, setProvince] = useState<string[]>([]);
 
   // 实际查询参数
   const [appliedDisease, setAppliedDisease] = useState('');
   const [appliedDataType, setAppliedDataType] = useState('');
-  const [appliedProvince, setAppliedProvince] = useState('');
+  const [appliedProvinces, setAppliedProvinces] = useState<string[]>([]);
 
   const [loading, setLoading] = useState(false);
   const [trendData, setTrendData] = useState<DataItem[]>([]);
@@ -59,13 +59,13 @@ const Analysis: React.FC = () => {
   const [vaccineSelectedDisease, setVaccineSelectedDisease] = useState<string>('');
 
   const fetchAll = useCallback(async () => {
-    if (!appliedDisease && !appliedDataType && !appliedProvince) return;
+    if (!appliedDisease && !appliedDataType && appliedProvinces.length === 0) return;
     setLoading(true);
     try {
       const params: Record<string, unknown> = {};
       if (appliedDisease) params.disease = appliedDisease;
       if (appliedDataType) params.data_type = appliedDataType;
-      if (appliedProvince) params.province = appliedProvince;
+      if (appliedProvinces.length > 0) params.province = appliedProvinces.join(',');
 
       const [trend, region, age] = await Promise.all([
         getTrend(params),
@@ -81,7 +81,7 @@ const Analysis: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [appliedDisease, appliedDataType, appliedProvince]);
+  }, [appliedDisease, appliedDataType, appliedProvinces]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -113,7 +113,7 @@ const Analysis: React.FC = () => {
     try {
       const params: Record<string, unknown> = {};
       if (appliedDisease) params.disease = appliedDisease;
-      if (appliedProvince) params.province = appliedProvince;
+      if (appliedProvinces.length > 0) params.province = appliedProvinces.join(',');
       const data = await getFoiHerdImmunity(params);
       setFoiData(data);
       // 默认选中第一个疾病
@@ -127,7 +127,7 @@ const Analysis: React.FC = () => {
     } finally {
       setFoiLoading(false);
     }
-  }, [appliedDisease, appliedProvince]);
+  }, [appliedDisease, appliedProvinces]);
 
   useEffect(() => {
     if (activeTab === 'foi') {
@@ -141,7 +141,7 @@ const Analysis: React.FC = () => {
     try {
       const params: Record<string, unknown> = {};
       if (appliedDisease) params.disease = appliedDisease;
-      if (appliedProvince) params.province = appliedProvince;
+      if (appliedProvinces.length > 0) params.province = appliedProvinces.join(',');
       const data = await getVaccineEffectivenessCoverage(params);
       setVaccineData(data);
       // 默认选中第一个疾病
@@ -155,7 +155,7 @@ const Analysis: React.FC = () => {
     } finally {
       setVaccineLoading(false);
     }
-  }, [appliedDisease, appliedProvince]);
+  }, [appliedDisease, appliedProvinces]);
 
   useEffect(() => {
     if (activeTab === 'vaccine') {
@@ -173,7 +173,7 @@ const Analysis: React.FC = () => {
       };
       if (appliedDisease) params.disease = appliedDisease;
       if (appliedDataType) params.data_type = appliedDataType;
-      if (appliedProvince) params.province = appliedProvince;
+      if (appliedProvinces.length > 0) params.province = appliedProvinces.join(',');
       if (sortBy) { params.sort_by = sortBy; params.sort_order = sortOrder || 'desc'; }
 
       const res = await getApprovedDataPoints(params);
@@ -186,7 +186,7 @@ const Analysis: React.FC = () => {
     } finally {
       setApprovedLoading(false);
     }
-  }, [appliedDisease, appliedDataType, appliedProvince]);
+  }, [appliedDisease, appliedDataType, appliedProvinces]);
 
   // 切换到数据点可视化tab时加载
   useEffect(() => {
@@ -202,7 +202,7 @@ const Analysis: React.FC = () => {
     setDataType(localDataType);
     setAppliedDisease(localDisease);
     setAppliedDataType(localDataType);
-    setAppliedProvince(province);
+    setAppliedProvinces(province);
     // 清除已选数据点
     setSelectedRowKeys([]);
     setSelectedRows([]);
@@ -391,7 +391,7 @@ const Analysis: React.FC = () => {
         <Col><span style={{ fontWeight: 'bold' }}>筛选：</span></Col>
         <Col><DiseaseSelector value={localDisease} onChange={setLocalDisease} /></Col>
         <Col><MapSelector value={localDataType} onChange={setLocalDataType} /></Col>
-        <Col><ProvinceSelector value={province} onChange={setProvince} /></Col>
+        <Col><ProvinceSelector multiple value={province} onChange={setProvince} /></Col>
         <Col>
           <Button type="primary" icon={<SearchOutlined />} onClick={handleConfirm}>
             查询
@@ -402,7 +402,7 @@ const Analysis: React.FC = () => {
             const params = new URLSearchParams();
             if (localDisease) params.set('disease', localDisease);
             if (localDataType) params.set('data_type', localDataType);
-            if (province) params.set('province', province);
+            if (province.length > 0) params.set('province', province.join(','));
             window.open(`/api/v1/analysis/export?${params.toString()}`);
           }}>
             导出 Excel
@@ -413,7 +413,7 @@ const Analysis: React.FC = () => {
             const params = new URLSearchParams();
             if (localDisease) params.set('disease', localDisease);
             if (localDataType) params.set('data_type', localDataType);
-            if (province) params.set('province', province);
+            if (province.length > 0) params.set('province', province.join(','));
             window.open(`/api/v1/analysis/dataset-snapshot?${params.toString()}`);
           }}>
             数据集快照
@@ -1700,7 +1700,7 @@ const Analysis: React.FC = () => {
               <AdvancedCharts
                 appliedDisease={appliedDisease}
                 appliedDataType={appliedDataType}
-                appliedProvince={appliedProvince}
+                appliedProvinces={appliedProvinces}
               />
             ),
           },

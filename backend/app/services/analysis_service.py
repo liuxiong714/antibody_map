@@ -48,7 +48,12 @@ def _build_base_query(disease, province, year_start, year_end, age_min, age_max,
         normalized = normalize_disease(disease)
         query = query.where(DataPoint.disease == normalized)
     if province:
-        query = query.where(DataPoint.province.ilike(f"%{province}%"))
+        # 支持逗号分隔的多省份筛选（前端多选省份），如 "北京市,上海市,广东省"
+        provinces = [p.strip() for p in province.split(",") if p.strip()]
+        if len(provinces) == 1:
+            query = query.where(DataPoint.province.ilike(f"%{provinces[0]}%"))
+        else:
+            query = query.where(DataPoint.province.in_(provinces))
     if year_start:
         query = query.where(DataPoint.collection_year >= year_start)
     if year_end:

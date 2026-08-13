@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Row, Col, Spin, Empty, message, Select, Space, Tag, Alert } from 'antd';
+import { Card, Row, Col, Spin, Empty, message, Select, Space, Tag, Alert, Typography } from 'antd';
 import { BarChartOutlined, HeatMapOutlined, RadarChartOutlined } from '@ant-design/icons';
 import ReactECharts from '../components/EChart';
 import { getTrend, getRegionCompare, getAgeStratify } from '../services/map';
@@ -10,10 +10,10 @@ type DataItem = Record<string, unknown>;
 interface Props {
   appliedDisease: string;
   appliedDataType: string;
-  appliedProvince: string;
+  appliedProvinces: string[];
 }
 
-const AdvancedCharts: React.FC<Props> = ({ appliedDisease, appliedDataType, appliedProvince }) => {
+const AdvancedCharts: React.FC<Props> = ({ appliedDisease, appliedDataType, appliedProvinces }) => {
   const [loading, setLoading] = useState(false);
   const [trendData, setTrendData] = useState<DataItem[]>([]);
   const [regionData, setRegionData] = useState<DataItem[]>([]);
@@ -25,15 +25,14 @@ const AdvancedCharts: React.FC<Props> = ({ appliedDisease, appliedDataType, appl
   const yAxisLabel = isGmc ? 'GMC' : '阳性率 (%)';
 
   const fetchData = useCallback(async () => {
-    if (!appliedDisease && !appliedDataType && !appliedProvince) {
-      return;
-    }
+    // 高级图表为多省份对比图表：未选省份时默认展示全部省份，
+    // 使箱线图/雷达图始终有足够省份数据；选了省份则限定所选省份。
     setLoading(true);
     try {
       const params: Record<string, unknown> = {};
       if (appliedDisease) params.disease = appliedDisease;
       if (appliedDataType) params.data_type = appliedDataType;
-      if (appliedProvince) params.province = appliedProvince;
+      if (appliedProvinces.length > 0) params.province = appliedProvinces.join(',');
 
       const [trend, region, age] = await Promise.all([
         getTrend(params),
@@ -49,13 +48,11 @@ const AdvancedCharts: React.FC<Props> = ({ appliedDisease, appliedDataType, appl
     } finally {
       setLoading(false);
     }
-  }, [appliedDisease, appliedDataType, appliedProvince]);
+  }, [appliedDisease, appliedDataType, appliedProvinces]);
 
   useEffect(() => {
-    if (appliedDisease || appliedDataType || appliedProvince) {
-      fetchData();
-    }
-  }, [fetchData, appliedDisease, appliedDataType, appliedProvince]);
+    fetchData();
+  }, [fetchData]);
 
   // ===== 1. Box Plot: 各省份数据分布 =====
   const boxPlotOption = regionData.length > 0 ? (() => {
@@ -322,8 +319,10 @@ const AdvancedCharts: React.FC<Props> = ({ appliedDisease, appliedDataType, appl
     { value: 'radar', label: '雷达图', icon: <RadarChartOutlined /> },
   ];
 
-  const hasData = appliedDisease || appliedDataType || appliedProvince;
-  const noDataMsg = '请先选择筛选条件后点击查询';
+  // 高级图表为多省份对比图表：默认展示全部省份，未筛选时也可直接使用。
+  const loadedAnyData = regionData.length > 0 || trendData.length > 0 || ageData.length > 0;
+  const onlyOneProvince = appliedProvinces.length === 1;
+  const noDataMsg = '暂无可用数据，请检查是否已完成文献提取与审核';
 
   return (
     <Spin spinning={loading}>
@@ -345,6 +344,9 @@ const AdvancedCharts: React.FC<Props> = ({ appliedDisease, appliedDataType, appl
             }))}
           />
           <Tag color="blue">高级图表</Tag>
+          <Typography.Text type="secondary">
+            多省份对比图表，可多选省份或留空展示全部省份
+          </Typography.Text>
         </Space>
       </Card>
 
@@ -361,7 +363,7 @@ const AdvancedCharts: React.FC<Props> = ({ appliedDisease, appliedDataType, appl
               />
             </>
           ) : (
-            <Empty description={hasData ? '数据不足（至少需3个省份且每个省份3个数据点）' : noDataMsg} />
+            <Empty description={loadedAnyData ? '数据不足（每个省份至少需3个数据点）' : noDataMsg} />
           )}
         </Card>
       )}
@@ -379,7 +381,7 @@ const AdvancedCharts: React.FC<Props> = ({ appliedDisease, appliedDataType, appl
               />
             </>
           ) : (
-            <Empty description={hasData ? '数据不足，需要省份和年龄组数据' : noDataMsg} />
+            <Empty description={loadedAnyData ? '数据不足，需要省份和年龄组数据' : noDataMsg} />
           )}
         </Card>
       )}
@@ -397,7 +399,11 @@ const AdvancedCharts: React.FC<Props> = ({ appliedDisease, appliedDataType, appl
               />
             </>
           ) : (
-            <Empty description={hasData ? '数据不足（至少需要3个省份的数据）' : noDataMsg} />
+            <Empty description={loadedAnyData
+              ? (onlyOneProvince
+                ? '仅1个省份的数据不足（至少需要3个省份），请多选几个省份或清除省份筛选'
+                : '数据不足（至少需要3个省份的数据）')
+              : noDataMsg} />
           )}
         </Card>
       )}
