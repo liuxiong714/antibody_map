@@ -38,6 +38,7 @@ export interface Literature {
     total_tokens: number;
     call_count: number;
   }> | null;
+  tags?: Array<{ id: string; name: string; color: string }>;
   created_at: string;
   updated_at: string;
 }

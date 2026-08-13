@@ -1,0 +1,54 @@
+.settings-page {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.settings-card {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.settings-section {
+  padding: 8px 0;
+}
+
+.settings-desc {
+  color: #666;
+  font-size: 14px;
+  line-height: 1.8;
+  margin-bottom: 20px;
+}
+
+.system-info {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.system-info-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.system-info-item .label {
+  width: 120px;
+  font-weight: 500;
+  color: #333;
+  flex-shrink: 0;
+}
+
+.system-info-item .value {
+  flex: 1;
+  color: #666;
+}
+
+.system-info-item .value a {
+  color: #1677ff;
+  text-decoration: none;
+}
+
+.system-info-item .value a:hover {
+  text-decoration: underline;
+}

@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip,
+  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip, Switch, Typography,
 } from 'antd';
-import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined, DownloadOutlined, PlusOutlined, HistoryOutlined, ClockCircleOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined, DownloadOutlined, PlusOutlined, HistoryOutlined, ClockCircleOutlined, FileTextOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
@@ -16,6 +16,9 @@ import { DATA_TYPE_LABEL, DISEASES, PROVINCES, MODEL_OPTIONS, VENDOR_INFO } from
 import type { Literature, DataPoint, ExtractionStatusWithUsage } from '../types';
 import type { ExtractionHistoryItem } from '../services/literature';
 import dayjs from 'dayjs';
+import { clearAnalysisApiCache, clearMapApiCache } from '../services/map';
+
+const { Text } = Typography;
 
 const LiteratureDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -34,6 +37,8 @@ const LiteratureDetail: React.FC = () => {
   const [extractModel, setExtractModel] = useState<string | undefined>(undefined);
   const [extractApiKey, setExtractApiKey] = useState('');
   const [extractBaseUrl, setExtractBaseUrl] = useState('');
+  // 提取时是否保留已审核数据
+  const [clearExistingData, setClearExistingData] = useState(true);
   // 是否在本次提取完成后显示 token/费用/模型信息
   const [showUsageOnComplete, setShowUsageOnComplete] = useState<boolean>(() => {
     try { return localStorage.getItem('lit_show_usage_on_complete') === '1'; } catch { return false; }
@@ -188,6 +193,9 @@ const LiteratureDetail: React.FC = () => {
       message.success('数据点已更新');
       setEditingRowId(null);
       setEditRowData(null);
+      // 数据点变更影响地图/分析数据，清除相关接口缓存
+      clearMapApiCache();
+      clearAnalysisApiCache();
       fetchData();
     } catch (err) {
       console.error('[LiteratureDetail] 保存数据点行编辑失败:', err);
@@ -370,9 +378,10 @@ const LiteratureDetail: React.FC = () => {
           model: extractModel,
           apiKey: extractApiKey || undefined,
           baseUrl: extractBaseUrl || undefined,
+          clearExistingData,
         });
       } else {
-        await triggerExtraction(id);
+        await triggerExtraction(id, { model: '', clearExistingData });
       }
       message.success('AI 提取任务已提交，正在轮询进度...');
       const interval = window.setInterval(() => {
@@ -468,6 +477,9 @@ const LiteratureDetail: React.FC = () => {
     try {
       await updateDataPoints(id, [{ id: dpId, review_status: status }]);
       message.success(status === 'approved' ? '已通过' : '已驳回');
+      // 审核状态影响地图/分析数据，清除相关接口缓存
+      clearMapApiCache();
+      clearAnalysisApiCache();
       fetchData();
     } catch (err) {
       console.error('[LiteratureDetail] 单个审核操作失败:', err);
@@ -484,6 +496,9 @@ const LiteratureDetail: React.FC = () => {
       setSelectedRowKeys([]);
       setModalOpen(false);
       setReviewNote('');
+      // 审核状态影响地图/分析数据，清除相关接口缓存
+      clearMapApiCache();
+      clearAnalysisApiCache();
       fetchData();
     } catch (err) {
       console.error('[LiteratureDetail] 批量审核操作失败:', err);
@@ -1034,6 +1049,13 @@ const LiteratureDetail: React.FC = () => {
                         溯源 HTML
                       </Button>
                       <Button
+                        icon={<FileTextOutlined />}
+                        onClick={() => window.open(`/api/v1/literatures/${id}/extraction/export-word`)}
+                        disabled={dataPoints.length === 0}
+                      >
+                        导出 Word
+                      </Button>
+                      <Button
                         type="primary"
                         icon={<CheckOutlined />}
                         disabled={selectedRowKeys.length === 0}
@@ -1235,6 +1257,12 @@ const LiteratureDetail: React.FC = () => {
             提取完成后显示 Token 用量、费用和模型信息
           </Checkbox>
         </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
+          <Switch checked={clearExistingData} onChange={setClearExistingData} size="small" />
+          <Text style={{ fontSize: 13 }}>
+            {clearExistingData ? '清除并重新提取所有数据（含已审核的）' : '保留已审核通过的数据点，仅覆盖未审核/已驳回的数据'}
+          </Text>
+        </div>
       </Modal>
 
       <Modal
@@ -1255,6 +1283,9 @@ const LiteratureDetail: React.FC = () => {
             await createDataPoint(id, addForm);
             message.success('数据点已添加');
             setAddModalOpen(false);
+            // 数据点变更影响地图/分析数据，清除相关接口缓存
+            clearMapApiCache();
+            clearAnalysisApiCache();
             fetchData();
           } catch (err) {
             console.error('[LiteratureDetail] 手动新增数据点失败:', err);

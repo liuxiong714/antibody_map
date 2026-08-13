@@ -31,6 +31,9 @@ openpyxl>=3.1.0
 pytesseract>=0.3.10
 Pillow>=10.0.0
 requests>=2.31.0
-# 认证：JWT 令牌 + 密码哈希
+# JWT 令牌 + 密码哈希
 pyjwt>=2.8.0
 bcrypt>=4.0.0
+
+# 结构化日志
+loguru>=0.7.0

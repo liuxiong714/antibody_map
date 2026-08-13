@@ -29,7 +29,7 @@ logger = logging.getLogger("uvicorn")
 router = APIRouter()
 
 
-@router.get("/folders", response_model=ApiResponse)
+@router.get("/folders", response_model=ApiResponse, summary="列出监控文件夹", description="获取所有配置的文件夹监控列表")
 async def list_folders(db: AsyncSession = Depends(get_db)):
     """列出所有监控文件夹"""
     folders = await list_monitored_folders(db)
@@ -38,7 +38,7 @@ async def list_folders(db: AsyncSession = Depends(get_db)):
     ])
 
 
-@router.post("/folders", response_model=ApiResponse)
+@router.post("/folders", response_model=ApiResponse, summary="添加监控文件夹", description="添加一个新的文件夹监控配置，用于自动扫描文件夹中的新文件")
 async def create_folder(
     req: MonitoredFolderCreate,
     db: AsyncSession = Depends(get_db),
@@ -54,7 +54,7 @@ async def create_folder(
     )
 
 
-@router.put("/folders/{folder_id}", response_model=ApiResponse)
+@router.put("/folders/{folder_id}", response_model=ApiResponse, summary="更新监控文件夹", description="更新指定监控文件夹的配置，如路径、启用状态等")
 async def update_folder(
     folder_id: uuid.UUID,
     req: MonitoredFolderUpdate,
@@ -73,7 +73,7 @@ async def update_folder(
     )
 
 
-@router.delete("/folders/{folder_id}", response_model=ApiResponse)
+@router.delete("/folders/{folder_id}", response_model=ApiResponse, summary="删除监控文件夹", description="删除指定的监控文件夹配置")
 async def delete_folder(
     folder_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -105,7 +105,7 @@ async def _run_scan_background(folder_id: uuid.UUID):
                 await db.commit()
 
 
-@router.post("/folders/{folder_id}/scan", response_model=ApiResponse)
+@router.post("/folders/{folder_id}/scan", response_model=ApiResponse, summary="手动触发扫描", description="手动触发指定文件夹的扫描（异步后台执行，立即返回），扫描结果在列表中查看")
 async def trigger_scan(
     folder_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -121,7 +121,7 @@ async def trigger_scan(
     return ApiResponse(message="扫描已启动，请稍后在列表中查看结果")
 
 
-@router.get("/folders/{folder_id}/files", response_model=ApiResponse)
+@router.get("/folders/{folder_id}/files", response_model=ApiResponse, summary="查看文件处理记录", description="查看指定监控文件夹下的文件处理记录，包括已导入和待处理的文件")
 async def list_files(
     folder_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

@@ -628,6 +628,56 @@ MIT
 
 ## 更新日志
 
+### v1.7.2 (2026-08-13)
+
+#### 任务调度统一
+
+- **统一使用 Celery 异步任务调度**：文献 AI 提取从进程内 `asyncio.create_task` 后台任务迁移为 Celery 任务队列调度，由独立 worker 进程消费，避免 API 进程阻塞与任务丢失。提取任务支持失败自动重试（指数退避，最多 3 次）。
+- **新增 Celery worker 服务**：`docker-compose.yml` 新增 `worker` 服务，复用后端镜像，以 `--pool=prefork --concurrency=1` 启动，与本地 Ollama 单并发模型配置对齐。
+- **提取保留审核数据开关适配 Celery**：批量/单选重新提取时的 `clear_existing_data` 参数已接入 Celery 任务，关闭时仅删除待审核/已驳回数据点，保留已通过数据点。
+
+#### 前端数据缓存优化
+
+- **新增前端 GET 请求缓存层**：新增 `apiCache.ts` 轻量缓存模块，以「URL + 排序后的 query 参数」为 key，支持 TTL（默认 60s）与并发去重（同一 key 的并发请求共享 Promise，避免重复发请求）。
+- **地图/分析接口接入缓存**：省份数据、可用年份、人群选项、汇总等静态接口用 2 分钟 TTL；趋势、地区对比、年龄分层、免疫屏障、数据缺口、FOI/VE 等筛选接口用 30 秒 TTL，大幅减少筛选切换时的重复请求。
+- **数据变更自动清除缓存**：数据点审核（通过/驳回）、编辑、手动新增后自动清除地图与分析接口缓存，保证地图/分析展示数据实时准确，避免因缓存导致数据过期。
+
+#### 版本号统一
+
+- **单一版本源**：新增 `APP_VERSION` 配置项（当前 1.7.2），`main.py` 的 OpenAPI version 与 `/health` 端点均引用该值，消除此前 main.py（1.7.1）与 /health（1.0.0）版本号不一致的问题，升级版本只需修改一处。
+
+#### 数据库连接池调优
+
+- **显式配置连接池**：为异步数据库引擎配置 `pool_size=20`、`max_overflow=10`、`pool_timeout=30s`、`pool_pre_ping=True`、`pool_recycle=1800s`，提升高并发下的连接复用与稳定性，避免默认连接池在高负载下不足或使用失效连接。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/services/extraction_service.py` | 提取触发从 `asyncio.create_task` 改为 `process_literature.delay()` 提交 Celery 任务 |
+| `backend/app/tasks/extract_task.py` | Celery 任务 `process_literature` 新增 `clear_existing_data` 参数 |
+| `docker-compose.yml` | 新增 `worker` 服务（Celery worker，concurrency=1） |
+| `frontend/src/lib/apiCache.ts` | 新增前端 GET 请求缓存层（TTL + 并发去重 + 手动失效） |
+| `frontend/src/services/map.ts` | 地图/分析只读接口接入缓存，新增 `clearMapApiCache`/`clearAnalysisApiCache` |
+| `frontend/src/pages/LiteratureDetail.tsx` | 数据点审核/编辑/新增后清除地图与分析缓存 |
+| `backend/app/config.py` | 新增 `APP_VERSION` 单一版本源 |
+| `backend/app/main.py` | OpenAPI version 引用 `settings.APP_VERSION` |
+| `backend/app/api/v1/router.py` | `/health` 端点 version 引用 `settings.APP_VERSION` |
+| `backend/app/models/base.py` | 显式配置数据库连接池（pool_size/max_overflow/pool_timeout/pool_pre_ping/pool_recycle） |
+
+#### 启动说明
+
+统一使用 Celery 后，需同时启动 API 服务与 worker：
+
+```bash
+# Docker 一键启动（含 worker）
+docker compose up -d
+
+# 或手动启动
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+celery -A app.tasks.celery_app worker --loglevel=info --concurrency=1
+```
+
 ### v1.7.1 (2026-08-13)
 
 #### 优化与修复

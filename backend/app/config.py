@@ -1,4 +1,8 @@
+import os
+import warnings
 from pathlib import Path
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # .env 文件位于项目根目录（backend/ 的父目录）
@@ -107,8 +111,61 @@ class Settings(BaseSettings):
     SECRET_KEY: str = ""  # 必须通过环境变量或 .env 文件配置
     APP_ENV: str = "development"
     APP_DEBUG: bool = False
+    # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
+    APP_VERSION: str = "1.7.2"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
+
+    @model_validator(mode="after")
+    def _validate_constraints(self) -> "Settings":
+        """交叉校验配置项之间的约束关系，在启动时即发现配置错误。"""
+        # 核心结构性约束：预处理截断必须大于分块阈值，否则分块并发逻辑永不触发
+        if self.TEXT_PREPROCESS_MAX_CHARS <= self.LLM_CHUNK_THRESHOLD:
+            raise ValueError(
+                "TEXT_PREPROCESS_MAX_CHARS 必须大于 LLM_CHUNK_THRESHOLD，"
+                f"当前 {self.TEXT_PREPROCESS_MAX_CHARS} <= {self.LLM_CHUNK_THRESHOLD}，"
+                "否则长文档分块并发逻辑将永不触发"
+            )
+
+        # 单块大小必须大于重叠区，否则分块无意义
+        if self.LLM_CHUNK_SIZE <= self.LLM_CHUNK_OVERLAP:
+            raise ValueError(
+                "LLM_CHUNK_SIZE 必须大于 LLM_CHUNK_OVERLAP，"
+                f"当前 {self.LLM_CHUNK_SIZE} <= {self.LLM_CHUNK_OVERLAP}"
+            )
+
+        # 分块阈值应不小于单块大小（否则首块即超过阈值，逻辑退化）
+        if self.LLM_CHUNK_THRESHOLD < self.LLM_CHUNK_SIZE:
+            warnings.warn(
+                f"LLM_CHUNK_THRESHOLD ({self.LLM_CHUNK_THRESHOLD}) 小于 "
+                f"LLM_CHUNK_SIZE ({self.LLM_CHUNK_SIZE})，分块逻辑可能退化",
+                stacklevel=2,
+            )
+
+        if self.LLM_CONCURRENCY < 1:
+            raise ValueError(f"LLM_CONCURRENCY 必须 >= 1，当前 {self.LLM_CONCURRENCY}")
+
+        if self.LLM_FEEDBACK_FEW_SHOT_COUNT < 1:
+            raise ValueError(
+                f"LLM_FEEDBACK_FEW_SHOT_COUNT 必须 >= 1，当前 {self.LLM_FEEDBACK_FEW_SHOT_COUNT}"
+            )
+
+        # 生产环境必须配置强密钥（>=32 字符）
+        if self.APP_ENV != "development" and len(self.SECRET_KEY) < 32:
+            raise ValueError(
+                f"生产环境 SECRET_KEY 必须 >= 32 字符，当前长度 {len(self.SECRET_KEY)}"
+            )
+
+        # 本地 Ollama 并发一致性：若设置了 OLLAMA_NUM_PARALLEL，应与 LLM_CONCURRENCY 对齐
+        ollama_parallel = os.getenv("OLLAMA_NUM_PARALLEL")
+        if ollama_parallel and int(ollama_parallel) != self.LLM_CONCURRENCY:
+            warnings.warn(
+                f"OLLAMA_NUM_PARALLEL ({ollama_parallel}) 与 LLM_CONCURRENCY "
+                f"({self.LLM_CONCURRENCY}) 不一致，可能导致本地模型并发异常",
+                stacklevel=2,
+            )
+
+        return self
 
 
 settings = Settings()

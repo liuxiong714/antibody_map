@@ -97,16 +97,34 @@ async def list_literature(
     sort_order: Optional[str] = None,
     review_status: Optional[str] = None,
     extraction_status: Optional[str] = None,
+    tag_id: Optional[uuid.UUID] = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[Literature], int]:
     query = select(Literature)
     count_query = select(func.count(Literature.id))
 
+    if tag_id:
+        from app.models.literature_tag import literature_tag
+        query = query.join(literature_tag).where(literature_tag.c.tag_id == tag_id)
+        count_query = count_query.join(literature_tag).where(literature_tag.c.tag_id == tag_id)
+
     if keyword:
         like = f"%{keyword}%"
-        query = query.where(Literature.title.ilike(like) | Literature.authors.ilike(like) | Literature.journal.ilike(like))
-        count_query = count_query.where(Literature.title.ilike(like) | Literature.authors.ilike(like) | Literature.journal.ilike(like))
+        query = query.where(
+            Literature.title.ilike(like)
+            | Literature.authors.ilike(like)
+            | Literature.journal.ilike(like)
+            | Literature.abstract.ilike(like)
+            | func.array_to_string(Literature.keywords, " ").ilike(like)
+        )
+        count_query = count_query.where(
+            Literature.title.ilike(like)
+            | Literature.authors.ilike(like)
+            | Literature.journal.ilike(like)
+            | Literature.abstract.ilike(like)
+            | func.array_to_string(Literature.keywords, " ").ilike(like)
+        )
 
     if province:
         query = query.where(Literature.province == province)

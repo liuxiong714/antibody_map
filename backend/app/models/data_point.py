@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import ForeignKey, Integer, String, Numeric, DateTime, CheckConstraint, Text, Boolean
+from sqlalchemy import ForeignKey, Integer, String, Numeric, DateTime, CheckConstraint, Text, Boolean, Index
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -60,6 +60,19 @@ class DataPoint(Base):
     )
 
     __table_args__ = (
+        # 复合索引：地图/分析最常用的组合过滤条件 (review_status, disease, data_type)
+        Index(
+            "ix_dp_review_disease_type",
+            "review_status",
+            "disease",
+            "data_type",
+        ),
+        # 复合索引：按文献提取/删除数据点时加速
+        Index(
+            "ix_dp_lit_review",
+            "literature_id",
+            "review_status",
+        ),
         CheckConstraint(
             "data_type IN ('seroprevalence','gmc')",
             name="dp_data_type_check",

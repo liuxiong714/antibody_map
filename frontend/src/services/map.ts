@@ -1,70 +1,169 @@
 import api from './api';
+import { cachedGet, clearApiCache } from '../lib/apiCache';
 import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, ApiModelConfig, ModelsListData } from '../types';
 
 // 拦截器已将 ApiResponse.data 提升到 resp.data，此处解包 AxiosResponse
 
+// 缓存 TTL（毫秒）：静态/低频变化数据用较长 TTL，筛选频繁变化数据用短 TTL
+const CACHE_STATIC = 120_000; // 2 分钟：省份数据、可用年份、人群选项、汇总
+const CACHE_FILTER = 30_000; // 30 秒：依赖筛选条件的动态数据
+
 export async function getProvinceData(params: Record<string, unknown>) {
-  const { data } = await api.get<MapDataPoint[]>('/map/province-data', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<MapDataPoint[]>('/map/province-data', { params });
+      return data;
+    },
+    '/map/province-data',
+    params,
+    CACHE_STATIC,
+  );
 }
 
 export async function getYearlyProvinceData(params: Record<string, unknown>) {
-  const { data } = await api.get<YearlyMapData[]>('/map/yearly-data', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<YearlyMapData[]>('/map/yearly-data', { params });
+      return data;
+    },
+    '/map/yearly-data',
+    params,
+    CACHE_STATIC,
+  );
 }
 
 export async function getAvailableYears(disease?: string) {
   const params: Record<string, unknown> = {};
   if (disease) params.disease = disease;
-  const { data } = await api.get<number[]>('/map/available-years', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<number[]>('/map/available-years', { params });
+      return data;
+    },
+    '/map/available-years',
+    params,
+    CACHE_STATIC,
+  );
 }
 
 export async function getPopulationOptions(disease?: string) {
   const params: Record<string, unknown> = {};
   if (disease) params.disease = disease;
-  const { data } = await api.get<string[]>('/map/population-options', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<string[]>('/map/population-options', { params });
+      return data;
+    },
+    '/map/population-options',
+    params,
+    CACHE_STATIC,
+  );
 }
 
 export async function getCityData(params: Record<string, unknown>) {
-  const { data } = await api.get<MapDataPoint[]>('/map/city-data', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<MapDataPoint[]>('/map/city-data', { params });
+      return data;
+    },
+    '/map/city-data',
+    params,
+    CACHE_FILTER,
+  );
 }
 
 export async function getSummary(params: Record<string, unknown>) {
-  const { data } = await api.get('/map/summary', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get('/map/summary', { params });
+      return data;
+    },
+    '/map/summary',
+    params,
+    CACHE_STATIC,
+  );
+}
+
+/** 数据变更（审核/提取/导入）后清除地图接口缓存，避免展示过期数据 */
+export function clearMapApiCache() {
+  clearApiCache('/map/');
 }
 
 export async function getTrend(params: Record<string, unknown>) {
-  const { data } = await api.get('/analysis/trend', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get('/analysis/trend', { params });
+      return data;
+    },
+    '/analysis/trend',
+    params,
+    CACHE_FILTER,
+  );
 }
 
 export async function getRegionCompare(params: Record<string, unknown>) {
-  const { data } = await api.get('/analysis/region-compare', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get('/analysis/region-compare', { params });
+      return data;
+    },
+    '/analysis/region-compare',
+    params,
+    CACHE_FILTER,
+  );
 }
 
 export async function getAgeStratify(params: Record<string, unknown>) {
-  const { data } = await api.get('/analysis/age-stratify', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get('/analysis/age-stratify', { params });
+      return data;
+    },
+    '/analysis/age-stratify',
+    params,
+    CACHE_FILTER,
+  );
 }
 
 export async function getApprovedDataPoints(params: Record<string, unknown>) {
-  const { data } = await api.get('/analysis/approved-data-points', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get('/analysis/approved-data-points', { params });
+      return data;
+    },
+    '/analysis/approved-data-points',
+    params,
+    CACHE_FILTER,
+  );
 }
 
 export async function getImmuneBarrier(params: Record<string, unknown>) {
-  const { data } = await api.get<ImmuneBarrierData>('/analysis/immune-barrier', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<ImmuneBarrierData>('/analysis/immune-barrier', { params });
+      return data;
+    },
+    '/analysis/immune-barrier',
+    params,
+    CACHE_FILTER,
+  );
 }
 
 export async function getDataGapAnalysis(params?: Record<string, unknown>) {
-  const { data } = await api.get<DataGapAnalysisResult>('/analysis/data-gaps', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<DataGapAnalysisResult>('/analysis/data-gaps', { params });
+      return data;
+    },
+    '/analysis/data-gaps',
+    params,
+    CACHE_FILTER,
+  );
+}
+
+/** 数据变更（审核/提取/导入）后清除分析接口缓存，避免展示过期数据 */
+export function clearAnalysisApiCache() {
+  clearApiCache('/analysis/');
 }
 
 export async function generateReport(params: Record<string, unknown>) {
@@ -104,14 +203,28 @@ export function getDownloadUrl(id: string) {
 
 // P0: FOI 感染力 + 群体免疫阈值分析
 export async function getFoiHerdImmunity(params: Record<string, unknown>) {
-  const { data } = await api.get<FoiHerdImmunityResult>('/analysis/foi-herd-immunity', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<FoiHerdImmunityResult>('/analysis/foi-herd-immunity', { params });
+      return data;
+    },
+    '/analysis/foi-herd-immunity',
+    params,
+    CACHE_FILTER,
+  );
 }
 
 // P1: 疫苗效果 VE + 接种率综合分析
 export async function getVaccineEffectivenessCoverage(params: Record<string, unknown>) {
-  const { data } = await api.get<VaccineEffectivenessCoverageResult>('/analysis/vaccine-effectiveness-coverage', { params });
-  return data;
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<VaccineEffectivenessCoverageResult>('/analysis/vaccine-effectiveness-coverage', { params });
+      return data;
+    },
+    '/analysis/vaccine-effectiveness-coverage',
+    params,
+    CACHE_FILTER,
+  );
 }
 
 // ===== 模型管理 =====

@@ -348,6 +348,7 @@ async def _process_literature_async(
     model: Optional[str] = None,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
+    clear_existing_data: bool = True,
 ) -> dict:
     """异步文献处理：PDF 解析 → LLM 提取 → 保存数据点（含精确溯源和强 Schema）"""
     async with async_session() as db:
@@ -446,15 +447,34 @@ async def _process_literature_async(
 
         # 5b. 清除该文献下已有的旧数据点（防止重新提取时新旧叠加）
         # 使用 ORM delete 确保 cascade 正确处理
-        old_dp_result = await db.execute(
-            select(DataPoint.id).where(DataPoint.literature_id == literature_id)
-        )
-        old_ids = old_dp_result.scalars().all()
-        if old_ids:
-            await db.execute(
-                delete(DataPoint).where(DataPoint.literature_id == literature_id)
+        # 当 clear_existing_data=False 时，保留已审核通过(approved)的数据点
+        if clear_existing_data:
+            old_dp_result = await db.execute(
+                select(DataPoint.id).where(DataPoint.literature_id == literature_id)
             )
-            logger.info(f"已清除 {len(old_ids)} 个旧数据点（文献 {literature_id}）")
+            old_ids = old_dp_result.scalars().all()
+            if old_ids:
+                await db.execute(
+                    delete(DataPoint).where(DataPoint.literature_id == literature_id)
+                )
+                logger.info(f"已清除 {len(old_ids)} 个旧数据点（文献 {literature_id}）")
+        else:
+            # 仅清除未审核和已驳回的数据点，保留已审核通过的
+            old_dp_result = await db.execute(
+                select(DataPoint.id).where(
+                    DataPoint.literature_id == literature_id,
+                    DataPoint.review_status.in_(["pending", "rejected"]),
+                )
+            )
+            old_ids = old_dp_result.scalars().all()
+            if old_ids:
+                await db.execute(
+                    delete(DataPoint).where(
+                        DataPoint.literature_id == literature_id,
+                        DataPoint.review_status.in_(["pending", "rejected"]),
+                    )
+                )
+                logger.info(f"已清除 {len(old_ids)} 个未审核/已驳回旧数据点，保留已审核数据点（文献 {literature_id}）")
 
         # 6. 为每个提取数据点创建 DataPoint 记录（含 grounding + schema 校验）
         all_data_points = []
@@ -594,10 +614,15 @@ def process_literature(
     model: Optional[str] = None,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
+    clear_existing_data: bool = True,
 ):
     """Celery 任务：文献处理（PDF 解析 + AI 提取）"""
     try:
-        result = asyncio.run(_process_literature_async(literature_id, model, api_key, base_url))
+        result = asyncio.run(
+            _process_literature_async(
+                literature_id, model, api_key, base_url, clear_existing_data
+            )
+        )
         logger.info(f"文献 {literature_id} 提取完成，数据点: {result['extracted_count']}")
         return result
 

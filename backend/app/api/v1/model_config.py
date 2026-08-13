@@ -40,7 +40,7 @@ LOCAL_MODELS = [
 ]
 
 
-@router.get("/models", response_model=ApiResponse)
+@router.get("/models", response_model=ApiResponse, summary="获取可用模型列表", description="获取可用模型列表，包括本地模型（Ollama等）和远程API模型配置")
 async def list_models(db: AsyncSession = Depends(get_db)):
     """获取可用模型列表（本地 + 远程配置）"""
     # 本地模型
@@ -60,7 +60,7 @@ async def list_models(db: AsyncSession = Depends(get_db)):
     return ApiResponse(data={"local": local_list, "remote": remote_list})
 
 
-@router.get("/models/remote", response_model=ApiResponse)
+@router.get("/models/remote", response_model=ApiResponse, summary="获取远程模型配置列表", description="获取所有远程模型配置，包括API Key（掩码显示）、Base URL、模型名等")
 async def list_remote_models(db: AsyncSession = Depends(get_db)):
     """获取所有远程模型配置"""
     result = await db.execute(select(ApiModelConfig).order_by(ApiModelConfig.created_at.desc()))
@@ -69,7 +69,7 @@ async def list_remote_models(db: AsyncSession = Depends(get_db)):
     return ApiResponse(data=items)
 
 
-@router.post("/models/remote", response_model=ApiResponse)
+@router.post("/models/remote", response_model=ApiResponse, summary="新增远程模型配置", description="管理员新增远程模型配置，需指定模型名称、API Key、Base URL等信息")
 async def create_remote_model(
     req: ApiModelConfigCreate,
     admin: User = Depends(require_admin),
@@ -89,7 +89,7 @@ async def create_remote_model(
     return ApiResponse(message="远程模型配置已添加", data=_config_to_dict(config))
 
 
-@router.put("/models/remote/{config_id}", response_model=ApiResponse)
+@router.put("/models/remote/{config_id}", response_model=ApiResponse, summary="更新远程模型配置", description="管理员更新远程模型配置，可以修改名称、模型名、API Key、Base URL、描述、激活状态")
 async def update_remote_model(
     config_id: str,
     req: ApiModelConfigUpdate,
@@ -122,7 +122,7 @@ async def update_remote_model(
     return ApiResponse(message="远程模型配置已更新", data=_config_to_dict(config))
 
 
-@router.delete("/models/remote/{config_id}", response_model=ApiResponse)
+@router.delete("/models/remote/{config_id}", response_model=ApiResponse, summary="删除远程模型配置", description="管理员删除指定的远程模型配置")
 async def delete_remote_model(
     config_id: str,
     admin: User = Depends(require_admin),

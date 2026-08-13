@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 
+from app.config import settings
 from app.api.deps import get_current_user
 from app.api.v1.auth import router as auth_router
 from app.api.v1.dictionary import router as dictionary_router
@@ -11,6 +12,7 @@ from app.api.v1.analysis import router as analysis_router
 from app.api.v1.report import router as report_router
 from app.api.v1.folder_monitor import router as folder_monitor_router
 from app.api.v1.model_config import router as model_config_router
+from app.api.v1.tag import router as tag_router
 
 router = APIRouter()
 
@@ -20,7 +22,7 @@ router.include_router(auth_router, tags=["auth"])
 
 @router.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "antibody-map-api", "version": "1.0.0"}
+    return {"status": "ok", "service": "antibody-map-api", "version": settings.APP_VERSION}
 
 
 # ── 需要认证的路由（自动注入 get_current_user）──
@@ -34,4 +36,5 @@ _protected.include_router(analysis_router, tags=["analysis"])
 _protected.include_router(report_router, tags=["report"])
 _protected.include_router(folder_monitor_router, tags=["folder_monitor"])
 _protected.include_router(model_config_router, tags=["models"])
+_protected.include_router(tag_router, tags=["tags"])
 router.include_router(_protected)

@@ -124,6 +124,8 @@ const LiteraturePage: React.FC = () => {
   const [savedDefault, setSavedDefault] = useState<SavedModelConfig | null>(() => loadSavedDefaultModel());
   // 批量提取模式
   const [batchExtractMode, setBatchExtractMode] = useState(false);
+  // 提取时是否保留已审核数据
+  const [clearExistingData, setClearExistingData] = useState(true);
   // 表格多选
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [selectedRows, setSelectedRows] = useState<Literature[]>([]);
@@ -514,7 +516,8 @@ const LiteraturePage: React.FC = () => {
         model,
         apiKey: extractApiKey || undefined,
         baseUrl: extractBaseUrl || undefined,
-      } : undefined;
+        clearExistingData,
+      } : (clearExistingData !== undefined ? { model: '', clearExistingData } : undefined);
 
       if (batchExtractMode) {
         // 批量提取模式
@@ -588,9 +591,9 @@ const LiteraturePage: React.FC = () => {
       title: '标题',
       dataIndex: 'title',
       key: 'title',
-      width: 280,
       sorter: true,
       sortOrder: sortInfo.field === 'title' ? sortInfo.order : null,
+      ellipsis: true,
       render: (t: string, r: Literature) => (
         <a onClick={() => saveStateAndNavigate(r.id)}>{truncate(t, 40)}</a>
       ),
@@ -712,7 +715,7 @@ const LiteraturePage: React.FC = () => {
       title: '提取状态',
       dataIndex: 'extraction_status',
       key: 'status',
-      width: 90,
+      width: 105,
       sorter: true,
       sortOrder: sortInfo.field === 'extraction_status' ? sortInfo.order : null,
       render: (s: string) => <StatusBadge status={s} />,
@@ -770,7 +773,7 @@ const LiteraturePage: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 310,
+      width: 200,
       render: (_: unknown, r: Literature) => (
         <Space size="small">
           <Tooltip title="AI 提取">
@@ -848,7 +851,7 @@ const LiteraturePage: React.FC = () => {
       <Card style={{ marginBottom: 16 }}>
         <Space wrap>
           <Input
-            placeholder="搜索标题/作者/期刊"
+            placeholder="搜索标题/作者/期刊/摘要/关键词"
             prefix={<SearchOutlined />}
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
@@ -1099,7 +1102,8 @@ const LiteraturePage: React.FC = () => {
             showSizeChanger: true,
             showTotal: (t) => `共 ${t} 条${selectedRowKeys.length > 0 ? `，已选 ${selectedRowKeys.length} 条` : ''}`,
           }}
-          scroll={{ x: 1100 }}
+          scroll={{ x: 1100, y: 560 }}
+          virtual={pageSize > 20}
           size="middle"
         />
       </Card>
@@ -1547,6 +1551,12 @@ const LiteraturePage: React.FC = () => {
               </Button>
             </>
           )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
+          <Switch checked={clearExistingData} onChange={setClearExistingData} size="small" />
+          <Text style={{ fontSize: 13 }}>
+            {clearExistingData ? '清除并重新提取所有数据（含已审核的）' : '保留已审核通过的数据点，仅覆盖未审核/已驳回的数据'}
+          </Text>
         </div>
       </Modal>
 

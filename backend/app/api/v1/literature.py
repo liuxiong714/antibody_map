@@ -57,7 +57,7 @@ def _build_safe_filename(title: Optional[str], ext: str, literature_id: uuid.UUI
     return quote(f"{safe}{ext}")
 
 
-@router.post("/literatures/upload", response_model=ApiResponse)
+@router.post("/literatures/upload", response_model=ApiResponse, summary="上传文献文件", description="上传单个文献文件（PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML），并自动创建文献记录，支持指定标题、DOI和省份信息")
 async def upload(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
@@ -102,7 +102,7 @@ async def upload(
     )
 
 
-@router.post("/literatures/from-url", response_model=ApiResponse)
+@router.post("/literatures/from-url", response_model=ApiResponse, summary="从URL导入文献", description="从指定URL抓取HTML内容并创建文献记录，自动提取页面标题，保存为HTML文件，后续可通过AI提取功能从HTML文本中提取数据点")
 async def create_from_url(
     url: str = Form(..., description="要抓取的网页 URL"),
     title: Optional[str] = Form(None, description="文献标题（留空则从 HTML <title> 自动提取）"),
@@ -152,7 +152,7 @@ async def create_from_url(
     )
 
 
-@router.get("/literatures", response_model=PagedResponse)
+@router.get("/literatures", response_model=PagedResponse, summary="获取文献列表", description="分页获取文献列表，支持关键词、疾病、省份、年份、期刊、审核状态、提取状态、标签等多维度筛选和排序")
 async def list_literatures(
     keyword: Optional[str] = Query(None, description="标题/作者/期刊关键词搜索"),
     disease: Optional[str] = Query(None, description="疾病筛选"),
@@ -164,12 +164,13 @@ async def list_literatures(
     sort_order: Optional[str] = Query(None, description="排序方向: asc, desc"),
     review_status: Optional[str] = Query(None, description="审核状态: none, pending, partial, approved"),
     extraction_status: Optional[str] = Query(None, description="提取状态: pending, processing, done, done_no_data, failed"),
+    tag_id: Optional[uuid.UUID] = Query(None, description="标签筛选：只显示有该标签的文献"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
     items, total = await list_literature(
-        db, keyword, disease, province, year_start, year_end, journal, sort_by, sort_order, review_status, extraction_status, page, page_size
+        db, keyword, disease, province, year_start, year_end, journal, sort_by, sort_order, review_status, extraction_status, tag_id, page, page_size
     )
 
     def _derive_file_format(lit) -> Optional[str]:
@@ -209,6 +210,11 @@ async def list_literatures(
     for item in items:
         data = LiteratureResponse.model_validate(item).model_dump()
         data["file_format"] = _derive_file_format(item)
+        # 添加标签信息
+        try:
+            data["tags"] = [{"id": str(t.id), "name": t.name, "color": t.color} for t in (item.tags or [])]
+        except Exception:
+            data["tags"] = []
         serialized.append(data)
 
     return PagedResponse(
@@ -219,7 +225,7 @@ async def list_literatures(
     )
 
 
-@router.get("/literatures/export")
+@router.get("/literatures/export", summary="导出文献列表", description="导出文献列表，支持CSV/Excel/JSON格式，可选包含数据点，支持按条件筛选或指定文献ID列表导出")
 async def export_literatures(
     keyword: Optional[str] = Query(None, description="标题/作者/期刊关键词搜索"),
     disease: Optional[str] = Query(None, description="疾病筛选"),
@@ -415,7 +421,7 @@ async def export_literatures(
     raise HTTPException(status_code=400, detail=f"不支持的导出格式: {format}")
 
 
-@router.post("/literatures/import", response_model=ApiResponse)
+@router.post("/literatures/import", response_model=ApiResponse, summary="导入文献数据", description="从JSON导出文件导入文献及数据点，自动检测重复文献，支持跳过重复或创建新记录，保留原有的审核状态")
 async def import_literatures(
     file: UploadFile = File(..., description="导入文件（JSON 格式）"),
     skip_duplicates: bool = Form(True, description="跳过重复文献"),
@@ -582,7 +588,7 @@ async def import_literatures(
     )
 
 
-@router.post("/literatures/batch-import-from-folder", response_model=ApiResponse)
+@router.post("/literatures/batch-import-from-folder", response_model=ApiResponse, summary="从文件夹批量导入", description="从服务器本地文件夹批量导入文件，自动匹配已有文献或新建文献记录，支持导入后自动触发AI提取")
 async def batch_import_from_folder(
     folder_path: str = Form(..., description="服务器上的文件夹路径，包含要导入的 PDF 等文件"),
     trigger_extraction_after: bool = Form(True, description="新导入的文献是否自动触发 AI 提取"),
@@ -704,7 +710,7 @@ async def batch_import_from_folder(
     )
 
 
-@router.post("/literatures/batch-upload-files", response_model=ApiResponse)
+@router.post("/literatures/batch-upload-files", response_model=ApiResponse, summary="批量上传文件", description="从浏览器上传多个文件批量导入，自动匹配已有文献或新建文献记录，与文件夹导入逻辑相同但文件从浏览器上传")
 async def batch_upload_files(
     files: list[UploadFile] = File(..., description="从浏览器上传的文件列表"),
     trigger_extraction_after: bool = Form(True),
@@ -820,7 +826,7 @@ async def batch_upload_files(
     )
 
 
-@router.get("/literatures/{literature_id}", response_model=ApiResponse)
+@router.get("/literatures/{literature_id}", response_model=ApiResponse, summary="获取文献详情", description="根据文献ID获取单篇文献的详细信息")
 async def get_one(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -831,7 +837,7 @@ async def get_one(
     return ApiResponse(data=LiteratureResponse.model_validate(literature).model_dump())
 
 
-@router.put("/literatures/{literature_id}", response_model=ApiResponse)
+@router.put("/literatures/{literature_id}", response_model=ApiResponse, summary="更新文献信息", description="根据文献ID更新文献的元数据信息，如标题、作者、期刊等")
 async def update(
     literature_id: uuid.UUID,
     data: LiteratureUpdate,
@@ -843,7 +849,7 @@ async def update(
     return ApiResponse(message="更新成功", data=LiteratureResponse.model_validate(literature).model_dump())
 
 
-@router.post("/literatures/{literature_id}/file", response_model=ApiResponse)
+@router.post("/literatures/{literature_id}/file", response_model=ApiResponse, summary="关联文献文件", description="为已有文献关联上传文件（替换原有文件），支持PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML格式")
 async def upload_file(
     literature_id: uuid.UUID,
     file: UploadFile = File(...),
@@ -880,7 +886,7 @@ async def upload_file(
     )
 
 
-@router.delete("/literatures/{literature_id}", response_model=ApiResponse)
+@router.delete("/literatures/{literature_id}", response_model=ApiResponse, summary="删除文献", description="根据文献ID删除文献记录及其关联的文件和数据点")
 async def delete(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -891,7 +897,7 @@ async def delete(
     return ApiResponse(message="删除成功")
 
 
-@router.get("/literatures/{literature_id}/file")
+@router.get("/literatures/{literature_id}/file", summary="预览文献文件", description="返回文件流供前端预览（仅PDF支持浏览器内预览，其余格式前端会禁用预览按钮）")
 async def get_pdf_file(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -920,7 +926,7 @@ async def get_pdf_file(
     )
 
 
-@router.get("/literatures/{literature_id}/download")
+@router.get("/literatures/{literature_id}/download", summary="下载文献文件", description="下载文献文件（attachment模式），触发浏览器下载，用本地阅读器打开")
 async def download_pdf_file(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -949,7 +955,7 @@ async def download_pdf_file(
     )
 
 
-@router.get("/literatures/{literature_id}/source-text", response_model=ApiResponse)
+@router.get("/literatures/{literature_id}/source-text", response_model=ApiResponse, summary="获取文献溯源文本", description="返回文献的提取文本，支持按字符区间截取，供溯源查看高亮使用，可以获取全文或指定区间的片段")
 async def get_source_text(
     literature_id: uuid.UUID,
     start: Optional[int] = Query(None, description="字符起始位置（0-based，含）"),
@@ -1009,7 +1015,7 @@ async def get_source_text(
 
 # ===== 查重与合并 API =====
 
-@router.post("/literatures/check-duplicate", response_model=ApiResponse)
+@router.post("/literatures/check-duplicate", response_model=ApiResponse, summary="检查文献重复", description="检查指定文献是否存在重复，支持按文献ID、标题、DOI、作者、PDF哈希值进行匹配检测")
 async def check_duplicate(
     req: CheckDuplicateRequest,
     db: AsyncSession = Depends(get_db),
@@ -1036,7 +1042,7 @@ async def check_duplicate(
     })
 
 
-@router.post("/literatures/scan-duplicates", response_model=ApiResponse)
+@router.post("/literatures/scan-duplicates", response_model=ApiResponse, summary="全库扫描重复文献", description="扫描整个文献库，识别所有重复文献并分组返回，用于批量管理重复记录")
 async def scan_duplicates_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
@@ -1057,7 +1063,7 @@ async def scan_duplicates_endpoint(
     })
 
 
-@router.post("/literatures/merge/preview", response_model=ApiResponse)
+@router.post("/literatures/merge/preview", response_model=ApiResponse, summary="预览文献合并", description="预览合并结果：展示两篇文献的字段对比及数据点冲突检测，供用户确认合并策略")
 async def merge_preview(
     req: MergePreviewRequest,
     db: AsyncSession = Depends(get_db),
@@ -1070,7 +1076,7 @@ async def merge_preview(
     return ApiResponse(data=result)
 
 
-@router.post("/literatures/merge", response_model=ApiResponse)
+@router.post("/literatures/merge", response_model=ApiResponse, summary="执行文献合并", description="执行合并操作：将源文献合并进目标文献，根据用户选择的字段和冲突策略处理数据点，删除源文献")
 async def merge(
     req: MergeRequest,
     db: AsyncSession = Depends(get_db),

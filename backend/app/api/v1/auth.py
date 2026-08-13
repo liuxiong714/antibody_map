@@ -93,7 +93,7 @@ def _validate_password_strength(password: str) -> Optional[str]:
 
 # ── 登录 ──────────────────────────────────────────────────
 
-@router.post("/auth/login", response_model=ApiResponse)
+@router.post("/auth/login", response_model=ApiResponse, summary="用户登录", description="用户登录认证，验证用户名和密码，返回JWT访问令牌和刷新令牌")
 async def login(
     req: LoginRequest,
     request: Request,
@@ -135,7 +135,7 @@ async def login(
 
 # ── 刷新令牌 ──────────────────────────────────────────────
 
-@router.post("/auth/refresh", response_model=ApiResponse)
+@router.post("/auth/refresh", response_model=ApiResponse, summary="刷新访问令牌", description="使用刷新令牌换取新的访问令牌，用于保持登录状态")
 async def refresh_token(
     req: RefreshTokenRequest,
     db: AsyncSession = Depends(get_db),
@@ -167,7 +167,7 @@ async def refresh_token(
 
 # ── 退出登录 ──────────────────────────────────────────────
 
-@router.post("/auth/logout", response_model=ApiResponse)
+@router.post("/auth/logout", response_model=ApiResponse, summary="用户登出", description="退出登录，吊销当前访问令牌，使其失效")
 async def logout(
     authorization: str | None = Header(None),
     user: User = Depends(get_current_user),
@@ -183,7 +183,7 @@ async def logout(
     return ApiResponse(message="退出登录成功")
 
 
-@router.get("/auth/me", response_model=ApiResponse)
+@router.get("/auth/me", response_model=ApiResponse, summary="获取当前用户信息", description="获取当前登录用户的详细信息，包括用户名、显示名、角色等")
 async def get_me(user: User = Depends(get_current_user)):
     """获取当前登录用户信息"""
     return ApiResponse(
@@ -200,7 +200,7 @@ async def get_me(user: User = Depends(get_current_user)):
 
 # ── 修改密码 ──────────────────────────────────────────────
 
-@router.post("/auth/change-password", response_model=ApiResponse)
+@router.post("/auth/change-password", response_model=ApiResponse, summary="修改密码", description="当前用户修改自己的密码，需验证原密码，新密码需满足强度要求（至少8位，含大小写字母和数字）")
 async def change_password(
     req: ChangePasswordRequest,
     user: User = Depends(get_current_user),
@@ -222,7 +222,7 @@ async def change_password(
 
 # ── 用户管理（仅管理员）──────────────────────────────────
 
-@router.get("/auth/users", response_model=ApiResponse)
+@router.get("/auth/users", response_model=ApiResponse, summary="获取用户列表", description="管理员获取所有用户列表，按创建时间排序")
 async def list_users(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
@@ -245,7 +245,7 @@ async def list_users(
     )
 
 
-@router.post("/auth/users", response_model=ApiResponse)
+@router.post("/auth/users", response_model=ApiResponse, summary="创建用户", description="管理员创建新用户，默认密码为myk123456，可指定用户名、显示名和是否为管理员")
 async def create_user(
     req: CreateUserRequest,
     admin: User = Depends(require_admin),
@@ -282,7 +282,7 @@ async def create_user(
     )
 
 
-@router.put("/auth/users/{user_id}", response_model=ApiResponse)
+@router.put("/auth/users/{user_id}", response_model=ApiResponse, summary="更新用户信息", description="管理员更新用户信息，可以修改显示名、激活状态、管理员权限，以及重置密码")
 async def update_user(
     user_id: str,
     req: UpdateUserRequest,
@@ -316,7 +316,7 @@ async def update_user(
     return ApiResponse(message="用户更新成功")
 
 
-@router.delete("/auth/users/{user_id}", response_model=ApiResponse)
+@router.delete("/auth/users/{user_id}", response_model=ApiResponse, summary="删除用户", description="管理员删除指定用户，不能删除自己")
 async def delete_user(
     user_id: str,
     admin: User = Depends(require_admin),

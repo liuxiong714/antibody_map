@@ -29,7 +29,7 @@ class UpdateReportRequest(BaseModel):
     content: Optional[str] = None
 
 
-@router.post("/reports/generate", response_model=ApiResponse)
+@router.post("/reports/generate", response_model=ApiResponse, summary="生成免疫学报告", description="生成免疫学参考意见报告，支持按疾病、省份、数据类型筛选，可选择语言（中文/英文）和自定义标题")
 async def generate_report(
     disease: Optional[str] = Query(None, description="疾病 key"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -57,7 +57,7 @@ async def generate_report(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/reports/generate-vaccination-strategy", response_model=ApiResponse)
+@router.post("/reports/generate-vaccination-strategy", response_model=ApiResponse, summary="生成疫苗接种策略报告", description="生成疫苗接种任务的策略研判报告，根据任务类型、时间、地点、人员信息生成专业建议")
 async def generate_vaccination_strategy(
     req: VaccinationStrategyRequest,
     db: AsyncSession = Depends(get_db),
@@ -82,7 +82,7 @@ async def generate_vaccination_strategy(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/reports", response_model=ApiResponse)
+@router.get("/reports", response_model=ApiResponse, summary="获取报告列表", description="分页获取所有已生成的报告列表")
 async def list_reports(
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
@@ -93,7 +93,7 @@ async def list_reports(
     return ApiResponse(message="操作成功", data=data)
 
 
-@router.get("/reports/{report_id}", response_model=ApiResponse)
+@router.get("/reports/{report_id}", response_model=ApiResponse, summary="获取报告详情", description="根据报告ID获取单个报告的详细信息，包括标题、内容、生成时间等")
 async def get_report(
     report_id: str,
     db: AsyncSession = Depends(get_db),
@@ -105,7 +105,7 @@ async def get_report(
     return ApiResponse(message="操作成功", data=data)
 
 
-@router.get("/reports/{report_id}/download")
+@router.get("/reports/{report_id}/download", summary="下载报告文件", description="将报告内容下载为Markdown文件，方便离线查看和分享")
 async def download_report(
     report_id: str,
     db: AsyncSession = Depends(get_db),
@@ -124,7 +124,7 @@ async def download_report(
     )
 
 
-@router.put("/reports/{report_id}", response_model=ApiResponse)
+@router.put("/reports/{report_id}", response_model=ApiResponse, summary="更新报告", description="更新报告的标题或内容，允许用户编辑已生成的报告")
 async def update_report(
     report_id: str,
     req: UpdateReportRequest,
@@ -142,7 +142,7 @@ async def update_report(
     return ApiResponse(message="报告已更新", data=data)
 
 
-@router.delete("/reports/{report_id}", response_model=ApiResponse)
+@router.delete("/reports/{report_id}", response_model=ApiResponse, summary="删除报告", description="根据报告ID删除指定的报告")
 async def delete_report(
     report_id: str,
     db: AsyncSession = Depends(get_db),

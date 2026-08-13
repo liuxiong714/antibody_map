@@ -8,6 +8,12 @@ from urllib.parse import quote
 import csv
 import io
 import re
+from collections import Counter
+
+from docx import Document
+from docx.shared import Inches, Pt, Cm, RGBColor
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -103,6 +109,7 @@ class ExtractionRequest(BaseModel):
     model: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    clear_existing_data: bool = True
 
 
 class BatchExtractionRequest(BaseModel):
@@ -111,6 +118,7 @@ class BatchExtractionRequest(BaseModel):
     model: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    clear_existing_data: bool = True
 
 
 class CreateDataPointRequest(BaseModel):
@@ -139,7 +147,7 @@ class CreateDataPointRequest(BaseModel):
 
 # ── 提取相关路由 ────────────────────────────────────────
 
-@router.post("/literatures/{literature_id}/extraction", response_model=ApiResponse)
+@router.post("/literatures/{literature_id}/extraction", response_model=ApiResponse, summary="触发AI提取", description="触发单篇文献的AI数据提取任务，可指定模型、API Key和Base URL，支持清空已有数据后重新提取")
 async def start_extraction(
     literature_id: uuid.UUID,
     req: ExtractionRequest = None,
@@ -150,13 +158,14 @@ async def start_extraction(
         model = req.model if req else None
         api_key = req.api_key if req else None
         base_url = req.base_url if req else None
-        result = await trigger_extraction(db, literature_id, model, api_key, base_url)
+        clear_existing = req.clear_existing_data if req else True
+        result = await trigger_extraction(db, literature_id, model, api_key, base_url, clear_existing)
         return ApiResponse(message="提取任务已提交", data=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/literatures/extraction/batch", response_model=ApiResponse)
+@router.post("/literatures/extraction/batch", response_model=ApiResponse, summary="批量触发AI提取", description="批量触发多篇文献的AI数据提取任务，自动跳过无关联文件或正在提取中的文献")
 async def start_batch_extraction(
     req: BatchExtractionRequest,
     db: AsyncSession = Depends(get_db),
@@ -193,6 +202,7 @@ async def start_batch_extraction(
                 model=req.model,
                 api_key=req.api_key,
                 base_url=req.base_url,
+                clear_existing_data=req.clear_existing_data,
             )
             submitted.append({
                 "id": str(lit_id),
@@ -222,7 +232,7 @@ async def start_batch_extraction(
     )
 
 
-@router.get("/literatures/{literature_id}/extraction/status", response_model=ApiResponse)
+@router.get("/literatures/{literature_id}/extraction/status", response_model=ApiResponse, summary="查询提取状态", description="查询指定文献的AI数据提取任务当前状态（pending/processing/done/failed等）")
 async def check_status(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -235,7 +245,7 @@ async def check_status(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.get("/literatures/{literature_id}/extraction", response_model=ApiResponse)
+@router.get("/literatures/{literature_id}/extraction", response_model=ApiResponse, summary="获取提取结果", description="获取指定文献的AI提取数据点列表及提取状态")
 async def get_results(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -255,7 +265,7 @@ async def get_results(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.get("/literatures/{literature_id}/extraction/export")
+@router.get("/literatures/{literature_id}/extraction/export", summary="导出数据点CSV", description="将指定文献的所有数据点导出为CSV文件，便于查看和分析")
 async def export_data_points(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -300,7 +310,141 @@ async def export_data_points(
     )
 
 
-@router.get("/literatures/{literature_id}/extraction/traceability-html")
+@router.get("/literatures/{literature_id}/extraction/export-word", summary="导出数据点Word报告", description="将指定文献的数据点导出为Word报告（.docx格式），包含文献元信息、数据摘要、数据点明细表格")
+async def export_data_points_word(
+    literature_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """导出文献的数据点为 Word 报告（.docx）"""
+    # 1. 文献信息
+    lit_result = await db.execute(
+        select(Literature).where(Literature.id == literature_id)
+    )
+    literature = lit_result.scalar_one_or_none()
+    if not literature:
+        raise HTTPException(status_code=404, detail="文献不存在")
+
+    data_points = await get_extraction_results(db, literature_id)
+
+    doc = Document()
+
+    # ── 标题 ──
+    title_text = literature.title or f"文献 {literature_id}"
+    doc.add_heading(title_text, level=0)
+
+    # ── 文献元信息 ──
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(6)
+    meta_info = []
+    if literature.authors:
+        meta_info.append(f"作者：{literature.authors}")
+    if literature.journal:
+        meta_info.append(f"期刊：{literature.journal}")
+    if literature.pub_year:
+        meta_info.append(f"发表年份：{literature.pub_year}")
+    if literature.extraction_status:
+        status_map = {"processing": "进行中", "done": "已完成", "done_no_data": "完成（无数据）", "failed": "失败", "pending": "待处理"}
+        meta_info.append(f"提取状态：{status_map.get(literature.extraction_status, literature.extraction_status)}")
+    p.add_run(" | ".join(meta_info)).font.size = Pt(10)
+
+    # ── 分隔线 ──
+    doc.add_paragraph("─" * 50)
+
+    # ── 统计摘要 ──
+    doc.add_heading("数据摘要", level=1)
+    total = len(data_points)
+    if total > 0:
+        by_type = Counter(dp.get("data_type", "") for dp in data_points)
+        by_status = Counter(dp.get("review_status", "") for dp in data_points)
+        provinces = set(dp.get("province", "") for dp in data_points if dp.get("province"))
+        diseases = set(dp.get("disease", "") for dp in data_points if dp.get("disease"))
+
+        summary = doc.add_table(rows=7, cols=2, style="Light List Accent 1")
+        summary.cell(0, 0).text = "统计项"
+        summary.cell(0, 1).text = "数值"
+        summary.cell(1, 0).text = "数据点总数"
+        summary.cell(1, 1).text = str(total)
+        summary.cell(2, 0).text = "血清阳性率"
+        summary.cell(2, 1).text = str(by_type.get("seroprevalence", 0))
+        summary.cell(3, 0).text = "GMC"
+        summary.cell(3, 1).text = str(by_type.get("gmc", 0))
+        summary.cell(4, 0).text = "覆盖省份"
+        summary.cell(4, 1).text = f"{len(provinces)} 个（{', '.join(sorted(provinces))}）"
+        summary.cell(5, 0).text = "涉及疾病"
+        summary.cell(5, 1).text = f"{len(diseases)} 种（{', '.join(sorted(diseases))}）"
+        summary.cell(6, 0).text = "审核状态"
+        summary.cell(6, 1).text = f"已通过 {by_status.get('approved', 0)} | 待审核 {by_status.get('pending', 0)} | 已驳回 {by_status.get('rejected', 0)}"
+    else:
+        doc.add_paragraph("暂无数据点")
+
+    # ── 数据点明细 ──
+    doc.add_heading("数据点明细", level=1)
+    if data_points:
+        table = doc.add_table(rows=1 + len(data_points), cols=9, style="Light Grid Accent 1")
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+        # 表头
+        headers = ["疾病", "省份", "数据类型", "数值", "样本量", "年龄段", "采集年份", "置信度", "审核状态"]
+        for i, h in enumerate(headers):
+            cell = table.cell(0, i)
+            cell.text = h
+            for paragraph in cell.paragraphs:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in paragraph.runs:
+                    run.bold = True
+                    run.font.size = Pt(9)
+
+        # 数据行
+        for idx, dp in enumerate(data_points):
+            row = table.rows[idx + 1]
+            age_range = ""
+            if dp.get("age_min") is not None or dp.get("age_max") is not None:
+                age_min = dp.get("age_min") or ""
+                age_max = dp.get("age_max") or ""
+                age_range = f"{age_min}-{age_max}" if age_min and age_max else f"{age_min or ''}~{age_max or ''}"
+            values = [
+                dp.get("disease", ""),
+                dp.get("province", ""),
+                "阳性率" if dp.get("data_type") == "seroprevalence" else "GMC" if dp.get("data_type") == "gmc" else dp.get("data_type", ""),
+                f"{dp.get('value', '')}{dp.get('unit', '')}",
+                str(dp.get("sample_size", "") or ""),
+                age_range,
+                str(dp.get("collection_year", "") or ""),
+                dp.get("confidence", ""),
+                {"approved": "通过", "rejected": "驳回", "pending": "待审"}.get(dp.get("review_status", ""), dp.get("review_status", "")),
+            ]
+            for col, val in enumerate(values):
+                cell = table.cell(idx + 1, col)
+                cell.text = val
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.size = Pt(8.5)
+    else:
+        doc.add_paragraph("暂无数据点")
+
+    # ── 生成时间 ──
+    doc.add_paragraph("─" * 50)
+    ts = doc.add_paragraph()
+    ts_run = ts.add_run(f"报告生成时间：{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    ts_run.font.size = Pt(9)
+    ts_run.font.color.rgb = RGBColor(128, 128, 128)
+
+    # ── 输出 ──
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+
+    safe_title = "".join(c for c in title_text if c not in r'\/:*?"<>|').strip() or str(literature_id)
+    filename = quote(f"{safe_title}_数据报告.docx")
+
+    return Response(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
+
+
+@router.get("/literatures/{literature_id}/extraction/traceability-html", summary="导出溯源HTML报告", description="导出自包含溯源HTML文件，高亮原文并附带侧边栏数据点列表，可离线打开查看")
 async def export_traceability_html(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -356,7 +500,7 @@ async def export_traceability_html(
     )
 
 
-@router.post("/literatures/{literature_id}/extraction/data-points", response_model=ApiResponse)
+@router.post("/literatures/{literature_id}/extraction/data-points", response_model=ApiResponse, summary="手动添加数据点", description="为指定文献手动添加一个数据点，可设置所有数据字段和溯源信息")
 async def create_data_point(
     literature_id: uuid.UUID,
     req: CreateDataPointRequest,
@@ -415,7 +559,7 @@ async def create_data_point(
 
 # ── 审核相关路由 ────────────────────────────────────────
 
-@router.put("/literatures/{literature_id}/extraction", response_model=ApiResponse)
+@router.put("/literatures/{literature_id}/extraction", response_model=ApiResponse, summary="更新数据点", description="批量更新数据点，可编辑任意字段和审核状态，支持编辑数据字段和审核状态")
 async def update_data_points(
     literature_id: uuid.UUID,
     req: UpdateDataPointsRequest,
@@ -468,7 +612,7 @@ async def update_data_points(
     return ApiResponse(message="数据点已更新", data={"updated": updated})
 
 
-@router.post("/literatures/{literature_id}/extraction/confirm", response_model=ApiResponse)
+@router.post("/literatures/{literature_id}/extraction/confirm", response_model=ApiResponse, summary="批量审核通过", description="批量将多个数据点审核通过，同步更新文献的已通过计数")
 async def batch_confirm(
     literature_id: uuid.UUID,
     req: BatchReviewRequest,
@@ -490,7 +634,7 @@ async def batch_confirm(
     return ApiResponse(message=f"已批量通过 {result.rowcount} 个数据点")
 
 
-@router.post("/literatures/{literature_id}/extraction/dispute", response_model=ApiResponse)
+@router.post("/literatures/{literature_id}/extraction/dispute", response_model=ApiResponse, summary="批量驳回", description="批量驳回多个数据点，同步更新文献的已通过计数")
 async def batch_dispute(
     literature_id: uuid.UUID,
     req: BatchReviewRequest,
@@ -528,7 +672,7 @@ async def _sync_approved_count(db: AsyncSession, literature_id: uuid.UUID):
     )
 
 
-@router.post("/literatures/{literature_id}/sync-metadata", response_model=ApiResponse)
+@router.post("/literatures/{literature_id}/sync-metadata", response_model=ApiResponse, summary="同步文献元数据", description="从数据点聚合同步文献的pub_year和province元数据，并清洗标题（去除文件后缀和年份前缀）")
 async def sync_literature_metadata(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -617,7 +761,7 @@ async def sync_literature_metadata(
     )
 
 
-@router.post("/literatures/sync-metadata-batch", response_model=ApiResponse)
+@router.post("/literatures/sync-metadata-batch", response_model=ApiResponse, summary="批量同步文献元数据", description="批量同步所有提取完成的文献元数据，包括清洗标题和从数据点聚合pub_year和province")
 async def sync_metadata_batch(db: AsyncSession = Depends(get_db)):
     """批量同步所有提取完成的文献元数据，包括：
     - 清洗标题：去除文件后缀（.pdf/.caj等）和年份前缀（2025、2024等）
@@ -722,7 +866,7 @@ async def sync_metadata_batch(db: AsyncSession = Depends(get_db)):
 
 # ── 提取状态修复与手动停止 ──────────────────────────────────
 
-@router.post("/literatures/{literature_id}/extraction/stop", response_model=ApiResponse)
+@router.post("/literatures/{literature_id}/extraction/stop", response_model=ApiResponse, summary="停止提取", description="手动停止/重置文献提取状态，将extraction_status=processing的文献强制重置为failed，用于处理因服务器重启等导致的永久提取中状态")
 async def stop_extraction(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -756,7 +900,7 @@ async def stop_extraction(
     )
 
 
-@router.get("/literatures/{literature_id}/extraction/history", response_model=ApiResponse)
+@router.get("/literatures/{literature_id}/extraction/history", response_model=ApiResponse, summary="获取提取历史", description="获取指定文献的历次AI提取历史记录")
 async def get_history(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -769,7 +913,7 @@ async def get_history(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse)
+@router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse, summary="批量重置卡住的提取", description="批量重置所有卡在processing状态的文献为failed，用于服务器重启后恢复状态")
 async def reset_stuck_extractions(db: AsyncSession = Depends(get_db)):
     """批量重置所有卡在 'processing' 状态的文献为 'failed'。
 

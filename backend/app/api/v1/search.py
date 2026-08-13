@@ -12,7 +12,7 @@ from app.services import search_service
 router = APIRouter()
 
 
-@router.post("/search/literatures", response_model=PagedResponse)
+@router.post("/search/literatures", response_model=PagedResponse, summary="高级检索文献", description="按关键词、疾病、省份、年份范围、提取状态等条件高级检索文献，支持分页")
 async def search_literatures(
     keyword: Optional[str] = Query(None, description="关键词（标题/作者/期刊）"),
     disease: Optional[str] = Query(None, description="疾病筛选"),
@@ -44,7 +44,7 @@ async def search_literatures(
     )
 
 
-@router.get("/search/data-points", response_model=PagedResponse)
+@router.get("/search/data-points", response_model=PagedResponse, summary="高级检索数据点", description="按疾病、省份、年份范围、年龄、人群类型、数据类型、审核状态等条件高级检索数据点，支持分页")
 async def search_data_points(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),

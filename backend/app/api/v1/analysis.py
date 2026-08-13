@@ -12,7 +12,7 @@ from app.services import analysis_service
 router = APIRouter()
 
 
-@router.get("/analysis/trend", response_model=ApiResponse)
+@router.get("/analysis/trend", response_model=ApiResponse, summary="逐年趋势分析", description="获取抗体水平的逐年趋势分析数据，支持按疾病、省份、年份范围、年龄、数据类型筛选")
 async def get_trend(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -37,7 +37,7 @@ async def get_trend(
     return ApiResponse(data=data)
 
 
-@router.get("/analysis/region-compare", response_model=ApiResponse)
+@router.get("/analysis/region-compare", response_model=ApiResponse, summary="区域对比分析", description="获取不同区域之间的抗体水平对比分析数据，支持按疾病、省份、年份范围、年龄、数据类型筛选")
 async def get_region_compare(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -62,7 +62,7 @@ async def get_region_compare(
     return ApiResponse(data=data)
 
 
-@router.get("/analysis/age-stratify", response_model=ApiResponse)
+@router.get("/analysis/age-stratify", response_model=ApiResponse, summary="年龄分层分析", description="获取按年龄分层的抗体水平分析数据，支持按疾病、省份、年份范围、年龄范围、数据类型筛选")
 async def get_age_stratify(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -87,7 +87,7 @@ async def get_age_stratify(
     return ApiResponse(data=data)
 
 
-@router.get("/analysis/summary", response_model=ApiResponse)
+@router.get("/analysis/summary", response_model=ApiResponse, summary="汇总统计", description="获取抗体数据的汇总统计信息，包括总数据点数、覆盖省份数、发表文献数等")
 async def get_summary(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -112,7 +112,7 @@ async def get_summary(
     return ApiResponse(data=data)
 
 
-@router.get("/analysis/immune-barrier", response_model=ApiResponse)
+@router.get("/analysis/immune-barrier", response_model=ApiResponse, summary="免疫屏障评估", description="评估免疫屏障状态，分析各省份各年龄组的抗体保护水平，判断免疫缺口")
 async def get_immune_barrier(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -135,7 +135,7 @@ async def get_immune_barrier(
     return ApiResponse(data=data)
 
 
-@router.get("/analysis/approved-data-points", response_model=ApiResponse)
+@router.get("/analysis/approved-data-points", response_model=ApiResponse, summary="获取审核通过的数据点", description="分页获取所有审核通过的数据点，用于数据分析模块，支持多维度筛选和排序")
 async def get_approved_data_points(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -168,7 +168,7 @@ async def get_approved_data_points(
     return ApiResponse(data={"items": items, "total": total})
 
 
-@router.get("/analysis/data-gaps", response_model=ApiResponse)
+@router.get("/analysis/data-gaps", response_model=ApiResponse, summary="数据覆盖度分析", description="分析各省份各年份的数据点分布，识别需要审核和补充的数据缺口，支持按疾病筛选")
 async def get_data_gaps(
     disease: Optional[str] = Query(None, description="疾病筛选（不传则分析全库）"),
     db: AsyncSession = Depends(get_db),
@@ -181,7 +181,7 @@ async def get_data_gaps(
     return ApiResponse(data=data)
 
 
-@router.get("/analysis/export")
+@router.get("/analysis/export", summary="导出分析数据Excel", description="将所有分析结果导出为Excel文件，包含多个sheet：汇总统计、年份趋势、区域对比、年龄分层、数据点明细")
 async def export_analysis(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -314,7 +314,7 @@ async def export_analysis(
     )
 
 
-@router.get("/analysis/dataset-snapshot")
+@router.get("/analysis/dataset-snapshot", summary="导出数据集快照ZIP", description="P2-1：导出公开数据集快照ZIP包，包含CSV数据文件、数据字典、README和LICENSE")
 async def export_dataset_snapshot(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -360,7 +360,7 @@ async def export_dataset_snapshot(
     )
 
 
-@router.get("/analysis/foi-herd-immunity", response_model=ApiResponse)
+@router.get("/analysis/foi-herd-immunity", response_model=ApiResponse, summary="FOI和群体免疫分析", description="P0：使用催化模型计算感染力（FOI）和群体免疫阈值，输出按省份×疾病的FOI热力矩阵与群体免疫状态")
 async def get_foi_herd_immunity(
     disease: Optional[str] = Query(None, description="疾病筛选（不传则全库分析）"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -386,7 +386,7 @@ async def get_foi_herd_immunity(
     return ApiResponse(data=data)
 
 
-@router.get("/analysis/vaccine-effectiveness-coverage", response_model=ApiResponse)
+@router.get("/analysis/vaccine-effectiveness-coverage", response_model=ApiResponse, summary="疫苗效果和接种率分析", description="P1：分析疫苗效果（VE）和接种覆盖率，计算VE，返回省×疾病覆盖率矩阵，判断接种进度是否达标")
 async def get_vaccine_ve_coverage(
     disease: Optional[str] = Query(None, description="疾病筛选（不传则全库分析）"),
     province: Optional[str] = Query(None, description="省份筛选"),

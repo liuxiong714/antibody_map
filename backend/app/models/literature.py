@@ -4,9 +4,10 @@ from typing import Any, Optional
 
 from sqlalchemy import Boolean, Integer, String, Text, ARRAY, DateTime, CheckConstraint, Numeric
 from sqlalchemy.dialects.postgresql import JSON
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+from app.models.literature_tag import literature_tag
 
 
 class Literature(Base):
@@ -40,6 +41,7 @@ class Literature(Base):
     llm_cost_usd: Mapped[Any] = mapped_column(Numeric(10, 6), default=0)
     llm_call_count: Mapped[int] = mapped_column(Integer, default=0)
     llm_usage_detail: Mapped[Optional[dict]] = mapped_column(JSON)
+    tags: Mapped[list["Tag"]] = relationship("Tag", secondary=literature_tag, back_populates="literatures", lazy="selectin")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

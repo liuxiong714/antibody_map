@@ -56,14 +56,19 @@ export interface ExtractionOptions {
   model: string;
   apiKey?: string;
   baseUrl?: string;
+  clearExistingData?: boolean;
 }
 
 export async function triggerExtraction(literatureId: string, options?: ExtractionOptions) {
-  const body = options ? {
-    model: options.model,
-    api_key: options.apiKey,
-    base_url: options.baseUrl,
-  } : {};
+  const body: Record<string, unknown> = {};
+  if (options) {
+    body.model = options.model;
+    body.api_key = options.apiKey;
+    body.base_url = options.baseUrl;
+    if (options.clearExistingData !== undefined) {
+      body.clear_existing_data = options.clearExistingData;
+    }
+  }
   // AI 提取启动接口本身是"提交任务"式的（后端通过 SSE/轮询查进度），超时时间给 60s 保障启动阶段稳定
   const { data } = await api.post(`/literatures/${literatureId}/extraction`, body, { timeout: 60_000 });
   return data;
@@ -89,9 +94,38 @@ export async function triggerBatchExtraction(
     body.model = options.model;
     body.api_key = options.apiKey;
     body.base_url = options.baseUrl;
+    if (options.clearExistingData !== undefined) {
+      body.clear_existing_data = options.clearExistingData;
+    }
   }
   const { data } = await api.post('/literatures/extraction/batch', body, { timeout: 60_000 });
   return data;
+}
+
+// ── 文献标签管理 ──
+
+export interface TagItem {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export async function listTags(): Promise<TagItem[]> {
+  const { data } = await api.get('/tags');
+  return data.data || [];
+}
+
+export async function createTag(name: string, color?: string): Promise<TagItem> {
+  const { data } = await api.post('/tags', { name, color });
+  return data.data;
+}
+
+export async function deleteTag(tagId: string): Promise<void> {
+  await api.delete(`/tags/${tagId}`);
+}
+
+export async function setLiteratureTags(literatureId: string, tagIds: string[]): Promise<void> {
+  await api.post(`/literatures/${literatureId}/tags`, tagIds);
 }
 
 // ── 提取状态修复与手动停止 ──

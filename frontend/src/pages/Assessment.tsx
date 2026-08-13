@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Card, Button, Row, Col, Statistic, Spin, Empty, Progress, Tag, message, InputNumber, Table, Tooltip } from 'antd';
 import type { TableProps } from 'antd';
 import { SafetyOutlined, InfoCircleOutlined } from '@ant-design/icons';
-import ReactECharts from 'echarts-for-react';
+import ReactECharts from '../components/EChart';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import { getImmuneBarrier } from '../services/map';

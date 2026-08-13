@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Card, Row, Col, Spin, Empty, message, Button, Tabs, Table, Space, Statistic, Alert, Tag, Collapse, Tooltip, Progress, Select } from 'antd';
-import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined, DownloadOutlined, ExperimentOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
-import ReactECharts from 'echarts-for-react';
+import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined, DownloadOutlined, ExperimentOutlined, SafetyCertificateOutlined, BarChartOutlined } from '@ant-design/icons';
+import ReactECharts from '../components/EChart';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import MapSelector from '../components/MapSelector';
@@ -10,6 +10,7 @@ import { useFilterStore } from '../store';
 import type { TableRowSelection } from 'antd/es/table/interface';
 import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult } from '../types';
 import { DISEASES } from '../utils/constants';
+import AdvancedCharts from '../components/AdvancedCharts';
 
 type DataItem = Record<string, unknown>;
 
@@ -1686,6 +1687,22 @@ const Analysis: React.FC = () => {
               </span>
             ),
             children: vaccineContent,
+          },
+          {
+            key: 'advanced',
+            label: (
+              <span>
+                <BarChartOutlined />
+                高级图表
+              </span>
+            ),
+            children: (
+              <AdvancedCharts
+                appliedDisease={appliedDisease}
+                appliedDataType={appliedDataType}
+                appliedProvince={appliedProvince}
+              />
+            ),
           },
         ]}
       />

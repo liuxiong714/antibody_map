@@ -1,5 +1,7 @@
 from fastapi import APIRouter
 
+from app.schemas.common import ApiResponse
+
 router = APIRouter()
 
 # 硬编码 11 种疾病数据
@@ -73,16 +75,16 @@ METHODS = [
 ]
 
 
-@router.get("/dictionary/diseases")
+@router.get("/dictionary/diseases", response_model=ApiResponse, summary="获取疾病字典", description="获取预定义的疾病数据字典列表，包含疾病key、中文名、英文名、分类和对应疫苗")
 async def get_diseases():
-    return {"success": True, "message": "操作成功", "data": DISEASES}
+    return ApiResponse(data=DISEASES)
 
 
-@router.get("/dictionary/provinces")
+@router.get("/dictionary/provinces", response_model=ApiResponse, summary="获取省份字典", description="获取中国34个省级行政区列表，包含代码和名称，用于前端选择器")
 async def get_provinces():
-    return {"success": True, "message": "操作成功", "data": PROVINCES}
+    return ApiResponse(data=PROVINCES)
 
 
-@router.get("/dictionary/methods")
+@router.get("/dictionary/methods", response_model=ApiResponse, summary="获取检测方法字典", description="获取常见的血清学检测方法字典列表，包含key、中文名和英文名")
 async def get_methods():
-    return {"success": True, "message": "操作成功", "data": METHODS}
+    return ApiResponse(data=METHODS)

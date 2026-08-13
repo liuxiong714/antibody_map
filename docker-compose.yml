@@ -44,6 +44,74 @@ services:
     networks:
       - antibody-net
 
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: antibody-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # 容器内通过服务名访问基础设施
+      DATABASE_URL: postgresql+asyncpg://antibody:antibody123@postgres:5432/antibody_map
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    volumes:
+      - ./backend/data:/app/backend/data
+    networks:
+      - antibody-net
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: antibody-worker
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://antibody:antibody123@postgres:5432/antibody_map
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # 本地 Ollama 模型按需并发数，须与 LLM_CONCURRENCY 保持一致
+      OLLAMA_NUM_PARALLEL: "${OLLAMA_NUM_PARALLEL:-1}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    volumes:
+      - ./backend/data:/app/backend/data
+    command: celery -A app.tasks.celery_app worker --loglevel=info --pool=prefork --concurrency=1
+    networks:
+      - antibody-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: antibody-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    networks:
+      - antibody-net
+
 volumes:
   postgres_data:
   redis_data:

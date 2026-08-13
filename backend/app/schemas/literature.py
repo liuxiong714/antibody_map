@@ -74,6 +74,7 @@ class LiteratureResponse(BaseModel):
     llm_cost_usd: Optional[float] = None
     llm_call_count: int = 0
     llm_usage_detail: Optional[dict] = None
+    tags: Optional[list[dict]] = None
     created_at: datetime
     updated_at: datetime
 
