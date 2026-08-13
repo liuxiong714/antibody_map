@@ -12,7 +12,7 @@ import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
 import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
-import { MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
+import { MODEL_OPTIONS, VENDOR_INFO, EXTRACTION_STATUS_META } from '../utils/constants';
 import { formatAuthors, truncate } from '../utils/format';
 import dayjs from 'dayjs';
 
@@ -80,6 +80,7 @@ const LiteraturePage: React.FC = () => {
   const [sortBy, setSortBy] = useState(() => (_cachedState?.sortBy as string) || 'created');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(() => (_cachedState?.sortOrder as 'asc' | 'desc') || 'desc');
   const [reviewStatus, setReviewStatus] = useState<string>(() => (_cachedState?.reviewStatus as string) || '');
+  const [extractionStatus, setExtractionStatus] = useState<string>(() => (_cachedState?.extractionStatus as string) || '');
   const [sortInfo, setSortInfo] = useState<{ field: string | null; order: 'ascend' | 'descend' | null }>(() => (
     _cachedState?.sortInfo as { field: string | null; order: 'ascend' | 'descend' | null }
   ) || { field: 'created_at', order: 'descend' });
@@ -100,7 +101,7 @@ const LiteraturePage: React.FC = () => {
   const saveStateAndNavigate = (litId: string) => {
     const payload = {
       sortBy, sortOrder, sortInfo, page, pageSize,
-      keyword, disease, province, yearStart, yearEnd, journal, reviewStatus,
+      keyword, disease, province, yearStart, yearEnd, journal, reviewStatus, extractionStatus,
     };
     console.log('[文献列表] 进入详情页前保存状态:', payload);
     try {
@@ -199,6 +200,7 @@ const LiteraturePage: React.FC = () => {
       if (sortBy) params.sort_by = sortBy;
       if (sortOrder) params.sort_order = sortOrder;
       if (reviewStatus) params.review_status = reviewStatus;
+      if (extractionStatus) params.extraction_status = extractionStatus;
       const resp = await listLiterature(params);
       setItems(resp.items);
       setTotal(resp.total);
@@ -926,10 +928,21 @@ const LiteraturePage: React.FC = () => {
               { value: 'none', label: '无数据' },
             ]}
           />
+          <Select
+            value={extractionStatus || undefined}
+            onChange={(v) => setExtractionStatus(v || '')}
+            style={{ width: 120 }}
+            placeholder="提取状态"
+            allowClear
+            options={Object.entries(EXTRACTION_STATUS_META).map(([k, v]) => ({
+              value: k,
+              label: v.label,
+            }))}
+          />
           <Button icon={<ReloadOutlined />} onClick={() => {
             setKeyword(''); setDisease(''); setProvince(''); setYearStart(undefined);
             setYearEnd(undefined); setJournal(''); setSortBy('created'); setSortOrder('desc');
-            setReviewStatus(''); setPage(1); setPageSize(20);
+            setReviewStatus(''); setExtractionStatus(''); setPage(1); setPageSize(20);
             setSortInfo({ field: 'created_at', order: 'descend' });
           }}>重置筛选</Button>
           <Button type="primary" icon={<SearchOutlined />} onClick={fetchList}>查询</Button>

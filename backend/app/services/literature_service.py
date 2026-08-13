@@ -96,6 +96,7 @@ async def list_literature(
     sort_by: Optional[str] = None,
     sort_order: Optional[str] = None,
     review_status: Optional[str] = None,
+    extraction_status: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[Literature], int]:
@@ -141,6 +142,11 @@ async def list_literature(
             # 已完成：approved_count == extracted_count AND extracted_count > 0
             query = query.where(Literature.extracted_count > 0, Literature.approved_count == Literature.extracted_count)
             count_query = count_query.where(Literature.extracted_count > 0, Literature.approved_count == Literature.extracted_count)
+
+    # 提取状态筛选
+    if extraction_status:
+        query = query.where(Literature.extraction_status == extraction_status)
+        count_query = count_query.where(Literature.extraction_status == extraction_status)
 
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0

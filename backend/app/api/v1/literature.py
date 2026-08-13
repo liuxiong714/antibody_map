@@ -163,12 +163,13 @@ async def list_literatures(
     sort_by: Optional[str] = Query(None, description="排序字段: title, authors, journal, year, province, created, status"),
     sort_order: Optional[str] = Query(None, description="排序方向: asc, desc"),
     review_status: Optional[str] = Query(None, description="审核状态: none, pending, partial, approved"),
+    extraction_status: Optional[str] = Query(None, description="提取状态: pending, processing, done, done_no_data, failed"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
     items, total = await list_literature(
-        db, keyword, disease, province, year_start, year_end, journal, sort_by, sort_order, review_status, page, page_size
+        db, keyword, disease, province, year_start, year_end, journal, sort_by, sort_order, review_status, extraction_status, page, page_size
     )
 
     def _derive_file_format(lit) -> Optional[str]:

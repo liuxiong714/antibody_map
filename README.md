@@ -150,6 +150,7 @@ antibody_map01/
 - Node.js 18+ (推荐 20+)
 - Docker Desktop (Windows / macOS) 或 Docker & Docker Compose (Linux)
 - Tesseract OCR (可选，用于扫描版 PDF 的文字识别，安装与配置见 [docs/tesseract_setup.md](docs/tesseract_setup.md))
+- **CAJ 转换工具** (可选，用于解析 CAJ 格式文献，见下方 [CAJ 格式支持](#caj-格式支持) 说明)
 
 ### Windows 一键部署（推荐）
 
@@ -441,6 +442,73 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | `TESSERACT_DATA_DIR` | Tesseract 语言包 (tessdata) 目录 | 自动探测 (可执行文件同级 tessdata) |
 | `PDF_STORAGE` | PDF 存储模式 | `local` (或 `minio`) |
 
+### CAJ 格式支持
+
+系统支持 CAJ（中国知网专用格式）文献的解析和 AI 提取，但需要额外安装以下依赖：
+
+#### 安装 caj2pdf
+
+```bash
+# 从 GitHub 克隆并安装
+git clone https://github.com/caj2pdf/caj2pdf.git
+cd caj2pdf
+pip install .
+
+# 或使用 pip 直接安装
+pip install git+https://github.com/caj2pdf/caj2pdf.git
+```
+
+#### 安装 mutool（mupdf-tools）
+
+**Windows**：
+1. 下载 mupdf: https://mupdf.com/downloads/archive/mupdf-1.24.10-windows.zip
+2. 解压后，将 `mupdf-1.24.10-windows/bin/mutool.exe` 所在目录添加到系统 PATH 环境变量
+3. 在 PowerShell 中验证：`mutool --version`
+
+**macOS**：
+```bash
+brew install mupdf
+```
+
+**Linux**：
+```bash
+sudo apt install mupdf mupdf-tools     # Ubuntu/Debian
+sudo yum install mupdf                  # CentOS/RHEL
+```
+
+> 如果未安装以上依赖，系统对 CAJ 文件会显示「无法转换」的错误提示，其他格式（PDF、EPUB、DOCX 等）不受影响。
+
+### 本地 Ollama 模型配置
+
+系统支持通过 Ollama 本地部署大模型进行 AI 提取，无需联网和 API Key。不同显卡的显存直接影响可运行的模型和并发能力：
+
+#### 显卡显存与推荐配置
+
+| 显存容量 | 推荐模型 | 推荐并发数 (`LLM_CONCURRENCY`) | 说明 |
+|----------|----------|-------------------------------|------|
+| 8-12 GB | qwen2.5:7b / llama3.1:8b | 1 | 小模型，推理速度较快 |
+| 16 GB | qwen2.5:14b | 1-2 | 平衡性能与精度 |
+| 24 GB | qwen2.5:14b | 2-4 | 实测最优吞吐拐点（RTX 4090/5090） |
+| 32 GB+ | qwen3:32b / llama3:70b (量化) | 2-4 | 大模型精度更高但推理更慢 |
+
+> **注意**：`qwen3:32b` 在 24GB 显存下会因显存不足触发 CPU/GPU 数据交换，推理速度骤降 10-50 倍，建议改用 `qwen2.5:14b`。<br>
+> 配置 `LLM_CONCURRENCY` 时必须与 Ollama 的 `OLLAMA_NUM_PARALLEL` 环境变量保持一致（Ollama 服务端默认值为 1，需在启动前设置）。
+
+#### 启动 Ollama 服务
+
+```bash
+# 拉取推荐模型
+ollama pull qwen2.5:14b
+
+# 设置并发数并启动服务（Windows 需在系统环境变量中设置）
+OLLAMA_NUM_PARALLEL=4 ollama serve
+
+# 验证 API 可用性
+curl http://localhost:11434/v1/chat/completions
+```
+
+> 启用本地模型后，需在 `.env` 文件中将 `LLM_MODEL` 设置为 `ollama:qwen2.5:14b`，或在上传/提取时在模型选择弹窗中手动选择。
+
 ## 数据流
 
 ```
@@ -559,6 +627,26 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.7.1 (2026-08-13)
+
+#### 优化与修复
+
+- **修复前端构建类型错误**：新增 `pdfjs-dist.d.ts` 类型声明文件，解决 `pdfjs-dist/build/pdf` 模块的 TypeScript 类型缺失问题，前端构建恢复正常。
+- **提取历史增加「重新提取」按钮**：提取历史弹窗每行记录末尾新增操作按钮，点击后自动预填该次使用的模型、关闭历史弹窗、打开提取设置弹窗，方便快速重试失败的提取。
+- **文献列表增加提取状态筛选**：筛选工具栏新增提取状态下拉选择器（待处理/进行中/已完成/完成（无数据）/失败），支持按提取状态精确筛选文献列表，筛选状态在页面切换间自动缓存恢复。
+- **完善 CAJ 安装文档与 Ollama 显存配置指南**：README 新增 `### CAJ 格式支持` 章节，详细说明 caj2pdf 和 mutool 的安装步骤（Windows/macOS/Linux 三平台）；新增 `### 本地 Ollama 模型配置` 章节，包含显卡显存推荐配置表（8GB-32GB+）。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `frontend/src/pdfjs-dist.d.ts` | 新增 pdfjs-dist/build/pdf 模块类型声明 |
+| `frontend/src/pages/LiteratureDetail.tsx` | 提取历史弹窗新增「重新提取」按钮 |
+| `frontend/src/pages/Literature.tsx` | 筛选工具栏新增提取状态下拉选择器，支持状态缓存与恢复 |
+| `backend/app/services/literature_service.py` | `list_literature` 新增 `extraction_status` 筛选参数 |
+| `backend/app/api/v1/literature.py` | 文献列表 API 新增 `extraction_status` 查询参数 |
+| `README.md` | 新增 CAJ 格式支持、Ollama 显存配置指南章节 |
 
 ### v1.7.0 (2026-08-13)
 

@@ -1633,6 +1633,36 @@ const LiteratureDetail: React.FC = () => {
                   render: (v: string | null) =>
                     v ? <Tooltip title={v}><Tag color="red" style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}>{v}</Tag></Tooltip> : '-',
                 },
+                {
+                  title: '操作',
+                  key: 'action',
+                  width: 100,
+                  fixed: 'right' as const,
+                  render: (_: unknown, r: ExtractionHistoryItem) => (
+                    <Button
+                      type="link"
+                      size="small"
+                      onClick={() => {
+                        if (!id) return;
+                        // 点击历史记录，使用相同模型重新提取
+                        if (r.model) {
+                          setExtractModel(r.model);
+                          // 自动根据模型匹配默认 baseUrl
+                          const vendor = MODEL_OPTIONS.find((o) => o.value === r.model)?.vendor || '';
+                          setExtractBaseUrl(VENDOR_INFO[vendor]?.defaultBaseUrl || '');
+                        } else {
+                          setExtractModel(undefined);
+                          setExtractBaseUrl('');
+                        }
+                        setExtractApiKey('');
+                        setHistoryModalOpen(false);
+                        setExtractModalOpen(true);
+                      }}
+                    >
+                      重新提取
+                    </Button>
+                  ),
+                },
               ]}
             />
           )}
