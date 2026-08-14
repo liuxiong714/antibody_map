@@ -1,18 +1,37 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Card, Row, Col, Spin, Empty, message, Button, Tabs, Table, Space, Statistic, Alert, Tag, Collapse, Tooltip, Progress, Select } from 'antd';
-import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined, DownloadOutlined, ExperimentOutlined, SafetyCertificateOutlined, BarChartOutlined } from '@ant-design/icons';
+import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined, DownloadOutlined, ExperimentOutlined, SafetyCertificateOutlined, BarChartOutlined, FundOutlined, AimOutlined, DashboardOutlined, EnvironmentOutlined } from '@ant-design/icons';
 import ReactECharts from '../components/EChart';
+import * as echarts from '../lib/echarts';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import MapSelector from '../components/MapSelector';
-import { getTrend, getRegionCompare, getAgeStratify, getApprovedDataPoints, getDataGapAnalysis, getFoiHerdImmunity, getVaccineEffectivenessCoverage } from '../services/map';
+import AdvancedCharts from '../components/AdvancedCharts';
+import KpiCards from '../components/KpiCards';
+import EquityRadar from '../components/EquityRadar';
+import QualityPanel from '../components/QualityPanel';
+import TrendWithCI from '../components/TrendWithCI';
+import AgeSmoothChart from '../components/AgeSmoothChart';
+import TopBottomRank from '../components/TopBottomRank';
+import GoalTrackingChart from '../components/GoalTrackingChart';
+import SimulationPanel from '../components/SimulationPanel';
+import CoverageReviewTable from '../components/CoverageReviewTable';
+import CoverageReviewChart from '../components/CoverageReviewChart';
+import { getTrend, getRegionCompare, getAgeStratify, getApprovedDataPoints, getDataGapAnalysis, getFoiHerdImmunity, getVaccineEffectivenessCoverage, getEquityAnalysis, getQualityAssessment, getGoalTracking, getAgeCurve, getMetaMerge, getAssayHeterogeneity, getSimulation, getProvinceData, fetchCoverageReview } from '../services/map';
 import { useFilterStore } from '../store';
 import type { TableRowSelection } from 'antd/es/table/interface';
-import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult } from '../types';
-import { DISEASES } from '../utils/constants';
-import AdvancedCharts from '../components/AdvancedCharts';
+import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, MetaMergeResponse, AssayHeterogeneityResponse, SimulationResponse, MapDataPoint, MetaMergeProvinceResult, AssayHeterogeneityRow, HeterogeneityLevel, CoverageReviewResult } from '../types';
+import { DISEASES, PROVINCE_GEOJSON_NAME } from '../utils/constants';
 
 type DataItem = Record<string, unknown>;
+
+type TrendSignificance = {
+  slope_per_year: number | null;
+  p_value: number | null;
+  r_squared: number | null;
+  direction: 'increasing' | 'decreasing' | 'flat' | null;
+  n: number;
+};
 
 const Analysis: React.FC = () => {
   const { disease: globalDisease, dataType: globalDataType, setDisease, setDataType } = useFilterStore();
@@ -29,6 +48,7 @@ const Analysis: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [trendData, setTrendData] = useState<DataItem[]>([]);
+  const [trendSignificance, setTrendSignificance] = useState<TrendSignificance | null>(null);
   const [regionData, setRegionData] = useState<DataItem[]>([]);
   const [ageData, setAgeData] = useState<DataItem[]>([]);
 
@@ -46,6 +66,10 @@ const Analysis: React.FC = () => {
 
   // 数据覆盖度分析
   const [gapData, setGapData] = useState<DataGapAnalysisResult | null>(null);
+  // 审核状态统计（按疾病）
+  const [coverageReview, setCoverageReview] = useState<CoverageReviewResult | null>(null);
+  const [coverageReviewLoading, setCoverageReviewLoading] = useState(false);
+  const [coverageReviewDisease, setCoverageReviewDisease] = useState('');
   const [gapLoading, setGapLoading] = useState(false);
 
   // FOI（感染力）+ 群体免疫阈值分析
@@ -57,6 +81,47 @@ const Analysis: React.FC = () => {
   const [vaccineData, setVaccineData] = useState<VaccineEffectivenessCoverageResult | null>(null);
   const [vaccineLoading, setVaccineLoading] = useState(false);
   const [vaccineSelectedDisease, setVaccineSelectedDisease] = useState<string>('');
+
+  // ===================== 公平性 / 数据质量 / 目标达成 / 高级分析 =====================
+
+  // 中国地图（geo）是否就绪
+  const [mapReady, setMapReady] = useState(false);
+
+  // 公平性分析
+  const [equityData, setEquityData] = useState<EquityAnalysisResponse | null>(null);
+  const [equityLoading, setEquityLoading] = useState(false);
+
+  // 数据质量（全库）
+  const [qualityData, setQualityData] = useState<QualityAssessmentResponse | null>(null);
+  const [qualityLoading, setQualityLoading] = useState(false);
+
+  // 目标达成追踪
+  const [goalData, setGoalData] = useState<GoalTrackingResponse | null>(null);
+  const [goalLoading, setGoalLoading] = useState(false);
+
+  // 高级分析：年龄曲线 / meta / assay / 模拟
+  const [ageCurveMetric, setAgeCurveMetric] = useState<'seroprevalence' | 'gmc'>('seroprevalence');
+  const [ageCurveData, setAgeCurveData] = useState<AgeCurveResponse | null>(null);
+  const [ageCurveLoading, setAgeCurveLoading] = useState(false);
+  const [metaData, setMetaData] = useState<MetaMergeResponse | null>(null);
+  const [metaLoading, setMetaLoading] = useState(false);
+  const [assayData, setAssayData] = useState<AssayHeterogeneityResponse | null>(null);
+  const [assayLoading, setAssayLoading] = useState(false);
+  const [simData, setSimData] = useState<SimulationResponse | null>(null);
+  const [simLoading, setSimLoading] = useState(false);
+  const [simCoverage, setSimCoverage] = useState(90);
+  const [simBooster, setSimBooster] = useState(0);
+
+  // 地图钻取：选中的省份及其联动数据（TrendWithCI / AgeSmoothChart / QualityPanel）
+  const [drillProvince, setDrillProvince] = useState<string | null>(null);
+  const [drillTrend, setDrillTrend] = useState<Array<{ year: number; value: number | null; ci_lower: number | null; ci_upper: number | null }>>([]);
+  const [drillAgeCurve, setDrillAgeCurve] = useState<AgeCurveResponse | null>(null);
+  const [drillQuality, setDrillQuality] = useState<QualityAssessmentResponse | null>(null);
+  const [drillLoading, setDrillLoading] = useState(false);
+
+  // 地图省份着色数据
+  const [mapData, setMapData] = useState<MapDataPoint[]>([]);
+  const [mapLoading, setMapLoading] = useState(false);
 
   const fetchAll = useCallback(async () => {
     if (!appliedDisease && !appliedDataType && appliedProvinces.length === 0) return;
@@ -72,7 +137,9 @@ const Analysis: React.FC = () => {
         getRegionCompare(params),
         getAgeStratify(params),
       ]);
-      setTrendData((trend.data as DataItem[]) || []);
+      const trendResp = (trend.data as { trend: DataItem[]; trend_significance?: TrendSignificance } | null) || null;
+      setTrendData(trendResp?.trend || []);
+      setTrendSignificance(trendResp?.trend_significance || null);
       setRegionData((region.data as DataItem[]) || []);
       setAgeData((age.data as DataItem[]) || []);
     } catch (err) {
@@ -106,6 +173,28 @@ const Analysis: React.FC = () => {
       fetchGapData();
     }
   }, [activeTab, fetchGapData]);
+
+  // 获取审核状态统计（按疾病）
+  const fetchCoverageReviewData = useCallback(async () => {
+    setCoverageReviewLoading(true);
+    try {
+      const params: Record<string, unknown> = {};
+      if (coverageReviewDisease) params.disease = coverageReviewDisease;
+      const data = await fetchCoverageReview(Object.keys(params).length > 0 ? params : undefined);
+      setCoverageReview(data);
+    } catch (err) {
+      console.error('[Analysis] 审核状态统计加载失败:', err);
+      message.error('审核状态统计加载失败');
+    } finally {
+      setCoverageReviewLoading(false);
+    }
+  }, [coverageReviewDisease]);
+
+  useEffect(() => {
+    if (activeTab === 'coverage') {
+      fetchCoverageReviewData();
+    }
+  }, [activeTab, fetchCoverageReviewData]);
 
   // 获取 FOI 感染力 + 群体免疫阈值分析
   const fetchFoiData = useCallback(async () => {
@@ -162,6 +251,213 @@ const Analysis: React.FC = () => {
       fetchVaccineData();
     }
   }, [activeTab, fetchVaccineData]);
+
+  // ===================== 公平性 / 数据质量 / 目标达成 / 高级分析：数据加载 =====================
+
+  // 注册中国地图（geo），与 MapOverview 一致，加载一次即可
+  useEffect(() => {
+    fetch('/china.json')
+      .then((r) => r.json())
+      .then((data) => {
+        echarts.registerMap('china', data);
+        setMapReady(true);
+      })
+      .catch(() => message.error('中国地图数据加载失败'));
+  }, []);
+
+  // 地图省份着色数据
+  const fetchMapData = useCallback(async () => {
+    setMapLoading(true);
+    try {
+      const params: Record<string, unknown> = {};
+      if (appliedDisease) params.disease = appliedDisease;
+      if (appliedDataType) params.data_type = appliedDataType;
+      const data = await getProvinceData(params);
+      setMapData(data || []);
+    } catch (err) {
+      console.error('[Analysis] 地图数据加载失败:', err);
+      setMapData([]);
+    } finally {
+      setMapLoading(false);
+    }
+  }, [appliedDisease, appliedDataType]);
+
+  useEffect(() => { fetchMapData(); }, [fetchMapData]);
+
+  // 公平性分析
+  const fetchEquity = useCallback(async () => {
+    setEquityLoading(true);
+    try {
+      const params: Record<string, unknown> = {};
+      if (appliedDisease) params.disease = appliedDisease;
+      const data = await getEquityAnalysis(params);
+      setEquityData(data);
+    } catch (err) {
+      console.error('[Analysis] 公平性分析加载失败:', err);
+      message.error('公平性分析加载失败');
+    } finally {
+      setEquityLoading(false);
+    }
+  }, [appliedDisease]);
+
+  // 数据质量（全库）
+  const fetchQuality = useCallback(async () => {
+    setQualityLoading(true);
+    try {
+      const params: Record<string, unknown> = {};
+      if (appliedDisease) params.disease = appliedDisease;
+      const data = await getQualityAssessment(params);
+      setQualityData(data);
+    } catch (err) {
+      console.error('[Analysis] 数据质量评估加载失败:', err);
+      message.error('数据质量评估加载失败');
+    } finally {
+      setQualityLoading(false);
+    }
+  }, [appliedDisease]);
+
+  // 目标达成追踪
+  const fetchGoal = useCallback(async () => {
+    setGoalLoading(true);
+    try {
+      const params: Record<string, unknown> = {};
+      if (appliedDisease) params.disease = appliedDisease;
+      const data = await getGoalTracking(params);
+      setGoalData(data);
+    } catch (err) {
+      console.error('[Analysis] 目标达成追踪加载失败:', err);
+      message.error('目标达成追踪加载失败');
+    } finally {
+      setGoalLoading(false);
+    }
+  }, [appliedDisease]);
+
+  // 高级分析：年龄曲线
+  const fetchAgeCurve = useCallback(async (metric: 'seroprevalence' | 'gmc') => {
+    setAgeCurveLoading(true);
+    try {
+      const params: Record<string, unknown> = { metric };
+      if (appliedDisease) params.disease = appliedDisease;
+      const data = await getAgeCurve(params);
+      setAgeCurveData(data);
+    } catch (err) {
+      console.error('[Analysis] 年龄曲线加载失败:', err);
+      message.error('年龄曲线加载失败');
+    } finally {
+      setAgeCurveLoading(false);
+    }
+  }, [appliedDisease]);
+
+  // 高级分析：meta 合并
+  const fetchMeta = useCallback(async () => {
+    setMetaLoading(true);
+    try {
+      const params: Record<string, unknown> = {};
+      if (appliedDisease) params.disease = appliedDisease;
+      const data = await getMetaMerge(params);
+      setMetaData(data);
+    } catch (err) {
+      console.error('[Analysis] meta 合并加载失败:', err);
+      message.error('meta 合并加载失败');
+    } finally {
+      setMetaLoading(false);
+    }
+  }, [appliedDisease]);
+
+  // 高级分析：assay 异质性
+  const fetchAssay = useCallback(async () => {
+    setAssayLoading(true);
+    try {
+      const params: Record<string, unknown> = {};
+      if (appliedDisease) params.disease = appliedDisease;
+      const data = await getAssayHeterogeneity(params);
+      setAssayData(data);
+    } catch (err) {
+      console.error('[Analysis] assay 异质性加载失败:', err);
+      message.error('assay 异质性分析加载失败');
+    } finally {
+      setAssayLoading(false);
+    }
+  }, [appliedDisease]);
+
+  // 高级分析：免疫屏障模拟
+  const fetchSimulation = useCallback(async (coverage: number, booster: number) => {
+    setSimLoading(true);
+    try {
+      const params: Record<string, unknown> = { assumed_coverage: coverage, booster_rate: booster };
+      if (appliedDisease) params.disease = appliedDisease;
+      const data = await getSimulation(params);
+      setSimData(data);
+    } catch (err) {
+      console.error('[Analysis] 免疫屏障模拟加载失败:', err);
+      message.error('免疫屏障模拟加载失败');
+    } finally {
+      setSimLoading(false);
+    }
+  }, [appliedDisease]);
+
+  // 地图钻取：加载选中省的 趋势(带CI) + 年龄曲线 + 数据质量
+  const fetchDrillDown = useCallback(async (prov: string) => {
+    setDrillLoading(true);
+    try {
+      const base: Record<string, unknown> = { province: prov };
+      if (appliedDisease) base.disease = appliedDisease;
+      const [trend, age, quality] = await Promise.all([
+        getTrend({ ...base, data_type: 'seroprevalence' }),
+        getAgeCurve({ ...base, metric: 'seroprevalence' }),
+        getQualityAssessment(base),
+      ]);
+      const trendItems = (trend as { trend: Array<{ year: number; weighted_positivity: number | null; positivity_ci_lower: number | null; positivity_ci_upper: number | null }> }).trend || [];
+      setDrillTrend(trendItems.map((t) => ({
+        year: t.year,
+        value: t.weighted_positivity,
+        ci_lower: t.positivity_ci_lower,
+        ci_upper: t.positivity_ci_upper,
+      })));
+      setDrillAgeCurve(age);
+      setDrillQuality(quality);
+    } catch (err) {
+      console.error('[Analysis] 省份钻取数据加载失败:', err);
+      message.error('省份钻取数据加载失败');
+    } finally {
+      setDrillLoading(false);
+    }
+  }, [appliedDisease]);
+
+  // 地图省份点击 → 钻取
+  const handleProvinceClick = useCallback((params: unknown) => {
+    const name = (params as { name?: string })?.name;
+    if (!name) return;
+    const entry = Object.entries(PROVINCE_GEOJSON_NAME).find(([, geoName]) => geoName === name);
+    const shortName = entry ? entry[0] : name;
+    if (!shortName || shortName === '台湾' || shortName === '香港' || shortName === '澳门') return;
+    setDrillProvince(shortName);
+    fetchDrillDown(shortName);
+  }, [fetchDrillDown]);
+
+  // Tab 切换时加载对应数据
+  useEffect(() => {
+    if (activeTab === 'equity') fetchEquity();
+  }, [activeTab, fetchEquity]);
+
+  useEffect(() => {
+    if (activeTab === 'quality') fetchQuality();
+  }, [activeTab, fetchQuality]);
+
+  useEffect(() => {
+    if (activeTab === 'goal') fetchGoal();
+  }, [activeTab, fetchGoal]);
+
+  useEffect(() => {
+    if (activeTab === 'advancedAnalysis') fetchAgeCurve(ageCurveMetric);
+  }, [activeTab, fetchAgeCurve, ageCurveMetric]);
+
+  useEffect(() => {
+    if (activeTab === 'advancedAnalysis') {
+      fetchMeta();
+      fetchAssay();
+    }
+  }, [activeTab, fetchMeta, fetchAssay]);
 
   // 获取审核通过的数据点
   const fetchApprovedData = useCallback(async (page: number, pageSize: number, sortBy?: string, sortOrder?: string) => {
@@ -436,6 +732,16 @@ const Analysis: React.FC = () => {
         <Col span={12}>
           <Card>
             {trendOption ? <ReactECharts option={trendOption} style={{ height: 350 }} /> : <Empty description="请选择筛选条件后点击查询" />}
+            {trendSignificance && (
+              <div style={{ marginTop: 8, textAlign: 'center' }}>
+                <Tag color={trendSignificance.direction === 'increasing' ? 'green' : trendSignificance.direction === 'decreasing' ? 'red' : 'blue'}>
+                  趋势：{trendSignificance.direction === 'increasing' ? '上升' : trendSignificance.direction === 'decreasing' ? '下降' : '平稳'}
+                </Tag>
+                <span style={{ marginLeft: 8 }}>
+                  斜率 {trendSignificance.slope_per_year ?? '—'}/年 · R² {trendSignificance.r_squared ?? '—'} · P {trendSignificance.p_value ?? '—'}
+                </span>
+              </div>
+            )}
           </Card>
         </Col>
       </Row>
@@ -1044,6 +1350,73 @@ const Analysis: React.FC = () => {
       ) : (
         <Empty description="正在加载..." />
       )}
+
+      {/* ===== 审核状态统计（按疾病）— 直接展示，无需筛选 ===== */}
+      <Card
+        size="small"
+        title={
+          <Space>
+            <span>审核状态统计（按疾病）</span>
+            <Tag color="blue">数据点 / 样本量 / 通过率</Tag>
+          </Space>
+        }
+        extra={
+          <Space>
+            <span style={{ color: '#888', fontSize: 13 }}>疾病筛选</span>
+            <DiseaseSelector
+              value={coverageReviewDisease}
+              onChange={setCoverageReviewDisease}
+              style={{ width: 160 }}
+            />
+          </Space>
+        }
+        style={{ marginTop: 16 }}
+      >
+        <Spin spinning={coverageReviewLoading}>
+          {coverageReview && coverageReview.diseases && coverageReview.diseases.length > 0 ? (
+            <>
+              {/* 总体概览 */}
+              <Row gutter={16} style={{ marginBottom: 16 }}>
+                <Col span={6}>
+                  <Statistic title="总疾病数" value={coverageReview.overview.total_diseases} />
+                </Col>
+                <Col span={6}>
+                  <Statistic title="总数据点" value={coverageReview.overview.total_points} />
+                </Col>
+                <Col span={6}>
+                  <Statistic
+                    title="待审核数据点"
+                    value={coverageReview.overview.pending_points}
+                    valueStyle={{ color: coverageReview.overview.pending_points > 0 ? '#fa541c' : '#52c41a' }}
+                  />
+                </Col>
+                <Col span={6}>
+                  <Statistic
+                    title="总体通过率"
+                    value={Math.round(coverageReview.overview.overall_approval_rate * 100)}
+                    suffix="%"
+                    valueStyle={
+                      coverageReview.overview.overall_approval_rate >= 0.8
+                        ? { color: '#52c41a' }
+                        : coverageReview.overview.overall_approval_rate >= 0.5
+                          ? { color: '#faad14' }
+                          : { color: '#f5222d' }
+                    }
+                  />
+                </Col>
+              </Row>
+
+              <Card size="small" title="各疾病审核状态分布" style={{ marginBottom: 16, border: 'none', boxShadow: 'none' }}>
+                <CoverageReviewChart data={coverageReview.diseases} />
+              </Card>
+
+              <CoverageReviewTable data={coverageReview.diseases} loading={coverageReviewLoading} />
+            </>
+          ) : (
+            <Empty description="无审核状态统计数据" />
+          )}
+        </Spin>
+      </Card>
     </Spin>
   );
 
@@ -1646,6 +2019,264 @@ const Analysis: React.FC = () => {
     </Spin>
   );
 
+  // ===================== 中国地图 + 省份钻取 =====================
+
+  const mapOption = mapReady ? {
+    tooltip: {
+      trigger: 'item',
+      formatter: (p: { name: string }) => {
+        const shortName = (Object.entries(PROVINCE_GEOJSON_NAME).find(([, v]) => v === p.name) || [null, p.name])[1];
+        const item = mapData.find((d) => d.province === shortName);
+        if (!item || item.weighted_positivity == null) return `${p.name}<br/>暂无数据`;
+        return `<b>${shortName}</b><br/>加权阳性率: ${Number(item.weighted_positivity).toFixed(2)}%<br/>数据点数: ${item.point_count}<br/>总样本量: ${item.total_sample.toLocaleString()}<br/><br/><i>点击省份可钻取查看趋势 / 年龄曲线 / 数据质量</i>`;
+      },
+    },
+    visualMap: {
+      min: 0,
+      max: 100,
+      text: ['高', '低'],
+      inRange: { color: ['#e8f5e9', '#66bb6a', '#26a69a', '#ffa726', '#ef5350'] },
+      calculable: true,
+      left: 'left',
+      bottom: 20,
+    },
+    geo: {
+      map: 'china',
+      roam: true,
+      label: { show: true, fontSize: 9, color: '#333' },
+      itemStyle: { areaColor: '#f3f3f3', borderColor: '#ccc' },
+      emphasis: { itemStyle: { areaColor: '#40a9ff' }, label: { show: true, fontWeight: 'bold' } },
+    },
+    series: [{
+      type: 'map',
+      map: 'china',
+      geoIndex: 0,
+      data: mapData
+        .filter((d): d is MapDataPoint & { province: string } => !!d.province && !!PROVINCE_GEOJSON_NAME[d.province!])
+        .map((d) => ({ name: PROVINCE_GEOJSON_NAME[d.province], value: d.weighted_positivity })),
+      animationDuration: 500,
+      animationEasing: 'cubicOut',
+    }],
+  } : null;
+
+  // 钻取面板：选中省份的 趋势(带CI) + 年龄曲线 + 数据质量
+  const mapDrillSection = (
+    <Card
+      size="small"
+      title={<Space><EnvironmentOutlined /><span>中国地图（点击省份钻取）</span></Space>}
+      style={{ marginTop: 16 }}
+    >
+      <Spin spinning={!mapReady || mapLoading}>
+        {mapOption ? (
+          <ReactECharts option={mapOption} style={{ height: 420 }} onEvents={{ click: handleProvinceClick }} />
+        ) : (
+          <Empty description="地图加载中..." style={{ padding: '60px 0' }} />
+        )}
+      </Spin>
+      <div style={{ marginTop: 16 }}>
+        {drillProvince ? (
+          <Spin spinning={drillLoading}>
+            <Alert
+              type="success"
+              showIcon
+              closable
+              onClose={() => setDrillProvince(null)}
+              message={<span>已钻取省份：<b>{drillProvince}</b>（基于当前疾病筛选，可切换其他疾病后重新点击地图）</span>}
+              style={{ marginBottom: 12 }}
+            />
+            <Row gutter={16}>
+              <Col span={12}>
+                <TrendWithCI
+                  data={drillTrend}
+                  title={`${drillProvince} 血清阳性率趋势（95% CI）`}
+                  yLabel="阳性率 (%)"
+                  height={300}
+                />
+              </Col>
+              <Col span={12}>
+                <AgeSmoothChart
+                  data={drillAgeCurve}
+                  loading={drillLoading}
+                  metric="seroprevalence"
+                  title={`${drillProvince} 年龄-阳性率曲线`}
+                  height={300}
+                />
+              </Col>
+            </Row>
+            <Row gutter={16} style={{ marginTop: 16 }}>
+              <Col span={24}>
+                <QualityPanel data={drillQuality} loading={drillLoading} compact />
+              </Col>
+            </Row>
+          </Spin>
+        ) : (
+          <Empty description="点击地图上的省份，钻取查看该省的趋势 / 年龄曲线 / 数据质量" style={{ padding: '30px 0' }} />
+        )}
+      </div>
+    </Card>
+  );
+
+  // ===================== 公平性分析内容 =====================
+
+  const equityContent = (
+    <Spin spinning={equityLoading}>
+      {equityData ? (
+        <>
+          <KpiCards
+            items={[
+              { label: '参与省份', value: equityData.summary?.total_provinces ?? equityData.n_provinces, tip: '有已审核主估计的省份数' },
+              { label: '数据点总数', value: equityData.n_data_points },
+              { label: '基尼系数', value: equityData.summary?.gini != null ? equityData.summary.gini : '-', precision: 3, tip: 'Gini 越接近 0，省际越公平' },
+              { label: '变异系数', value: equityData.summary?.coefficient_of_variation != null ? equityData.summary.coefficient_of_variation : '-', precision: 3 },
+              { label: '达标省份', value: equityData.summary?.meeting_provinces_count ?? 0, suffix: equityData.summary?.total_provinces ? ` / ${equityData.summary.total_provinces}` : undefined, valueStyle: { color: '#52c41a' }, tip: '加权阳性率 ≥ 目标阈值的省份数' },
+            ]}
+          />
+          <Row gutter={16}>
+            <Col span={24}>
+              <EquityRadar selectedDisease={appliedDisease} selectedProvince={drillProvince} />
+            </Col>
+          </Row>
+          <Row gutter={16} style={{ marginTop: 16 }}>
+            <Col span={24}>
+              <TopBottomRank data={equityData} />
+            </Col>
+          </Row>
+          {equityData.notes?.length > 0 && (
+            <Alert type="info" showIcon style={{ marginTop: 12 }} message={equityData.notes.join('；')} />
+          )}
+        </>
+      ) : (
+        <Empty description="暂无公平性分析数据，请选择疾病后点击查询" style={{ padding: '60px 0' }} />
+      )}
+    </Spin>
+  );
+
+  // ===================== 数据质量分析内容 =====================
+
+  const qualityContent = (
+    <>
+      <KpiCards
+        loading={qualityLoading}
+        items={[
+          { label: '主估计总数', value: qualityData?.total_estimates ?? null },
+          { label: '覆盖省份', value: qualityData?.n_provinces ?? null },
+          { label: '高质量占比 (A+B)', value: qualityData?.summary ? qualityData.summary.high_quality_ratio * 100 : null, precision: 1, suffix: '%' },
+          { label: '带 95%CI 占比', value: qualityData?.summary ? qualityData.summary.with_ci_ratio * 100 : null, precision: 1, suffix: '%' },
+          { label: '原文溯源占比', value: qualityData?.summary ? qualityData.summary.grounded_ratio * 100 : null, precision: 1, suffix: '%' },
+        ]}
+      />
+      <QualityPanel data={qualityData} loading={qualityLoading} />
+    </>
+  );
+
+  // ===================== 目标达成分析内容 =====================
+
+  const goalContent = (
+    <GoalTrackingChart data={goalData} loading={goalLoading} />
+  );
+
+  // ===================== 高级分析内容（年龄曲线 / meta / assay / 模拟） =====================
+
+  const metaColumns = [
+    { title: '省份', dataIndex: 'province', key: 'province', width: 90, fixed: 'left' as const },
+    { title: '研究数 k', dataIndex: 'k', key: 'k', width: 70 },
+    { title: '固定效应合并', dataIndex: 'pooled_fixed_percent', key: 'pooled_fixed_percent', width: 100, render: (v: number | null) => v != null ? `${v.toFixed(2)}%` : '-' },
+    { title: '随机效应合并', dataIndex: 'pooled_random_percent', key: 'pooled_random_percent', width: 100, render: (v: number | null) => v != null ? `${v.toFixed(2)}%` : '-' },
+    { title: 'I² (%)', dataIndex: 'i_squared_percent', key: 'i_squared_percent', width: 70, render: (v: number) => <b style={{ color: v >= 75 ? '#f5222d' : v >= 50 ? '#fa8c16' : '#52c41a' }}>{v.toFixed(1)}</b> },
+    { title: 'Q', dataIndex: 'q_statistic', key: 'q_statistic', width: 70, render: (v: number | null) => v != null ? v.toFixed(2) : '-' },
+    { title: 'τ²', dataIndex: 'tau_squared', key: 'tau_squared', width: 70, render: (v: number | null) => v != null ? v.toFixed(4) : '-' },
+    {
+      title: '异质性',
+      dataIndex: 'heterogeneity',
+      key: 'heterogeneity',
+      width: 80,
+      render: (v: HeterogeneityLevel) => {
+        const meta: Record<HeterogeneityLevel, [string, string]> = { low: ['低', 'green'], moderate: ['中', 'gold'], high: ['高', 'red'], 'n/a': ['N/A', 'default'] };
+        const [label, color] = meta[v] || ['-', 'default'];
+        return <Tag color={color}>{label}</Tag>;
+      },
+    },
+  ];
+
+  const assayColumns = [
+    { title: '检测方法', dataIndex: 'assay', key: 'assay', width: 150 },
+    { title: '研究数', dataIndex: 'n_studies', key: 'n_studies', width: 80 },
+    { title: '样本量', dataIndex: 'total_samples', key: 'total_samples', width: 100, render: (v: number) => v.toLocaleString() },
+    { title: '加权阳性率', dataIndex: 'weighted_positivity', key: 'weighted_positivity', width: 110, render: (v: number | null) => v != null ? `${v.toFixed(2)}%` : '-' },
+    { title: '95% CI', key: 'ci', width: 140, render: (_: unknown, r: AssayHeterogeneityRow) => r.ci_lower != null && r.ci_upper != null ? `${r.ci_lower.toFixed(1)} ~ ${r.ci_upper.toFixed(1)}` : '-' },
+  ];
+
+  const advancedContent = (
+    <Spin spinning={ageCurveLoading || metaLoading || assayLoading || simLoading}>
+      <Row gutter={16}>
+        <Col span={24}>
+          <AgeSmoothChart
+            data={ageCurveData}
+            loading={ageCurveLoading}
+            metric={ageCurveMetric}
+            onMetricChange={(m) => setAgeCurveMetric(m)}
+          />
+        </Col>
+      </Row>
+      <Row gutter={16} style={{ marginTop: 16 }}>
+        <Col span={12}>
+          <Card size="small" title={<Space><span>Meta 合并（省级，I² 异质性）</span><Tag color="blue">逆方差加权</Tag></Space>}>
+            {metaData && metaData.results.length > 0 ? (
+              <Table<MetaMergeProvinceResult>
+                rowKey="province"
+                size="small"
+                pagination={false}
+                scroll={{ x: 700 }}
+                dataSource={metaData.results}
+                columns={metaColumns}
+              />
+            ) : (
+              <Empty description="暂无 Meta 合并结果（需同省多研究已审核主估计）" />
+            )}
+            {metaData?.notes?.length ? <Alert type="info" showIcon style={{ marginTop: 8 }} message={metaData.notes.join('；')} /> : null}
+          </Card>
+        </Col>
+        <Col span={12}>
+          <Card size="small" title={<Space><span>检测方法（Assay）异质性</span><Tag color="purple">跨方法对比</Tag></Space>}>
+            {assayData && assayData.results.length > 0 ? (
+              <>
+                <Alert
+                  type={assayData.across_assay_i_squared_percent >= 75 ? 'warning' : assayData.across_assay_i_squared_percent >= 50 ? 'info' : 'success'}
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message={`跨 Assay I² = ${assayData.across_assay_i_squared_percent.toFixed(1)}%（Q=${assayData.across_assay_q_statistic != null ? assayData.across_assay_q_statistic.toFixed(2) : '-'}，k=${assayData.across_assay_k}）`}
+                />
+                <Table<AssayHeterogeneityRow>
+                  rowKey="assay"
+                  size="small"
+                  pagination={false}
+                  dataSource={assayData.results}
+                  columns={assayColumns}
+                />
+              </>
+            ) : (
+              <Empty description="暂无 Assay 异质性数据" />
+            )}
+            {assayData?.notes?.length ? <Alert type="info" showIcon style={{ marginTop: 8 }} message={assayData.notes.join('；')} /> : null}
+          </Card>
+        </Col>
+      </Row>
+      <Row gutter={16} style={{ marginTop: 16 }}>
+        <Col span={24}>
+          <SimulationPanel
+            data={simData}
+            loading={simLoading}
+            coverage={simCoverage}
+            booster={simBooster}
+            onCoverageChange={setSimCoverage}
+            onBoosterChange={setSimBooster}
+            onRun={() => fetchSimulation(simCoverage, simBooster)}
+          />
+        </Col>
+      </Row>
+    </Spin>
+  );
+
   return (
     <>
       {filterPanel}
@@ -1656,7 +2287,12 @@ const Analysis: React.FC = () => {
           {
             key: 'summary',
             label: '汇总分析',
-            children: summaryContent,
+            children: (
+              <>
+                {summaryContent}
+                {mapDrillSection}
+              </>
+            ),
           },
           {
             key: 'datapoints',
@@ -1703,6 +2339,46 @@ const Analysis: React.FC = () => {
                 appliedProvinces={appliedProvinces}
               />
             ),
+          },
+          {
+            key: 'equity',
+            label: (
+              <span>
+                <FundOutlined />
+                公平性分析
+              </span>
+            ),
+            children: equityContent,
+          },
+          {
+            key: 'quality',
+            label: (
+              <span>
+                <CheckCircleOutlined />
+                数据质量
+              </span>
+            ),
+            children: qualityContent,
+          },
+          {
+            key: 'goal',
+            label: (
+              <span>
+                <AimOutlined />
+                目标达成
+              </span>
+            ),
+            children: goalContent,
+          },
+          {
+            key: 'advancedAnalysis',
+            label: (
+              <span>
+                <ExperimentOutlined />
+                高级分析
+              </span>
+            ),
+            children: advancedContent,
           },
         ]}
       />

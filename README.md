@@ -377,9 +377,17 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | GET | `/analysis/summary` | 汇总统计 |
 | GET | `/analysis/approved-data-points` | 已审核数据点列表 |
 | GET | `/analysis/data-gaps` | 数据覆盖度分析（含数据缺失提醒，按完善度排序） |
+| GET | `/analysis/coverage-review` | 审核状态统计（按疾病统计点数/样本量/审核通过率，默认按待审核数降序） |
 | GET | `/analysis/foi-herd-immunity` | **P0: FOI 感染力 + 群体免疫阈值分析**（催化模型 λ = -ln(1-SP)/age、R0、HIT） |
 | GET | `/analysis/vaccine-effectiveness-coverage` | **P1: 疫苗效果 VE + 接种率分析**（亚组 VE、NIP 参考表、隐含接种率、覆盖率矩阵） |
-| GET | `/analysis/export` | 导出分析数据 Excel（多工作表） |
+| GET | `/analysis/equity` | 省间公平性分析（基尼系数、变异系数、最佳/最差省、对比 WHO 阈值的达标比例、Top/Bottom 排名） |
+| GET | `/analysis/quality` | 数据质量评估（reliability_grade A/B/C/D 分级、高质量占比、带 CI / 原文溯源比例、单点估计省份预警） |
+| GET | `/analysis/goal-tracking` | 目标达成追踪（按年追踪达标省比例、全国加权阳性率、相对 GOAL_THRESHOLDS/HIT 的缺口百分点） |
+| GET | `/analysis/age-curve` | 年龄-抗体曲线（seroprevalence/gmc 随年龄变化，LOWESS 平滑 + 拐点定位） |
+| GET | `/analysis/meta-merge` | 同省多研究 meta 合并（固定/随机效应逆方差合并，输出 I² 异质性、Q 统计量、τ²） |
+| GET | `/analysis/assay-heterogeneity` | 检测方法(assay)异质性（按 assay 分层对比加权阳性率与 95% CI，跨 assay 的 I² 异质性） |
+| GET | `/analysis/simulate` | 免疫屏障模拟（FOI 催化模型反推 R0/HIT，结合假设接种覆盖与加强针比例判定屏障状态、反推达标所需覆盖） |
+| GET | `/analysis/export` | 导出分析数据 Excel（多工作表，含统计方法附录：加权率/GMC/95%CI/基尼/meta 合并等算法公式） |
 
 ### 高级检索
 
@@ -627,6 +635,34 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.7.4 (2026-08-14)
+
+#### 统计分析框架与审核状态监控
+
+- **新增统计方法库 `stats.py`**：实现 8 个纯 Python 统计算法（几何均数 GMC 及其 95% CI、加权阳性率（逆方差合并）与 Wilson CI、加权线性趋势、基尼系数、变异系数、LOWESS 平滑、固定/随机效应逆方差 Meta 合并与 I² 异质性、可靠性分级），并配套 44 个单元测试（含已知答案校验，如 `geometric_mean([1,10,100])≈10`）。
+- **新增 7 个分析接口**：省间公平性分析（基尼/变异系数）、数据质量评估（A/B/C/D 分级）、目标达成追踪（对比 GOAL_THRESHOLDS/HIT 缺口）、年龄-抗体曲线（LOWESS 平滑+拐点）、同省多研究 Meta 合并（I²/Q/τ²）、检测方法异质性、免疫屏障模拟（FOI 反推 R0/HIT+假设覆盖）。
+- **新增审核状态统计接口**：`/analysis/coverage-review` 按疾病维度统计点数/样本量/审核通过率（approved/pending/rejected），默认按待审核数降序。
+- **导出增加「统计方法附录」sheet**：`/analysis/export` 新增第 6 个工作表，以「方法-公式-说明」三列说明加权率/GMC/95%CI/基尼/meta 合并等 10 种统计方法的算法。
+- **前端「数据覆盖度」页新增审核状态监控**：新增审核状态统计卡片（概览 KPI + 堆叠柱状图 + 明细表格，含疾病筛选），并直接展示无需额外操作。
+- **修复 Meta 合并 I² 低估 Bug**：`inverse_variance_meta` 对百分数单位的 CI 做 `>1 → /100` 归一，避免方差虚高导致 I² 被系统性低估。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/core/stats.py` | 新增 8 个统计算法（GMC/加权率/基尼/Meta 合并等） |
+| `backend/app/core/goal_thresholds.py` | 新增各病 HIT 保护目标阈值常量 |
+| `backend/app/services/analysis_service.py` | 新增 fair/quality/goal/age/meta/assay/simulate/coverage-review 分析函数 |
+| `backend/app/api/v1/analysis.py` | 新增 8 个分析路由 + `/analysis/export` 统计方法附录 sheet |
+| `backend/app/schemas/analysis.py` | 新增 Coverage 相关 Pydantic 模型 |
+| `backend/app/config.py` | APP_VERSION 升级至 1.7.4 |
+| `backend/tests/test_stats.py` | 统计函数单元测试（含已知答案校验） |
+| `backend/tests/test_analysis_advanced.py` | 新增分析 service 函数测试（26 条） |
+| `frontend/src/components/` | 新增 KpiCards/EquityRadar/QualityPanel/TrendWithCI/AgeSmoothChart/TopBottomRank/GoalTrackingChart/SimulationPanel/CoverageReviewTable/CoverageReviewChart |
+| `frontend/src/pages/Analysis.tsx` | 新增公平性/数据质量/目标达成/高级分析 tab + 覆盖度页审核状态监控 |
+| `frontend/src/services/map.ts` | 新增对应接口调用函数 |
+| `frontend/src/types/index.ts` | 新增对应响应类型定义 |
 
 ### v1.7.3 (2026-08-13)
 

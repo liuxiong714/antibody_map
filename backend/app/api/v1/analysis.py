@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
 from app.schemas.common import ApiResponse
+from app.schemas.analysis import EquityAnalysisResponse
 from app.services import analysis_service
 
 router = APIRouter()
@@ -58,6 +59,135 @@ async def get_region_compare(
         age_min=age_min,
         age_max=age_max,
         data_type=data_type,
+    )
+    return ApiResponse(data=data)
+
+
+@router.get("/analysis/equity", response_model=ApiResponse, summary="省间公平性分析", description="以省为粒度分析抗体水平公平性：省间基尼系数、变异系数、最佳/最差省、达标比例（对比 WHO 阈值）、Top/Bottom 排名")
+async def get_equity(
+    disease: Optional[str] = Query(None, description="疾病筛选"),
+    year_start: Optional[int] = Query(None, description="起始年份"),
+    year_end: Optional[int] = Query(None, description="结束年份"),
+    age_min: Optional[int] = Query(None, description="最小年龄"),
+    age_max: Optional[int] = Query(None, description="最大年龄"),
+    db: AsyncSession = Depends(get_db),
+):
+    """省间公平性分析（设计 B）"""
+    data = await analysis_service.get_equity_analysis(
+        db=db,
+        disease=disease,
+        year_start=year_start,
+        year_end=year_end,
+        age_min=age_min,
+        age_max=age_max,
+    )
+    # 用 Pydantic schema 校验并序列化，保持 ApiResponse 统一结构
+    validated = EquityAnalysisResponse.model_validate(data).model_dump()
+    return ApiResponse(data=validated)
+
+
+@router.get("/analysis/quality", response_model=ApiResponse, summary="数据质量评估", description="评估已审核主估计的数据质量：高质量(A/B)占比、带CI比例、原文溯源(grounded)比例、单点估计省份预警（基于 reliability_grade 分级）")
+async def get_quality(
+    disease: Optional[str] = Query(None, description="疾病筛选"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    year_start: Optional[int] = Query(None, description="起始年份"),
+    year_end: Optional[int] = Query(None, description="结束年份"),
+    db: AsyncSession = Depends(get_db),
+):
+    """数据质量评估"""
+    data = await analysis_service.get_quality_assessment(
+        db=db,
+        disease=disease,
+        province=province,
+        year_start=year_start,
+        year_end=year_end,
+    )
+    return ApiResponse(data=data)
+
+
+@router.get("/analysis/goal-tracking", response_model=ApiResponse, summary="目标达成追踪", description="按年追踪全国抗体保护达标进度：达标省比例、全国加权阳性率、相对每病保护目标(GOAL_THRESHOLDS/HIT)的缺口百分点")
+async def get_goal_tracking(
+    disease: Optional[str] = Query(None, description="疾病筛选（用于匹配 GOAL_THRESHOLDS 保护目标阈值）"),
+    year_start: Optional[int] = Query(None, description="起始年份"),
+    year_end: Optional[int] = Query(None, description="结束年份"),
+    db: AsyncSession = Depends(get_db),
+):
+    """目标达成追踪"""
+    data = await analysis_service.get_goal_tracking(
+        db=db,
+        disease=disease,
+        year_start=year_start,
+        year_end=year_end,
+    )
+    return ApiResponse(data=data)
+
+
+@router.get("/analysis/age-curve", response_model=ApiResponse, summary="年龄-抗体曲线", description="以年龄组中点为 x 绘制 seroprevalence/gmc 随年龄变化曲线（LOWESS 平滑），并定位拐点")
+async def get_age_curve(
+    disease: Optional[str] = Query(None, description="疾病筛选"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    year_start: Optional[int] = Query(None, description="起始年份"),
+    year_end: Optional[int] = Query(None, description="结束年份"),
+    metric: str = Query("seroprevalence", pattern="^(seroprevalence|gmc)$", description="指标：seroprevalence=阳性率，gmc=几何均数"),
+    db: AsyncSession = Depends(get_db),
+):
+    """年龄-抗体曲线（LOWESS 平滑 + 拐点）"""
+    data = await analysis_service.get_age_curve(
+        db=db,
+        disease=disease,
+        province=province,
+        year_start=year_start,
+        year_end=year_end,
+        metric=metric,
+    )
+    return ApiResponse(data=data)
+
+
+@router.get("/analysis/meta-merge", response_model=ApiResponse, summary="同省多研究 meta 合并", description="按省份对同病多研究做逆方差加权合并（固定/随机效应），输出 I² 异质性、Q 统计量、τ²")
+async def get_meta_merge(
+    disease: Optional[str] = Query(None, description="疾病筛选"),
+    province: Optional[str] = Query(None, description="省份筛选（不传则按省分组）"),
+    db: AsyncSession = Depends(get_db),
+):
+    """同省同病多研究 meta 合并 + I²"""
+    data = await analysis_service.get_meta_merge(
+        db=db,
+        disease=disease,
+        province=province,
+    )
+    return ApiResponse(data=data)
+
+
+@router.get("/analysis/assay-heterogeneity", response_model=ApiResponse, summary="检测方法(assay)异质性", description="按 assay 分层对比各检测方法的加权阳性率与95%CI，并计算跨 assay 的 I² 异质性")
+async def get_assay_heterogeneity(
+    disease: Optional[str] = Query(None, description="疾病筛选"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    db: AsyncSession = Depends(get_db),
+):
+    """按 assay 分层的异质性对比"""
+    data = await analysis_service.get_assay_heterogeneity(
+        db=db,
+        disease=disease,
+        province=province,
+    )
+    return ApiResponse(data=data)
+
+
+@router.get("/analysis/simulate", response_model=ApiResponse, summary="免疫屏障模拟", description="复用 FOI 催化模型反推 R0/HIT，结合假设接种覆盖与加强针比例模拟有效免疫比例，判定屏障状态并反推达标所需覆盖")
+async def get_simulation(
+    disease: Optional[str] = Query(None, description="疾病筛选"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    assumed_coverage: float = Query(90.0, ge=0, le=100, description="假设基础接种覆盖率(%)"),
+    booster_rate: float = Query(0.0, ge=0, le=100, description="加强针比例(%)，作用于尚未免疫者"),
+    db: AsyncSession = Depends(get_db),
+):
+    """免疫屏障模拟（FOI 反推 + 接种情景）"""
+    data = await analysis_service.get_simulation(
+        db=db,
+        disease=disease,
+        province=province,
+        assumed_coverage=assumed_coverage,
+        booster_rate=booster_rate,
     )
     return ApiResponse(data=data)
 
@@ -181,7 +311,20 @@ async def get_data_gaps(
     return ApiResponse(data=data)
 
 
-@router.get("/analysis/export", summary="导出分析数据Excel", description="将所有分析结果导出为Excel文件，包含多个sheet：汇总统计、年份趋势、区域对比、年龄分层、数据点明细")
+@router.get("/analysis/coverage-review", response_model=ApiResponse, summary="审核状态统计", description="按疾病维度统计数据点数、样本量、审核状态(approved/pending/rejected)与通过率，默认按待审核数降序排序")
+async def get_coverage_review(
+    disease: Optional[str] = Query(None, description="疾病筛选（不传则统计全部疾病）"),
+    db: AsyncSession = Depends(get_db),
+):
+    """按疾病维度的审核状态统计（数据点/样本量/通过率）"""
+    data = await analysis_service.get_coverage_review_stats(
+        db=db,
+        disease=disease,
+    )
+    return ApiResponse(data=data)
+
+
+@router.get("/analysis/export", summary="导出分析数据Excel", description="将所有分析结果导出为Excel文件，包含多个sheet：汇总统计、年份趋势、区域对比、年龄分层、数据点明细、统计方法附录（加权率/GMC/95%CI/基尼/meta合并等算法公式）")
 async def export_analysis(
     disease: Optional[str] = Query(None, description="疾病筛选"),
     province: Optional[str] = Query(None, description="省份筛选"),
@@ -246,12 +389,13 @@ async def export_analysis(
     for col in range(1, 3):
         ws_summary.column_dimensions[chr(64 + col)].width = 25
 
-    # Sheet 2: 年份趋势
-    if trend_data:
+    # Sheet 2: 年份趋势（get_trend 返回 {"trend": [...], "trend_significance": {...}}）
+    trend_rows = trend_data.get("trend", []) if isinstance(trend_data, dict) else (trend_data or [])
+    if trend_rows:
         ws_trend = wb.create_sheet("年份趋势")
-        trend_keys = list(trend_data[0].keys()) if isinstance(trend_data[0], dict) else []
+        trend_keys = list(trend_rows[0].keys()) if isinstance(trend_rows[0], dict) else []
         _write_header(ws_trend, trend_keys)
-        for i, row in enumerate(trend_data, 2):
+        for i, row in enumerate(trend_rows, 2):
             if isinstance(row, dict):
                 for j, k in enumerate(trend_keys, 1):
                     ws_trend.cell(row=i, column=j, value=row.get(k))
@@ -301,6 +445,86 @@ async def export_analysis(
                     ws_dp.cell(row=i, column=j, value=item.get(field))
         for col_idx in range(1, len(dp_headers) + 1):
             ws_dp.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else "A"].width = 18
+
+    # Sheet 6: 统计方法附录（算法与公式说明）
+    ws_methods = wb.create_sheet("统计方法附录")
+    _write_header(ws_methods, ["统计方法", "公式", "说明"])
+    wrap_align = Alignment(vertical="top", wrap_text=True)
+    appendix_rows = [
+        (
+            "加权阳性率（逆方差加权合并）",
+            "w_i = n_i / (p_i·(1-p_i))\npooled = Σ(w_i·p_i) / Σw_i",
+            "p_i = 研究阳性率（0-1，>1 视为百分数除以 100）；n_i = 样本量。"
+            "p=0 或 1 的边界研究采用连续性校正（x'=x+0.5，n'=n+1）避免方差为 0 / 权重无穷大。"
+            "输出为百分比（×100）。",
+        ),
+        (
+            "95% 置信区间（Wilson score）",
+            "center = (p + z²/2n) / (1 + z²/n)\n"
+            "half = z·√(p(1-p)/n + z²/4n²) / (1 + z²/n)\n"
+            "CI = [max(0, center-half), min(1, center+half)]",
+            "z = 1.96（95% 置信水平）；n 取合并总样本量。用于合并阳性率的区间估计。",
+        ),
+        (
+            "GMC 几何均数 + 对数域 t 分布 CI",
+            "GMC = exp( mean(ln v_i) )\nSE = SD(ln v) / √n\n"
+            "CI = exp( mean(ln v) ± t(n-1)·SE )",
+            "仅对正数计算，缺失 / 非正值剔除。t 临界值查表（df>30 用 z=1.96 近似）。"
+            "几何均数适用于抗体滴度等对数正态分布数据。",
+        ),
+        (
+            "基尼系数（省间公平性）",
+            "G = 2·Σ(i+1)·x_i / (n·Σx_i) - (n+1)/n",
+            "对排序后的非负序列计算（i 从 0 起）。G=0 完全均等，G=1 完全不均等。"
+            "用于评估各省加权阳性率的离散程度。",
+        ),
+        (
+            "变异系数",
+            "CV = 样本标准差 / |均值|",
+            "无量纲比值，衡量省际阳性率相对离散程度。样本数 < 2 或均值为 0 时无法计算，返回 0。",
+        ),
+        (
+            "Meta 合并（逆方差 固定/随机效应 + I²）",
+            "var_i = ((CI_upper - CI_lower) / (2·1.96))²\n"
+            "固定: pooled = Σ(w_i·p_i)/Σw_i，w_i = 1/var_i\n"
+            "Q = Σ w_i·(p_i - pooled)²，df = k-1\n"
+            "I² = max(0, (Q - df)/Q)·100%\n"
+            "随机(D-L): τ² = max(0,(Q-df)/(Σw-Σw²/Σw))，w*_i = 1/(var_i+τ²)",
+            "CI 缺失时退化为二项方差 p(1-p)/n（p=0/1 连续性校正）。"
+            "异质性解读：I²<25% 低、25%-50% 中、>50% 高。",
+        ),
+        (
+            "LOWESS 平滑（年龄曲线）",
+            "k = max(2, ceil(frac·n))\nw = (1 - u³)³（tricube 核，u=距离/最大距离）",
+            "对每个年龄点取最近 k 个邻居做局部加权线性拟合。"
+            "用于生成年龄-阳性率 / 年龄-GMC 平滑曲线。",
+        ),
+        (
+            "加权线性趋势（显著性）",
+            "y = a + b·x；b = Sxy/Sxx\nR² = 1 - SS_res/SS_tot；p 值 = 斜率 t 检验",
+            "权重取各年总样本量。趋势方向：斜率 >0 上升、<0 下降、≈0 平稳。",
+        ),
+        (
+            "证据可靠性分级 A/B/C/D",
+            "score = 样本量分 + CI分 + 置信度分 + 溯源分 + 研究数分",
+            "样本量 ≥1000:+4 / ≥300:+3 / ≥100:+2 / ≥30:+1；带CI:+2；置信度 high:+2 / medium:+1；"
+            "原文溯源:+2；研究数 ≥5:+2 / ≥2:+1。总分 ≥9→A、≥6→B、≥3→C、<3→D。",
+        ),
+        (
+            "FOI 催化模型（免疫屏障模拟）",
+            "λ = -ln(1-SP) / age\nR0 ≈ λ·L（L=期望寿命 75 年）\nHIT = (1 - 1/R0)·100%",
+            "SP=观测血清阳性率（0-1），age=年龄组中点。模拟有效免疫比例 "
+            "effective = 覆盖 + (1-覆盖)·加强针比例，与 HIT 对比判定屏障状态并反推达标所需覆盖。",
+        ),
+    ]
+    for r_idx, (method, formula, note) in enumerate(appendix_rows, 2):
+        ws_methods.cell(row=r_idx, column=1, value=method).alignment = wrap_align
+        ws_methods.cell(row=r_idx, column=2, value=formula).alignment = wrap_align
+        ws_methods.cell(row=r_idx, column=3, value=note).alignment = wrap_align
+        ws_methods.row_dimensions[r_idx].height = 80
+    ws_methods.column_dimensions["A"].width = 28
+    ws_methods.column_dimensions["B"].width = 46
+    ws_methods.column_dimensions["C"].width = 60
 
     # 输出到字节流
     output = io.BytesIO()

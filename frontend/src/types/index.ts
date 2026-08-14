@@ -563,3 +563,236 @@ export interface VaccineEffectivenessCoverageResult {
   };
   notes: string[];
 }
+
+// ===== 分析模块新增接口（公平性 / 数据质量 / 目标达成 / 年龄曲线 / meta / assay / 模拟）=====
+
+export interface EquityProvinceRow {
+  rank: number | null;
+  province: string;
+  weighted_positivity: number | null;
+  ci_lower: number | null;
+  ci_upper: number | null;
+  total_samples: number;
+  n_studies: number;
+  is_meeting_target: boolean | null;
+}
+
+export interface EquityAnalysisResponse {
+  disease: string | null;
+  n_provinces: number;
+  n_data_points: number;
+  summary: {
+    gini: number | null;
+    coefficient_of_variation: number | null;
+    best_province: string | null;
+    best_positivity: number | null;
+    worst_province: string | null;
+    worst_positivity: number | null;
+    target_threshold_percent: number | null;
+    meeting_ratio: number | null;
+    meeting_provinces_count: number;
+    total_provinces: number;
+  };
+  top_provinces: EquityProvinceRow[];
+  bottom_provinces: EquityProvinceRow[];
+  province_rows: EquityProvinceRow[];
+  notes: string[];
+}
+
+export interface QualityGradeCounts {
+  A: number;
+  B: number;
+  C: number;
+  D: number;
+}
+
+export interface QualityProvinceRow {
+  province: string;
+  n_estimates: number;
+  high_quality_ratio: number;
+  with_ci_ratio: number;
+  grounded_ratio: number;
+  grades: QualityGradeCounts;
+  is_single_estimate: boolean;
+}
+
+export interface QualityAssessmentResponse {
+  disease: string | null;
+  province: string | null;
+  year_start: number | null;
+  year_end: number | null;
+  total_estimates: number;
+  n_provinces: number;
+  summary: {
+    high_quality_ratio: number;
+    grade_a_ratio: number;
+    grade_b_ratio: number;
+    grade_c_ratio: number;
+    grade_d_ratio: number;
+    with_ci_ratio: number;
+    grounded_ratio: number;
+  };
+  grade_distribution: QualityGradeCounts;
+  provinces: QualityProvinceRow[];
+  single_estimate_provinces: string[];
+  notes: string[];
+}
+
+export interface GoalTrackingYearRow {
+  year: number;
+  national_positivity: number | null;
+  national_ci_lower: number | null;
+  national_ci_upper: number | null;
+  n_provinces: number;
+  meeting_provinces: number;
+  meeting_ratio: number;
+  gap_to_hit: number | null;
+}
+
+export interface GoalTrackingResponse {
+  disease: string | null;
+  goal_threshold_percent: number | null;
+  n_provinces: number;
+  years: GoalTrackingYearRow[];
+  latest_year: number | null;
+  latest_gap_to_hit: number | null;
+  notes: string[];
+}
+
+export interface AgeCurvePoint {
+  age_mid: number;
+  value: number;
+  n_studies: number;
+  total_samples: number;
+}
+
+export interface AgeCurveResponse {
+  disease: string | null;
+  province: string | null;
+  metric: 'seroprevalence' | 'gmc';
+  n_points: number;
+  age_mid_range: [number | null, number | null];
+  raw_points: AgeCurvePoint[];
+  smoothed: Array<{ age_mid: number; value: number }>;
+  inflection_points: Array<{ age_mid: number; value: number }>;
+  notes: string[];
+}
+
+export interface MetaStudyItem {
+  literature_title: string;
+  collection_year: number | null;
+  sample_size: number | null;
+  value: number | null;
+  ci_lower: number | null;
+  ci_upper: number | null;
+  assay: string | null;
+}
+
+export type HeterogeneityLevel = 'low' | 'moderate' | 'high' | 'n/a';
+
+export interface MetaMergeProvinceResult {
+  province: string;
+  k: number;
+  pooled_fixed_percent: number | null;
+  pooled_random_percent: number | null;
+  i_squared_percent: number;
+  q_statistic: number | null;
+  tau_squared: number | null;
+  heterogeneity: HeterogeneityLevel;
+  studies: MetaStudyItem[];
+}
+
+export interface MetaMergeResponse {
+  disease: string | null;
+  province: string | null;
+  n_provinces: number;
+  results: MetaMergeProvinceResult[];
+  notes: string[];
+}
+
+export interface AssayHeterogeneityRow {
+  assay: string;
+  n_studies: number;
+  total_samples: number;
+  weighted_positivity: number | null;
+  ci_lower: number | null;
+  ci_upper: number | null;
+}
+
+export interface AssayHeterogeneityResponse {
+  disease: string | null;
+  province: string | null;
+  n_assays: number;
+  results: AssayHeterogeneityRow[];
+  pooled_all_percent: number | null;
+  pooled_all_ci_lower: number | null;
+  pooled_all_ci_upper: number | null;
+  across_assay_i_squared_percent: number;
+  across_assay_q_statistic: number | null;
+  across_assay_k: number;
+  notes: string[];
+}
+
+export type BarrierStatus = 'reached' | 'near' | 'not_reached' | 'undetermined';
+
+export interface SimulationCurrent {
+  weighted_positivity_percent: number | null;
+  weighted_avg_foi_per_year: number | null;
+  estimated_r0: number | null;
+  r0_reference: {
+    typical: number | null;
+    range_low: number | null;
+    range_high: number | null;
+  } | null;
+  hit_percent: number | null;
+  status: BarrierStatus;
+}
+
+export interface SimulationResult {
+  effective_coverage_percent: number;
+  hit_percent: number | null;
+  gap_to_hit_percent: number | null;
+  gain_from_booster_percent: number;
+  status: BarrierStatus;
+}
+
+export interface SimulationResponse {
+  disease: string | null;
+  province: string | null;
+  assumed_coverage_percent: number;
+  booster_rate_percent: number;
+  current: SimulationCurrent | null;
+  simulated: SimulationResult | null;
+  required_coverage_to_reach_hit: number | null;
+  notes: string[];
+}
+
+// ===== 审核状态统计（按疾病 /analysis/coverage-review）=====
+
+export interface CoverageReviewDisease {
+  disease: string;
+  total_points: number;
+  total_samples: number;
+  approved_points: number;
+  approved_samples: number;
+  pending_points: number;
+  pending_samples: number;
+  rejected_points: number;
+  rejected_samples: number;
+  approval_rate: number; // 通过率 0-1
+}
+
+export interface CoverageReviewOverview {
+  total_diseases: number;
+  total_points: number;
+  total_samples: number;
+  approved_points: number;
+  pending_points: number;
+  rejected_points: number;
+  overall_approval_rate: number; // 0-1
+}
+
+export interface CoverageReviewResult {
+  overview: CoverageReviewOverview;
+  diseases: CoverageReviewDisease[];
+}

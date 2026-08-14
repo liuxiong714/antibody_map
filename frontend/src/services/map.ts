@@ -1,6 +1,6 @@
 import api from './api';
 import { cachedGet, clearApiCache } from '../lib/apiCache';
-import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, ApiModelConfig, ModelsListData } from '../types';
+import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, ApiModelConfig, ModelsListData, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, MetaMergeResponse, AssayHeterogeneityResponse, SimulationResponse, CoverageReviewResult } from '../types';
 
 // 拦截器已将 ApiResponse.data 提升到 resp.data，此处解包 AxiosResponse
 
@@ -161,6 +161,19 @@ export async function getDataGapAnalysis(params?: Record<string, unknown>) {
   );
 }
 
+// 按疾病维度的审核状态统计（数据点/样本量/通过率）
+export async function fetchCoverageReview(params?: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<CoverageReviewResult>('/analysis/coverage-review', { params });
+      return data;
+    },
+    '/analysis/coverage-review',
+    params,
+    CACHE_FILTER,
+  );
+}
+
 /** 数据变更（审核/提取/导入）后清除分析接口缓存，避免展示过期数据 */
 export function clearAnalysisApiCache() {
   clearApiCache('/analysis/');
@@ -222,6 +235,92 @@ export async function getVaccineEffectivenessCoverage(params: Record<string, unk
       return data;
     },
     '/analysis/vaccine-effectiveness-coverage',
+    params,
+    CACHE_FILTER,
+  );
+}
+
+// ===== 公平性 / 数据质量 / 目标达成 / 年龄曲线 / meta / assay / 模拟 =====
+
+export async function getEquityAnalysis(params: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<EquityAnalysisResponse>('/analysis/equity', { params });
+      return data;
+    },
+    '/analysis/equity',
+    params,
+    CACHE_FILTER,
+  );
+}
+
+export async function getQualityAssessment(params: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<QualityAssessmentResponse>('/analysis/quality', { params });
+      return data;
+    },
+    '/analysis/quality',
+    params,
+    CACHE_FILTER,
+  );
+}
+
+export async function getGoalTracking(params: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<GoalTrackingResponse>('/analysis/goal-tracking', { params });
+      return data;
+    },
+    '/analysis/goal-tracking',
+    params,
+    CACHE_FILTER,
+  );
+}
+
+export async function getAgeCurve(params: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<AgeCurveResponse>('/analysis/age-curve', { params });
+      return data;
+    },
+    '/analysis/age-curve',
+    params,
+    CACHE_FILTER,
+  );
+}
+
+export async function getMetaMerge(params: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<MetaMergeResponse>('/analysis/meta-merge', { params });
+      return data;
+    },
+    '/analysis/meta-merge',
+    params,
+    CACHE_FILTER,
+  );
+}
+
+export async function getAssayHeterogeneity(params: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<AssayHeterogeneityResponse>('/analysis/assay-heterogeneity', { params });
+      return data;
+    },
+    '/analysis/assay-heterogeneity',
+    params,
+    CACHE_FILTER,
+  );
+}
+
+export async function getSimulation(params: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<SimulationResponse>('/analysis/simulate', { params });
+      return data;
+    },
+    '/analysis/simulate',
     params,
     CACHE_FILTER,
   );

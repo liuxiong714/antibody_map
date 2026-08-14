@@ -8,6 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
 from app.core.term_normalizer import normalize_disease
+from app.core.stats import (
+    geometric_mean_with_ci,
+    weighted_proportion_with_ci,
+    weighted_linear_trend,
+    gini,
+    coefficient_of_variation,
+    reliability_grade,
+    lowess,
+    inverse_variance_meta,
+)
+from app.core.goal_thresholds import GOAL_THRESHOLDS
 
 logger = logging.getLogger("uvicorn")
 
@@ -68,16 +79,26 @@ def _build_base_query(disease, province, year_start, year_end, age_min, age_max,
     return query
 
 
-def _calc_weighted_positivity(rows: list[DataPoint]) -> tuple[float, int]:
-    """计算加权阳性率（仅 seroprevalence 且有 sample_size）"""
-    sp_rows = [r for r in rows if r.data_type == "seroprevalence" and r.sample_size]
+def _calc_weighted_positivity(rows: list[DataPoint]) -> dict:
+    """计算加权阳性率及其 95% CI（逆方差合并，仅 seroprevalence 且有 sample_size）。
+
+    调用 stats.weighted_proportion_with_ci（逆方差加权 + Wilson 95% CI，p=0/1 连续性校正兜底）。
+    返回 ``{weighted_positivity, ci_lower, ci_upper, total_sample}``（阳性率为百分数 0-100）；
+    无有效数据时 weighted_positivity / ci 为 None，total_sample 为 0。
+    """
+    sp_rows = [r for r in rows if r.data_type == "seroprevalence" and r.sample_size and r.value is not None]
     if not sp_rows:
-        return 0.0, 0
-    total_sample = sum(r.sample_size for r in sp_rows)
-    weighted_sum = sum(r.value * r.sample_size for r in sp_rows)
-    if total_sample == 0:
-        return 0.0, 0
-    return round(weighted_sum / total_sample, 2), total_sample
+        return {"weighted_positivity": None, "ci_lower": None, "ci_upper": None, "total_sample": 0}
+    total_sample = sum(int(r.sample_size) for r in sp_rows)
+    p_list = [float(r.value) for r in sp_rows]
+    n_list = [float(r.sample_size) for r in sp_rows]
+    merged = weighted_proportion_with_ci(p_list, n_list)
+    return {
+        "weighted_positivity": round(merged["pooled_proportion"] * 100, 2) if merged["pooled_proportion"] is not None else None,
+        "ci_lower": round(merged["ci_lower"] * 100, 2) if merged["ci_lower"] is not None else None,
+        "ci_upper": round(merged["ci_upper"] * 100, 2) if merged["ci_upper"] is not None else None,
+        "total_sample": total_sample,
+    }
 
 
 async def get_trend(
@@ -89,8 +110,14 @@ async def get_trend(
     age_min: Optional[int] = None,
     age_max: Optional[int] = None,
     data_type: Optional[str] = None,
-) -> list[dict]:
-    """逐年趋势分析"""
+) -> dict:
+    """逐年趋势分析。
+
+    返回 ``{"trend": [...], "trend_significance": {...}}``：
+    - trend: 逐年聚合，含加权阳性率（逆方差合并 + 95% CI）与 GMC（几何均数 + 对数域 95% CI）；
+    - trend_significance: 对逐年加权阳性率做加权线性回归（stats.weighted_linear_trend，
+      权重 = 各年总样本量）；少于 2 个有效年份时为 None。
+    """
     query = _build_base_query(disease, province, year_start, year_end, age_min, age_max, data_type)
     result = await db.execute(query)
     rows = result.scalars().all()
@@ -107,20 +134,33 @@ async def get_trend(
     trend = []
     for year in sorted(year_groups.keys()):
         group_rows = year_groups[year]
-        wpr, total_sample = _calc_weighted_positivity(group_rows)
+        wpr_info = _calc_weighted_positivity(group_rows)
 
         gmc_rows = [r for r in group_rows if r.data_type == "gmc" and r.value is not None]
-        avg_gmc = round(sum(r.value for r in gmc_rows) / len(gmc_rows), 2) if gmc_rows else None
+        gmc_res = geometric_mean_with_ci([r.value for r in gmc_rows])
 
         trend.append({
             "year": year,
-            "weighted_positivity": wpr,
-            "avg_gmc": avg_gmc,
-            "total_sample": total_sample,
+            "weighted_positivity": wpr_info["weighted_positivity"],
+            "positivity_ci_lower": wpr_info["ci_lower"],
+            "positivity_ci_upper": wpr_info["ci_upper"],
+            "avg_gmc": gmc_res["gmc"],
+            "gmc_ci_lower": gmc_res["ci_lower"],
+            "gmc_ci_upper": gmc_res["ci_upper"],
+            "total_sample": wpr_info["total_sample"],
             "point_count": len(group_rows),
         })
 
-    return trend
+    # 趋势显著性：对逐年加权阳性率做加权线性回归（权重 = 各年总样本量）
+    trend_significance = None
+    pts = [(d["year"], d["weighted_positivity"], d["total_sample"]) for d in trend if d["weighted_positivity"] is not None]
+    if len(pts) >= 2:
+        years = [float(t[0]) for t in pts]
+        vals = [t[1] for t in pts]
+        weights = [float(t[2]) if t[2] else 1.0 for t in pts]
+        trend_significance = weighted_linear_trend(years, vals, weights)
+
+    return {"trend": trend, "trend_significance": trend_significance}
 
 
 async def get_region_compare(
@@ -150,20 +190,741 @@ async def get_region_compare(
 
     results = []
     for prov, group_rows in province_map.items():
-        wpr, total_sample = _calc_weighted_positivity(group_rows)
+        wpr_info = _calc_weighted_positivity(group_rows)
         gmc_rows = [r for r in group_rows if r.data_type == "gmc" and r.value is not None]
-        avg_gmc = round(sum(r.value for r in gmc_rows) / len(gmc_rows), 2) if gmc_rows else None
+        gmc_res = geometric_mean_with_ci([r.value for r in gmc_rows])
 
         results.append({
             "province": prov,
-            "avg_positivity": wpr,
-            "avg_gmc": avg_gmc,
+            "avg_positivity": wpr_info["weighted_positivity"],
+            "positivity_ci_lower": wpr_info["ci_lower"],
+            "positivity_ci_upper": wpr_info["ci_upper"],
+            "avg_gmc": gmc_res["gmc"],
+            "gmc_ci_lower": gmc_res["ci_lower"],
+            "gmc_ci_upper": gmc_res["ci_upper"],
             "point_count": len(group_rows),
-            "total_samples": total_sample,
+            "total_samples": wpr_info["total_sample"],
         })
 
     results.sort(key=lambda x: x["province"])
     return results
+
+
+async def get_equity_analysis(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+    age_min: Optional[int] = None,
+    age_max: Optional[int] = None,
+) -> dict:
+    """省间公平性分析（设计 B）。
+
+    以省为粒度聚合血清阳性率（复用 _build_base_query 过滤范式），输出：
+      - 省间基尼系数（gini）与变异系数（coefficient_of_variation）
+      - 最佳 / 最差省（按加权阳性率）
+      - 达标比例：对比 WHO 免疫屏障阈值（WHO_THRESHOLDS）
+      - Top / Bottom 排名
+
+    返回结构见 schemas/analysis.py 的 EquityAnalysisResponse。
+    """
+    query = _build_base_query(disease, None, year_start, year_end, age_min, age_max,
+                              data_type="seroprevalence", review_status="approved",
+                              include_subgroups=False)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+
+    empty = {
+        "disease": disease,
+        "n_provinces": 0,
+        "n_data_points": len(rows),
+        "summary": {
+            "gini": None,
+            "coefficient_of_variation": None,
+            "best_province": None,
+            "best_positivity": None,
+            "worst_province": None,
+            "worst_positivity": None,
+            "target_threshold_percent": None,
+            "meeting_ratio": None,
+            "meeting_provinces_count": 0,
+            "total_provinces": 0,
+        },
+        "top_provinces": [],
+        "bottom_provinces": [],
+        "province_rows": [],
+        "notes": [],
+    }
+    if not rows:
+        return empty
+
+    province_map: dict[str, list[DataPoint]] = {}
+    for r in rows:
+        for p in (r.province or "").split(";"):
+            p = p.strip()
+            if not p:
+                p = "未知"
+            province_map.setdefault(p, []).append(r)
+
+    threshold = WHO_THRESHOLDS.get(normalize_disease(disease or "")) if disease else None
+
+    province_rows = []
+    for prov, group_rows in province_map.items():
+        wpr_info = _calc_weighted_positivity(group_rows)
+        wpr = wpr_info["weighted_positivity"]
+        province_rows.append({
+            "rank": None,
+            "province": prov,
+            "weighted_positivity": wpr,
+            "ci_lower": wpr_info["ci_lower"],
+            "ci_upper": wpr_info["ci_upper"],
+            "total_samples": wpr_info["total_sample"],
+            "n_studies": len(group_rows),
+            "is_meeting_target": (wpr >= threshold) if (wpr is not None and threshold is not None) else None,
+        })
+
+    # 仅用有加权阳性率的省计算离散度指标
+    valid = [r for r in province_rows if r["weighted_positivity"] is not None]
+    if valid:
+        valid.sort(key=lambda r: r["weighted_positivity"], reverse=True)
+        for i, r in enumerate(valid, 1):
+            r["rank"] = i
+
+        pos_vals = [r["weighted_positivity"] for r in valid]
+        gini_val = gini(pos_vals)
+        cv_val = coefficient_of_variation(pos_vals)
+
+        n_meeting = sum(1 for r in valid if r["is_meeting_target"] is True)
+        n_total = len(valid)
+        meeting_ratio = round(n_meeting / n_total, 4) if n_total else None
+
+        best, worst = valid[0], valid[-1]
+    else:
+        gini_val = None
+        cv_val = None
+        n_meeting = 0
+        n_total = 0
+        meeting_ratio = None
+        best = {"province": None, "weighted_positivity": None}
+        worst = {"province": None, "weighted_positivity": None}
+
+    # 全量排名（含无值省，排最后）
+    province_rows.sort(key=lambda r: (r["weighted_positivity"] is None, -(r["weighted_positivity"] or 0)))
+    for i, r in enumerate(province_rows, 1):
+        r["rank"] = i if r["weighted_positivity"] is not None else None
+
+    top_provinces = valid[:5]
+    bottom_provinces = valid[-5:][::-1]
+
+    notes = []
+    if threshold is not None:
+        notes.append(f"达标阈值参照 WHO 免疫屏障标准：{threshold}%")
+    else:
+        notes.append("未在 WHO_THRESHOLDS 中找到该疾病阈值，达标比例不可用")
+    if not valid:
+        notes.append("无含样本量的血清阳性率数据，无法计算省间离散度指标")
+
+    return {
+        "disease": disease,
+        "n_provinces": len(province_rows),
+        "n_data_points": len(rows),
+        "summary": {
+            "gini": gini_val,
+            "coefficient_of_variation": cv_val,
+            "best_province": best["province"],
+            "best_positivity": best["weighted_positivity"],
+            "worst_province": worst["province"],
+            "worst_positivity": worst["weighted_positivity"],
+            "target_threshold_percent": threshold,
+            "meeting_ratio": meeting_ratio,
+            "meeting_provinces_count": n_meeting,
+            "total_provinces": n_total,
+        },
+        "top_provinces": top_provinces,
+        "bottom_provinces": bottom_provinces,
+        "province_rows": province_rows,
+        "notes": notes,
+    }
+
+
+async def get_quality_assessment(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+) -> dict:
+    """数据质量评估。
+
+    对每个已审核通过的主估计调用 ``stats.reliability_grade``（A/B/C/D），输出：
+      - 高质量（A/B）占比、带 CI 比例、原文溯源（grounded）比例
+      - 等级分布与省级质量汇总
+      - 单点估计省份列表（证据薄弱预警：该省仅 1 个主估计）
+    """
+    query = _build_base_query(disease, province, year_start, year_end, None, None,
+                              data_type=None, review_status="approved",
+                              include_subgroups=False)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+
+    # 先按省统计主估计数（作为 reliability_grade 的 n_studies 依据）
+    province_map: dict[str, list[DataPoint]] = {}
+    for r in rows:
+        for p in (r.province or "").split(";"):
+            p = p.strip() or "未知"
+            province_map.setdefault(p, []).append(r)
+    province_counts = {p: len(v) for p, v in province_map.items()}
+
+    estimates = []
+    for r in rows:
+        prov = (r.province or "").strip() or "未知"
+        has_ci = r.ci_lower is not None and r.ci_upper is not None
+        grade = reliability_grade(
+            sample_size=r.sample_size,
+            has_ci=has_ci,
+            confidence=r.confidence,
+            is_grounded=bool(r.is_grounded),
+            n_studies=province_counts.get(prov, 1),
+        )
+        estimates.append({
+            "id": str(r.id),
+            "province": prov,
+            "disease": r.disease,
+            "collection_year": r.collection_year,
+            "data_type": r.data_type,
+            "sample_size": r.sample_size,
+            "value": float(r.value) if r.value is not None else None,
+            "has_ci": has_ci,
+            "is_grounded": bool(r.is_grounded),
+            "confidence": r.confidence,
+            "grade": grade,
+        })
+
+    total = len(estimates)
+    grade_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
+    for e in estimates:
+        grade_counts[e["grade"]] += 1
+
+    high_quality = grade_counts["A"] + grade_counts["B"]
+    with_ci = sum(1 for e in estimates if e["has_ci"])
+    grounded = sum(1 for e in estimates if e["is_grounded"])
+
+    def _ratio(n: int) -> float:
+        return round(n / total, 4) if total else 0.0
+
+    province_groups: dict[str, list[dict]] = {}
+    for e in estimates:
+        province_groups.setdefault(e["province"], []).append(e)
+
+    province_rows = []
+    single_estimate_provinces = []
+    for prov, ests in province_groups.items():
+        n = len(ests)
+        p_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
+        for e in ests:
+            p_counts[e["grade"]] += 1
+        province_rows.append({
+            "province": prov,
+            "n_estimates": n,
+            "high_quality_ratio": _ratio(sum(1 for e in ests if e["grade"] in ("A", "B"))),
+            "with_ci_ratio": _ratio(sum(1 for e in ests if e["has_ci"])),
+            "grounded_ratio": _ratio(sum(1 for e in ests if e["is_grounded"])),
+            "grades": p_counts,
+            "is_single_estimate": n == 1,
+        })
+        if n == 1:
+            single_estimate_provinces.append(prov)
+    province_rows.sort(key=lambda x: x["province"])
+
+    notes = []
+    if total == 0:
+        notes.append("无已审核通过的主估计数据，无法评估质量")
+    if single_estimate_provinces:
+        notes.append(f"{len(single_estimate_provinces)} 个省份仅含单点估计，证据薄弱：{'、'.join(sorted(single_estimate_provinces))}")
+
+    return {
+        "disease": disease,
+        "province": province,
+        "year_start": year_start,
+        "year_end": year_end,
+        "total_estimates": total,
+        "n_provinces": len(province_groups),
+        "summary": {
+            "high_quality_ratio": _ratio(high_quality),
+            "grade_a_ratio": _ratio(grade_counts["A"]),
+            "grade_b_ratio": _ratio(grade_counts["B"]),
+            "grade_c_ratio": _ratio(grade_counts["C"]),
+            "grade_d_ratio": _ratio(grade_counts["D"]),
+            "with_ci_ratio": _ratio(with_ci),
+            "grounded_ratio": _ratio(grounded),
+        },
+        "grade_distribution": grade_counts,
+        "provinces": province_rows,
+        "single_estimate_provinces": sorted(single_estimate_provinces),
+        "notes": notes,
+    }
+
+
+async def get_goal_tracking(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+) -> dict:
+    """目标达成追踪（对照每病保护阈值 GOAL_THRESHOLDS / HIT）。
+
+    按年聚合全省血清阳性率主估计：
+      - 全国进度：当年全部主估计的逆方差加权阳性率（_calc_weighted_positivity）
+      - 达标省比例：各省加权阳性率 >= GOAL_THRESHOLDS[疾病] 的省份占比
+      - HIT 缺口：GOAL_THRESHOLDS[疾病] - 全国加权阳性率（百分点，负值表示已超标）
+    """
+    empty = {
+        "disease": disease,
+        "goal_threshold_percent": None,
+        "n_provinces": 0,
+        "years": [],
+        "latest_year": None,
+        "latest_gap_to_hit": None,
+        "notes": [],
+    }
+    if not disease:
+        empty["notes"] = ["请指定疾病（disease）以匹配 GOAL_THRESHOLDS 保护目标阈值"]
+        return empty
+
+    threshold = GOAL_THRESHOLDS.get(normalize_disease(disease))
+    if threshold is None:
+        empty["notes"] = [f"未在 GOAL_THRESHOLDS 中找到疾病「{disease}」的保护目标阈值，无法评估达标进度"]
+        return empty
+
+    query = _build_base_query(disease, None, year_start, year_end, None, None,
+                              data_type="seroprevalence", review_status="approved",
+                              include_subgroups=False)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+    if not rows:
+        empty["goal_threshold_percent"] = threshold
+        empty["notes"] = ["无已审核通过的血清阳性率数据"]
+        return empty
+
+    # 按 (年 → 省 → 数据点) 分层
+    by_year_prov: dict[int, dict[str, list[DataPoint]]] = {}
+    for r in rows:
+        if r.collection_year is None:
+            continue
+        y = r.collection_year
+        if y not in by_year_prov:
+            by_year_prov[y] = {}
+        for p in (r.province or "").split(";"):
+            p = p.strip() or "未知"
+            by_year_prov[y].setdefault(p, []).append(r)
+
+    years = []
+    for y in sorted(by_year_prov.keys()):
+        prov_groups = by_year_prov[y]
+        year_rows = [r for g in prov_groups.values() for r in g]
+        nat = _calc_weighted_positivity(year_rows)
+        n_prov = len(prov_groups)
+        meeting = 0
+        for g in prov_groups.values():
+            wpr = _calc_weighted_positivity(g)["weighted_positivity"]
+            if wpr is not None and wpr >= threshold:
+                meeting += 1
+        years.append({
+            "year": y,
+            "national_positivity": nat["weighted_positivity"],
+            "national_ci_lower": nat["ci_lower"],
+            "national_ci_upper": nat["ci_upper"],
+            "n_provinces": n_prov,
+            "meeting_provinces": meeting,
+            "meeting_ratio": round(meeting / n_prov, 4) if n_prov else 0.0,
+            "gap_to_hit": round(threshold - nat["weighted_positivity"], 2)
+            if nat["weighted_positivity"] is not None else None,
+        })
+
+    latest = years[-1]
+    return {
+        "disease": disease,
+        "goal_threshold_percent": threshold,
+        "n_provinces": len({p for yp in by_year_prov.values() for p in yp.keys()}),
+        "years": years,
+        "latest_year": latest["year"],
+        "latest_gap_to_hit": latest["gap_to_hit"],
+        "notes": [f"达标阈值参照 GOAL_THRESHOLDS（{disease}）：{threshold}%"],
+    }
+
+
+async def get_age_curve(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+    metric: str = "seroprevalence",
+) -> dict:
+    """年龄-抗体曲线（LOWESS 平滑 + 拐点）。
+
+    以年龄组中点（age_mid）为 x：seroprevalence 用各年龄中点加权阳性率，
+    gmc 用各年龄中点几何均数（GMC）。调用 ``stats.lowess`` 生成平滑曲线，
+    并基于平滑曲线的二阶差分符号变化定位拐点（曲线增速由快转慢处）。
+    """
+    if metric not in ("seroprevalence", "gmc"):
+        metric = "seroprevalence"
+    query = _build_base_query(disease, province, year_start, year_end, None, None,
+                              data_type=metric, review_status="approved",
+                              include_subgroups=False)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+
+    # 按 age_mid（四舍五入到 0.1）聚合，避免同一年龄多点造成噪声
+    groups: dict[float, list[DataPoint]] = {}
+    for r in rows:
+        mid = _midpoint_age(r.age_min, r.age_max)
+        if mid is None or r.value is None:
+            continue
+        key = round(mid, 1)
+        groups.setdefault(key, []).append(r)
+
+    raw_points = []
+    for key in sorted(groups.keys()):
+        g = groups[key]
+        if metric == "gmc":
+            gmc_res = geometric_mean_with_ci([r.value for r in g])
+            val = gmc_res["gmc"]
+        else:
+            val = _calc_weighted_positivity(g)["weighted_positivity"]
+        if val is None:
+            continue
+        raw_points.append({
+            "age_mid": key,
+            "value": val,
+            "n_studies": len(g),
+            "total_samples": sum(int(r.sample_size) for r in g if r.sample_size),
+        })
+
+    empty = {
+        "disease": disease,
+        "province": province,
+        "metric": metric,
+        "n_points": 0,
+        "age_mid_range": [None, None],
+        "raw_points": [],
+        "smoothed": [],
+        "inflection_points": [],
+        "notes": ["无可用数据（需含可计算年龄中点且有值的已审核主估计）"],
+    }
+    if len(raw_points) < 2:
+        return empty
+
+    xs = [p["age_mid"] for p in raw_points]
+    ys = [p["value"] for p in raw_points]
+    sx, sy = lowess(xs, ys)
+
+    # 拐点：平滑曲线二阶差分（ys[i-1] - 2ys[i] + ys[i+1]）符号变化处
+    inflection_points = []
+    if len(sy) >= 3:
+        d2 = [sy[i - 1] - 2.0 * sy[i] + sy[i + 1] for i in range(1, len(sy) - 1)]
+        for i in range(1, len(d2)):
+            if d2[i - 1] * d2[i] < 0:
+                idx = i + 1
+                inflection_points.append({"age_mid": round(sx[idx], 2), "value": round(sy[idx], 2)})
+
+    return {
+        "disease": disease,
+        "province": province,
+        "metric": metric,
+        "n_points": len(raw_points),
+        "age_mid_range": [raw_points[0]["age_mid"], raw_points[-1]["age_mid"]],
+        "raw_points": raw_points,
+        "smoothed": [{"age_mid": round(x, 2), "value": round(y, 2)} for x, y in zip(sx, sy)],
+        "inflection_points": inflection_points,
+        "notes": [],
+    }
+
+
+async def get_meta_merge(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+) -> dict:
+    """同省同病多研究 meta 合并（固定/随机效应）+ 异质性 I²。
+
+    以每条已审核主估计（seroprevalence）作为一项「研究」，按省份分组，
+    调用 ``stats.inverse_variance_meta`` 做逆方差加权合并并输出 I² / Q / τ²。
+    """
+    query = _build_base_query(disease, province, None, None, None, None,
+                              data_type="seroprevalence", review_status="approved",
+                              include_subgroups=False)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+
+    # 批量取文献标题，用于标识每项研究
+    title_map: dict[str, str] = {}
+    lit_ids = {str(r.literature_id) for r in rows if r.literature_id is not None}
+    if lit_ids:
+        lit_res = await db.execute(
+            select(Literature.id, Literature.title).where(Literature.id.in_(list(lit_ids)))
+        )
+        title_map = {str(lid): title for lid, title in lit_res.all()}
+
+    prov_map: dict[str, list[DataPoint]] = {}
+    for r in rows:
+        for p in (r.province or "").split(";"):
+            p = p.strip() or "未知"
+            prov_map.setdefault(p, []).append(r)
+
+    def _run_merge(prov_rows: list[DataPoint]) -> dict:
+        studies = []
+        p_list, n_list, lo_list, hi_list = [], [], [], []
+        for r in prov_rows:
+            if r.value is None or not r.sample_size:
+                continue
+            p_list.append(float(r.value))
+            n_list.append(float(r.sample_size))
+            lo_list.append(float(r.ci_lower) if r.ci_lower is not None else None)
+            hi_list.append(float(r.ci_upper) if r.ci_upper is not None else None)
+            studies.append({
+                "literature_title": title_map.get(str(r.literature_id)) or "未知文献",
+                "collection_year": r.collection_year,
+                "sample_size": r.sample_size,
+                "value": round(float(r.value), 2),
+                "ci_lower": round(float(r.ci_lower), 2) if r.ci_lower is not None else None,
+                "ci_upper": round(float(r.ci_upper), 2) if r.ci_upper is not None else None,
+                "assay": r.assay,
+            })
+        m = inverse_variance_meta(p_list, n_list, lo_list, hi_list)
+        i2 = m["i_squared_percent"]
+        if m["k"] == 0:
+            het = "n/a"
+        elif i2 < 25:
+            het = "low"
+        elif i2 <= 50:
+            het = "moderate"
+        else:
+            het = "high"
+        return {
+            "k": m["k"],
+            "pooled_fixed_percent": round(m["pooled_fixed"] * 100, 2) if m["pooled_fixed"] is not None else None,
+            "pooled_random_percent": round(m["pooled_random"] * 100, 2) if m["pooled_random"] is not None else None,
+            "i_squared_percent": i2,
+            "q_statistic": m["q_statistic"],
+            "tau_squared": m["tau_squared"],
+            "heterogeneity": het,
+            "studies": studies,
+        }
+
+    results = [{"province": p, **_run_merge(g)} for p, g in prov_map.items()]
+    results.sort(key=lambda x: x["province"])
+
+    notes = []
+    if not results:
+        notes.append("无已审核通过的血清阳性率数据，无法进行 meta 合并")
+
+    return {
+        "disease": disease,
+        "province": province,
+        "n_provinces": len(results),
+        "results": results,
+        "notes": notes,
+    }
+
+
+async def get_assay_heterogeneity(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+) -> dict:
+    """按 assay（检测方法）分层的异质性对比。
+
+    以每种 assay 作为一组（seroprevalence 主估计），输出各组的加权阳性率与
+    95% CI，并用 ``stats.inverse_variance_meta`` 计算跨 assay 的 I² 异质性。
+    """
+    query = _build_base_query(disease, province, None, None, None, None,
+                              data_type="seroprevalence", review_status="approved",
+                              include_subgroups=False)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+
+    assay_map: dict[str, list[DataPoint]] = {}
+    for r in rows:
+        key = (r.assay or "").strip() or "未注明"
+        assay_map.setdefault(key, []).append(r)
+
+    results = []
+    for assay, g in assay_map.items():
+        wpr = _calc_weighted_positivity(g)
+        results.append({
+            "assay": assay,
+            "n_studies": len(g),
+            "total_samples": wpr["total_sample"],
+            "weighted_positivity": wpr["weighted_positivity"],
+            "ci_lower": wpr["ci_lower"],
+            "ci_upper": wpr["ci_upper"],
+        })
+    results.sort(key=lambda x: (x["weighted_positivity"] is None, -(x["weighted_positivity"] or 0)))
+
+    # 跨 assay 异质性：以各组为「研究」做逆方差合并
+    across = inverse_variance_meta(
+        [r["weighted_positivity"] for r in results],
+        [float(r["total_samples"]) for r in results],
+        [r["ci_lower"] for r in results],
+        [r["ci_upper"] for r in results],
+    )
+    pooled_all = _calc_weighted_positivity(rows)
+
+    notes = []
+    if not results:
+        notes.append("无已审核通过的血清阳性率数据，无法按 assay 分层")
+    if across["k"] >= 2:
+        i2 = across["i_squared_percent"]
+        if i2 >= 50:
+            notes.append(f"跨 assay 异质性较高（I²={i2}%），不同检测方法结果差异需谨慎解读")
+
+    return {
+        "disease": disease,
+        "province": province,
+        "n_assays": len(results),
+        "results": results,
+        "pooled_all_percent": pooled_all["weighted_positivity"],
+        "pooled_all_ci_lower": pooled_all["ci_lower"],
+        "pooled_all_ci_upper": pooled_all["ci_upper"],
+        "across_assay_i_squared_percent": across["i_squared_percent"],
+        "across_assay_q_statistic": across["q_statistic"],
+        "across_assay_k": across["k"],
+        "notes": notes,
+    }
+
+
+async def get_simulation(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+    assumed_coverage: float = 90.0,
+    booster_rate: float = 0.0,
+) -> dict:
+    """免疫屏障模拟（复用 FOI 催化模型反推）。
+
+    1. 用观测血清阳性率经催化模型反推平均 FOI → 估计 R0 → HIT；
+    2. 给定假设接种覆盖（assumed_coverage）与加强针比例（booster_rate），
+       模拟有效免疫比例 effective = cov + (1-cov)·booster；
+    3. 对比 HIT 判定屏障状态，并反推「需达到的覆盖/加强组合」。
+    """
+    empty = {
+        "disease": disease,
+        "province": province,
+        "assumed_coverage_percent": assumed_coverage,
+        "booster_rate_percent": booster_rate,
+        "current": None,
+        "simulated": None,
+        "required_coverage_to_reach_hit": None,
+        "notes": ["无已审核通过的血清阳性率数据，无法进行 FOI 反推"],
+    }
+    query = _build_base_query(disease, province, None, None, None, None,
+                              data_type="seroprevalence", review_status="approved",
+                              include_subgroups=False)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+    if not rows:
+        return empty
+
+    # 观测免疫水平（样本量加权）
+    current_sp = _calc_weighted_positivity(rows)["weighted_positivity"]
+
+    # FOI：每点催化模型 → 样本量加权平均 FOI → R0 → HIT
+    foi_tuples = []
+    for r in rows:
+        if r.value is None:
+            continue
+        mid = _midpoint_age(r.age_min, r.age_max)
+        if mid is None:
+            continue
+        foi = _calc_foi_from_sp(float(r.value), mid)
+        if foi is not None:
+            foi_tuples.append((foi, r.sample_size or 1))
+    foi_avg = None
+    if foi_tuples:
+        w = sum(wt for _, wt in foi_tuples)
+        foi_avg = round(sum(v * wt for v, wt in foi_tuples) / w, 6) if w > 0 else None
+
+    estimated_r0 = _calc_r0_from_foi(foi_avg) if foi_avg is not None else None
+    hit_from_foi = _calc_hit_from_r0(estimated_r0) if estimated_r0 is not None else None
+
+    dis_key = normalize_disease(disease or "") or (disease or "")
+    r0_ref = R0_REFERENCE.get(dis_key)
+    reference_hit = _calc_hit_from_r0(r0_ref[0]) if r0_ref else None
+    goal_threshold = GOAL_THRESHOLDS.get(dis_key)
+    who_threshold = WHO_THRESHOLDS.get(dis_key)
+
+    # 屏障目标：优先 FOI 估计，否则 GOAL/WHO 阈值，再退到文献 R0
+    hit_target = hit_from_foi or goal_threshold or who_threshold or reference_hit
+
+    def _status(sp: Optional[float], target: Optional[float]) -> str:
+        if sp is None or target is None:
+            return "undetermined"
+        if sp >= target:
+            return "reached"
+        if sp >= target - 10:
+            return "near"
+        return "not_reached"
+
+    current_status = _status(current_sp, hit_target)
+    current = {
+        "weighted_positivity_percent": current_sp,
+        "weighted_avg_foi_per_year": foi_avg,
+        "estimated_r0": estimated_r0,
+        "r0_reference": {"typical": r0_ref[0] if r0_ref else None,
+                         "range_low": r0_ref[1] if r0_ref else None,
+                         "range_high": r0_ref[2] if r0_ref else None},
+        "hit_percent": hit_target,
+        "status": current_status,
+    }
+
+    # 模拟有效免疫比例（加强针只作用于尚未免疫者）
+    cov = max(0.0, min(100.0, float(assumed_coverage)))
+    boost = max(0.0, min(100.0, float(booster_rate)))
+    effective = cov + (1.0 - cov / 100.0) * boost  # 单位 %
+    sim_status = _status(effective, hit_target)
+    gain = effective - cov
+    simulated = {
+        "effective_coverage_percent": round(effective, 2),
+        "hit_percent": hit_target,
+        "gap_to_hit_percent": round(hit_target - effective, 2) if hit_target is not None else None,
+        "gain_from_booster_percent": round(gain, 2),
+        "status": sim_status,
+    }
+
+    # 反推：给定 booster 下达到 HIT 所需的基础覆盖
+    required = None
+    if hit_target is not None:
+        hit_ratio = hit_target / 100.0
+        b_ratio = boost / 100.0
+        if b_ratio >= 1.0:
+            required = 0.0 if hit_ratio <= 1.0 else None
+        elif hit_ratio <= b_ratio:
+            required = 0.0
+        else:
+            required = round((hit_ratio - b_ratio) / (1.0 - b_ratio) * 100.0, 2)
+            if required > 100.0:
+                required = None  # 仅靠基础接种无法达标
+
+    notes = []
+    if hit_target is None:
+        notes.append("无法估计 HIT（无 FOI 数据且无 GOAL/WHO/文献阈值），屏障状态为 undetermined")
+    if current_status != "reached" and sim_status == "reached":
+        notes.append(f"在当前假设（覆盖 {cov}% + 加强 {boost}%）下模拟可达群体免疫（≥{hit_target}%）")
+    if hit_from_foi is not None and r0_ref and estimated_r0 is not None:
+        if estimated_r0 < r0_ref[1] * 0.3 or estimated_r0 > r0_ref[2] * 2:
+            notes.append("基于 FOI 的 R0 估计超出文献参考区间，模拟结果需谨慎解读")
+
+    return {
+        "disease": disease,
+        "province": province,
+        "assumed_coverage_percent": cov,
+        "booster_rate_percent": boost,
+        "current": current,
+        "simulated": simulated,
+        "required_coverage_to_reach_hit": required,
+        "notes": notes,
+    }
 
 
 AGE_GROUPS = [
@@ -216,16 +977,16 @@ async def get_age_stratify(
     for age_group, group_rows in age_map.items():
         if not group_rows:
             continue
-        wpr, total_sample = _calc_weighted_positivity(group_rows)
+        wpr_info = _calc_weighted_positivity(group_rows)
         gmc_rows = [r for r in group_rows if r.data_type == "gmc" and r.value is not None]
         avg_gmc = round(sum(r.value for r in gmc_rows) / len(gmc_rows), 2) if gmc_rows else None
 
         results.append({
             "age_group": age_group,
-            "avg_positivity": wpr,
+            "avg_positivity": wpr_info["weighted_positivity"],
             "avg_gmc": avg_gmc,
             "point_count": len(group_rows),
-            "total_samples": total_sample,
+            "total_samples": wpr_info["total_sample"],
         })
 
     return results
@@ -262,7 +1023,7 @@ async def get_summary(
 
     lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
 
-    _, total_sample = _calc_weighted_positivity(rows)
+    total_sample = _calc_weighted_positivity(rows)["total_sample"]
 
     return {
         "total_data_points": len(rows),
@@ -1867,4 +2628,91 @@ async def get_vaccine_analysis(
         "province_coverage_matrix": province_coverage_matrix,
         "notes": notes,
     }
+
+
+async def get_coverage_review_stats(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+) -> dict:
+    """按疾病维度统计：数据点数、样本量、审核状态(approved/pending/rejected)与通过率。
+
+    查询全部数据点（不过滤 review_status，以便统计各审核状态），
+    在 Python 层用 normalize_disease 归一化疾病名后按疾病聚合。
+    返回 {"overview": {...}, "diseases": [...]}，默认按 pending_points 降序、
+    其次 total_points 降序排序。
+    """
+    from collections import defaultdict
+
+    query = select(
+        DataPoint.id,
+        DataPoint.disease,
+        DataPoint.review_status,
+        DataPoint.sample_size,
+    )
+    if disease:
+        query = query.where(DataPoint.disease == normalize_disease(disease))
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # ---- Python 层按疾病聚合 ----
+    # 每个疾病维护：total & 各状态的 points / samples
+    agg: dict[str, dict] = defaultdict(lambda: {
+        "total_points": 0,
+        "total_samples": 0,
+        "approved_points": 0,
+        "approved_samples": 0,
+        "pending_points": 0,
+        "pending_samples": 0,
+        "rejected_points": 0,
+        "rejected_samples": 0,
+    })
+
+    for r in rows:
+        normalized = normalize_disease(r.disease) if r.disease else (r.disease or "未知")
+        d = agg[normalized]
+        d["total_points"] += 1
+        d["total_samples"] += r.sample_size or 0
+        status = r.review_status if r.review_status in ("approved", "pending", "rejected") else "pending"
+        d[f"{status}_points"] += 1
+        d[f"{status}_samples"] += r.sample_size or 0
+
+    # ---- 组装疾病列表 ----
+    diseases: list[dict] = []
+    for dis, d in agg.items():
+        total = d["total_points"]
+        approval_rate = (d["approved_points"] / total) if total else 0.0
+        diseases.append({
+            "disease": dis,
+            "total_points": d["total_points"],
+            "total_samples": d["total_samples"],
+            "approved_points": d["approved_points"],
+            "approved_samples": d["approved_samples"],
+            "pending_points": d["pending_points"],
+            "pending_samples": d["pending_samples"],
+            "rejected_points": d["rejected_points"],
+            "rejected_samples": d["rejected_samples"],
+            "approval_rate": round(approval_rate, 4),
+        })
+
+    # 默认排序：pending_points 降序 > total_points 降序 > 疾病名升序（稳定）
+    diseases.sort(key=lambda x: (-x["pending_points"], -x["total_points"], x["disease"]))
+
+    total_rows = sum(d["total_points"] for d in diseases)
+    total_samples = sum(d["total_samples"] for d in diseases)
+    approved_total = sum(d["approved_points"] for d in diseases)
+    pending_total = sum(d["pending_points"] for d in diseases)
+    rejected_total = sum(d["rejected_points"] for d in diseases)
+
+    overview = {
+        "total_diseases": len(diseases),
+        "total_points": total_rows,
+        "total_samples": total_samples,
+        "approved_points": approved_total,
+        "pending_points": pending_total,
+        "rejected_points": rejected_total,
+        "overall_approval_rate": round((approved_total / total_rows), 4) if total_rows else 0.0,
+    }
+
+    return {"overview": overview, "diseases": diseases}
 
