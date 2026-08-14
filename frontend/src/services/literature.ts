@@ -28,6 +28,13 @@ export async function getLiterature(id: string) {
   return data;
 }
 
+export async function openLiteratureFolder(id: string) {
+  const { data } = await api.post<{ opened: boolean; path: string; folder: string }>(
+    `/literatures/${id}/open-folder`,
+  );
+  return data;
+}
+
 export async function deleteLiterature(id: string) {
   const { data } = await api.delete<{ message: string }>(`/literatures/${id}`);
   return data;

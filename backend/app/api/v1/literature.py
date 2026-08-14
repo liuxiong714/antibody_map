@@ -2,6 +2,9 @@ import csv
 import io
 import json
 import logging
+import re
+import subprocess  # 打开文件夹使用
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,10 +42,50 @@ from app.services.literature_service import (
     preview_merge,
     merge_literatures,
     _clean_filename_title,
+    LOCAL_STORAGE_DIR,
 )
 from app.services.extraction_service import trigger_extraction
 
 router = APIRouter()
+
+
+def _resolve_literature_file(literature) -> Optional[Path]:
+    """解析文献文件在磁盘上的真实路径。
+
+    数据库中存储的 file_path 可能是 Windows 绝对路径（E:\\...），
+    当后端运行在 Docker 容器（Linux）中时无法直接访问该路径。
+    此处依次尝试：原始路径 → 与 backend/data/pdfs 目录相对的本地路径。
+    """
+    raw = (literature.file_path or "").strip()
+    if not raw:
+        return None
+
+    candidates: list[Path] = []
+    # 候选1：原始路径（Windows 主机运行时直接命中）
+    candidates.append(Path(raw))
+    # 候选2：与 LOCAL_STORAGE_DIR 相对的路径（容器/路径迁移时命中）
+    # 去除可能的 Windows 盘符前缀与目录前缀，仅保留相对部分
+    rel = raw.replace("\\", "/")
+    rel = re.sub(r"^[A-Za-z]:", "", rel)
+    # 取 data/pdfs 之后的相对路径，兼容绝对/相对两种写法
+    if "/data/pdfs/" in rel:
+        rel = rel.split("/data/pdfs/", 1)[1]
+    elif rel.startswith("/backend/data/pdfs/"):
+        rel = rel.split("/backend/data/pdfs/", 1)[1]
+    elif rel.startswith("/app/backend/data/pdfs/"):
+        rel = rel.split("/app/backend/data/pdfs/", 1)[1]
+    else:
+        rel = rel.lstrip("/")
+    if rel:
+        candidates.append(LOCAL_STORAGE_DIR / rel)
+
+    for p in candidates:
+        try:
+            if p.exists() and p.is_file():
+                return p
+        except OSError:
+            continue
+    return None
 
 
 def _build_safe_filename(title: Optional[str], ext: str, literature_id: uuid.UUID) -> str:
@@ -909,9 +952,9 @@ async def get_pdf_file(
         logger.warning(f"[预览] 文献不存在: id={literature_id}")
         raise HTTPException(status_code=404, detail="文献不存在")
 
-    file_path = Path(literature.file_path) if literature.file_path else None
-    if not file_path or not file_path.exists():
-        logger.error(f"[预览] 文件在磁盘上不存在: id={literature_id}, path={file_path}")
+    file_path = _resolve_literature_file(literature)
+    if not file_path:
+        logger.error(f"[预览] 文件在磁盘上不存在: id={literature_id}, path={literature.file_path}")
         raise HTTPException(status_code=404, detail="文件不存在")
 
     ext = file_path.suffix.lower()
@@ -938,9 +981,9 @@ async def download_pdf_file(
         logger.warning(f"[下载] 文献不存在: id={literature_id}")
         raise HTTPException(status_code=404, detail="文献不存在")
 
-    file_path = Path(literature.file_path) if literature.file_path else None
-    if not file_path or not file_path.exists():
-        logger.error(f"[下载] 文件在磁盘上不存在: id={literature_id}, path={file_path}")
+    file_path = _resolve_literature_file(literature)
+    if not file_path:
+        logger.error(f"[下载] 文件在磁盘上不存在: id={literature_id}, path={literature.file_path}")
         raise HTTPException(status_code=404, detail="文件不存在")
 
     ext = file_path.suffix.lower()
@@ -953,6 +996,50 @@ async def download_pdf_file(
         filename=safe_filename,
         content_disposition_type="attachment",
     )
+
+
+@router.post("/literatures/{literature_id}/open-folder", response_model=ApiResponse, summary="打开所在文件夹", description="在服务器（宿主机）上打开该文献文件所在的文件夹并选中文件，仅当文件存在时可用")
+async def open_literature_folder(
+    literature_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """在宿主机上打开文件所在文件夹并选中该文件（Windows 资源管理器）"""
+    logger.info(f"[打开文件夹] 请求: literature_id={literature_id}")
+    literature = await get_literature(db, literature_id)
+    if not literature:
+        logger.warning(f"[打开文件夹] 文献不存在: id={literature_id}")
+        raise HTTPException(status_code=404, detail="文献不存在")
+
+    file_path = _resolve_literature_file(literature)
+    if not file_path:
+        logger.error(f"[打开文件夹] 文件在磁盘上不存在: id={literature_id}, path={literature.file_path}")
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    resolved = str(file_path.resolve())
+
+    if sys.platform == "win32":
+        # Windows：使用资源管理器打开并选中文件
+        try:
+            subprocess.Popen(
+                ["explorer", "/select,", resolved],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as e:  # pragma: no cover
+            logger.error(f"[打开文件夹] 调用 explorer 失败: {e}")
+            raise HTTPException(status_code=500, detail=f"打开文件夹失败: {e}")
+    elif sys.platform == "darwin":
+        # macOS：在 Finder 中显示
+        subprocess.Popen(["open", "-R", resolved])
+    else:
+        # Linux 桌面：打开所在目录
+        subprocess.Popen(["xdg-open", str(file_path.parent)])
+
+    logger.info(f"[打开文件夹] 已发起打开请求: id={literature_id}, path={resolved}")
+    return ApiResponse(data={
+        "opened": True,
+        "path": resolved,
+        "folder": str(file_path.parent),
+    })
 
 
 @router.get("/literatures/{literature_id}/source-text", response_model=ApiResponse, summary="获取文献溯源文本", description="返回文献的提取文本，支持按字符区间截取，供溯源查看高亮使用，可以获取全文或指定区间的片段")

@@ -979,12 +979,17 @@ async def get_age_stratify(
             continue
         wpr_info = _calc_weighted_positivity(group_rows)
         gmc_rows = [r for r in group_rows if r.data_type == "gmc" and r.value is not None]
-        avg_gmc = round(sum(r.value for r in gmc_rows) / len(gmc_rows), 2) if gmc_rows else None
+        _gmc_res = geometric_mean_with_ci([r.value for r in gmc_rows])
+        avg_gmc = _gmc_res["gmc"]
+        gmc_ci_lower = _gmc_res["ci_lower"]
+        gmc_ci_upper = _gmc_res["ci_upper"]
 
         results.append({
             "age_group": age_group,
             "avg_positivity": wpr_info["weighted_positivity"],
             "avg_gmc": avg_gmc,
+            "gmc_ci_lower": gmc_ci_lower,
+            "gmc_ci_upper": gmc_ci_upper,
             "point_count": len(group_rows),
             "total_samples": wpr_info["total_sample"],
         })
@@ -1029,10 +1034,10 @@ async def get_summary(
         "total_data_points": len(rows),
         "total_literatures": len(lit_ids),
         "total_samples": total_sample,
-        "avg_positivity": round(sum(r.value for r in sp_rows) / len(sp_rows), 2) if sp_rows else None,
+        "avg_positivity": _calc_weighted_positivity(sp_rows)["weighted_positivity"],
         "min_positivity": round(min(r.value for r in sp_rows), 2) if sp_rows else None,
         "max_positivity": round(max(r.value for r in sp_rows), 2) if sp_rows else None,
-        "avg_gmc": round(sum(r.value for r in gmc_rows) / len(gmc_rows), 2) if gmc_rows else None,
+        "avg_gmc": geometric_mean_with_ci([r.value for r in gmc_rows])["gmc"],
     }
 
 
@@ -1103,13 +1108,11 @@ async def get_immune_barrier_assessment(
 
     # --- 1) 总体加权阳性率 ---
     sp_rows = [r for r in rows if r.data_type == "seroprevalence" and r.sample_size]
-    if sp_rows:
-        total_sample = sum(r.sample_size for r in sp_rows)
-        weighted_sum = sum(r.value * r.sample_size for r in sp_rows)
-        weighted_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
-    else:
-        total_sample = 0
-        weighted_rate = None
+    _wpr = _calc_weighted_positivity(rows)
+    weighted_rate = _wpr["weighted_positivity"]
+    total_sample = _wpr["total_sample"]
+    weighted_rate_ci_lower = _wpr["ci_lower"]
+    weighted_rate_ci_upper = _wpr["ci_upper"]
 
     lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
 
@@ -1164,18 +1167,15 @@ async def get_immune_barrier_assessment(
     yearly_trend = []
     for year in sorted(year_groups.keys()):
         group = year_groups[year]
-        sp_g = [r for r in group if r.data_type == "seroprevalence" and r.sample_size]
-        if sp_g:
-            ys = sum(r.sample_size for r in sp_g)
-            yw = sum(r.value * r.sample_size for r in sp_g)
-            y_rate = round(yw / ys, 2) if ys > 0 else None
-        else:
-            ys = 0
-            y_rate = None
+        _wpr_g = _calc_weighted_positivity(group)
+        y_rate = _wpr_g["weighted_positivity"]
+        ys = _wpr_g["total_sample"]
         yearly_trend.append({
             "year": year,
             "weighted_positivity": y_rate,
             "sample_size": ys,
+            "ci_lower": _wpr_g["ci_lower"],
+            "ci_upper": _wpr_g["ci_upper"],
             "point_count": len(group),
         })
 
@@ -1292,6 +1292,8 @@ async def get_immune_barrier_assessment(
             "total_literatures": len(lit_ids),
             "total_samples": total_sample,
             "weighted_positivity_rate": weighted_rate,
+            "weighted_positivity_ci_lower": weighted_rate_ci_lower,
+            "weighted_positivity_ci_upper": weighted_rate_ci_upper,
             "weighted_avg_foi_per_year": weighted_avg_foi,
             "estimated_r0_from_foi": estimated_r0,
             "hit_from_foi_percent": foi_hit_percent,

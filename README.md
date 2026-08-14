@@ -636,6 +636,30 @@ MIT
 
 ## 更新日志
 
+### v1.7.5 (2026-08-14)
+
+#### 文献管理交互优化与统计口径修复
+
+- **PDF 预览「文件不存在」修复**：新增 `_resolve_literature_file` 文件路径解析函数，兼容数据库中存储的 Windows 绝对路径与容器内路径两种形态，解决后端运行环境与文件存储路径不一致时预览 404、无法显示本地已有文件的问题。
+- **文献列表支持列宽拖拽调整**：引入 `react-resizable`，所有列均可手动拖拽调整宽度，可将标题、作者等列拖宽以完整展示内容。
+- **文献列表列内容自动换行**：移除标题列省略号截断，各列在列宽不足时自动换行显示（含长英文/URL 断行），配合拖拽调整可完整查看全部信息。
+- **新增「打开所在文件夹」功能**：操作列为有文档的文献新增文件夹按钮，调用后端接口在 Windows 资源管理器 / macOS Finder / Linux 桌面上打开文件所在文件夹并选中该文件。
+- **GMC 几何均值口径修正**：`get_age_stratify` 与 `get_summary` 中 GMC（几何平均浓度）由算术平均改为几何均值计算（`geometric_mean_with_ci`），并补充 95% 置信区间字段。
+- **免疫屏障阳性率聚合口径统一**：`get_immune_barrier_assessment` 的总体与逐年趋势均改用逆方差加权阳性率（`_calc_weighted_positivity`），与其他分析函数口径保持一致，并补充置信区间字段。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/api/v1/literature.py` | 新增 `_resolve_literature_file` 路径解析 + `POST /literatures/{id}/open-folder` 打开文件夹端点 |
+| `backend/app/services/analysis_service.py` | GMC 改几何均值计算、免疫屏障加权阳性率口径统一、补充置信区间 |
+| `backend/app/config.py` | APP_VERSION 升级至 1.7.5 |
+| `backend/tests/test_analysis_gmc_fix.py` | 新增 GMC 几何均值修复测试 |
+| `frontend/package.json` | 新增依赖 `react-resizable` |
+| `frontend/src/pages/Literature.tsx` | 列宽拖拽、列内容自动换行、操作列新增打开文件夹按钮 |
+| `frontend/src/index.css` | 列宽拖拽手柄样式 + 单元格自动换行样式 |
+| `frontend/src/services/literature.ts` | 新增 `openLiteratureFolder` 接口调用 |
+
 ### v1.7.4 (2026-08-14)
 
 #### 统计分析框架与审核状态监控

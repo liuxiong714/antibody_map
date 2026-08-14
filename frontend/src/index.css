@@ -170,3 +170,41 @@ body {
   font-weight: 600;
   padding: 0 2px;
 }
+
+/* ── 文献表格列宽拖拽调整 ── */
+.ant-table-thead th .react-resizable {
+  position: relative;
+  display: block;
+}
+.ant-table-thead th .react-resizable-handle {
+  position: absolute;
+  right: -6px;
+  bottom: 0;
+  top: 0;
+  width: 10px;
+  height: 100%;
+  background: none;
+  cursor: col-resize;
+  z-index: 10;
+}
+.ant-table-thead th .react-resizable-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  height: 16px;
+  width: 2px;
+  border-left: 1px solid #d9d9d9;
+  border-right: 1px solid #d9d9d9;
+}
+.ant-table-thead th .react-resizable-handle:hover::after {
+  border-color: #1677ff;
+}
+
+/* ── 文献表格：列宽不足时内容自动换行 ── */
+.literature-table .ant-table-tbody > tr > td.ant-table-cell {
+  white-space: normal;
+  word-break: break-word;
+  vertical-align: top;
+}

@@ -5,18 +5,65 @@ import {
 import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
+import { Resizable, ResizeCallbackData } from 'react-resizable';
+import 'react-resizable/css/styles.css';
 import DiseaseSelector from '../components/DiseaseSelector';
 import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult } from '../services/literature';
+import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { MODEL_OPTIONS, VENDOR_INFO, EXTRACTION_STATUS_META } from '../utils/constants';
-import { formatAuthors, truncate } from '../utils/format';
+import { formatAuthors } from '../utils/format';
 import dayjs from 'dayjs';
 
 const { Text } = Typography;
+
+// 列宽状态（可拖拽调整，标题列默认较宽以完整显示）
+const DEFAULT_COL_WIDTHS: Record<string, number> = {
+  title: 320,
+  authors: 140,
+  journal: 140,
+  year: 70,
+  province: 80,
+  file_format: 90,
+  status: 105,
+  review_status: 140,
+  created: 110,
+  actions: 200,
+};
+
+// ===== 可调整宽度的表头 =====
+// 通过 react-resizable 实现拖拽列宽，保证标题等长文本可完整展示
+interface ResizableTitleProps extends React.HTMLAttributes<HTMLTableCellElement> {
+  width?: number;
+  onResize?: (e: React.SyntheticEvent, data: ResizeCallbackData) => void;
+}
+const ResizableTitle: React.FC<ResizableTitleProps> = (props) => {
+  const { onResize, width, children, ...restProps } = props;
+  if (!width || !onResize) {
+    return <th {...restProps}>{children}</th>;
+  }
+  return (
+    <Resizable
+      width={width}
+      height={0}
+      handle={
+        <span
+          className="react-resizable-handle"
+          onClick={(e) => { e.stopPropagation(); }}
+        />
+      }
+      onResize={onResize}
+      draggableOpts={{ enableUserSelectHack: false }}
+      minConstraints={[60, 0]}
+      maxConstraints={[1200, 0]}
+    >
+      <th {...restProps}>{children}</th>
+    </Resizable>
+  );
+};
 
 // ===== 默认模型持久化（localStorage）=====
 const DEFAULT_MODEL_KEY = 'antibody-default-model';
@@ -71,6 +118,15 @@ const LiteraturePage: React.FC = () => {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(() => (_cachedState?.page as number) || 1);
   const [pageSize, setPageSize] = useState(() => (_cachedState?.pageSize as number) || 20);
+
+  // 列宽状态（可拖拽调整）
+  const [colWidths, setColWidths] = useState<Record<string, number>>(DEFAULT_COL_WIDTHS);
+  const handleColumnResize = (key: string) => (
+    _e: React.SyntheticEvent,
+    { size }: ResizeCallbackData,
+  ) => {
+    setColWidths((prev) => ({ ...prev, [key]: Math.max(60, Math.round(size.width)) }));
+  };
   const [keyword, setKeyword] = useState(() => (_cachedState?.keyword as string) || '');
   const [disease, setDisease] = useState(() => (_cachedState?.disease as string) || '');
   const [province, setProvince] = useState(() => (_cachedState?.province as string) || '');
@@ -224,6 +280,17 @@ const LiteraturePage: React.FC = () => {
     } catch (err) {
       console.error('[Literature] 删除文献失败:', err);
       message.error('删除失败');
+    }
+  };
+
+  const handleOpenFolder = async (id: string) => {
+    try {
+      await openLiteratureFolder(id);
+      message.success('已打开文件所在文件夹');
+    } catch (err: any) {
+      console.error('[Literature] 打开所在文件夹失败:', err);
+      const detail = err?.response?.data?.detail;
+      message.error(detail ? `打开文件夹失败：${detail}` : '打开文件夹失败，文件可能不存在');
     }
   };
 
@@ -591,56 +658,62 @@ const LiteraturePage: React.FC = () => {
       title: '标题',
       dataIndex: 'title',
       key: 'title',
+      width: colWidths.title,
       sorter: true,
       sortOrder: sortInfo.field === 'title' ? sortInfo.order : null,
-      ellipsis: true,
+      onHeaderCell: () => ({ width: colWidths.title, onResize: handleColumnResize('title') }),
       render: (t: string, r: Literature) => (
-        <a onClick={() => saveStateAndNavigate(r.id)}>{truncate(t, 40)}</a>
+        <a onClick={() => saveStateAndNavigate(r.id)} title={t}>{t}</a>
       ),
     },
     {
       title: '作者',
       dataIndex: 'authors',
       key: 'authors',
-      width: 140,
+      width: colWidths.authors,
       sorter: true,
       sortOrder: sortInfo.field === 'authors' ? sortInfo.order : null,
+      onHeaderCell: () => ({ width: colWidths.authors, onResize: handleColumnResize('authors') }),
       render: (v: string) => formatAuthors(v),
     },
     {
       title: '期刊',
       dataIndex: 'journal',
       key: 'journal',
-      width: 140,
+      width: colWidths.journal,
       sorter: true,
       sortOrder: sortInfo.field === 'journal' ? sortInfo.order : null,
+      onHeaderCell: () => ({ width: colWidths.journal, onResize: handleColumnResize('journal') }),
       render: (v: string) => v || '-',
     },
     {
       title: '年份',
       dataIndex: 'pub_year',
       key: 'year',
-      width: 70,
+      width: colWidths.year,
       sorter: true,
       sortOrder: sortInfo.field === 'pub_year' ? sortInfo.order : null,
+      onHeaderCell: () => ({ width: colWidths.year, onResize: handleColumnResize('year') }),
       render: (v: number | null) => v || '-',
     },
     {
       title: '省份',
       dataIndex: 'province',
       key: 'province',
-      width: 80,
+      width: colWidths.province,
       sorter: true,
       sortOrder: sortInfo.field === 'province' ? sortInfo.order : null,
+      onHeaderCell: () => ({ width: colWidths.province, onResize: handleColumnResize('province') }),
       render: (v: string) => v || '-',
     },
     {
       title: '文档',
       dataIndex: 'file_format',
       key: 'file_format',
-      width: 90,
+      width: colWidths.file_format,
       sorter: true,
       sortOrder: sortInfo.field === 'file_format' ? sortInfo.order : null,
+      onHeaderCell: () => ({ width: colWidths.file_format, onResize: handleColumnResize('file_format') }),
       render: (_: unknown, r: Literature) => {
         const fmt = r.file_format;
         const hasFile = !!fmt;
@@ -715,17 +788,19 @@ const LiteraturePage: React.FC = () => {
       title: '提取状态',
       dataIndex: 'extraction_status',
       key: 'status',
-      width: 105,
+      width: colWidths.status,
       sorter: true,
       sortOrder: sortInfo.field === 'extraction_status' ? sortInfo.order : null,
+      onHeaderCell: () => ({ width: colWidths.status, onResize: handleColumnResize('status') }),
       render: (s: string) => <StatusBadge status={s} />,
     },
     {
       title: '审核状态',
       key: 'review_status',
-      width: 140,
+      width: colWidths.review_status,
       sorter: true,
       sortOrder: sortInfo.field === 'review_status' ? sortInfo.order : null,
+      onHeaderCell: () => ({ width: colWidths.review_status, onResize: handleColumnResize('review_status') }),
       render: (_: unknown, r: Literature) => {
         const total = r.extracted_count || 0;
         const approved = r.approved_count || 0;
@@ -765,15 +840,17 @@ const LiteraturePage: React.FC = () => {
       title: '创建时间',
       dataIndex: 'created_at',
       key: 'created',
-      width: 110,
+      width: colWidths.created,
       sorter: true,
       sortOrder: sortInfo.field === 'created_at' ? sortInfo.order : null,
+      onHeaderCell: () => ({ width: colWidths.created, onResize: handleColumnResize('created') }),
       render: (v: string) => dayjs(v).format('YYYY-MM-DD'),
     },
     {
       title: '操作',
       key: 'actions',
-      width: 200,
+      width: colWidths.actions,
+      onHeaderCell: () => ({ width: colWidths.actions, onResize: handleColumnResize('actions') }),
       render: (_: unknown, r: Literature) => (
         <Space size="small">
           <Tooltip title="AI 提取">
@@ -837,6 +914,15 @@ const LiteraturePage: React.FC = () => {
               onClick={() => window.open(`/api/v1/literatures/${r.id}/download`)}
             />
           </Tooltip>
+          {r.file_path && (
+            <Tooltip title="打开所在文件夹">
+              <Button
+                size="small"
+                icon={<FolderOpenOutlined />}
+                onClick={() => handleOpenFolder(r.id)}
+              />
+            </Tooltip>
+          )}
           <Button size="small" onClick={() => saveStateAndNavigate(r.id)}>详情</Button>
           <Popconfirm title="确定删除？" onConfirm={() => handleDelete(r.id)}>
             <Button size="small" danger icon={<DeleteOutlined />} />
@@ -1082,9 +1168,11 @@ const LiteraturePage: React.FC = () => {
       <Card>
         <Table
           rowKey="id"
+          className="literature-table"
           dataSource={items}
           columns={columns}
           loading={loading}
+          components={{ header: { cell: ResizableTitle } }}
           onChange={handleTableChange}
           rowSelection={{
             selectedRowKeys,
