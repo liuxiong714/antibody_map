@@ -1,6 +1,6 @@
 import api from './api';
 import { cachedGet, clearApiCache } from '../lib/apiCache';
-import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, ApiModelConfig, ModelsListData, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, MetaMergeResponse, AssayHeterogeneityResponse, SimulationResponse, CoverageReviewResult } from '../types';
+import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, ApiModelConfig, ModelsListData, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, BirthCohortResponse, MetaMergeResponse, MetaAnalysisResponse, AssayHeterogeneityResponse, SimulationResponse, CoverageReviewResult, SpatialHotspotsResponse, AntigenicMapData, TiterTableListData } from '../types';
 
 // 拦截器已将 ApiResponse.data 提升到 resp.data，此处解包 AxiosResponse
 
@@ -290,6 +290,18 @@ export async function getAgeCurve(params: Record<string, unknown>) {
   );
 }
 
+export async function getBirthCohort(params: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<BirthCohortResponse>('/analysis/birth-cohort', { params });
+      return data;
+    },
+    '/analysis/birth-cohort',
+    params,
+    CACHE_FILTER,
+  );
+}
+
 export async function getMetaMerge(params: Record<string, unknown>) {
   return cachedGet(
     async () => {
@@ -302,6 +314,18 @@ export async function getMetaMerge(params: Record<string, unknown>) {
   );
 }
 
+export async function getMetaAnalysis(params: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<MetaAnalysisResponse>('/analysis/meta-analysis', { params });
+      return data;
+    },
+    '/analysis/meta-analysis',
+    params,
+    CACHE_FILTER,
+  );
+}
+
 export async function getAssayHeterogeneity(params: Record<string, unknown>) {
   return cachedGet(
     async () => {
@@ -309,6 +333,18 @@ export async function getAssayHeterogeneity(params: Record<string, unknown>) {
       return data;
     },
     '/analysis/assay-heterogeneity',
+    params,
+    CACHE_FILTER,
+  );
+}
+
+export async function getSpatialHotspots(params: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<SpatialHotspotsResponse>('/analysis/spatial-hotspots', { params });
+      return data;
+    },
+    '/analysis/spatial-hotspots',
     params,
     CACHE_FILTER,
   );
@@ -350,5 +386,24 @@ export async function updateRemoteModel(id: string, body: Partial<ApiModelConfig
 
 export async function deleteRemoteModel(id: string) {
   const { data } = await api.delete(`/models/remote/${id}`);
+  return data;
+}
+
+// ===== 抗原图谱（滴度矩阵制图）=====
+
+export async function getTiterTables(params: Record<string, unknown> = {}) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<TiterTableListData>('/analysis/titer-tables', { params });
+      return data;
+    },
+    '/analysis/titer-tables',
+    params,
+    CACHE_FILTER,
+  );
+}
+
+export async function getAntigenicMap(titerTableId: string) {
+  const { data } = await api.get<AntigenicMapData>(`/analysis/antigenic-map/${titerTableId}`);
   return data;
 }

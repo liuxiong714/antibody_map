@@ -42,6 +42,18 @@ export const REVIEW_META: Record<string, { color: string; label: string }> = {
   rejected: { color: 'red', label: '已驳回' },
 };
 
+export const QUALITY_GRADE_META: Record<string, { color: string; label: string }> = {
+  A: { color: 'green', label: 'A 高质量' },
+  B: { color: 'gold', label: 'B 中质量' },
+  C: { color: 'red', label: 'C 低质量' },
+};
+
+export const ESTIMATE_GRADE_LABEL: Record<string, string> = {
+  national: '全国',
+  provincial: '省级',
+  local: '地区/局部',
+};
+
 export const EXTRACTION_STATUS_META: Record<string, { color: string; label: string }> = {
   pending: { color: 'default', label: '待处理' },
   processing: { color: 'processing', label: '提取中' },

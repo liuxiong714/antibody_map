@@ -1,13 +1,16 @@
 import logging
 import math
+from datetime import date
 from typing import Optional
 
+import scipy.stats as sps
 from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
-from app.core.term_normalizer import normalize_disease
+from app.core.term_normalizer import normalize_disease, normalize_province
+from app.core.methodology import build_methodology_note
 from app.core.stats import (
     geometric_mean_with_ci,
     weighted_proportion_with_ci,
@@ -18,9 +21,67 @@ from app.core.stats import (
     lowess,
     inverse_variance_meta,
 )
+from app.core.stats_engine import (
+    gmc_ci,
+    weighted_rate_ci,
+    fit_age_curve,
+    foi_from_curve,
+    meta_proportion,
+    fit_catalytic_models,
+    cochran_armitage_trend,
+    two_proportion_test,
+    direct_standardize,
+    morans_i,
+    g_star,
+    classify_hotspot_cluster,
+    birth_cohort_analysis,
+)
 from app.core.goal_thresholds import GOAL_THRESHOLDS
 
 logger = logging.getLogger("uvicorn")
+
+# 中国2020年七普标准人口（用于年龄标准化率 ASR）
+def _load_std_pop() -> dict:
+    import json as _json
+    import os as _os
+    _p = _os.path.join(
+        _os.path.dirname(__file__), "..", "core", "reference_data", "china_pop_2020.json"
+    )
+    with open(_p, "r", encoding="utf-8") as _f:
+        return _json.load(_f)
+
+
+_CHINA_POP_2020 = _load_std_pop()
+CHINA_POP_STD_VERSION = _CHINA_POP_2020["version"]
+_STD_WEIGHT_BY_GROUP: dict[str, float] = {
+    g["group"]: float(g["weight"]) for g in _CHINA_POP_2020["age_groups"]
+}
+
+
+def _load_disease_note(disease_key: Optional[str]) -> Optional[str]:
+    """读取 reference_data/disease_notes.json 中某疾病的解读提示（无则 None）。"""
+    import json as _json
+    import os as _os
+    _p = _os.path.join(
+        _os.path.dirname(__file__), "..", "core", "reference_data", "disease_notes.json"
+    )
+    try:
+        with open(_p, "r", encoding="utf-8") as _f:
+            data = _json.load(_f)
+    except (OSError, ValueError):
+        return None
+    entry = data.get("notes", {}).get(disease_key or "")
+    return (entry or {}).get("note") if isinstance(entry, dict) else None
+
+# 服务层年龄段（AGE_GROUPS）→ 标准人口年龄组映射（权重聚合，因 15-59/≥60 为粗分组，
+# 55-64 组整段计入 15-59，60-64 段归入 15-59 属近似，权重合计仍归一为 1）
+_STD_BAND_MAP: dict[str, list[str]] = {
+    "<1岁": ["0"],
+    "1-4岁": ["1-4"],
+    "5-14岁": ["5-14"],
+    "15-59岁": ["15-24", "25-34", "35-44", "45-54", "55-64"],
+    "≥60岁": ["65-74", "75-84", "85+"],
+}
 
 # WHO 免疫屏障阈值（阳性率百分比）
 WHO_THRESHOLDS = {
@@ -43,16 +104,22 @@ WHO_THRESHOLDS = {
 
 
 def _build_base_query(disease, province, year_start, year_end, age_min, age_max,
-                      data_type=None, review_status="approved", include_subgroups=False):
+                      data_type=None, review_status="approved", include_subgroups=False,
+                      quality_grades: Optional[set[str]] = None):
     """构建通用数据点查询。
 
     P1-1：默认只查主估计（estimate_type='primary'）避免重复计算，
     传 include_subgroups=True 可包含子估计。
+    quality_grades: 可选，仅返回指定质量等级（如 {"A","B"}）的数据点；
+    默认 None 不过滤。
     """
     query = select(DataPoint).where(DataPoint.review_status == review_status)
     # P1-1：默认过滤主估计
     if not include_subgroups:
         query = query.where(DataPoint.estimate_type == "primary")
+
+    if quality_grades:
+        query = query.where(DataPoint.quality_grade.in_(list(quality_grades)))
 
     if disease:
         # 标准化疾病名称，数据库中的 disease 字段已统一为标准 key
@@ -80,24 +147,101 @@ def _build_base_query(disease, province, year_start, year_end, age_min, age_max,
 
 
 def _calc_weighted_positivity(rows: list[DataPoint]) -> dict:
-    """计算加权阳性率及其 95% CI（逆方差合并，仅 seroprevalence 且有 sample_size）。
+    """计算加权阳性率及其 95% CI（样本量加权 + 正态近似）。
 
-    调用 stats.weighted_proportion_with_ci（逆方差加权 + Wilson 95% CI，p=0/1 连续性校正兜底）。
+    调用 stats_engine.weighted_rate_ci（样本量加权，保守正态近似，
+    任一行 sample_size 缺失则剔除并计入 dropped）。
     返回 ``{weighted_positivity, ci_lower, ci_upper, total_sample}``（阳性率为百分数 0-100）；
-    无有效数据时 weighted_positivity / ci 为 None，total_sample 为 0。
+    无有效数据时各字段为 None，total_sample 为 0。
     """
-    sp_rows = [r for r in rows if r.data_type == "seroprevalence" and r.sample_size and r.value is not None]
-    if not sp_rows:
-        return {"weighted_positivity": None, "ci_lower": None, "ci_upper": None, "total_sample": 0}
-    total_sample = sum(int(r.sample_size) for r in sp_rows)
-    p_list = [float(r.value) for r in sp_rows]
-    n_list = [float(r.sample_size) for r in sp_rows]
-    merged = weighted_proportion_with_ci(p_list, n_list)
+    sp_rows = [r for r in rows if r.data_type == "seroprevalence" and r.value is not None]
+    result = weighted_rate_ci(sp_rows)
     return {
-        "weighted_positivity": round(merged["pooled_proportion"] * 100, 2) if merged["pooled_proportion"] is not None else None,
-        "ci_lower": round(merged["ci_lower"] * 100, 2) if merged["ci_lower"] is not None else None,
-        "ci_upper": round(merged["ci_upper"] * 100, 2) if merged["ci_upper"] is not None else None,
-        "total_sample": total_sample,
+        "weighted_positivity": result["weighted_positivity"],
+        "ci_lower": result["ci_lower"],
+        "ci_upper": result["ci_upper"],
+        "total_sample": result["n_total"],
+    }
+
+
+def _calc_gmc(rows: list[DataPoint]) -> dict:
+    """计算 GMC 几何均数及对数域 95% CI（样本量加权）。
+
+    调用 stats_engine.gmc_ci：对同组多个 GMC 值（已计算好的几何均值，非原始滴度）
+    取对数平均 gmc = exp(mean(ln v))，样本量作权重，CI 按 ln v 的标准误构建。
+    返回 ``{gmc, ci_lower, ci_upper, n, n_total}``；无有效数据时各字段为 None。
+    """
+    gmc_rows = [r for r in rows if r.data_type == "gmc" and r.value is not None]
+    res = gmc_ci(
+        [r.value for r in gmc_rows],
+        weights=[r.sample_size for r in gmc_rows],
+    )
+    return {
+        "gmc": res["gmc"],
+        "ci_lower": res["ci_lower"],
+        "ci_upper": res["ci_upper"],
+        "n": res["n"],
+        "n_total": res["n_total"],
+    }
+
+
+def _meta_merge_cell(rows: list[DataPoint]) -> dict:
+    """单元格内多文献血清阳性率的 Meta 合并（Freeman-Tukey + 随机/固定效应）。
+
+    替换原"样本量加权一把梭"口径：同格（同年/同省/同年龄组）多篇文献的主估计
+    作为研究单元调用 ``meta_proportion`` 合并。保留旧样本量加权值于
+    ``rate_weighted_legacy``（@deprecated，仅用于与 meta 口径比对）。
+
+    返回 ``{positivity, ci_lower, ci_upper, rate_weighted_legacy, total_sample, meta}``：
+    - positivity / ci_lower / ci_upper: Meta 合并阳性率与 95% CI（0-100，主模型）；
+    - rate_weighted_legacy: 旧样本量加权阳性率（@deprecated）；
+    - total_sample: 有效研究样本量之和；
+    - meta: {model, primary_model, I2, Q, Q_p, tau2, k, n_rep} 或 None（无有效研究）。
+    无有效研究时阳性率字段为 None。
+    """
+    sp_rows = [r for r in rows if r.data_type == "seroprevalence" and r.value is not None]
+
+    # 旧口径：样本量加权阳性率（@deprecated，仅保留用于比对）
+    legacy = weighted_rate_ci(sp_rows)
+
+    studies = []
+    total_sample = 0.0
+    for r in sp_rows:
+        if not r.sample_size:
+            continue
+        p = float(r.value) / 100.0 if float(r.value) > 1.0 else float(r.value)
+        n = float(r.sample_size)
+        if p < 0.0 or p > 1.0 or n <= 0:
+            continue
+        x = p * n
+        total_sample += n
+        lid = getattr(r, "literature_id", None)
+        label = f"文献{lid}" if lid else f"研究{len(studies) + 1}"
+        studies.append((x, n, label))
+
+    meta = meta_proportion(studies) if studies else meta_proportion([])
+    pooled = meta.get("pooled") or {}
+
+    meta_summary = None
+    if pooled.get("k"):
+        meta_summary = {
+            "model": pooled.get("model"),
+            "primary_model": meta.get("primary_model"),
+            "I2": pooled.get("I2"),
+            "Q": pooled.get("Q"),
+            "Q_p": pooled.get("Q_p"),
+            "tau2": pooled.get("tau2"),
+            "k": pooled.get("k"),
+            "n_rep": pooled.get("n_rep"),
+        }
+
+    return {
+        "positivity": pooled.get("rate"),
+        "ci_lower": pooled.get("ci_lower"),
+        "ci_upper": pooled.get("ci_upper"),
+        "rate_weighted_legacy": legacy["weighted_positivity"],  # @deprecated
+        "total_sample": round(total_sample, 0),
+        "meta": meta_summary,
     }
 
 
@@ -114,7 +258,8 @@ async def get_trend(
     """逐年趋势分析。
 
     返回 ``{"trend": [...], "trend_significance": {...}}``：
-    - trend: 逐年聚合，含加权阳性率（逆方差合并 + 95% CI）与 GMC（几何均数 + 对数域 95% CI）；
+    - trend: 逐年聚合，含 Meta 合并阳性率（Freeman-Tukey 随机/固定效应 + 95% CI）
+      与 GMC（几何均数 + 对数域 95% CI）；旧样本量加权值保留于 rate_weighted_legacy（@deprecated）；
     - trend_significance: 对逐年加权阳性率做加权线性回归（stats.weighted_linear_trend，
       权重 = 各年总样本量）；少于 2 个有效年份时为 None。
     """
@@ -134,21 +279,29 @@ async def get_trend(
     trend = []
     for year in sorted(year_groups.keys()):
         group_rows = year_groups[year]
-        wpr_info = _calc_weighted_positivity(group_rows)
-
-        gmc_rows = [r for r in group_rows if r.data_type == "gmc" and r.value is not None]
-        gmc_res = geometric_mean_with_ci([r.value for r in gmc_rows])
+        meta_info = _meta_merge_cell(group_rows)
+        gmc_res = _calc_gmc(group_rows)
 
         trend.append({
             "year": year,
-            "weighted_positivity": wpr_info["weighted_positivity"],
-            "positivity_ci_lower": wpr_info["ci_lower"],
-            "positivity_ci_upper": wpr_info["ci_upper"],
+            "weighted_positivity": meta_info["positivity"],
+            "positivity_ci_lower": meta_info["ci_lower"],
+            "positivity_ci_upper": meta_info["ci_upper"],
+            "rate_weighted_legacy": meta_info["rate_weighted_legacy"],  # @deprecated
+            "meta": meta_info["meta"],
             "avg_gmc": gmc_res["gmc"],
             "gmc_ci_lower": gmc_res["ci_lower"],
             "gmc_ci_upper": gmc_res["ci_upper"],
-            "total_sample": wpr_info["total_sample"],
+            "total_sample": meta_info["total_sample"],
             "point_count": len(group_rows),
+            "ci_meta": {
+                "positivity_method": "meta_ft" if meta_info["meta"] else "normal_approx",
+                "positivity_model": meta_info["meta"]["model"] if meta_info["meta"] else None,
+                "positivity_I2": meta_info["meta"]["I2"] if meta_info["meta"] else None,
+                "positivity_n": meta_info["total_sample"],
+                "gmc_method": "lognormal",
+                "gmc_n": gmc_res["n_total"],
+            },
         })
 
     # 趋势显著性：对逐年加权阳性率做加权线性回归（权重 = 各年总样本量）
@@ -160,7 +313,53 @@ async def get_trend(
         weights = [float(t[2]) if t[2] else 1.0 for t in pts]
         trend_significance = weighted_linear_trend(years, vals, weights)
 
-    return {"trend": trend, "trend_significance": trend_significance}
+    # Cochran-Armitage 趋势检验
+    trend_test = None
+    if len(pts) >= 3:
+        ca_groups = [(d["year"], round(d["weighted_positivity"] * d["total_sample"] / 100), d["total_sample"]) for d in trend if d["weighted_positivity"] is not None and d["total_sample"]]
+        trend_test = cochran_armitage_trend(ca_groups)
+
+    return {"trend": trend, "trend_significance": trend_significance, "trend_test": trend_test}
+
+
+def _compute_province_asr(group_rows: list[DataPoint]) -> dict:
+    """计算省份年龄标准化阳性率（ASR，直接法，七普标准人口）。
+
+    将省内容格数据按年龄段（_get_age_group_label）聚合，得到各年龄段率与样本量，
+    再把标准人口权重聚合到相同年龄段（_STD_BAND_MAP），调用 direct_standardize。
+    有效年龄段 < 3 组时 asr=None（note 注明）。
+    """
+    band_map: dict[str, list[DataPoint]] = {}
+    for r in group_rows:
+        label = _get_age_group_label(r.age_min, r.age_max) or "其他"
+        if label not in band_map:
+            band_map[label] = []
+        band_map[label].append(r)
+
+    strata: list[tuple[str, float, float]] = []
+    std_bands: list[dict] = []
+    for label, rows_ in band_map.items():
+        std_groups = _STD_BAND_MAP.get(label)
+        if not std_groups:
+            continue
+        mi = _meta_merge_cell(rows_)
+        rate = mi["positivity"]
+        n = mi["total_sample"]
+        if rate is None or not n or n <= 0:
+            continue
+        rate = rate / 100.0 if rate > 1.0 else rate
+        w = sum(_STD_WEIGHT_BY_GROUP.get(g, 0.0) for g in std_groups)
+        if w <= 0:
+            continue
+        strata.append((label, rate, float(n)))
+        std_bands.append({"group": label, "weight": w, "range": [0, 200]})
+
+    res = direct_standardize(strata, standard=std_bands) if strata else {
+        "crude": None, "asr": None, "asr_ci_lower": None, "asr_ci_upper": None,
+        "se": None, "n_strata": 0, "used_groups": [], "note": "无有效年龄分层数据",
+    }
+    res["standard_version"] = CHINA_POP_STD_VERSION
+    return res
 
 
 async def get_region_compare(
@@ -172,8 +371,13 @@ async def get_region_compare(
     age_min: Optional[int] = None,
     age_max: Optional[int] = None,
     data_type: Optional[str] = None,
-) -> list[dict]:
-    """区域对比分析"""
+) -> dict:
+    """区域对比分析
+
+    同省多篇文献的主估计做 Meta 合并（Freeman-Tukey 随机/固定效应 + 95% CI），
+    替代原样本量加权口径；旧加权值保留于 rate_weighted_legacy（@deprecated）。
+    各省级联输出 asr 字段；指定恰好两省时返回 comparison_test（RD/RR 两样本率检验）。
+    """
     query = _build_base_query(disease, province, year_start, year_end, age_min, age_max, data_type)
     result = await db.execute(query)
     rows = result.scalars().all()
@@ -190,24 +394,60 @@ async def get_region_compare(
 
     results = []
     for prov, group_rows in province_map.items():
-        wpr_info = _calc_weighted_positivity(group_rows)
-        gmc_rows = [r for r in group_rows if r.data_type == "gmc" and r.value is not None]
-        gmc_res = geometric_mean_with_ci([r.value for r in gmc_rows])
+        meta_info = _meta_merge_cell(group_rows)
+        gmc_res = _calc_gmc(group_rows)
+        asr_res = _compute_province_asr(group_rows)
 
         results.append({
             "province": prov,
-            "avg_positivity": wpr_info["weighted_positivity"],
-            "positivity_ci_lower": wpr_info["ci_lower"],
-            "positivity_ci_upper": wpr_info["ci_upper"],
+            "avg_positivity": meta_info["positivity"],
+            "positivity_ci_lower": meta_info["ci_lower"],
+            "positivity_ci_upper": meta_info["ci_upper"],
+            "rate_weighted_legacy": meta_info["rate_weighted_legacy"],  # @deprecated
+            "meta": meta_info["meta"],
             "avg_gmc": gmc_res["gmc"],
             "gmc_ci_lower": gmc_res["ci_lower"],
             "gmc_ci_upper": gmc_res["ci_upper"],
             "point_count": len(group_rows),
-            "total_samples": wpr_info["total_sample"],
+            "total_samples": meta_info["total_sample"],
+            "asr": asr_res["asr"],
+            "asr_ci_lower": asr_res["asr_ci_lower"],
+            "asr_ci_upper": asr_res["asr_ci_upper"],
+            "crude_rate": asr_res["crude"],
+            "asr_meta": {
+                "standard_version": asr_res["standard_version"],
+                "n_strata": asr_res["n_strata"],
+                "used_groups": asr_res["used_groups"],
+                "note": asr_res["note"],
+            },
+            "ci_meta": {
+                "positivity_method": "meta_ft" if meta_info["meta"] else "normal_approx",
+                "positivity_model": meta_info["meta"]["model"] if meta_info["meta"] else None,
+                "positivity_I2": meta_info["meta"]["I2"] if meta_info["meta"] else None,
+                "positivity_n": meta_info["total_sample"],
+                "gmc_method": "lognormal",
+                "gmc_n": gmc_res["n_total"],
+            },
         })
 
     results.sort(key=lambda x: x["province"])
-    return results
+
+    # 恰好两省时做两样本率比较（z 检验 + RD/RR 及 95%CI）
+    comparison_test = None
+    if len(results) == 2:
+        r0, r1 = results[0], results[1]
+        if r0["avg_positivity"] is not None and r1["avg_positivity"] is not None \
+                and r0["total_samples"] and r1["total_samples"]:
+            p0 = r0["avg_positivity"] / 100.0 if r0["avg_positivity"] > 1 else r0["avg_positivity"]
+            p1 = r1["avg_positivity"] / 100.0 if r1["avg_positivity"] > 1 else r1["avg_positivity"]
+            comparison_test = two_proportion_test(
+                p0 * r0["total_samples"], r0["total_samples"],
+                p1 * r1["total_samples"], r1["total_samples"],
+            )
+            comparison_test["province_a"] = r0["province"]
+            comparison_test["province_b"] = r1["province"]
+
+    return {"regions": results, "comparison_test": comparison_test}
 
 
 async def get_equity_analysis(
@@ -559,85 +799,167 @@ async def get_age_curve(
     province: Optional[str] = None,
     year_start: Optional[int] = None,
     year_end: Optional[int] = None,
-    metric: str = "seroprevalence",
 ) -> dict:
-    """年龄-抗体曲线（LOWESS 平滑 + 拐点）。
+    """血清阳性率-年龄曲线（惩罚样条平滑 + 95% 置信带 + 年龄别 FOI）。
 
-    以年龄组中点（age_mid）为 x：seroprevalence 用各年龄中点加权阳性率，
-    gmc 用各年龄中点几何均数（GMC）。调用 ``stats.lowess`` 生成平滑曲线，
-    并基于平滑曲线的二阶差分符号变化定位拐点（曲线增速由快转慢处）。
+    流程：
+    1. 取 seroprevalence 已审核主估计，按 age_mid（无则用 _midpoint_age 推算，仍无则
+       剔除并计数）聚合：同中点合并阳性数 x 与样本量 n。
+    2. 调用 ``stats_engine.fit_age_curve`` 做惩罚样条拟合（加权 GCV 选 λp），
+       输出 0.5 岁步长的 P(a) 曲线 + delta 法置信带。
+    3. 调用 ``stats_engine.foi_from_curve`` 由样条解析导数产出年龄别 FOI。
+    4. 组装 ``meta``：covarage_warning / dropped_points / lambda_smooth / monotonic_violation。
     """
-    if metric not in ("seroprevalence", "gmc"):
-        metric = "seroprevalence"
     query = _build_base_query(disease, province, year_start, year_end, None, None,
-                              data_type=metric, review_status="approved",
+                              data_type="seroprevalence", review_status="approved",
                               include_subgroups=False)
     result = await db.execute(query)
     rows = result.scalars().all()
 
-    # 按 age_mid（四舍五入到 0.1）聚合，避免同一年龄多点造成噪声
+    # 按 age_mid（0.1 取整）聚合 x、n；缺失可推算年龄的剔除并计数
     groups: dict[float, list[DataPoint]] = {}
+    dropped = 0
     for r in rows:
+        if r.value is None or r.sample_size is None:
+            dropped += 1
+            continue
         mid = _midpoint_age(r.age_min, r.age_max)
-        if mid is None or r.value is None:
+        if mid is None:
+            dropped += 1
             continue
         key = round(mid, 1)
         groups.setdefault(key, []).append(r)
 
-    raw_points = []
+    points: list[dict] = []
+    records: list[tuple[float, int, int]] = []
     for key in sorted(groups.keys()):
         g = groups[key]
-        if metric == "gmc":
-            gmc_res = geometric_mean_with_ci([r.value for r in g])
-            val = gmc_res["gmc"]
-        else:
-            val = _calc_weighted_positivity(g)["weighted_positivity"]
-        if val is None:
+        p_vals, n_vals = [], []
+        for r in g:
+            p = float(r.value)
+            if p > 1.0:
+                p /= 100.0
+            p = min(max(p, 0.0), 1.0)
+            n_vals.append(int(r.sample_size))
+            p_vals.append(p)
+        n_tot = sum(n_vals)
+        # 样本量加权阳性数：x = Σ nᵢ·pᵢ
+        x_tot = int(round(sum(n_i * p_i for n_i, p_i in zip(n_vals, p_vals))))
+        if n_tot <= 0:
             continue
-        raw_points.append({
+        points.append({
             "age_mid": key,
-            "value": val,
-            "n_studies": len(g),
-            "total_samples": sum(int(r.sample_size) for r in g if r.sample_size),
+            "x": x_tot,
+            "n": n_tot,
+            "prevalence": round(x_tot / n_tot * 100.0, 2),
         })
+        records.append((key, x_tot, n_tot))
 
-    empty = {
-        "disease": disease,
-        "province": province,
-        "metric": metric,
-        "n_points": 0,
-        "age_mid_range": [None, None],
-        "raw_points": [],
-        "smoothed": [],
-        "inflection_points": [],
-        "notes": ["无可用数据（需含可计算年龄中点且有值的已审核主估计）"],
-    }
-    if len(raw_points) < 2:
-        return empty
+    n_points = len(points)
 
-    xs = [p["age_mid"] for p in raw_points]
-    ys = [p["value"] for p in raw_points]
-    sx, sy = lowess(xs, ys)
+    # 覆盖度警告：相邻年龄中点间隔 >10 年，或覆盖年龄跨度 <5 年
+    covarage_warning = False
+    if n_points >= 2:
+        gaps = [points[i + 1]["age_mid"] - points[i]["age_mid"] for i in range(n_points - 1)]
+        if max(gaps) > 10.0:
+            covarage_warning = True
+        if points[-1]["age_mid"] - points[0]["age_mid"] < 5.0:
+            covarage_warning = True
 
-    # 拐点：平滑曲线二阶差分（ys[i-1] - 2ys[i] + ys[i+1]）符号变化处
-    inflection_points = []
-    if len(sy) >= 3:
-        d2 = [sy[i - 1] - 2.0 * sy[i] + sy[i + 1] for i in range(1, len(sy) - 1)]
-        for i in range(1, len(d2)):
-            if d2[i - 1] * d2[i] < 0:
-                idx = i + 1
-                inflection_points.append({"age_mid": round(sx[idx], 2), "value": round(sy[idx], 2)})
+    # 数据点不足（<8）时直接返回空结构，由路由层报 422
+    if n_points < 8:
+        return {
+            "disease": disease,
+            "province": province,
+            "n_points": n_points,
+            "curve": [],
+            "points": points,
+            "foi_curve": [],
+            "meta": {
+                "covarage_warning": covarage_warning,
+                "dropped_points": dropped,
+                "lambda_smooth": None,
+                "monotonic_violation": None,
+            },
+        }
+
+    fit = fit_age_curve(records)
+    curve = fit["curve"]
+    grid_ages = [pt["age"] for pt in curve]
+    foi_curve = foi_from_curve(grid_ages, fit["spline"])
 
     return {
         "disease": disease,
         "province": province,
-        "metric": metric,
-        "n_points": len(raw_points),
-        "age_mid_range": [raw_points[0]["age_mid"], raw_points[-1]["age_mid"]],
-        "raw_points": raw_points,
-        "smoothed": [{"age_mid": round(x, 2), "value": round(y, 2)} for x, y in zip(sx, sy)],
-        "inflection_points": inflection_points,
-        "notes": [],
+        "n_points": n_points,
+        "curve": curve,
+        "points": points,
+        "foi_curve": foi_curve,
+        "meta": {
+            "covarage_warning": covarage_warning,
+            "dropped_points": dropped,
+            "lambda_smooth": fit["lambda_smooth"],
+            "monotonic_violation": fit["monotonic_violation"],
+        },
+    }
+
+
+async def get_birth_cohort(
+    db: AsyncSession,
+    disease: str,
+    province: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+) -> dict:
+    """出生队列分析：birth_year = collection_year − age_mid，揭示代际免疫差异。
+
+    流程：
+    1. 复用 ``_build_base_query`` 取 seroprevalence 已审核主估计（disease 必填）；
+    2. age_mid 用 ``_midpoint_age`` 推算，无法推算（无年龄、无调查年、无样本量）
+       的点剔除并计数 ``meta.dropped``；
+    3. 聚合 cell=(出生十年段, collection_year) → 加权阳性率 + 95% CI
+       （复用 stats_engine.birth_cohort_analysis，内部调 weighted_rate_ci）；
+    4. 不足 2 点的 cell → rate 置 None（heatmap 留空）。
+    响应附 ``disease_note``（麻疹/风疹等计划免疫史解读提示，读 disease_notes.json）。
+    """
+    query = _build_base_query(disease, province, year_start, year_end, None, None,
+                              data_type="seroprevalence", review_status="approved",
+                              include_subgroups=False)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+
+    records: list[tuple] = []
+    dropped = 0
+    for r in rows:
+        if r.value is None or r.sample_size is None or r.collection_year is None:
+            dropped += 1
+            continue
+        mid = _midpoint_age(r.age_min, r.age_max)
+        if mid is None:
+            dropped += 1
+            continue
+        records.append((r.collection_year, mid, float(r.value), int(r.sample_size)))
+
+    analysis = birth_cohort_analysis(records)
+    analysis["dropped"] += dropped
+
+    normalized = normalize_disease(disease)
+    return {
+        "disease": normalized,
+        "province": province,
+        "year_start": year_start,
+        "year_end": year_end,
+        "cohorts": analysis["cohorts"],
+        "matrix": analysis["matrix"],
+        "x_years": analysis["x_years"],
+        "y_bands": analysis["y_bands"],
+        "disease_note": _load_disease_note(normalized),
+        "meta": {
+            "n_records": analysis["n_records"],
+            "dropped": analysis["dropped"],
+            "min_cell_points": 2,
+            "method": "weighted_rate_ci",
+        },
     }
 
 
@@ -645,15 +967,20 @@ async def get_meta_merge(
     db: AsyncSession,
     disease: Optional[str] = None,
     province: Optional[str] = None,
+    include_low_quality: bool = False,
 ) -> dict:
     """同省同病多研究 meta 合并（固定/随机效应）+ 异质性 I²。
 
     以每条已审核主估计（seroprevalence）作为一项「研究」，按省份分组，
     调用 ``stats.inverse_variance_meta`` 做逆方差加权合并并输出 I² / Q / τ²。
+
+    质量过滤：默认仅纳入质量分级为 A+B 的数据点（meta 合并的证据质量门槛）；
+    传 include_low_quality=True 可放开，纳入全部已审核主估计。
     """
     query = _build_base_query(disease, province, None, None, None, None,
                               data_type="seroprevalence", review_status="approved",
-                              include_subgroups=False)
+                              include_subgroups=False,
+                              quality_grades=None if include_low_quality else {"A", "B"})
     result = await db.execute(query)
     rows = result.scalars().all()
 
@@ -690,6 +1017,8 @@ async def get_meta_merge(
                 "ci_lower": round(float(r.ci_lower), 2) if r.ci_lower is not None else None,
                 "ci_upper": round(float(r.ci_upper), 2) if r.ci_upper is not None else None,
                 "assay": r.assay,
+                "quality_score": r.quality_score,
+                "quality_grade": r.quality_grade,
             })
         m = inverse_variance_meta(p_list, n_list, lo_list, hi_list)
         i2 = m["i_squared_percent"]
@@ -725,6 +1054,167 @@ async def get_meta_merge(
         "n_provinces": len(results),
         "results": results,
         "notes": notes,
+    }
+
+
+async def get_meta_analysis(
+    db: AsyncSession,
+    disease: str,
+    province: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+    age_min: Optional[int] = None,
+    age_max: Optional[int] = None,
+    group_by: Optional[str] = None,
+    include_low_quality: bool = False,
+) -> dict:
+    """多文献血清阳性率随机效应 Meta 分析（Freeman-Tukey 双反正弦变换）。
+
+    不指定 group_by：把过滤集内每个文献的主估计作为研究单元合并。
+    指定 group_by：（逗号分隔 province/year/age_group）按组分别合并，
+    返回数组，组间附带 Q_between 亚组异质性检验。
+
+    质量过滤：默认仅纳入 A+B 级（meta 合并的证据质量门槛）。
+    """
+    quality_grades = None if include_low_quality else {"A", "B"}
+    query = _build_base_query(disease, province, year_start, year_end, age_min, age_max,
+                              data_type="seroprevalence", review_status="approved",
+                              include_subgroups=False,
+                              quality_grades=quality_grades)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+
+    # 批量取文献标题
+    title_map: dict[str, str] = {}
+    lit_ids = {str(r.literature_id) for r in rows if r.literature_id is not None}
+    if lit_ids:
+        lit_res = await db.execute(
+            select(Literature.id, Literature.title).where(Literature.id.in_(list(lit_ids)))
+        )
+        title_map = {str(lid): title for lid, title in lit_res.all()}
+
+    def _row_to_study(r: DataPoint) -> Optional[tuple]:
+        """转换 DataPoint 为 (x, n, label) 三元组。"""
+        if r.value is None or not r.sample_size:
+            return None
+        p = float(r.value) / 100.0 if float(r.value) > 1.0 else float(r.value)
+        n = float(r.sample_size)
+        if p < 0.0 or p > 1.0 or n <= 0:
+            return None
+        x = p * n
+        label = title_map.get(str(r.literature_id)) or f"文献{r.literature_id}"
+        if r.collection_year:
+            label = f"{label} ({r.collection_year})"
+        return (x, n, label)
+
+    def _group_key(r: DataPoint, fields: list[str]) -> str:
+        """按 group_by 字段生成组键。"""
+        parts = []
+        for f in fields:
+            if f == "province":
+                parts.append((r.province or "").strip() or "未知")
+            elif f == "year":
+                parts.append(str(r.collection_year or 0))
+            elif f == "age_group":
+                parts.append(_get_age_group_label(r.age_min, r.age_max) or "未分类")
+        return "|".join(parts)
+
+    def _compute_q_between(groups: list[dict]) -> Optional[dict]:
+        """亚组异质性 Q_between 检验（Cochran Q 分解）。
+
+        Q_between = Q_total − Σ Q_within_j
+        - Q_within_j：组 j 内固定效应 Q（取自 meta.pooled.Q，纯函数内已按 FE 权重计算）；
+        - Q_total：全部研究合并后（固定效应）的 Q；
+        - df = g − 1，p 用 chi2.sf。数值稳定，避免对组 SE 求倒数的爆炸。
+        """
+        valid = [g for g in groups if g.get("meta") and g["meta"].get("pooled")]
+        if len(valid) < 2:
+            return None
+
+        # 全部研究的 (t, se)（se = √v，FE 权重 w = 1/v）
+        all_studies = []
+        for g in valid:
+            for s in g["meta"].get("per_study", []):
+                if s.get("t") is not None and s.get("se"):
+                    all_studies.append((s["t"], s["se"]))
+        if not all_studies:
+            return None
+
+        # Q_total：全部研究 FE 加权平均周围的 Q
+        w_total = sum(1.0 / (se ** 2) for _, se in all_studies)
+        t_total = sum(t / (se ** 2) for t, se in all_studies) / w_total
+        q_total = sum((t - t_total) ** 2 / (se ** 2) for t, se in all_studies)
+
+        # Σ Q_within_j：各组内 Q（meta.pooled.Q 已是 FE 口径）
+        q_within = sum(g["meta"]["pooled"].get("Q") or 0.0 for g in valid)
+
+        q_between = max(0.0, q_total - q_within)
+        df = len(valid) - 1
+        p = float(sps.chi2.sf(q_between, df)) if df > 0 else 1.0
+        return {
+            "Q_between": round(q_between, 4),
+            "df": df,
+            "p_value": round(p, 6),
+            "Q_total": round(q_total, 4),
+            "Q_within": round(q_within, 4),
+        }
+
+    # ── 无 group_by：单次合并 ──────────────────────────────
+    if not group_by:
+        studies = []
+        for r in rows:
+            s = _row_to_study(r)
+            if s:
+                studies.append(s)
+        meta = meta_proportion(studies) if studies else meta_proportion([])
+        per_study = []
+        for s, m in zip(studies, meta.get("per_study", [])):
+            per_study.append(m)
+
+        resp = {
+            "disease": disease,
+            "group_by": None,
+            "groups": [{
+                "group": "all",
+                "n_studies": meta["pooled"]["k"],
+                "meta": meta,
+            }],
+            "q_between": None,
+            "notes": meta["notes"],
+        }
+        return resp
+
+    # ── 有 group_by：按组分合并 ────────────────────────────
+    group_fields = [f.strip() for f in group_by.split(",") if f.strip()]
+    valid_fields = {"province", "year", "age_group"}
+    group_fields = [f for f in group_fields if f in valid_fields]
+    if not group_fields:
+        group_fields = ["province"]
+
+    groups: dict[str, list[tuple]] = {}
+    for r in rows:
+        key = _group_key(r, group_fields)
+        s = _row_to_study(r)
+        if s:
+            groups.setdefault(key, []).append(s)
+
+    group_results = []
+    for key, studies in sorted(groups.items()):
+        meta = meta_proportion(studies)
+        group_results.append({
+            "group": key,
+            "n_studies": len(studies),
+            "meta": meta,
+        })
+
+    q_between = _compute_q_between(group_results)
+
+    return {
+        "disease": disease,
+        "group_by": group_by,
+        "groups": group_results,
+        "q_between": q_between,
+        "notes": [m["notes"] for g in group_results for m in [g["meta"]]],
     }
 
 
@@ -977,24 +1467,35 @@ async def get_age_stratify(
     for age_group, group_rows in age_map.items():
         if not group_rows:
             continue
-        wpr_info = _calc_weighted_positivity(group_rows)
-        gmc_rows = [r for r in group_rows if r.data_type == "gmc" and r.value is not None]
-        _gmc_res = geometric_mean_with_ci([r.value for r in gmc_rows])
-        avg_gmc = _gmc_res["gmc"]
-        gmc_ci_lower = _gmc_res["ci_lower"]
-        gmc_ci_upper = _gmc_res["ci_upper"]
+        meta_info = _meta_merge_cell(group_rows)
+        gmc_res = _calc_gmc(group_rows)
 
         results.append({
             "age_group": age_group,
-            "avg_positivity": wpr_info["weighted_positivity"],
-            "avg_gmc": avg_gmc,
-            "gmc_ci_lower": gmc_ci_lower,
-            "gmc_ci_upper": gmc_ci_upper,
+            "avg_positivity": meta_info["positivity"],
+            "positivity_ci_lower": meta_info["ci_lower"],
+            "positivity_ci_upper": meta_info["ci_upper"],
+            "rate_weighted_legacy": meta_info["rate_weighted_legacy"],  # @deprecated
+            "meta": meta_info["meta"],
+            "avg_gmc": gmc_res["gmc"],
+            "gmc_ci_lower": gmc_res["ci_lower"],
+            "gmc_ci_upper": gmc_res["ci_upper"],
             "point_count": len(group_rows),
-            "total_samples": wpr_info["total_sample"],
+            "total_samples": meta_info["total_sample"],
+            "ci_meta": {
+                "positivity_method": "meta_ft" if meta_info["meta"] else "normal_approx",
+                "positivity_model": meta_info["meta"]["model"] if meta_info["meta"] else None,
+                "positivity_I2": meta_info["meta"]["I2"] if meta_info["meta"] else None,
+                "positivity_n": meta_info["total_sample"],
+                "gmc_method": "lognormal",
+                "gmc_n": gmc_res["n_total"],
+            },
         })
 
-    return results
+    return {
+        "age_groups": results,
+        "standard_population_version": CHINA_POP_STD_VERSION,
+    }
 
 
 async def get_summary(
@@ -1018,26 +1519,45 @@ async def get_summary(
             "total_literatures": 0,
             "total_samples": 0,
             "avg_positivity": None,
+            "avg_positivity_ci_lower": None,
+            "avg_positivity_ci_upper": None,
             "min_positivity": None,
             "max_positivity": None,
             "avg_gmc": None,
+            "avg_gmc_ci_lower": None,
+            "avg_gmc_ci_upper": None,
+            "ci_meta": {
+                "positivity_method": "normal_approx",
+                "positivity_n": 0,
+                "gmc_method": "lognormal",
+                "gmc_n": 0,
+            },
         }
 
     sp_rows = [r for r in rows if r.data_type == "seroprevalence" and r.value is not None]
-    gmc_rows = [r for r in rows if r.data_type == "gmc" and r.value is not None]
-
     lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
 
-    total_sample = _calc_weighted_positivity(rows)["total_sample"]
+    wpr_info = _calc_weighted_positivity(sp_rows)
+    gmc_info = _calc_gmc(rows)
 
     return {
         "total_data_points": len(rows),
         "total_literatures": len(lit_ids),
-        "total_samples": total_sample,
-        "avg_positivity": _calc_weighted_positivity(sp_rows)["weighted_positivity"],
+        "total_samples": wpr_info["total_sample"],
+        "avg_positivity": wpr_info["weighted_positivity"],
+        "avg_positivity_ci_lower": wpr_info["ci_lower"],
+        "avg_positivity_ci_upper": wpr_info["ci_upper"],
         "min_positivity": round(min(r.value for r in sp_rows), 2) if sp_rows else None,
         "max_positivity": round(max(r.value for r in sp_rows), 2) if sp_rows else None,
-        "avg_gmc": geometric_mean_with_ci([r.value for r in gmc_rows])["gmc"],
+        "avg_gmc": gmc_info["gmc"],
+        "avg_gmc_ci_lower": gmc_info["ci_lower"],
+        "avg_gmc_ci_upper": gmc_info["ci_upper"],
+        "ci_meta": {
+            "positivity_method": "normal_approx",
+            "positivity_n": wpr_info["total_sample"],
+            "gmc_method": "lognormal",
+            "gmc_n": gmc_info["n_total"],
+        },
     }
 
 
@@ -1049,6 +1569,9 @@ async def get_immune_barrier_assessment(
     year_end: Optional[int] = None,
     age_min: Optional[int] = None,
     age_max: Optional[int] = None,
+    life_expectancy: float = 75.0,
+    seroreversion_mu: Optional[float] = None,
+    hit_source_override: Optional[str] = None,
 ) -> dict:
     """免疫屏障评估（复用 FOI 模块的 R0/HIT 计算）。
 
@@ -1063,6 +1586,15 @@ async def get_immune_barrier_assessment(
         f"[ImmuneBarrier] 开始评估: disease={disease}, province={province}, "
         f"year_start={year_start}, year_end={year_end}, age_min={age_min}, age_max={age_max}"
     )
+
+    # 收集本次评估使用的显式参数假设（用于响应透明展示）
+    assumptions = {}
+    if life_expectancy != 75.0:
+        assumptions["life_expectancy"] = life_expectancy
+    if seroreversion_mu:
+        assumptions["seroreversion_mu"] = seroreversion_mu
+    if hit_source_override:
+        assumptions["hit_source_override"] = hit_source_override
 
     query = _build_base_query(disease, province, year_start, year_end, age_min, age_max,
                               review_status="approved")
@@ -1098,12 +1630,22 @@ async def get_immune_barrier_assessment(
                 "hit_from_reference_r0_percent": reference_hit,
                 "hit_target_used_percent": None,
                 "hit_target_source": "none",
+                "models": [],
+                "recommended_model": None,
+                "recommended_params": None,
+                "fitted_curve": [],
+                "modeling_notes": [],
+                "r0_assumption_note": None,
+                "n_catalytic_records": 0,
+                "catalytic_age_range": [None, None],
             },
             "yearly_trend": [],
             "age_groups": [],
             "province_matrix": [],
             "status": "no_data",
             "assessment": "暂无审核通过的数据可供评估。",
+            "life_expectancy_used": life_expectancy,
+            "assumptions": assumptions or None,
         }
 
     # --- 1) 总体加权阳性率 ---
@@ -1116,7 +1658,8 @@ async def get_immune_barrier_assessment(
 
     lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
 
-    # --- 2) FOI 估算（按年龄中点 + sample_size 加权）---
+    # --- 2) FOI 估算（复用催化模型族 MLE 新引擎）---
+    # 旧口径：单点 λ=-ln(1-SP)/age 再样本量加权（仅作催化模型失败时的回退）
     foi_tuples: list[tuple[float, int]] = []
     for r in sp_rows:
         if r.value is None:
@@ -1127,31 +1670,46 @@ async def get_immune_barrier_assessment(
         foi = _calc_foi_from_sp(float(r.value), age_mid)
         if foi is not None:
             foi_tuples.append((foi, r.sample_size or 1))
-
     if foi_tuples:
         w_total_foi = sum(w for _, w in foi_tuples)
-        weighted_avg_foi = round(
+        legacy_foi = round(
             sum(v * w for v, w in foi_tuples) / w_total_foi, 6
         ) if w_total_foi > 0 else None
     else:
-        weighted_avg_foi = None
+        legacy_foi = None
 
-    estimated_r0 = _calc_r0_from_foi(weighted_avg_foi) if weighted_avg_foi is not None else None
+    # 新引擎：M1/M2/M3 催化模型族 MLE 拟合 + 模型比较 + 理论修正
+    catalytic_records = _build_catalytic_records(sp_rows)
+    catalytic_result = fit_catalytic_models(catalytic_records, mu_fixed=seroreversion_mu)
+    models_out = catalytic_result.get("models") or []
+    recommended_model = catalytic_result.get("recommended_model")
+    recommended_params = catalytic_result.get("recommended_params") or {}
+    fitted_curve = catalytic_result.get("fitted_curve") or []
+    catalytic_notes = catalytic_result.get("modeling_notes") or []
+
+    r0_hit_info = _catalytic_r0_hit(catalytic_result, dis_key, life_exp=life_expectancy,
+                                    mu_fixed=seroreversion_mu)
+    rec_foi = r0_hit_info["foi_avg"]
+    r0_to_hit = r0_hit_info["r0_to_hit"]
+    literature_hit = r0_hit_info["literature_hit"]
+    r0_assumption_note = r0_hit_info["r0_assumption_note"]
+
+    # 兼容旧字段：foi/r0 取 recommended_model 参数重算；无催化结果时回退旧加权平均
+    weighted_avg_foi = rec_foi if rec_foi is not None else legacy_foi
+    estimated_r0 = r0_to_hit
     foi_hit_percent = _calc_hit_from_r0(estimated_r0) if estimated_r0 is not None else None
 
-    # HIT 阈值优先级：FOI 估计 > WHO 硬编码 > 文献 R0
-    hit_target = foi_hit_percent or who_threshold or reference_hit
-    hit_source = (
-        "foi" if foi_hit_percent else
-        ("who" if who_threshold else
-         ("ref_r0" if reference_hit else "none"))
+    # HIT 阈值优先级链不变：FOI 估算 > WHO 硬编码 > 文献 R0（hit_source 扩展 mle_foi）
+    hit_target, hit_source = _resolve_hit_target(
+        foi_hit_percent, who_threshold, literature_hit, dis_key,
+        hit_source_override=hit_source_override,
     )
 
     logger.info(
         f"[ImmuneBarrier] FOI/R0/HIT: weighted_avg_foi={weighted_avg_foi}, "
-        f"estimated_r0={estimated_r0}, foi_hit={foi_hit_percent}%, "
-        f"reference_hit={reference_hit}%, who_threshold={who_threshold}%, "
-        f"hit_target={hit_target}% (source={hit_source})"
+        f"estimated_r0={estimated_r0}, recommended_model={recommended_model}, "
+        f"foi_hit={foi_hit_percent}%, reference_hit={literature_hit}%, "
+        f"who_threshold={who_threshold}%, hit_target={hit_target}% (source={hit_source})"
     )
 
     # --- 3) 逐年趋势 ---
@@ -1260,7 +1818,7 @@ async def get_immune_barrier_assessment(
             prov_foi = round(sum(v * w for v, w in pm["foi_values"]) / fw, 6) if fw > 0 else None
         else:
             prov_foi = None
-        prov_r0 = _calc_r0_from_foi(prov_foi) if prov_foi is not None else None
+        prov_r0 = _calc_r0_from_foi(prov_foi, life_expectancy) if prov_foi is not None else None
         prov_status = _barrier_status_from_rate(w_sp, hit_target)
         province_matrix.append({
             "province": prov_name,
@@ -1297,15 +1855,26 @@ async def get_immune_barrier_assessment(
             "weighted_avg_foi_per_year": weighted_avg_foi,
             "estimated_r0_from_foi": estimated_r0,
             "hit_from_foi_percent": foi_hit_percent,
-            "hit_from_reference_r0_percent": reference_hit,
+            "hit_from_reference_r0_percent": literature_hit,
             "hit_target_used_percent": hit_target,
             "hit_target_source": hit_source,
+            # 新增：催化模型族 MLE 拟合 + 模型比较
+            "models": models_out,
+            "recommended_model": recommended_model,
+            "recommended_params": recommended_params,
+            "fitted_curve": fitted_curve,
+            "modeling_notes": catalytic_notes,
+            "r0_assumption_note": r0_assumption_note,
+            "n_catalytic_records": catalytic_result.get("n_records"),
+            "catalytic_age_range": catalytic_result.get("age_range"),
         },
         "yearly_trend": yearly_trend,
         "age_groups": age_groups_out,
         "province_matrix": province_matrix,
         "status": status,
         "assessment": assessment,
+        "life_expectancy_used": life_expectancy,
+        "assumptions": assumptions or None,
     }
 
 
@@ -1330,7 +1899,7 @@ def _barrier_status_with_message(
     hit_source: str,
 ) -> tuple[str, str]:
     """总体状态判定 + 文案。"""
-    source_label = {"foi": "FOI 估算", "who": "WHO 建议", "ref_r0": "文献 R0", "none": "无"}.get(
+    source_label = {"mle_foi": "FOI 估算", "who": "WHO 建议", "literature_r0": "文献 R0", "none": "无"}.get(
         hit_source, hit_source
     )
     if hit_target is not None and rate is not None:
@@ -1545,29 +2114,29 @@ async def get_data_gap_analysis(
     PENALTY_PER_PENDING = 2
     MAX_PENDING_PENALTY = 30
 
-    def _calc_completeness(approved: int, pending: int, total_years: int) -> float:
+    def _calc_completeness(approved_ab: int, pending: int, total_years: int) -> float:
         """计算完整性评分（0-100）。
 
-        规则：
-        - 基础分：min(approved / WELL_COVERED_THRESHOLD, 1) × MAX_APPROVED_SCORE
+        规则（2026-08-16 起仅统计 A+B 高质量数据点）：
+        - 基础分：min(approved_ab / WELL_COVERED_THRESHOLD, 1) × MAX_APPROVED_SCORE
         - 待审核惩罚：min(pending × PENALTY_PER_PENDING, MAX_PENDING_PENALTY)
-        - 特殊：approved=0 且 pending=0 但该省有数据（被循环到）→ 0 分（需补充）
+        - 特殊：approved_ab=0 且 pending=0 但该省有数据（被循环到）→ 0 分（需补充）
         """
-        base = min(approved / WELL_COVERED_THRESHOLD, 1.0) * MAX_APPROVED_SCORE
+        base = min(approved_ab / WELL_COVERED_THRESHOLD, 1.0) * MAX_APPROVED_SCORE
         penalty = min(pending * PENALTY_PER_PENDING, MAX_PENDING_PENALTY)
         score = base - penalty
         # 如果 total_years=0（该组合无任何年份数据）→ 0 分
-        if approved + pending == 0:
+        if approved_ab + pending == 0:
             score = 0.0
         return max(0.0, round(score, 2))
 
-    def _status_label(approved: int, pending: int) -> str:
-        """给省×年或城市×年组合打标签。"""
-        if approved == 0 and pending == 0:
+    def _status_label(approved_ab: int, pending: int) -> str:
+        """给省×年或城市×年组合打标签（approved_ab 仅计 A+B 高质量已通过数据点）。"""
+        if approved_ab == 0 and pending == 0:
             return "need_supplement"   # 完全无数据，需要补充
-        if approved == 0:
+        if approved_ab == 0:
             return "need_review"        # 有待审核但还没通过，需要先审核
-        if approved < WELL_COVERED_THRESHOLD:
+        if approved_ab < WELL_COVERED_THRESHOLD:
             if pending > 0:
                 return "need_both"       # 数据不足 + 有待审核
             return "need_supplement"     # 数据不足，需要补充
@@ -1575,13 +2144,14 @@ async def get_data_gap_analysis(
             return "need_review"        # 已达标但仍有待审核
         return "well_covered"            # 完善
 
-    # 基础查询：全部数据点（不限 review_status），同时取 city
+    # 基础查询：全部数据点（不限 review_status），同时取 city 与质量等级
     query = select(
         DataPoint.province,
         DataPoint.city,
         DataPoint.collection_year,
         DataPoint.disease,
         DataPoint.review_status,
+        DataPoint.quality_grade,
         func.count(DataPoint.id).label("cnt"),
     ).group_by(
         DataPoint.province,
@@ -1589,6 +2159,7 @@ async def get_data_gap_analysis(
         DataPoint.collection_year,
         DataPoint.disease,
         DataPoint.review_status,
+        DataPoint.quality_grade,
     )
     if disease:
         normalized_disease = normalize_disease(disease)
@@ -1635,24 +2206,27 @@ async def get_data_gap_analysis(
         normalized_dis = normalize_disease(r.disease) if r.disease else (r.disease or "未知")
         key = (prov, r.collection_year, normalized_dis)
         if key not in pyd_map:
-            pyd_map[key] = {"pending": 0, "approved": 0, "rejected": 0, "total": 0}
+            pyd_map[key] = {"pending": 0, "approved": 0, "approved_ab": 0, "rejected": 0, "total": 0}
         if r.review_status in pyd_map[key]:
             pyd_map[key][r.review_status] += r.cnt
+            if r.review_status == "approved" and r.quality_grade in ("A", "B"):
+                pyd_map[key]["approved_ab"] += r.cnt
         pyd_map[key]["total"] += r.cnt
 
     review_needed: list[dict] = []
     supplement_needed: list[dict] = []
     for (prov, year, dis), counts in pyd_map.items():
-        status = _status_label(counts["approved"], counts["pending"])
+        status = _status_label(counts["approved_ab"], counts["pending"])
         base_item = {
             "province": prov,
             "year": year,
             "disease": dis,
             "pending_count": counts["pending"],
             "approved_count": counts["approved"],
+            "approved_ab_count": counts["approved_ab"],
             "rejected_count": counts["rejected"],
             "total_count": counts["total"],
-            "completeness_score": _calc_completeness(counts["approved"], counts["pending"], len(year_list)),
+            "completeness_score": _calc_completeness(counts["approved_ab"], counts["pending"], len(year_list)),
             "status": status,
         }
         if status in ("need_review", "need_both"):
@@ -1714,36 +2288,40 @@ async def get_data_gap_analysis(
         if prov not in py_matrix_map:
             py_matrix_map[prov] = {}
         if year not in py_matrix_map[prov]:
-            py_matrix_map[prov][year] = {"total": 0, "pending": 0, "approved": 0}
+            py_matrix_map[prov][year] = {"total": 0, "pending": 0, "approved": 0, "approved_ab": 0}
         py_matrix_map[prov][year]["total"] += r.cnt
         if r.review_status == "pending":
             py_matrix_map[prov][year]["pending"] += r.cnt
         elif r.review_status == "approved":
             py_matrix_map[prov][year]["approved"] += r.cnt
+            if r.quality_grade in ("A", "B"):
+                py_matrix_map[prov][year]["approved_ab"] += r.cnt
 
     province_year_matrix: list[dict] = []
     for prov, year_data in py_matrix_map.items():
         total_for_prov = sum(yd["total"] for yd in year_data.values())
         pending_for_prov = sum(yd["pending"] for yd in year_data.values())
         approved_for_prov = sum(yd["approved"] for yd in year_data.values())
+        approved_ab_for_prov = sum(yd["approved_ab"] for yd in year_data.values())
         # 为每个年份单元格追加 completeness_score 和 status
         years_formatted: dict[str, dict] = {}
         for y in sorted(y for y in year_data.keys() if y is not None):
             cell = year_data[y]
             years_formatted[str(y)] = {
                 **cell,
-                "completeness_score": _calc_completeness(cell["approved"], cell["pending"], len(year_list)),
-                "status": _status_label(cell["approved"], cell["pending"]),
+                "completeness_score": _calc_completeness(cell["approved_ab"], cell["pending"], len(year_list)),
+                "status": _status_label(cell["approved_ab"], cell["pending"]),
             }
         # 省份整体完整性评分（所有年份的加权）
-        overall_score = _calc_completeness(approved_for_prov, pending_for_prov, len(year_list))
-        overall_status = _status_label(approved_for_prov, pending_for_prov)
+        overall_score = _calc_completeness(approved_ab_for_prov, pending_for_prov, len(year_list))
+        overall_status = _status_label(approved_ab_for_prov, pending_for_prov)
         province_year_matrix.append({
             "province": prov,
             "years": years_formatted,
             "total": total_for_prov,
             "pending": pending_for_prov,
             "approved": approved_for_prov,
+            "approved_ab": approved_ab_for_prov,
             "completeness_score": overall_score,
             "status": overall_status,
         })
@@ -1765,28 +2343,31 @@ async def get_data_gap_analysis(
         if key not in cy_matrix_map:
             cy_matrix_map[key] = {}
         if year not in cy_matrix_map[key]:
-            cy_matrix_map[key][year] = {"total": 0, "pending": 0, "approved": 0}
+            cy_matrix_map[key][year] = {"total": 0, "pending": 0, "approved": 0, "approved_ab": 0}
         cy_matrix_map[key][year]["total"] += r.cnt
         if r.review_status == "pending":
             cy_matrix_map[key][year]["pending"] += r.cnt
         elif r.review_status == "approved":
             cy_matrix_map[key][year]["approved"] += r.cnt
+            if r.quality_grade in ("A", "B"):
+                cy_matrix_map[key][year]["approved_ab"] += r.cnt
 
     city_year_matrix: list[dict] = []
     for (prov, city), year_data in cy_matrix_map.items():
         total_city = sum(yd["total"] for yd in year_data.values())
         pending_city = sum(yd["pending"] for yd in year_data.values())
         approved_city = sum(yd["approved"] for yd in year_data.values())
+        approved_ab_city = sum(yd["approved_ab"] for yd in year_data.values())
         years_formatted: dict[str, dict] = {}
         for y in sorted(y for y in year_data.keys() if y is not None):
             cell = year_data[y]
             years_formatted[str(y)] = {
                 **cell,
-                "completeness_score": _calc_completeness(cell["approved"], cell["pending"], len(year_list)),
-                "status": _status_label(cell["approved"], cell["pending"]),
+                "completeness_score": _calc_completeness(cell["approved_ab"], cell["pending"], len(year_list)),
+                "status": _status_label(cell["approved_ab"], cell["pending"]),
             }
-        overall_score = _calc_completeness(approved_city, pending_city, len(year_list))
-        overall_status = _status_label(approved_city, pending_city)
+        overall_score = _calc_completeness(approved_ab_city, pending_city, len(year_list))
+        overall_status = _status_label(approved_ab_city, pending_city)
         city_year_matrix.append({
             "province": prov,
             "city": city,
@@ -1794,6 +2375,7 @@ async def get_data_gap_analysis(
             "total": total_city,
             "pending": pending_city,
             "approved": approved_city,
+            "approved_ab": approved_ab_city,
             "completeness_score": overall_score,
             "status": overall_status,
         })
@@ -1939,12 +2521,127 @@ def _calc_r0_from_foi(foi_avg: float, life_exp: float = DEFAULT_LIFE_EXPECTANCY)
     return r0
 
 
+# 非"地方性 + 终生免疫"疾病：R0 = λ·L 理论不适用，默认不输出 r0_to_hit，
+# 改用文献 R0（R0_REFERENCE 表）计算 HIT，标 hit_source="literature_r0"。
+NON_ENDEMIC_LIFELONG = {"covid19", "influenza", "hfmd", "rotavirus", "pertussis"}
+
+# R0 = λ·L 假设说明（响应 meta / 报告模板引用）
+R0_ASSUMPTION_NOTE = "基于地方性流行+终生免疫假设，对新冠/流感/手足口等不适用"
+
+
+def _build_catalytic_records(rows: list[DataPoint]) -> list[tuple[float, int, int]]:
+    """从已审核 seroprevalence 数据点构建催化模型输入 [(age_mid, x, n), ...]。
+
+    value 为百分数（>1）或 0-1 比例均可；样本量加权阳性数 x = round(n·p)。
+    无样本量 / 不可推算年龄中点 / 中点≤0 的记录剔除。
+    """
+    records: list[tuple[float, int, int]] = []
+    for r in rows:
+        if r.value is None or r.sample_size is None:
+            continue
+        mid = _midpoint_age(r.age_min, r.age_max)
+        if mid is None or mid <= 0:
+            continue
+        ss = int(r.sample_size)
+        if ss <= 0:
+            continue
+        p = float(r.value)
+        if p > 1.0:
+            p /= 100.0
+        p = min(max(p, 0.0), 1.0)
+        records.append((float(mid), int(round(p * ss)), ss))
+    return records
+
+
+def _catalytic_r0_hit(catalytic: dict, dis_key: Optional[str], life_exp: float = DEFAULT_LIFE_EXPECTANCY,
+                      mu_fixed: Optional[float] = None) -> dict:
+    """按理论修正从催化模型结果计算 R0 / HIT 目标与来源标签。
+
+    - R0 = λ·L 对 recommended_model == M1_constant 且疾病满足
+      「地方性 + 终生免疫」（不在 NON_ENDEMIC_LIFELONG）时计算；
+      结果填入 ``r0_to_hit``，来源标 ``mle_foi``。
+    - 显式指定血清转阴率（``mu_fixed>0``）时，即便推荐模型为 M2（μ 固定），
+      仍用其 λ 按 λ·L 反推 R0/HIT——用户显式假设驱动重算。
+    - 其余情况（M2/M3 自由拟合或非地方性/非终生免疫疾病）：默认不输出 r0_to_hit
+      （置 None），改用文献 R0 计算 HIT，来源标 ``literature_r0``。
+    - ``foi_avg`` 恒为推荐模型的平均 FOI（/年）。
+    - ``r0_assumption_note``：当 R0 = λ·L 参与计算时给出固定说明文案。
+    """
+    rec_name = catalytic.get("recommended_model")
+    rec_params = catalytic.get("recommended_params") or {}
+    foi_avg = catalytic.get("recommended_foi_avg")
+    r0_ref = R0_REFERENCE.get(dis_key) if dis_key else None
+    literature_hit = _calc_hit_from_r0(r0_ref[0]) if r0_ref else None
+
+    endemic_lifelong = dis_key not in NON_ENDEMIC_LIFELONG
+    explicit_seroreversion = mu_fixed is not None and mu_fixed > 0
+    r0_to_hit: Optional[float] = None
+    if endemic_lifelong and (rec_name == "M1_constant" or explicit_seroreversion):
+        lam = rec_params.get("lambda")
+        if lam is not None and lam > 0:
+            r0_to_hit = round(float(lam) * life_exp, 3)
+
+    if r0_to_hit is not None and r0_to_hit > 1.0:
+        hit_source = "mle_foi"
+    elif literature_hit is not None:
+        hit_source = "literature_r0"
+    else:
+        hit_source = None
+
+    r0_assumption_note = R0_ASSUMPTION_NOTE if (
+        r0_to_hit is not None or rec_name == "M1_constant" or explicit_seroreversion
+    ) else None
+
+    return {
+        "foi_avg": foi_avg,
+        "r0_to_hit": r0_to_hit,
+        "hit_source": hit_source,
+        "literature_hit": literature_hit,
+        "r0_assumption_note": r0_assumption_note,
+    }
+
+
+def _resolve_hit_target(
+    foi_hit: Optional[float],
+    who_threshold: Optional[float],
+    literature_hit: Optional[float],
+    dis_key: Optional[str],
+    hit_source_override: Optional[str] = None,
+) -> tuple[Optional[float], str]:
+    """HIT 阈值解析：优先级链 FOI 估算 > WHO > 文献 R0（保持不变）。
+
+    理论修正：对非「地方性 + 终生免疫」疾病（covid19/influenza/hfmd/rotavirus/
+    pertussis），上游已把 r0_to_hit 置 None → foi_hit 为 None，因此本函数自然走
+    WHO > 文献 R0 链，来源标 who / literature_r0，不再出现错误的 FOI 反推 HIT。
+    返回 (hit_target, hit_source)；hit_source ∈ mle_foi/who/literature_r0/none。
+    """
+    # hit_source_override：显式指定优先使用的阈值来源（foi/who/literature）
+    # 覆盖源无值时回落到正常优先级链
+    if hit_source_override is not None:
+        if hit_source_override == "foi" and foi_hit is not None:
+            return foi_hit, "mle_foi"
+        if hit_source_override == "who" and who_threshold is not None:
+            return who_threshold, "who"
+        if hit_source_override in ("literature", "literature_r0") and literature_hit is not None:
+            return literature_hit, "literature_r0"
+    if foi_hit is not None:
+        return foi_hit, "mle_foi"
+    if who_threshold is not None:
+        return who_threshold, "who"
+    if literature_hit is not None:
+        return literature_hit, "literature_r0"
+    return None, "none"
+
+
 async def get_foi_analysis(
     db: AsyncSession,
     disease: Optional[str] = None,
     province: Optional[str] = None,
     year_start: Optional[int] = None,
     year_end: Optional[int] = None,
+    life_expectancy: float = 75.0,
+    seroreversion_mu: Optional[float] = None,
+    hit_source_override: Optional[str] = None,
 ) -> dict:
     """P0-1: FOI（感染力）+ 群体免疫阈值综合分析。
 
@@ -1974,6 +2671,15 @@ async def get_foi_analysis(
         f"查询到 {len(rows)} 条已审核 seroprevalence 数据点"
     )
 
+    # 收集本次分析使用的显式参数假设（用于响应透明展示）
+    assumptions = {}
+    if life_expectancy != 75.0:
+        assumptions["life_expectancy"] = life_expectancy
+    if seroreversion_mu:
+        assumptions["seroreversion_mu"] = seroreversion_mu
+    if hit_source_override:
+        assumptions["hit_source_override"] = hit_source_override
+
     if not rows:
         return {
             "disease": disease,
@@ -1990,11 +2696,21 @@ async def get_foi_analysis(
                 "hit_from_reference_r0_percent": None,
                 "who_threshold_percent": None,
                 "hit_target_used_percent": None,
+                "hit_target_source": "none",
                 "herd_immunity_status": "no_data",
-                "life_expectancy_used": DEFAULT_LIFE_EXPECTANCY,
+                "life_expectancy_used": life_expectancy,
+                "models": [],
+                "recommended_model": None,
+                "recommended_params": None,
+                "fitted_curve": [],
+                "modeling_notes": [],
+                "r0_assumption_note": None,
+                "n_catalytic_records": 0,
+                "catalytic_age_range": [None, None],
             },
             "province_foi_matrix": [],
             "notes": ["无已审核通过的 seroprevalence 数据，无法进行 FOI 分析"],
+            "assumptions": assumptions or None,
         }
 
     # 按疾病分组（若传了 disease 则只有一个组）
@@ -2088,7 +2804,7 @@ async def get_foi_analysis(
                 "weighted_avg_foi_per_year": w_foi,
             })
 
-        # --- 2) 全年龄段加权平均 FOI ---
+        # --- 2) 全年龄段加权平均 FOI（旧口径，仅作催化模型失败时的回退）---
         # 取每个年龄组的 foi 汇总到整体
         all_foi_tuples: list[tuple[float, int]] = []
         for f in foi_by_age:
@@ -2096,22 +2812,41 @@ async def get_foi_analysis(
                 all_foi_tuples.append((f["weighted_avg_foi_per_year"], f["total_samples"]))
         if all_foi_tuples:
             w_total = sum(w for _, w in all_foi_tuples)
-            weighted_avg_foi = round(
+            legacy_foi = round(
                 sum(v * w for v, w in all_foi_tuples) / w_total, 6
             ) if w_total > 0 else None
         else:
-            weighted_avg_foi = None
+            legacy_foi = None
+
+        # --- 2.5) 催化模型族 MLE 拟合（新引擎）---
+        # 用 (age_mid, x, n) 拟合 M1/M2/M3，输出模型比较 + 推荐模型 + 拟合曲线
+        catalytic_records = _build_catalytic_records(dis_rows)
+        catalytic_result = fit_catalytic_models(catalytic_records, mu_fixed=seroreversion_mu)
+        models_out = catalytic_result.get("models") or []
+        recommended_model = catalytic_result.get("recommended_model")
+        recommended_params = catalytic_result.get("recommended_params") or {}
+        fitted_curve = catalytic_result.get("fitted_curve") or []
+        catalytic_notes = catalytic_result.get("modeling_notes") or []
+
+        # 理论修正：R0/HIT 来源解析（仅 M1 + 地方性/终生免疫 才用 R0=λ·L；显式 μ 强制重算）
+        r0_hit_info = _catalytic_r0_hit(catalytic_result, dis_key, life_exp=life_expectancy,
+                                        mu_fixed=seroreversion_mu)
+        rec_foi = r0_hit_info["foi_avg"]
+        r0_to_hit = r0_hit_info["r0_to_hit"]
+        literature_hit = r0_hit_info["literature_hit"]
+        r0_assumption_note = r0_hit_info["r0_assumption_note"]
+
+        # 兼容旧字段：foi/r0 取 recommended_model 参数重算；无催化结果时回退旧加权平均
+        weighted_avg_foi = rec_foi if rec_foi is not None else legacy_foi
+        estimated_r0 = r0_to_hit
 
         logger.info(
-            f"[FOI] [{dis_key}] 全年龄段加权平均FOI: "
-            f"参与年龄组数={len(all_foi_tuples)}, "
-            f"各年龄组(foi,samples)={[(v, w) for v, w in all_foi_tuples]}, "
-            f"加权总样本={w_total if all_foi_tuples else 0} → "
-            f"weighted_avg_foi={weighted_avg_foi}/年"
+            f"[FOI] [{dis_key}] 催化模型: records={len(catalytic_records)}, "
+            f"recommended={recommended_model}, foi_avg={weighted_avg_foi}/年, "
+            f"r0_to_hit={r0_to_hit}, legacy_foi={legacy_foi}"
         )
 
-        # --- 3) R0 估计：R0 ≈ λ·L（催化模型）+ 文献参考 ---
-        estimated_r0 = _calc_r0_from_foi(weighted_avg_foi) if weighted_avg_foi is not None else None
+        # --- 3) R0 估计（催化模型推荐参数）+ 文献参考 ---
         r0_ref = R0_REFERENCE.get(dis_key)  # (typical, low, high)
 
         logger.info(
@@ -2130,26 +2865,30 @@ async def get_foi_analysis(
                 logger.warning(f"[FOI] [{dis_key}] R0估计({estimated_r0})显著高于文献参考[{rlow},{rhigh}]")
 
         # --- 4) HIT（群体免疫阈值）两种估计 ---
-        # 方案 A：FOI → R0 → HIT
+        # 方案 A：FOI → R0 → HIT（仅 M1 + 地方性/终生免疫 有值，理论修正）
         foi_hit_percent = _calc_hit_from_r0(estimated_r0) if estimated_r0 is not None else None
         # 方案 B：文献 R0（typical）→ HIT
-        reference_hit = _calc_hit_from_r0(r0_ref[0]) if r0_ref else None
         who_threshold = WHO_THRESHOLDS.get(dis_key)
 
         logger.info(
             f"[FOI] [{dis_key}] HIT计算: hit_from_foi={foi_hit_percent}%, "
-            f"hit_from_reference_r0={reference_hit}%, who_threshold={who_threshold}%"
+            f"hit_from_reference_r0={literature_hit}%, who_threshold={who_threshold}%"
         )
 
         # --- 5) 群体免疫状态判定 ---
-        # 用加权平均 SP 与 HIT（优先 FOI 估计，否则参考 WHO）对比
+        # HIT 阈值优先级链不变：FOI 估算 > WHO > 文献 R0（hit_source 扩展 mle_foi 标签）
+        hit_target, hit_source = _resolve_hit_target(
+            foi_hit_percent, who_threshold, literature_hit, dis_key,
+            hit_source_override=hit_source_override,
+        )
+
+        # 用加权平均 SP 与 HIT 对比
         overall_sp = None
         sp_valid = [(r.value, r.sample_size or 1) for r in dis_rows if r.value is not None]
         if sp_valid:
             w_sum = sum(w for _, w in sp_valid)
             overall_sp = round(sum(v * w for v, w in sp_valid) / w_sum, 2) if w_sum > 0 else None
 
-        hit_target = foi_hit_percent or who_threshold or reference_hit
         if overall_sp is not None and hit_target is not None:
             if overall_sp >= hit_target:
                 herd_status = "reached"        # 已达群体免疫
@@ -2162,7 +2901,7 @@ async def get_foi_analysis(
 
         logger.info(
             f"[FOI] [{dis_key}] 群体免疫判定: overall_sp={overall_sp}%, "
-            f"hit_target={hit_target}% (来源={'foi' if foi_hit_percent else 'who' if who_threshold else 'ref_r0' if reference_hit else 'none'}), "
+            f"hit_target={hit_target}% (来源={hit_source}), "
             f"herd_status={herd_status}"
         )
 
@@ -2238,17 +2977,33 @@ async def get_foi_analysis(
                 "range_high": r0_ref[2] if r0_ref else None,
             },
             "hit_from_foi_percent": foi_hit_percent,
-            "hit_from_reference_r0_percent": reference_hit,
+            "hit_from_reference_r0_percent": literature_hit,
             "who_threshold_percent": who_threshold,
             "hit_target_used_percent": hit_target,
+            "hit_target_source": hit_source,
             "herd_immunity_status": herd_status,
-            "life_expectancy_used": DEFAULT_LIFE_EXPECTANCY,
+            "life_expectancy_used": life_expectancy,
+            "assumptions": assumptions or None,
+            # 新增：催化模型族 MLE 拟合 + 模型比较 + 理论修正
+            "models": models_out,
+            "recommended_model": recommended_model,
+            "recommended_params": recommended_params,
+            "fitted_curve": fitted_curve,
+            "modeling_notes": catalytic_notes,
+            "r0_assumption_note": r0_assumption_note,
+            "n_catalytic_records": catalytic_result.get("n_records"),
+            "catalytic_age_range": catalytic_result.get("age_range"),
         }
 
         per_disease_results.append({
             "disease": dis_key,
             "summary": summary_block,
             "foi_by_age_group": foi_by_age,
+            "models": models_out,
+            "recommended_model": recommended_model,
+            "fitted_curve": fitted_curve,
+            "modeling_notes": catalytic_notes,
+            "r0_assumption_note": r0_assumption_note,
         })
 
     # 如果只传了一个疾病，把 summary 提升到顶层
@@ -2264,6 +3019,7 @@ async def get_foi_analysis(
         },
         "province_foi_matrix": province_foi_matrix,
         "notes": notes if notes else [],
+        "assumptions": assumptions or None,
     }
 
 
@@ -2717,4 +3473,125 @@ async def get_coverage_review_stats(
     }
 
     return {"overview": overview, "diseases": diseases}
+
+
+# ============================================================
+# 空间统计：省级热点/冷点（Moran's I + Getis-Ord Gi*）
+# ============================================================
+
+def _load_province_adjacency() -> dict:
+    """加载 34 省级 queen 邻接矩阵（binary）。"""
+    import json as _json
+    import os as _os
+    _p = _os.path.join(
+        _os.path.dirname(__file__), "..", "core", "reference_data",
+        "china_province_adjacency.json",
+    )
+    with open(_p, "r", encoding="utf-8") as _f:
+        return _json.load(_f)
+
+
+def _build_province_weights(adjacency: dict, data_provinces: list[str]):
+    """从 binary 邻接构建仅含有效省份的对称行标准化权重 W。
+
+    - 邻接矩阵以 binary（对称）存储；
+    - 缺数省份从 W 中删去行列（邻接列表同步过滤）；
+    - 对称化（binary 本身对称，此处兜底）后行标准化。
+    """
+    from libpysal.weights import W
+
+    id_set = set(data_provinces)
+    neighbors = {
+        p: [n for n in adjacency.get(p, []) if n in id_set]
+        for p in data_provinces
+    }
+    w = W(neighbors)
+    w.symmetrize()
+    w.transform = "r"
+    return w
+
+
+async def get_spatial_hotspots(
+    db: AsyncSession,
+    disease: str,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+    level: str = "province",
+) -> dict:
+    """省级空间热点/冷点分析（Moran's I 全局自相关 + Getis-Ord Gi* 局部热点）。
+
+    - 率口径：复用 ``get_region_compare`` 的省级加权阳性率（avg_positivity）。
+    - 权重口径：binary queen 邻接 → 对称化 → 行标准化；缺数省份不参与且不纳入邻接。
+    - 有数据省份 < 8 → 返回 n_valid，由路由层转 422 中文提示。
+    """
+    region = await get_region_compare(
+        db=db,
+        disease=disease,
+        province=None,
+        year_start=year_start,
+        year_end=year_end,
+        age_min=None,
+        age_max=None,
+        data_type=None,
+    )
+    regions = region.get("regions", [])
+
+    adj = _load_province_adjacency()
+    adjacency = adj["binary"]
+
+    # 省份名归一化到标准键，仅保留有阳性率的省
+    prov_map: dict[str, dict] = {}
+    for r in regions:
+        rate = r.get("avg_positivity")
+        if rate is None:
+            continue
+        std = normalize_province(r["province"])
+        if not std or std not in adjacency or std in prov_map:
+            continue
+        prov_map[std] = {"name": std, "rate": float(rate)}
+
+    if len(prov_map) < 8:
+        return {
+            "disease": disease,
+            "level": level,
+            "year_start": year_start,
+            "year_end": year_end,
+            "n_valid": len(prov_map),
+            "adjacency_version": adj.get("version"),
+            "global_moran": None,
+            "provinces": [],
+        }
+
+    data_provinces = sorted(prov_map.keys())
+    rates = [prov_map[p]["rate"] for p in data_provinces]
+
+    # 权重阵 W（对称化 + 行标准化，缺数省份已删行列）
+    w = _build_province_weights(adjacency, data_provinces)
+
+    global_moran = morans_i(rates, w)
+    gi_list = g_star(rates, w) or []
+
+    provinces = []
+    for i, p in enumerate(data_provinces):
+        g = gi_list[i] if i < len(gi_list) else None
+        gi_z = g["gi_z"] if g else None
+        provinces.append({
+            "name": p,
+            "rate": round(prov_map[p]["rate"], 4),
+            "gi_z": gi_z,
+            "p": g["p"] if g else None,
+            "cluster": classify_hotspot_cluster(gi_z),
+        })
+
+    return {
+        "disease": disease,
+        "level": level,
+        "year_start": year_start,
+        "year_end": year_end,
+        "n_valid": len(data_provinces),
+        "adjacency_version": adj.get("version"),
+        "global_moran": global_moran,
+        "provinces": provinces,
+    }
+
 

@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { Card, Row, Col, Spin, Empty, message, Button, Tabs, Table, Space, Statistic, Alert, Tag, Collapse, Tooltip, Progress, Select } from 'antd';
-import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined, DownloadOutlined, ExperimentOutlined, SafetyCertificateOutlined, BarChartOutlined, FundOutlined, AimOutlined, DashboardOutlined, EnvironmentOutlined } from '@ant-design/icons';
+import { Card, Row, Col, Spin, Empty, message, Button, Tabs, Table, Space, Statistic, Alert, Tag, Collapse, Tooltip, Progress, Select, Segmented, Radio, Modal, Descriptions } from 'antd';
+import { SearchOutlined, WarningOutlined, CheckCircleOutlined, FileSearchOutlined, DownloadOutlined, ExperimentOutlined, SafetyCertificateOutlined, BarChartOutlined, FundOutlined, AimOutlined, DashboardOutlined, EnvironmentOutlined, LineChartOutlined } from '@ant-design/icons';
 import ReactECharts from '../components/EChart';
+import ChartWithSnapshot from '../components/ChartWithSnapshot';
 import * as echarts from '../lib/echarts';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
@@ -11,17 +12,18 @@ import KpiCards from '../components/KpiCards';
 import EquityRadar from '../components/EquityRadar';
 import QualityPanel from '../components/QualityPanel';
 import TrendWithCI from '../components/TrendWithCI';
-import AgeSmoothChart from '../components/AgeSmoothChart';
+import AgeCurveChart from '../components/AgeCurveChart';
 import TopBottomRank from '../components/TopBottomRank';
 import GoalTrackingChart from '../components/GoalTrackingChart';
 import SimulationPanel from '../components/SimulationPanel';
 import CoverageReviewTable from '../components/CoverageReviewTable';
 import CoverageReviewChart from '../components/CoverageReviewChart';
-import { getTrend, getRegionCompare, getAgeStratify, getApprovedDataPoints, getDataGapAnalysis, getFoiHerdImmunity, getVaccineEffectivenessCoverage, getEquityAnalysis, getQualityAssessment, getGoalTracking, getAgeCurve, getMetaMerge, getAssayHeterogeneity, getSimulation, getProvinceData, fetchCoverageReview } from '../services/map';
+import { getTrend, getRegionCompare, getAgeStratify, getApprovedDataPoints, getDataGapAnalysis, getFoiHerdImmunity, getVaccineEffectivenessCoverage, getEquityAnalysis, getQualityAssessment, getGoalTracking, getAgeCurve, getMetaMerge, getMetaAnalysis, getAssayHeterogeneity, getSimulation, getProvinceData, fetchCoverageReview, getBirthCohort } from '../services/map';
 import { useFilterStore } from '../store';
 import type { TableRowSelection } from 'antd/es/table/interface';
-import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, MetaMergeResponse, AssayHeterogeneityResponse, SimulationResponse, MapDataPoint, MetaMergeProvinceResult, AssayHeterogeneityRow, HeterogeneityLevel, CoverageReviewResult } from '../types';
+import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, MetaMergeResponse, AssayHeterogeneityResponse, SimulationResponse, MapDataPoint, MetaMergeProvinceResult, AssayHeterogeneityRow, HeterogeneityLevel, CoverageReviewResult, MetaAnalysisResponse, MetaAnalysisGroup, BirthCohortResponse } from '../types';
 import { DISEASES, PROVINCE_GEOJSON_NAME } from '../utils/constants';
+import { lineWithBand, barWithError, forestPlotOption, funnelPlotOption, wilsonCi, ftTransform, birthCohortHeatmapOption, birthCohortLinesOption } from '../utils/chartBuilders';
 
 type DataItem = Record<string, unknown>;
 
@@ -32,6 +34,38 @@ type TrendSignificance = {
   direction: 'increasing' | 'decreasing' | 'flat' | null;
   n: number;
 };
+
+type TrendTest = {
+  z: number;
+  p_value: number;
+  direction: 'increasing' | 'decreasing' | 'flat';
+  direction_label: '上升' | '下降' | '不显著';
+};
+
+type ComparisonTest = {
+  province_a?: string;
+  province_b?: string;
+  p1: number;
+  p2: number;
+  n1: number;
+  n2: number;
+  rd: number;
+  rd_ci_lower: number;
+  rd_ci_upper: number;
+  rr: number | null;
+  rr_ci_lower: number | null;
+  rr_ci_upper: number | null;
+  z: number;
+  p_value: number;
+  significant: boolean;
+  conclusion: string;
+};
+
+type RegionRateView = 'crude' | 'asr';
+
+// 从任意分析响应中安全提取快照 token（响应 meta.snapshot_token）
+const tokenOf = (d: unknown): string | null =>
+  ((d as { meta?: { snapshot_token?: string } })?.meta?.snapshot_token) ?? null;
 
 const Analysis: React.FC = () => {
   const { disease: globalDisease, dataType: globalDataType, setDisease, setDataType } = useFilterStore();
@@ -49,7 +83,11 @@ const Analysis: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [trendData, setTrendData] = useState<DataItem[]>([]);
   const [trendSignificance, setTrendSignificance] = useState<TrendSignificance | null>(null);
+  const [trendTest, setTrendTest] = useState<TrendTest | null>(null);
   const [regionData, setRegionData] = useState<DataItem[]>([]);
+  const [comparisonTest, setComparisonTest] = useState<ComparisonTest | null>(null);
+  const [regionRateView, setRegionRateView] = useState<RegionRateView>('crude');
+  const [pairModalVisible, setPairModalVisible] = useState(false);
   const [ageData, setAgeData] = useState<DataItem[]>([]);
 
   // 审核通过的数据点
@@ -59,6 +97,8 @@ const Analysis: React.FC = () => {
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [selectedRows, setSelectedRows] = useState<DataItem[]>([]);
   const [activeTab, setActiveTab] = useState('summary');
+  // 各分析模块的快照 token（来自响应 meta.snapshot_token）
+  const [snapshotTokens, setSnapshotTokens] = useState<Record<string, string | null>>({});
   const [dpPage, setDpPage] = useState(1);
   const [dpPageSize, setDpPageSize] = useState(50);
   const [dpSortBy, setDpSortBy] = useState<string | undefined>(undefined);
@@ -100,11 +140,16 @@ const Analysis: React.FC = () => {
   const [goalLoading, setGoalLoading] = useState(false);
 
   // 高级分析：年龄曲线 / meta / assay / 模拟
-  const [ageCurveMetric, setAgeCurveMetric] = useState<'seroprevalence' | 'gmc'>('seroprevalence');
   const [ageCurveData, setAgeCurveData] = useState<AgeCurveResponse | null>(null);
   const [ageCurveLoading, setAgeCurveLoading] = useState(false);
   const [metaData, setMetaData] = useState<MetaMergeResponse | null>(null);
   const [metaLoading, setMetaLoading] = useState(false);
+  const [metaAnalysisData, setMetaAnalysisData] = useState<MetaAnalysisResponse | null>(null);
+  const [metaAnalysisLoading, setMetaAnalysisLoading] = useState(false);
+  const [metaGroupBy, setMetaGroupBy] = useState<string>('');
+  // 出生队列：birth_year = collection_year − age_mid，按十年段分桶
+  const [birthCohortData, setBirthCohortData] = useState<BirthCohortResponse | null>(null);
+  const [birthCohortLoading, setBirthCohortLoading] = useState(false);
   const [assayData, setAssayData] = useState<AssayHeterogeneityResponse | null>(null);
   const [assayLoading, setAssayLoading] = useState(false);
   const [simData, setSimData] = useState<SimulationResponse | null>(null);
@@ -112,7 +157,7 @@ const Analysis: React.FC = () => {
   const [simCoverage, setSimCoverage] = useState(90);
   const [simBooster, setSimBooster] = useState(0);
 
-  // 地图钻取：选中的省份及其联动数据（TrendWithCI / AgeSmoothChart / QualityPanel）
+  // 地图钻取：选中的省份及其联动数据（TrendWithCI / AgeCurveChart / QualityPanel）
   const [drillProvince, setDrillProvince] = useState<string | null>(null);
   const [drillTrend, setDrillTrend] = useState<Array<{ year: number; value: number | null; ci_lower: number | null; ci_upper: number | null }>>([]);
   const [drillAgeCurve, setDrillAgeCurve] = useState<AgeCurveResponse | null>(null);
@@ -137,11 +182,22 @@ const Analysis: React.FC = () => {
         getRegionCompare(params),
         getAgeStratify(params),
       ]);
-      const trendResp = (trend.data as { trend: DataItem[]; trend_significance?: TrendSignificance } | null) || null;
+      const trendResp = (trend as { trend: DataItem[]; trend_significance?: TrendSignificance; trend_test?: TrendTest } | null) || null;
       setTrendData(trendResp?.trend || []);
       setTrendSignificance(trendResp?.trend_significance || null);
-      setRegionData((region.data as DataItem[]) || []);
-      setAgeData((age.data as DataItem[]) || []);
+      setTrendTest(trendResp?.trend_test || null);
+      const regionResp = (region as { regions?: DataItem[]; comparison_test?: ComparisonTest | null } | null) || null;
+      const regionList = Array.isArray(region) ? (region as DataItem[]) : (regionResp?.regions || []);
+      setRegionData(regionList);
+      setComparisonTest(regionResp?.comparison_test || null);
+      const ageResp = (age as { age_groups?: DataItem[] } | null) || null;
+      setAgeData((Array.isArray(age) ? (age as DataItem[]) : (ageResp?.age_groups || [])));
+      // 记录各模块快照 token（供图表卡片引用/水印使用）
+      setSnapshotTokens({
+        trend: ((trend as { meta?: { snapshot_token?: string } })?.meta?.snapshot_token) ?? null,
+        region: ((region as { meta?: { snapshot_token?: string } })?.meta?.snapshot_token) ?? null,
+        age: ((age as { meta?: { snapshot_token?: string } })?.meta?.snapshot_token) ?? null,
+      });
     } catch (err) {
       console.error('[Analysis] 数据加载失败:', err);
       message.error('数据加载失败');
@@ -332,12 +388,15 @@ const Analysis: React.FC = () => {
     }
   }, [appliedDisease]);
 
-  // 高级分析：年龄曲线
-  const fetchAgeCurve = useCallback(async (metric: 'seroprevalence' | 'gmc') => {
+  // 高级分析：年龄曲线（惩罚样条平滑 + 置信带 + FOI）
+  const fetchAgeCurve = useCallback(async () => {
+    if (!appliedDisease) {
+      setAgeCurveData(null);
+      return;
+    }
     setAgeCurveLoading(true);
     try {
-      const params: Record<string, unknown> = { metric };
-      if (appliedDisease) params.disease = appliedDisease;
+      const params: Record<string, unknown> = { disease: appliedDisease };
       const data = await getAgeCurve(params);
       setAgeCurveData(data);
     } catch (err) {
@@ -363,6 +422,46 @@ const Analysis: React.FC = () => {
       setMetaLoading(false);
     }
   }, [appliedDisease]);
+
+  // 证据合成：多文献 Meta 分析（森林图 / 漏斗图）
+  const fetchMetaAnalysis = useCallback(async () => {
+    if (!appliedDisease) {
+      setMetaAnalysisData(null);
+      return;
+    }
+    setMetaAnalysisLoading(true);
+    try {
+      const params: Record<string, unknown> = { disease: appliedDisease };
+      if (metaGroupBy) params.group_by = metaGroupBy;
+      const data = await getMetaAnalysis(params);
+      setMetaAnalysisData(data);
+    } catch (err) {
+      console.error('[Analysis] 证据合成加载失败:', err);
+      message.error('证据合成加载失败');
+    } finally {
+      setMetaAnalysisLoading(false);
+    }
+  }, [appliedDisease, metaGroupBy]);
+
+  // 出生队列：birth_year = collection_year − age_mid，聚合 (十年段, 调查年)
+  const fetchBirthCohort = useCallback(async () => {
+    if (!appliedDisease) {
+      setBirthCohortData(null);
+      return;
+    }
+    setBirthCohortLoading(true);
+    try {
+      const params: Record<string, unknown> = { disease: appliedDisease };
+      if (appliedProvinces.length > 0) params.province = appliedProvinces.join(',');
+      const data = await getBirthCohort(params);
+      setBirthCohortData(data);
+    } catch (err) {
+      console.error('[Analysis] 出生队列加载失败:', err);
+      message.error('出生队列加载失败');
+    } finally {
+      setBirthCohortLoading(false);
+    }
+  }, [appliedDisease, appliedProvinces]);
 
   // 高级分析：assay 异质性
   const fetchAssay = useCallback(async () => {
@@ -402,10 +501,11 @@ const Analysis: React.FC = () => {
     try {
       const base: Record<string, unknown> = { province: prov };
       if (appliedDisease) base.disease = appliedDisease;
-      const [trend, age, quality] = await Promise.all([
+      const [trend, quality, age] = await Promise.all([
         getTrend({ ...base, data_type: 'seroprevalence' }),
-        getAgeCurve({ ...base, metric: 'seroprevalence' }),
         getQualityAssessment(base),
+        // 年龄曲线端点要求必传 disease；未选疾病时跳过
+        appliedDisease ? getAgeCurve({ ...base }) : Promise.resolve(null),
       ]);
       const trendItems = (trend as { trend: Array<{ year: number; weighted_positivity: number | null; positivity_ci_lower: number | null; positivity_ci_upper: number | null }> }).trend || [];
       setDrillTrend(trendItems.map((t) => ({
@@ -414,7 +514,7 @@ const Analysis: React.FC = () => {
         ci_lower: t.positivity_ci_lower,
         ci_upper: t.positivity_ci_upper,
       })));
-      setDrillAgeCurve(age);
+      setDrillAgeCurve(age as AgeCurveResponse | null);
       setDrillQuality(quality);
     } catch (err) {
       console.error('[Analysis] 省份钻取数据加载失败:', err);
@@ -449,8 +549,8 @@ const Analysis: React.FC = () => {
   }, [activeTab, fetchGoal]);
 
   useEffect(() => {
-    if (activeTab === 'advancedAnalysis') fetchAgeCurve(ageCurveMetric);
-  }, [activeTab, fetchAgeCurve, ageCurveMetric]);
+    if (activeTab === 'advancedAnalysis' || activeTab === 'ageCurve') fetchAgeCurve();
+  }, [activeTab, fetchAgeCurve]);
 
   useEffect(() => {
     if (activeTab === 'advancedAnalysis') {
@@ -458,6 +558,14 @@ const Analysis: React.FC = () => {
       fetchAssay();
     }
   }, [activeTab, fetchMeta, fetchAssay]);
+
+  useEffect(() => {
+    if (activeTab === 'metaAnalysis') fetchMetaAnalysis();
+  }, [activeTab, fetchMetaAnalysis]);
+
+  useEffect(() => {
+    if (activeTab === 'birthCohort') fetchBirthCohort();
+  }, [activeTab, fetchBirthCohort]);
 
   // 获取审核通过的数据点
   const fetchApprovedData = useCallback(async (page: number, pageSize: number, sortBy?: string, sortOrder?: string) => {
@@ -476,6 +584,10 @@ const Analysis: React.FC = () => {
       const data = res as { items: DataItem[]; total: number };
       setApprovedData(data.items || []);
       setApprovedTotal(data.total || 0);
+      setSnapshotTokens((prev) => ({
+        ...prev,
+        datapoints: ((res as { meta?: { snapshot_token?: string } })?.meta?.snapshot_token) ?? null,
+      }));
     } catch (err) {
       console.error('[Analysis] 数据点加载失败:', err);
       message.error('数据点加载失败');
@@ -508,61 +620,45 @@ const Analysis: React.FC = () => {
 
   const isGmc = appliedDataType === 'gmc';
   const trendValueField = isGmc ? 'avg_gmc' : 'weighted_positivity';
+  const trendLoField = isGmc ? 'gmc_ci_lower' : 'positivity_ci_lower';
+  const trendHiField = isGmc ? 'gmc_ci_upper' : 'positivity_ci_upper';
   const compareValueField = isGmc ? 'avg_gmc' : 'avg_positivity';
-  const yAxisLabel = isGmc ? 'GMC' : '阳性率 (%)';
+  const compareLoField = isGmc ? 'gmc_ci_lower' : 'positivity_ci_lower';
+  const compareHiField = isGmc ? 'gmc_ci_upper' : 'positivity_ci_upper';
+  const valueUnit = isGmc ? '' : '%';
 
-  const trendOption = trendData.length ? {
-    title: { text: '年份趋势', left: 'center' },
-    xAxis: { type: 'category', data: trendData.map((d) => (d as { year: number }).year) },
-    yAxis: { type: 'value', name: yAxisLabel },
-    tooltip: {
-      trigger: 'axis',
-      valueFormatter: (v: number) => isGmc ? `${v}` : `${v}%`,
-    },
-    series: [{
-      type: 'line',
-      name: yAxisLabel,
-      data: trendData.map((d) => (d[trendValueField] ?? null) as number),
-      smooth: true,
-    }],
-  } : null;
+  // 趋势：折线 + 置信带
+  const trendOption = trendData.length ? lineWithBand(
+    '年份趋势',
+    trendData.map((d) => (d as { year: number }).year),
+    trendData.map((d) => (d[trendValueField] ?? null) as number),
+    trendData.map((d) => (d[trendLoField] ?? null) as number),
+    trendData.map((d) => (d[trendHiField] ?? null) as number),
+    valueUnit,
+  ) : null;
 
-  const regionOption = regionData.length ? {
-    title: { text: '省份均值对比', left: 'center' },
-    xAxis: {
-      type: 'category',
-      data: regionData.map((d) => (d as { province: string }).province),
-      axisLabel: { rotate: 45 },
-    },
-    yAxis: { type: 'value', name: yAxisLabel },
-    tooltip: {
-      trigger: 'axis',
-      valueFormatter: (v: number) => isGmc ? `${v}` : `${v}%`,
-    },
-    series: [{
-      type: 'bar',
-      name: yAxisLabel,
-      data: regionData.map((d) => (d[compareValueField] ?? null) as number),
-    }],
-  } : null;
+  // 区域对比：柱状 + 误差线（粗率 avg_positivity ↔ 标化率 asr）
+  const regionValueField = regionRateView === 'asr' ? 'asr' : compareValueField;
+  const regionLoField = regionRateView === 'asr' ? 'asr_ci_lower' : compareLoField;
+  const regionHiField = regionRateView === 'asr' ? 'asr_ci_upper' : compareHiField;
+  const regionOption = regionData.length ? barWithError(
+    regionRateView === 'asr' ? '省份年龄标化率（ASR）' : '省份均值对比',
+    regionData.map((d) => (d as { province: string }).province),
+    regionData.map((d) => (d[regionValueField] ?? null) as number),
+    regionData.map((d) => (d[regionLoField] ?? null) as number),
+    regionData.map((d) => (d[regionHiField] ?? null) as number),
+    valueUnit,
+  ) : null;
 
-  const ageOption = ageData.length ? {
-    title: { text: '年龄分布', left: 'center' },
-    xAxis: {
-      type: 'category',
-      data: ageData.map((d) => (d as { age_group: string }).age_group),
-    },
-    yAxis: { type: 'value', name: yAxisLabel },
-    tooltip: {
-      trigger: 'axis',
-      valueFormatter: (v: number) => isGmc ? `${v}` : `${v}%`,
-    },
-    series: [{
-      type: 'bar',
-      name: yAxisLabel,
-      data: ageData.map((d) => (d[compareValueField] ?? null) as number),
-    }],
-  } : null;
+  // 年龄分布：柱状 + 误差线
+  const ageOption = ageData.length ? barWithError(
+    '年龄分布',
+    ageData.map((d) => (d as { age_group: string }).age_group),
+    ageData.map((d) => (d[compareValueField] ?? null) as number),
+    ageData.map((d) => (d[compareLoField] ?? null) as number),
+    ageData.map((d) => (d[compareHiField] ?? null) as number),
+    valueUnit,
+  ) : null;
 
   // ===================== 数据点表格 =====================
 
@@ -721,37 +817,185 @@ const Analysis: React.FC = () => {
 
   // ===================== 汇总分析内容 =====================
 
+  const regionCompareColumns = [
+    { title: '省份', dataIndex: 'province', key: 'province', width: 80, ellipsis: true, sorter: (a: DataItem, b: DataItem) => String(a.province).localeCompare(String(b.province)) },
+    {
+      title: '粗率 (%)',
+      key: 'crude',
+      width: 110,
+      render: (_: unknown, r: DataItem) => {
+        const v = r.avg_positivity as number | null;
+        if (v == null) return '-';
+        return (
+          <span>
+            {v.toFixed(2)}
+            {r.positivity_ci_lower != null && (
+              <span style={{ color: '#999', fontSize: 11 }}>
+                <br />({Number(r.positivity_ci_lower).toFixed(1)}~{Number(r.positivity_ci_upper).toFixed(1)})
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
+    {
+      title: '标化率 ASR (%)',
+      key: 'asr',
+      width: 130,
+      render: (_: unknown, r: DataItem) => {
+        const v = r.asr as number | null;
+        if (v == null) return <span style={{ color: '#999' }}>—</span>;
+        return (
+          <span>
+            {v.toFixed(2)}
+            {r.asr_ci_lower != null && (
+              <span style={{ color: '#999', fontSize: 11 }}>
+                <br />({Number(r.asr_ci_lower).toFixed(1)}~{Number(r.asr_ci_upper).toFixed(1)})
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
+    { title: '样本量', dataIndex: 'total_samples', key: 'total_samples', width: 90, sorter: (a: DataItem, b: DataItem) => Number(a.total_samples) - Number(b.total_samples) },
+    { title: '数据点', dataIndex: 'point_count', key: 'point_count', width: 70, sorter: (a: DataItem, b: DataItem) => Number(a.point_count) - Number(b.point_count) },
+  ];
+
   const summaryContent = (
     <Spin spinning={loading}>
       <Row gutter={16}>
         <Col span={12}>
-          <Card>
-            {regionOption ? <ReactECharts option={regionOption} style={{ height: 350 }} /> : <Empty description="请选择筛选条件后点击查询" />}
-          </Card>
-        </Col>
-        <Col span={12}>
-          <Card>
-            {trendOption ? <ReactECharts option={trendOption} style={{ height: 350 }} /> : <Empty description="请选择筛选条件后点击查询" />}
-            {trendSignificance && (
+          <ChartWithSnapshot
+            title="区域对比（各省阳性率）"
+            token={snapshotTokens.region}
+            option={regionOption}
+            height={350}
+          >
+            {!regionOption && <Empty description="请选择筛选条件后点击查询" />}
+            {regionData.length > 0 && (
               <div style={{ marginTop: 8, textAlign: 'center' }}>
-                <Tag color={trendSignificance.direction === 'increasing' ? 'green' : trendSignificance.direction === 'decreasing' ? 'red' : 'blue'}>
-                  趋势：{trendSignificance.direction === 'increasing' ? '上升' : trendSignificance.direction === 'decreasing' ? '下降' : '平稳'}
-                </Tag>
-                <span style={{ marginLeft: 8 }}>
-                  斜率 {trendSignificance.slope_per_year ?? '—'}/年 · R² {trendSignificance.r_squared ?? '—'} · P {trendSignificance.p_value ?? '—'}
-                </span>
+                <Radio.Group
+                  value={regionRateView}
+                  onChange={(e) => setRegionRateView(e.target.value)}
+                  size="small"
+                  optionType="button"
+                  buttonStyle="solid"
+                  style={{ marginRight: 8 }}
+                >
+                  <Radio.Button value="crude">粗率</Radio.Button>
+                  <Radio.Button value="asr">标化率 (ASR)</Radio.Button>
+                </Radio.Group>
+                {comparisonTest && (
+                  <Button
+                    size="small"
+                    type="link"
+                    onClick={() => setPairModalVisible(true)}
+                  >
+                    两两对比详情
+                  </Button>
+                )}
               </div>
             )}
-          </Card>
+            {regionData.length > 0 && (
+              <Table
+                rowKey="province"
+                columns={regionCompareColumns}
+                dataSource={regionData}
+                size="small"
+                pagination={false}
+                scroll={{ x: 480, y: 220 }}
+                style={{ marginTop: 12 }}
+              />
+            )}
+          </ChartWithSnapshot>
+        </Col>
+        <Col span={12}>
+          <ChartWithSnapshot
+            title="逐年趋势分析"
+            token={snapshotTokens.trend}
+            option={trendOption}
+            height={350}
+          >
+            {!trendOption && <Empty description="请选择筛选条件后点击查询" />}
+            <div style={{ marginTop: 8, textAlign: 'center' }}>
+              {trendTest && (
+                <Tag color={trendTest.p_value < 0.05 ? (trendTest.direction === 'increasing' ? 'green' : 'red') : 'default'}
+                  style={{ marginBottom: 4 }}>
+                  Cochran-Armitage p={trendTest.p_value.toFixed(3)}
+                  {trendTest.p_value < 0.05 ? `，${trendTest.direction_label}趋势${trendTest.direction === 'increasing' ? '↗' : '↘'}` : '，无显著趋势'}
+                </Tag>
+              )}
+              {trendSignificance && (
+                <span>
+                  <Tag color={trendSignificance.direction === 'increasing' ? 'green' : trendSignificance.direction === 'decreasing' ? 'red' : 'blue'}
+                    style={{ marginBottom: 4 }}>
+                    趋势：{trendSignificance.direction === 'increasing' ? '上升' : trendSignificance.direction === 'decreasing' ? '下降' : '平稳'}
+                  </Tag>
+                  <span style={{ marginLeft: 8, fontSize: 12 }}>
+                    斜率 {trendSignificance.slope_per_year ?? '—'}/年 · R² {trendSignificance.r_squared ?? '—'} · P {trendSignificance.p_value ?? '—'}
+                  </span>
+                </span>
+              )}
+            </div>
+          </ChartWithSnapshot>
         </Col>
       </Row>
       <Row gutter={16} style={{ marginTop: 16 }}>
         <Col span={12}>
-          <Card>
-            {ageOption ? <ReactECharts option={ageOption} style={{ height: 350 }} /> : <Empty description="请选择筛选条件后点击查询" />}
-          </Card>
+          <ChartWithSnapshot
+            title="年龄分层分析"
+            token={snapshotTokens.age}
+            option={ageOption}
+            height={350}
+          >
+            {!ageOption && <Empty description="请选择筛选条件后点击查询" />}
+          </ChartWithSnapshot>
         </Col>
       </Row>
+
+      {/* 两两对比详情弹窗 */}
+      <Modal
+        title="两省对比统计检验"
+        open={pairModalVisible}
+        onCancel={() => setPairModalVisible(false)}
+        footer={null}
+        width={520}
+      >
+        {comparisonTest && (
+          <Descriptions column={1} bordered size="small">
+            <Descriptions.Item label="对比省份">
+              {comparisonTest.province_a} vs {comparisonTest.province_b}
+            </Descriptions.Item>
+            <Descriptions.Item label="阳性率">
+              {comparisonTest.province_a}: {(comparisonTest.p1 * 100).toFixed(1)}% (n={comparisonTest.n1})
+              <br />
+              {comparisonTest.province_b}: {(comparisonTest.p2 * 100).toFixed(1)}% (n={comparisonTest.n2})
+            </Descriptions.Item>
+            <Descriptions.Item label="率差 (RD)">
+              {(comparisonTest.rd * 100).toFixed(2)}%
+              <br />
+              95%CI: {(comparisonTest.rd_ci_lower * 100).toFixed(2)}% ~ {(comparisonTest.rd_ci_upper * 100).toFixed(2)}%
+            </Descriptions.Item>
+            <Descriptions.Item label="率比 (RR)">
+              {comparisonTest.rr != null ? comparisonTest.rr.toFixed(4) : '—'}
+              <br />
+              {comparisonTest.rr_ci_lower != null && comparisonTest.rr_ci_upper != null
+                ? `95%CI: ${comparisonTest.rr_ci_lower.toFixed(4)} ~ ${comparisonTest.rr_ci_upper.toFixed(4)}`
+                : '—'}
+            </Descriptions.Item>
+            <Descriptions.Item label="z 值 / p 值">
+              z={comparisonTest.z.toFixed(3)}, p={comparisonTest.p_value.toFixed(4)}
+            </Descriptions.Item>
+            <Descriptions.Item label="结论">
+              <Alert
+                type={comparisonTest.significant ? 'info' : 'warning'}
+                message={comparisonTest.conclusion}
+                showIcon
+              />
+            </Descriptions.Item>
+          </Descriptions>
+        )}
+      </Modal>
     </Spin>
   );
 
@@ -787,15 +1031,23 @@ const Analysis: React.FC = () => {
       {selectedRows.length > 0 && (
         <Row gutter={16}>
           <Col span={scatterOption ? 12 : 24}>
-            <Card>
-              {selectedBarOption ? <ReactECharts option={selectedBarOption} style={{ height: 400 }} /> : <Empty description="请先选择数据点" />}
-            </Card>
+            <ChartWithSnapshot
+              title="选中数据点数值对比"
+              token={snapshotTokens.datapoints}
+              option={selectedBarOption}
+              height={400}
+            >
+              {!selectedBarOption && <Empty description="请先选择数据点" />}
+            </ChartWithSnapshot>
           </Col>
           {scatterOption && (
             <Col span={12}>
-              <Card>
-                <ReactECharts option={scatterOption} style={{ height: 400 }} />
-              </Card>
+              <ChartWithSnapshot
+                title="样本量 vs 数值"
+                token={snapshotTokens.datapoints}
+                option={scatterOption}
+                height={400}
+              />
             </Col>
           )}
         </Row>
@@ -1628,20 +1880,14 @@ const Analysis: React.FC = () => {
           {foiCurrentDisease && (
             <Row gutter={16} style={{ marginBottom: 16 }}>
               <Col span={24}>
-                <Card
-                  title={
-                    <Space>
-                      <span>年龄组 FOI 分析</span>
-                      <Tag color="blue">{foiCurrentDisease.foi_by_age_group.length} 个年龄组</Tag>
-                    </Space>
-                  }
+                <ChartWithSnapshot
+                  title={`年龄组 FOI 分析（${foiCurrentDisease.foi_by_age_group.length} 个年龄组）`}
+                  token={tokenOf(foiData)}
+                  option={foiAgeOption}
+                  height={400}
                 >
-                  {foiAgeOption ? (
-                    <ReactECharts option={foiAgeOption} style={{ height: 400 }} />
-                  ) : (
-                    <Empty description="暂无足够年龄组数据进行FOI分析" />
-                  )}
-                </Card>
+                  {!foiAgeOption && <Empty description="暂无足够年龄组数据进行FOI分析" />}
+                </ChartWithSnapshot>
               </Col>
             </Row>
           )}
@@ -1924,32 +2170,23 @@ const Analysis: React.FC = () => {
           {/* 上半部分：VE亚组对比 + 接种率双轨 */}
           <Row gutter={16} style={{ marginBottom: 16 }}>
             <Col span={veCompareOption ? 12 : 24}>
-              <Card
-                title={
-                  <Space>
-                    <span>接种率双轨分析</span>
-                    <Tag color="blue">NIP参考 vs 隐含接种率 vs 阳性率</Tag>
-                  </Space>
-                }
+              <ChartWithSnapshot
+                title="接种率双轨分析（NIP参考 vs 隐含接种率 vs 阳性率）"
+                token={tokenOf(vaccineData)}
+                option={vaccineCoverageBarOption}
+                height={380}
               >
-                {vaccineCoverageBarOption ? (
-                  <ReactECharts option={vaccineCoverageBarOption} style={{ height: 380 }} />
-                ) : (
-                  <Empty description="暂无接种率数据" />
-                )}
-              </Card>
+                {!vaccineCoverageBarOption && <Empty description="暂无接种率数据" />}
+              </ChartWithSnapshot>
             </Col>
             {veCompareOption && (
               <Col span={12}>
-                <Card
-                  title={
-                    <Space>
-                      <span>亚组VE分析</span>
-                      <Tag color="green">已接种 vs 未接种</Tag>
-                    </Space>
-                  }
+                <ChartWithSnapshot
+                  title="亚组VE分析（已接种 vs 未接种）"
+                  token={tokenOf(vaccineData)}
+                  option={veCompareOption}
+                  height={380}
                 >
-                  <ReactECharts option={veCompareOption} style={{ height: 380 }} />
                   {vaccineCurrentDisease?.ve_result?.interpretation && (
                     <Alert
                       style={{ marginTop: 12 }}
@@ -1978,7 +2215,7 @@ const Analysis: React.FC = () => {
                       </Col>
                     </Row>
                   )}
-                </Card>
+                </ChartWithSnapshot>
               </Col>
             )}
           </Row>
@@ -2094,10 +2331,9 @@ const Analysis: React.FC = () => {
                 />
               </Col>
               <Col span={12}>
-                <AgeSmoothChart
+                <AgeCurveChart
                   data={drillAgeCurve}
                   loading={drillLoading}
-                  metric="seroprevalence"
                   title={`${drillProvince} 年龄-阳性率曲线`}
                   height={300}
                 />
@@ -2210,11 +2446,9 @@ const Analysis: React.FC = () => {
     <Spin spinning={ageCurveLoading || metaLoading || assayLoading || simLoading}>
       <Row gutter={16}>
         <Col span={24}>
-          <AgeSmoothChart
+          <AgeCurveChart
             data={ageCurveData}
             loading={ageCurveLoading}
-            metric={ageCurveMetric}
-            onMetricChange={(m) => setAgeCurveMetric(m)}
           />
         </Col>
       </Row>
@@ -2277,6 +2511,198 @@ const Analysis: React.FC = () => {
     </Spin>
   );
 
+  // ===================== 证据合成内容（Meta 分析） =====================
+
+  // 渲染单个亚组的：合并摘要卡片 → 森林图 → 漏斗图（无则隐藏）
+  const renderMetaGroup = (g: MetaAnalysisGroup, key: string) => {
+    const meta = g.meta;
+    const pooled = meta.pooled;
+    const k = pooled.k;
+
+    // 空状态：k<2，未进行合并，降级展示单项 CI
+    if (k < 2) {
+      const s = meta.per_study[0];
+      const ci = s ? wilsonCi(s.x, s.n) : null;
+      return (
+        <Card size="small" style={{ marginBottom: 16 }} key={key}>
+          <Alert
+            type="warning"
+            showIcon
+            message="当前筛选仅 1 项研究，未进行合并"
+            description={
+              s
+                ? `单项研究：${s.label} —— 阳性率 ${(s.p * 100).toFixed(1)}%（95% CI: ${(ci ? ci.lower * 100 : 0).toFixed(1)}% – ${(ci ? ci.upper * 100 : 0).toFixed(1)}%）`
+                : undefined
+            }
+          />
+        </Card>
+      );
+    }
+
+    const studies = meta.per_study.map((s) => {
+      const ci = wilsonCi(s.x, s.n);
+      return {
+        label: s.label,
+        p: s.p * 100,
+        ci_lower: ci.lower * 100,
+        ci_upper: ci.upper * 100,
+        weight: s.weight,
+      };
+    });
+
+    const forestOption = forestPlotOption(studies, {
+      rate: pooled.rate,
+      ci_lower: pooled.ci_lower,
+      ci_upper: pooled.ci_upper,
+      model: pooled.model,
+      tau2: pooled.tau2,
+      Q: pooled.Q,
+      Q_p: pooled.Q_p,
+      I2: pooled.I2,
+      k: pooled.k,
+    });
+
+    const tCenter =
+      pooled.n_rep != null && pooled.rate != null ? ftTransform(pooled.rate / 100, pooled.n_rep) : null;
+    const funnelOption =
+      meta.funnel && meta.funnel.length > 0 ? funnelPlotOption(meta.funnel, meta.egger, tCenter) : null;
+
+    const groupTitle = g.group === 'all' ? '整体合并' : `亚组：${g.group}`;
+
+    return (
+      <div key={key}>
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Row gutter={16} align="middle">
+            <Col>
+              <span style={{ fontSize: 13, color: '#666' }}>{groupTitle}</span>
+            </Col>
+            <Col flex="auto">
+              <Space size="large" wrap>
+                <Statistic
+                  title="合并率"
+                  value={pooled.rate ?? 0}
+                  precision={pooled.rate != null ? 1 : 0}
+                  suffix="%"
+                />
+                <Statistic
+                  title="95% CI"
+                  value={
+                    pooled.ci_lower != null && pooled.ci_upper != null
+                      ? `${pooled.ci_lower.toFixed(1)}% – ${pooled.ci_upper.toFixed(1)}%`
+                      : '—'
+                  }
+                  valueStyle={{ fontSize: 18 }}
+                />
+                <Statistic
+                  title="I²"
+                  value={pooled.I2}
+                  precision={1}
+                  suffix="%"
+                  valueStyle={{
+                    color: pooled.I2 >= 75 ? '#cf1322' : pooled.I2 >= 50 ? '#d46b08' : '#389e0d',
+                  }}
+                />
+              </Space>
+            </Col>
+          </Row>
+        </Card>
+        <ChartWithSnapshot
+          title={`森林图 — ${groupTitle}`}
+          token={tokenOf(metaAnalysisData)}
+          option={forestOption}
+          height={Math.max(280, 60 + studies.length * 32)}
+        />
+        {funnelOption && (
+          <ChartWithSnapshot
+            title={`漏斗图 — ${groupTitle}`}
+            token={tokenOf(metaAnalysisData)}
+            option={funnelOption}
+            height={320}
+          />
+        )}
+      </div>
+    );
+  };
+
+  const metaAnalysisContent = (
+    <Spin spinning={metaAnalysisLoading}>
+      {!appliedDisease ? (
+        <Empty description="请先在上方筛选面板选择疾病后查看证据合成" style={{ padding: '40px 0' }} />
+      ) : !metaAnalysisData || metaAnalysisData.groups.length === 0 ? (
+        <Empty description="当前筛选无符合质量要求（A+B 级）的研究数据" style={{ padding: '40px 0' }} />
+      ) : (
+        <>
+          <Space style={{ marginBottom: 16 }}>
+            <span style={{ fontWeight: 'bold' }}>亚组：</span>
+            <Segmented
+              options={[
+                { label: '整体', value: '' },
+                { label: '按省', value: 'province' },
+                { label: '按年份', value: 'year' },
+                { label: '按年龄段', value: 'age_group' },
+              ]}
+              value={metaGroupBy}
+              onChange={(v) => setMetaGroupBy(v as string)}
+            />
+          </Space>
+          {metaAnalysisData.groups.map((g, i) => renderMetaGroup(g, `${g.group}_${i}`))}
+        </>
+      )}
+    </Spin>
+  );
+
+  // ===================== 出生队列内容（热力图 + 队列轨迹折线） =====================
+  const birthCohortContent = (
+    <Spin spinning={birthCohortLoading}>
+      {!appliedDisease ? (
+        <Empty description="请先在上方筛选面板选择疾病后查看出生队列" style={{ padding: '40px 0' }} />
+      ) : !birthCohortData || birthCohortData.cohorts.length === 0 ? (
+        <Empty description="当前筛选无有效数据（无法推算出生年份或被剔除）" style={{ padding: '40px 0' }} />
+      ) : (
+        <>
+          {birthCohortData.disease_note ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={birthCohortData.disease_note}
+            />
+          ) : null}
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="同一颜色斜向带提示队列效应（该代人持续低免疫）"
+          />
+          <ChartWithSnapshot
+            title="出生队列热力图（x=调查年, y=出生年代, 值=加权阳性率）"
+            token={tokenOf(birthCohortData)}
+            option={birthCohortHeatmapOption(
+              '出生队列热力图（x=调查年, y=出生年代, 值=加权阳性率）',
+              birthCohortData.matrix,
+              birthCohortData.x_years,
+              birthCohortData.y_bands,
+            )}
+            height={Math.max(320, birthCohortData.y_bands.length * 48 + 80)}
+          />
+          <ChartWithSnapshot
+            title="各出生队列阳性率随调查年轨迹"
+            token={tokenOf(birthCohortData)}
+            option={birthCohortLinesOption(
+              '各出生队列阳性率随调查年轨迹',
+              birthCohortData.cohorts,
+            )}
+            height={380}
+          />
+          <div style={{ marginTop: 12, color: '#888', fontSize: 12 }}>
+            数据点：{birthCohortData.meta.n_records}，剔除（无法推算出生年份）：{birthCohortData.meta.dropped}；每格需 ≥
+            {birthCohortData.meta.min_cell_points} 个数据点，不足置空。
+          </div>
+        </>
+      )}
+    </Spin>
+  );
+
   return (
     <>
       {filterPanel}
@@ -2303,6 +2729,24 @@ const Analysis: React.FC = () => {
             key: 'coverage',
             label: '数据覆盖度',
             children: coverageContent,
+          },
+          {
+            key: 'ageCurve',
+            label: (
+              <span>
+                <LineChartOutlined />
+                年龄曲线
+              </span>
+            ),
+            children: (
+              <Spin spinning={ageCurveLoading}>
+                {!appliedDisease ? (
+                  <Empty description="请先在上方筛选面板选择疾病后查看年龄曲线" style={{ padding: '40px 0' }} />
+                ) : (
+                  <AgeCurveChart data={ageCurveData} loading={ageCurveLoading} />
+                )}
+              </Spin>
+            ),
           },
           {
             key: 'foi',
@@ -2379,6 +2823,26 @@ const Analysis: React.FC = () => {
               </span>
             ),
             children: advancedContent,
+          },
+          {
+            key: 'metaAnalysis',
+            label: (
+              <span>
+                <ExperimentOutlined />
+                证据合成
+              </span>
+            ),
+            children: metaAnalysisContent,
+          },
+          {
+            key: 'birthCohort',
+            label: (
+              <span>
+                <LineChartOutlined />
+                出生队列
+              </span>
+            ),
+            children: birthCohortContent,
           },
         ]}
       />

@@ -51,14 +51,19 @@ class FakeDB:
         return FakeResult(self._rows)
 
 
-def row(province=None, city=None, collection_year=None, disease="flu", review_status="approved", cnt=1):
-    """创建一个假的 SQLAlchemy Row 对象"""
+def row(province=None, city=None, collection_year=None, disease="flu", review_status="approved", cnt=1, quality_grade="A"):
+    """创建一个假的 SQLAlchemy Row 对象
+
+    质量分级默认 A 级：data-gaps 完整度仅统计 A+B 级，默认 A 可保证
+    已通过(approved)数据点计入 approved_ab。
+    """
     return SimpleNamespace(
         province=province,
         city=city,
         collection_year=collection_year,
         disease=disease,
         review_status=review_status,
+        quality_grade=quality_grade,
         cnt=cnt,
     )
 
@@ -445,6 +450,35 @@ def test_city_matrix_sorted():
     assert cities[1] == "南京", f"南京应为第2: {cities}"
     assert cities[2] == "无锡", f"无锡应为第3: {cities}"
     print("✓ test_city_matrix_sorted")
+
+
+# ── 19. 完整度仅统计 A+B 级 ─────────────────────────
+def test_completeness_counts_only_ab_grade():
+    """完整度只统计 A+B 级已通过数据点；C 级 approved 不计入 approved_ab"""
+    # 5 个 A 级 approved → 满分基础 70
+    db_ab = FakeDB([
+        row(province="A", collection_year=2020, review_status="approved", cnt=5, quality_grade="A"),
+    ])
+    assert run(db_ab)["province_year_matrix"][0]["completeness_score"] == 70.0
+
+    # 5 个 C 级 approved → approved_ab=0 → 完整度 0（C 级不计入）
+    db_c = FakeDB([
+        row(province="A", collection_year=2020, review_status="approved", cnt=5, quality_grade="C"),
+    ])
+    res_c = run(db_c)["province_year_matrix"][0]
+    assert res_c["approved"] == 5          # 已通过总数仍为 5
+    assert res_c["approved_ab"] == 0       # 但 A+B 级为 0
+    assert res_c["completeness_score"] == 0.0
+
+    # 混合：5 A + 3 C → approved_ab=5 → 满分 70
+    db_mix = FakeDB([
+        row(province="A", collection_year=2020, review_status="approved", cnt=5, quality_grade="A"),
+        row(province="A", collection_year=2020, review_status="approved", cnt=3, quality_grade="C"),
+    ])
+    res_mix = run(db_mix)["province_year_matrix"][0]
+    assert res_mix["approved_ab"] == 5
+    assert res_mix["completeness_score"] == 70.0
+    print("✓ test_completeness_counts_only_ab_grade")
 
 
 # ── 运行所有测试 ─────────────────────────────────────

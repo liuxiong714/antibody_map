@@ -37,3 +37,14 @@ bcrypt>=4.0.0
 
 # 结构化日志
 loguru>=0.7.0
+
+# 统计分析（95% CI 引擎：Wilson score / Clopper-Pearson 精确法）
+statsmodels>=0.14.1
+scipy>=1.13.0
+
+# 空间统计（Moran's I 全局自相关 + Getis-Ord Gi* 局部热点）
+esda>=2.5.1
+libpysal>=4.10.0
+
+# 抗原制图（metric MDS：sklearn.manifold.MDS + scipy.spatial.procrustes）
+scikit-learn>=1.5.0

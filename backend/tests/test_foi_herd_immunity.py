@@ -24,7 +24,11 @@ from app.services.analysis_service import (
     R0_REFERENCE,
     DEFAULT_LIFE_EXPECTANCY,
     get_foi_analysis,
+    get_immune_barrier_assessment,
+    _catalytic_r0_hit,
+    _resolve_hit_target,
 )
+from app.core.methodology import build_methodology_note
 from app.api.v1.analysis import router as analysis_router
 
 
@@ -338,6 +342,164 @@ def test_foi_endpoint_is_get():
 
 
 # ============================================================
+# 4. 假设参数 + 方法学脚注测试（免疫屏障/FOI 交互面板相关）
+# ============================================================
+
+def test_catalytic_r0_hit_explicit_mu_forces_r0():
+    """显式 μ>0 时即便推荐模型为 M2（μ 固定）也用 λ·L 强制重算 R0/HIT。
+
+    - 不传 mu_fixed：recommended=M2_seroreversion 且非 M1 → r0_to_hit=None → 回退文献 R0
+    - 传 mu_fixed=0.02：explicit_seroreversion=True → r0_to_hit=λ·L=0.1×75=7.5
+    """
+    catalytic = {
+        "recommended_model": "M2_seroreversion",
+        "recommended_params": {"lambda": 0.1, "mu": 0.02},
+        "recommended_foi_avg": 0.1,
+    }
+    # 无显式 μ → 不输出 r0_to_hit，回退文献 R0
+    r0_none = _catalytic_r0_hit(catalytic, "measles", life_exp=75.0, mu_fixed=None)
+    assert r0_none["r0_to_hit"] is None
+    assert r0_none["hit_source"] == "literature_r0"
+    # 显式 μ=0.02 → 强制 λ·L
+    r0_forced = _catalytic_r0_hit(catalytic, "measles", life_exp=75.0, mu_fixed=0.02)
+    assert r0_forced["r0_to_hit"] == 7.5
+    assert r0_forced["hit_source"] == "mle_foi"
+
+
+def test_catalytic_r0_hit_life_expectancy_scales():
+    """期望寿命参数直接缩放 R0=λ·L。"""
+    catalytic = {
+        "recommended_model": "M1_constant",
+        "recommended_params": {"lambda": 0.2},
+        "recommended_foi_avg": 0.2,
+    }
+    r0_60 = _catalytic_r0_hit(catalytic, "measles", life_exp=60.0)
+    r0_80 = _catalytic_r0_hit(catalytic, "measles", life_exp=80.0)
+    assert r0_60["r0_to_hit"] == 12.0
+    assert r0_80["r0_to_hit"] == 16.0
+
+
+def test_resolve_hit_target_override():
+    """HIT 来源覆盖参数：who/literature/foi 优先级，覆盖源无值回退默认链。"""
+    foi_hit, who, lit = 95.0, 90.0, 93.33
+    # 默认链：FOI > WHO > 文献
+    assert _resolve_hit_target(foi_hit, who, lit, "measles") == (95.0, "mle_foi")
+    # 覆盖为 who
+    assert _resolve_hit_target(foi_hit, who, lit, "measles", hit_source_override="who") == (90.0, "who")
+    # 覆盖为 literature
+    assert _resolve_hit_target(foi_hit, who, lit, "measles", hit_source_override="literature") == (93.33, "literature_r0")
+    # 覆盖为 foi
+    assert _resolve_hit_target(foi_hit, who, lit, "measles", hit_source_override="foi") == (95.0, "mle_foi")
+    # 覆盖源无值（who=None）→ 回退默认链
+    assert _resolve_hit_target(foi_hit, None, lit, "measles", hit_source_override="who") == (95.0, "mle_foi")
+
+
+def test_get_foi_analysis_seroreversion_mu_effect():
+    """指定 seroreversion_mu=0.02 → 显式 μ 驱动催化模型 M2(μ 固定) + λ·L 强制重算 HIT。"""
+    dps = [
+        _make_dp("measles", 90.0, "广东", 1000, 0, 14),
+        _make_dp("measles", 95.0, "广东", 1000, 5, 14),
+    ]
+    db = FakeSession(dps)
+    r_default = asyncio.run(get_foi_analysis(db, disease="measles"))
+    r_mu = asyncio.run(get_foi_analysis(db, disease="measles", seroreversion_mu=0.02))
+
+    s_mu = r_mu["summary"]
+    # μ>0 时推荐模型固定为 M2_seroreversion（μ 固定）
+    assert s_mu["recommended_model"] == "M2_seroreversion"
+    assert s_mu["models"][0]["params"].get("mu_fixed") is True
+    # 显式 μ 强制 R0=λ·L 输出 → hit 目标有值
+    assert s_mu["estimated_r0_from_foi"] is not None
+    assert s_mu["hit_target_used_percent"] is not None
+    # 假设记录
+    assert r_mu["assumptions"] == {"seroreversion_mu": 0.02}
+    assert r_default["assumptions"] is None
+    assert s_mu["life_expectancy_used"] == 75.0
+
+
+def test_get_foi_analysis_assumptions_recorded():
+    """三个假设参数全部指定 → assumptions 完整记录 + life_expectancy_used 生效。"""
+    dps = [_make_dp("measles", 90.0, "广东", 1000, 0, 14)]
+    db = FakeSession(dps)
+    result = asyncio.run(get_foi_analysis(
+        db, disease="measles",
+        life_expectancy=80, seroreversion_mu=0.01, hit_source_override="who",
+    ))
+    assert result["assumptions"] == {
+        "life_expectancy": 80, "seroreversion_mu": 0.01, "hit_source_override": "who",
+    }
+    assert result["summary"]["life_expectancy_used"] == 80
+
+
+def test_get_immune_barrier_assumptions_recorded():
+    """免疫屏障端点：seroreversion_mu=0.02 → 响应记录假设，且 HIT/状态可能变化。"""
+    dps = [_make_dp("measles", 90.0, "广东", 1000, 0, 14)]
+    db = FakeSession(dps)
+
+    r_def = asyncio.run(get_immune_barrier_assessment(db, disease="measles"))
+    r_mu = asyncio.run(get_immune_barrier_assessment(db, disease="measles", seroreversion_mu=0.02))
+
+    assert r_def["assumptions"] is None
+    assert r_mu["assumptions"] == {"seroreversion_mu": 0.02}
+    assert r_mu["life_expectancy_used"] == 75.0
+    # 显式 μ → 强制 λ·L → hit_target_used_percent 有值且来源可解析
+    assert r_mu["summary"]["hit_target_used_percent"] is not None
+    assert r_mu["summary"]["hit_target_source"] in ("mle_foi", "literature_r0", "who")
+
+
+def test_methodology_note_full_content():
+    """方法学脚注应包含数据纳入、合并模型、异质性、CI 方法、快照日期。"""
+    note = build_methodology_note(
+        "meta_analysis",
+        {"disease": "measles", "province": "广东"},
+        {
+            "n_estimates": 23,
+            "n_literatures": 8,
+            "quality_grades": True,
+            "model": "random",
+            "I2": 64,
+            "ci_method": "wilson",
+            "snapshot_date": "2026-08-16",
+        },
+    )
+    assert "共纳入 A/B 级估计 23 个（8 篇文献）" in note
+    assert "随机效应模型" in note
+    assert "I²=64%" in note
+    assert "Wilson 法" in note
+    assert "2026-08-16 数据快照" in note
+
+
+def test_methodology_note_with_assumptions():
+    """生效假设应写入方法学脚注（假设：...），催化模型 μ 固定说明生效。"""
+    note = build_methodology_note(
+        "immune_barrier",
+        {"disease": "measles"},
+        {
+            "n_estimates": 12,
+            "catalytic_model": "M2_seroreversion",
+            "catalytic_mu": 0.02,
+            "assumptions": {
+                "life_expectancy": 80,
+                "seroreversion_mu": 0.02,
+                "hit_source_override": "who",
+            },
+            "snapshot_date": "2026-08-16",
+        },
+    )
+    assert "血清转阴率固定 μ=0.02/年" in note
+    assert "假设：" in note
+    assert "期望寿命 80 年" in note
+    assert "HIT 来源强制: who" in note
+
+
+def test_methodology_note_fallback():
+    """无任何事实信息 → 模块级兜底文案 + 快照日期。"""
+    note = build_methodology_note("foi", {"disease": "measles"}, {})
+    assert "FOI 与群体免疫分析" in note
+    assert "数据快照" in note
+
+
+# ============================================================
 # 入口：直接运行
 # ============================================================
 if __name__ == "__main__":
@@ -363,6 +525,17 @@ if __name__ == "__main__":
         ]),
         ("API 路由", [
             test_foi_api_endpoint_registered, test_foi_endpoint_is_get,
+        ]),
+        ("假设参数 + 方法学", [
+            test_catalytic_r0_hit_explicit_mu_forces_r0,
+            test_catalytic_r0_hit_life_expectancy_scales,
+            test_resolve_hit_target_override,
+            test_get_foi_analysis_seroreversion_mu_effect,
+            test_get_foi_analysis_assumptions_recorded,
+            test_get_immune_barrier_assumptions_recorded,
+            test_methodology_note_full_content,
+            test_methodology_note_with_assumptions,
+            test_methodology_note_fallback,
         ]),
     ]
     total = 0

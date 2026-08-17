@@ -7,6 +7,7 @@ import {
   BookOutlined,
   SafetyOutlined,
   BarChartOutlined,
+  RadarChartOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
   UserOutlined,
@@ -53,6 +54,7 @@ const MainLayout: React.FC = () => {
     { key: '/literature', icon: <BookOutlined />, label: t('nav.literature') },
     { key: '/analysis', icon: <BarChartOutlined />, label: t('nav.analysis') },
     { key: '/assessment', icon: <SafetyOutlined />, label: t('nav.assessment') },
+    { key: '/antigenic-map', icon: <RadarChartOutlined />, label: '抗原图谱' },
     { key: '/report', icon: <FileTextOutlined />, label: t('nav.report') },
     { key: '/folders', icon: <FolderOpenOutlined />, label: t('nav.folders') },
   ];

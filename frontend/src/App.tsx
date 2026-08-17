@@ -13,6 +13,7 @@ const MapOverview = React.lazy(() => import('./pages/MapOverview'));
 const Literature = React.lazy(() => import('./pages/Literature'));
 const LiteratureDetail = React.lazy(() => import('./pages/LiteratureDetail'));
 const Assessment = React.lazy(() => import('./pages/Assessment'));
+const AntigenicMap = React.lazy(() => import('./pages/AntigenicMap'));
 const Analysis = React.lazy(() => import('./pages/Analysis'));
 const Report = React.lazy(() => import('./pages/Report'));
 const FolderMonitor = React.lazy(() => import('./pages/FolderMonitor'));
@@ -57,6 +58,7 @@ const App: React.FC = () => {
               <Route path="/literature" element={<PageBoundary><Literature /></PageBoundary>} />
               <Route path="/literature/:id" element={<PageBoundary><LiteratureDetail /></PageBoundary>} />
               <Route path="/assessment" element={<PageBoundary><Assessment /></PageBoundary>} />
+              <Route path="/antigenic-map" element={<PageBoundary><AntigenicMap /></PageBoundary>} />
               <Route path="/analysis" element={<PageBoundary><Analysis /></PageBoundary>} />
               <Route path="/report" element={<PageBoundary><Report /></PageBoundary>} />
               <Route path="/folders" element={<PageBoundary><FolderMonitor /></PageBoundary>} />

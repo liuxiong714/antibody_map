@@ -14,6 +14,21 @@ from app.tasks.extract_task import process_literature
 logger = logging.getLogger("uvicorn")
 
 
+def _metadata_quality_breakdown(dp: DataPoint) -> dict | None:
+    """元数据级质量明细（无文献全文时的实时估算，仅用于前端 Tooltip 展示）。
+
+    有全文时以异步任务落库的 quality_score/quality_grade 为准；此处仅给出六项分项。
+    """
+    try:
+        from app.services.quality_service import score_data_point
+
+        result = score_data_point(dp, literature_text=None)
+        return result["breakdown"]
+    except Exception as e:  # 评分失败不应影响列表加载
+        logger.warning(f"质量明细估算失败: {e}")
+        return None
+
+
 async def trigger_extraction(
     db: AsyncSession,
     literature_id: uuid.UUID,
@@ -135,6 +150,11 @@ async def get_extraction_results(
             "is_grounded": bool(dp.is_grounded),
             "confidence": dp.confidence,
             "review_status": dp.review_status,
+            # 质量分级（审核通过后异步打分写入；breakdown 为元数据级实时估算，用于前端 Tooltip 明细）
+            "quality_score": dp.quality_score,
+            "quality_grade": dp.quality_grade,
+            "estimate_grade": dp.estimate_grade,
+            "quality_breakdown": _metadata_quality_breakdown(dp),
             "created_at": dp.created_at.isoformat() if dp.created_at else None,
             "updated_at": dp.updated_at.isoformat() if dp.updated_at else None,
         }

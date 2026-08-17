@@ -85,6 +85,11 @@ export interface DataPoint {
   collection_year: number | null;
   confidence: string;
   review_status: string;
+  // 质量分级（审核通过后异步打分写入；breakdown 为元数据级实时明细）
+  quality_score?: number | null;
+  quality_grade?: string | null;
+  estimate_grade?: string | null;
+  quality_breakdown?: Record<string, { score: number; label: string; max?: number }> | null;
   source_context: string | null;
   source_page: number | null;
   // P0 新增：精确字符级溯源字段
@@ -262,6 +267,34 @@ export interface ModelsListData {
   local: ModelOption[];
   remote: ModelOption[];
 }
+// ===== 催化模型族（MLE 拟合 + 模型比较） =====
+
+export interface CatalyticModel {
+  name: string;
+  label: string;
+  k_params: number;
+  /** 参数 MLE 估计 + 95%CI（键为 lambda / mu / lambda1 / lambda2 等及对应 _ci_lower/_ci_upper） */
+  params: Record<string, number | null>;
+  loglik: number | null;
+  aic: number | null;
+  bic: number | null;
+  delta_aic: number | null;
+  akaike_weight: number | null;
+  converged: boolean;
+}
+
+export interface CatalyticLRT {
+  pair: string;
+  chisq: number;
+  df: number;
+  p_value: number;
+}
+
+export interface CatalyticCurvePoint {
+  age: number;
+  prevalence: number;
+}
+
 export interface ImmuneBarrierData {
   disease: string;
   who_threshold: number | null;
@@ -281,6 +314,15 @@ export interface ImmuneBarrierData {
     hit_from_reference_r0_percent?: number | null;
     hit_target_used_percent?: number | null;
     hit_target_source?: string;
+    // 催化模型族 MLE 拟合 + 模型比较（新）
+    models?: CatalyticModel[];
+    recommended_model?: string | null;
+    recommended_params?: Record<string, number | null> | null;
+    fitted_curve?: CatalyticCurvePoint[];
+    modeling_notes?: string[];
+    r0_assumption_note?: string | null;
+    n_catalytic_records?: number;
+    catalytic_age_range?: [number | null, number | null];
   };
   yearly_trend: Array<{ year: number; weighted_positivity: number | null; sample_size: number; point_count: number }>;
   age_groups?: Array<{
@@ -661,21 +703,38 @@ export interface GoalTrackingResponse {
 
 export interface AgeCurvePoint {
   age_mid: number;
-  value: number;
-  n_studies: number;
-  total_samples: number;
+  x: number;
+  n: number;
+  prevalence: number;
+}
+
+export interface AgeCurveCurvePoint {
+  age: number;
+  prevalence: number;
+  ci_lower: number;
+  ci_upper: number;
+}
+
+export interface AgeCurveFoiPoint {
+  age: number;
+  foi: number | null;
+}
+
+export interface AgeCurveMeta {
+  covarage_warning: boolean;
+  dropped_points: number;
+  lambda_smooth: number | null;
+  monotonic_violation: boolean | null;
 }
 
 export interface AgeCurveResponse {
   disease: string | null;
   province: string | null;
-  metric: 'seroprevalence' | 'gmc';
   n_points: number;
-  age_mid_range: [number | null, number | null];
-  raw_points: AgeCurvePoint[];
-  smoothed: Array<{ age_mid: number; value: number }>;
-  inflection_points: Array<{ age_mid: number; value: number }>;
-  notes: string[];
+  curve: AgeCurveCurvePoint[];
+  points: AgeCurvePoint[];
+  foi_curve: AgeCurveFoiPoint[];
+  meta: AgeCurveMeta;
 }
 
 export interface MetaStudyItem {
@@ -710,6 +769,105 @@ export interface MetaMergeResponse {
   notes: string[];
 }
 
+// ===== 多文献 Meta 分析 /analysis/meta-analysis =====
+
+export interface MetaAnalysisStudy {
+  label: string;          // 研究标签（标题 年份）
+  x: number;              // 阳性数
+  n: number;              // 样本量
+  p: number;              // 阳性率（0-1 比例）
+  weight: number;         // 主模型权重(%)
+  t: number;              // FT 变换效应量
+  se: number;
+  sqrt_n: number;
+}
+
+export interface MetaAnalysisPooled {
+  rate: number | null;    // 合并率（%）
+  ci_lower: number | null;
+  ci_upper: number | null;
+  model: string | null;   // 'random' | 'fixed' | 'single_study'
+  tau2: number;
+  tau2_se: number | null;
+  Q: number;
+  Q_p: number | null;
+  I2: number;
+  k: number;
+  se: number | null;
+  n_rep?: number | null;
+}
+
+export interface MetaFunnelPoint {
+  t: number;
+  sqrt_n: number;
+}
+
+export interface MetaEggerTest {
+  intercept: number;
+  p_value: number;
+  note?: string;
+}
+
+export interface MetaAnalysisGroup {
+  group: string;
+  n_studies: number;
+  meta: {
+    per_study: MetaAnalysisStudy[];
+    pooled: MetaAnalysisPooled;
+    funnel: MetaFunnelPoint[] | null;
+    egger: MetaEggerTest | null;
+    primary_model: string | null;
+    notes: string[];
+  };
+}
+
+export interface MetaAnalysisResponse {
+  disease: string | null;
+  group_by: string | null;
+  groups: MetaAnalysisGroup[];
+  q_between: {
+    Q_between: number;
+    df: number;
+    p_value: number;
+    Q_total: number;
+    Q_within: number;
+  } | null;
+  notes: string[];
+}
+
+// ===== 出生队列分析 /analysis/birth-cohort =====
+
+export interface BirthCohortSeriesPoint {
+  year: number;
+  rate: number | null;
+  ci_lower: number | null;
+  ci_upper: number | null;
+  n: number;
+}
+
+export interface BirthCohortGroup {
+  birth_year_band: string;
+  series: BirthCohortSeriesPoint[];
+}
+
+export interface BirthCohortResponse {
+  disease: string | null;
+  province: string | null;
+  year_start: number | null;
+  year_end: number | null;
+  cohorts: BirthCohortGroup[];
+  matrix: (number | null)[][];
+  x_years: number[];
+  y_bands: string[];
+  disease_note: string | null;
+  meta: {
+    n_records: number;
+    dropped: number;
+    min_cell_points: number;
+    method: string;
+  };
+}
+
 export interface AssayHeterogeneityRow {
   assay: string;
   n_studies: number;
@@ -731,6 +889,36 @@ export interface AssayHeterogeneityResponse {
   across_assay_q_statistic: number | null;
   across_assay_k: number;
   notes: string[];
+}
+
+/** 空间热点/冷点分类：99/95/90% 置信热点（hot_*）、冷点（cold_*）、不显著（ns） */
+export type HotspotCluster =
+  | 'hot_99' | 'hot_95' | 'hot_90'
+  | 'cold_99' | 'cold_95' | 'cold_90'
+  | 'ns';
+
+export interface SpatialHotspotProvince {
+  name: string;
+  rate: number | null;
+  gi_z: number | null;
+  p: number | null;
+  cluster: HotspotCluster;
+}
+
+export interface SpatialHotspotsResponse {
+  disease: string;
+  level: string;
+  year_start: number | null;
+  year_end: number | null;
+  n_valid: number;
+  adjacency_version: string | null;
+  global_moran: {
+    I: number;
+    p_sim: number;
+    z: number;
+    conclusion: string;
+  } | null;
+  provinces: SpatialHotspotProvince[];
 }
 
 export type BarrierStatus = 'reached' | 'near' | 'not_reached' | 'undetermined';
@@ -796,3 +984,56 @@ export interface CoverageReviewResult {
   overview: CoverageReviewOverview;
   diseases: CoverageReviewDisease[];
 }
+
+// ===== 抗原图谱（滴度矩阵制图 /analysis/antigenic-map）=====
+
+export interface AntigenicMapPoint {
+  name: string;
+  type: 'antigen' | 'serum';
+  x: number;
+  y: number;
+}
+
+export interface AntigenicMapData {
+  titer_table_id: string;
+  literature_id: string;
+  assay_type: 'hi' | 'vnt' | 'elisa';
+  unit: string | null;
+  antigens: string[];
+  ref_antisera: string[];
+  quality_score: number | null;
+  confidence: string;
+  source_page: number | null;
+  coordinates: AntigenicMapPoint[];
+  stress_raw: number;
+  stress_normalized: number;
+  stress_per_point: number[];
+  grid_explanation: string;
+  n_antigen: number;
+  n_serum: number;
+  dropped_rows: number[];
+  converged: boolean;
+  n_iter: number;
+  meta?: {
+    methodology_note?: string;
+  };
+}
+
+export interface TiterTableItem {
+  id: string;
+  literature_id: string;
+  literature_title: string;
+  assay_type: 'hi' | 'vnt' | 'elisa';
+  unit: string | null;
+  n_antigens: number;
+  n_sera: number;
+  quality_score: number | null;
+  confidence: string;
+  created_at: string | null;
+}
+
+export interface TiterTableListData {
+  items: TiterTableItem[];
+  total: number;
+}
+

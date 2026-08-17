@@ -19,6 +19,33 @@ from app.core.term_normalizer import (
 
 logger = logging.getLogger("uvicorn")
 
+
+def _parse_titer_cell(cell: Any) -> Optional[float]:
+    """把滴度矩阵单元格归一化为数值。
+
+    - 数字直接返回（float）
+    - "<10"、"<20" 等低于检出限 → 0
+    - "-"、""、"·"、None、无法解析 → None（缺失）
+    """
+    if cell is None:
+        return None
+    if isinstance(cell, bool):
+        return None
+    if isinstance(cell, (int, float)):
+        return float(cell)
+    s = str(cell).strip().replace("，", ",").replace("：", ":")
+    if s == "" or s in ("-", "—", "–", "/", "·", "NA", "n/a", "N/A", "null", "None", "nan"):
+        return None
+    # "<10" / "<20" / "≤10" 等低于检出限表达
+    m = re.match(r"^[<≤]\s*([0-9.]+)$", s)
+    if m:
+        return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 # ==================== Prompt 模板 ====================
 
 PROVINCE_LIST_TIP = f"""中国省份标准名称列表（必须从这里选择，不要使用简称或拼音）：
@@ -67,6 +94,18 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
       "estimate_type": "估计类型：primary（主估计/总体汇总）或 subgroup（子组/分层估计）",
       "parent_group": "子估计所属主估计的分组标识（如：广东全省、0-14岁组的主估计 id）。主估计填null"
     }}
+  ],
+  "titer_tables": [
+    {{
+      "assay_type": "检测类型：hi（血凝抑制）/ vnt（病毒中和）/ elisa（酶联免疫）",
+      "ref_antisera": ["抗血清名称1", "抗血清名称2", "..."],
+      "antigens": ["抗原名称1", "抗原名称2", "..."],
+      "titers": [[40, 80, 160], [20, 40, 80]],
+      "unit": "滴度单位（如 1:10、1:100），无法确定填null",
+      "source_page": 来源页码（整数，如无法判断填null）,
+      "source_context": "包含该表格的原文片段（20-50字）",
+      "confidence": 0.0到1.0的置信度（依据表格结构是否完整、行列是否对齐、数值是否连贯判断）
+    }}
   ]
 }}
 
@@ -79,6 +118,12 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
 - **无法确定填null**：确实无法从文中确定的字段填null
 - **仅输出JSON**：不要包含任何解释性文字或markdown代码块标记
 - **【重要】标注来源**：每个数据点必须填写source_context，摘录包含关键数据的原文片段（如："阳性者215例，阳性率84.3%"）
+- **【titer_tables 试点】滴度矩阵识别**：
+  - 仅在文中**明确存在 HI（血凝抑制）/ VNT（病毒中和）/ ELISA 滴度矩阵表**时输出 titer_tables；否则该键输出空数组 []
+  - 滴度矩阵：行 = 抗原（如不同毒株），列 = 抗血清（如不同免疫参考血清），单元格 = 滴度数值（如 40、80、160、320、<10）
+  - 数值必须是整数；"<10"或"<20"等低于检出限的值填 0；"-"、空格、缺失填 null
+  - 每张独立表格单独输出一条记录；assay_type 只能取 hi / vnt / elisa 三选一
+  - confidence < 0.8 的表格会被转入人工审核，请如实评估表格结构完整性
 - **【P1-1 主估计/子估计】**：
   - 如果一个研究既有"总体/全省汇总"数据，又有"按年龄/地区/免疫史分组"的细分数据，则：
     - 总体汇总数据 → estimate_type="primary"，parent_group=null
@@ -132,6 +177,18 @@ Chinese Province Name Reference List:
       "source_page": source page number (integer, null if undeterminable),
       "source_context": "original text snippet containing key data (20-50 chars)"
     }}
+  ],
+  "titer_tables": [
+    {{
+      "assay_type": "assay type: hi (hemagglutination inhibition) / vnt (virus neutralization) / elisa",
+      "ref_antisera": ["serum name 1", "serum name 2", "..."],
+      "antigens": ["antigen name 1", "antigen name 2", "..."],
+      "titers": [[40, 80, 160], [20, 40, 80]],
+      "unit": "titer unit (e.g. 1:10, 1:100), null if unknown",
+      "source_page": source page number (integer, null if undeterminable),
+      "source_context": "original text snippet containing the table (20-50 chars)",
+      "confidence": 0.0-1.0 confidence (based on table structure completeness and row/col alignment)
+    }}
   ]
 }}
 
@@ -144,6 +201,12 @@ Chinese Province Name Reference List:
 - Fill null if not determinable
 - Output ONLY JSON, no markdown code blocks
 - **【IMPORTANT】Include source_context**: Quote the original text snippet containing key numbers (e.g., "215 positive cases, positivity rate 84.3%")
+- **【titer_tables pilot】Titer matrix recognition**:
+  - Only output titer_tables when the text clearly contains an HI / VNT / ELISA titer matrix table; otherwise output an empty array []
+  - Matrix: rows = antigens (e.g., strains), columns = antisera (e.g., immune reference sera), cells = integer titer values (e.g., 40, 80, 160, 320, <10)
+  - Values must be integers; values below detection limit such as "<10" or "<20" → 0; "-", blank, missing → null
+  - Output one record per independent table; assay_type must be one of hi / vnt / elisa
+  - Tables with confidence < 0.8 will be routed to manual review, so assess table completeness honestly
 
 Literature text:
 {text}"""
@@ -203,6 +266,18 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
       "estimate_type": "估计类型：primary（主估计/总体汇总）或 subgroup（子组/分层估计）",
       "parent_group": "子估计所属主估计的分组标识（如：广东全省、0-14岁组的主估计 id）。主估计填null"
     }}
+  ],
+  "titer_tables": [
+    {{
+      "assay_type": "检测类型：hi（血凝抑制）/ vnt（病毒中和）/ elisa（酶联免疫）",
+      "ref_antisera": ["抗血清名称1", "抗血清名称2", "..."],
+      "antigens": ["抗原名称1", "抗原名称2", "..."],
+      "titers": [[40, 80, 160], [20, 40, 80]],
+      "unit": "滴度单位（如 1:10、1:100），无法确定填null",
+      "source_page": 来源页码（整数，如无法判断填null）,
+      "source_context": "包含该表格的原文片段（20-50字）",
+      "confidence": 0.0到1.0的置信度（依据表格结构是否完整、行列是否对齐、数值是否连贯判断）
+    }}
   ]
 }}
 
@@ -215,6 +290,12 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
 - **无法确定填null**：确实无法从文中确定的字段填null
 - **仅输出JSON**：不要包含任何解释性文字或markdown代码块标记
 - **【重要】标注来源**：每个数据点必须填写source_context，摘录包含关键数据的原文片段（如："阳性者215例，阳性率84.3%"）
+- **【titer_tables 试点】滴度矩阵识别**：
+  - 仅在文中**明确存在 HI（血凝抑制）/ VNT（病毒中和）/ ELISA 滴度矩阵表**时输出 titer_tables；否则该键输出空数组 []
+  - 滴度矩阵：行 = 抗原（如不同毒株），列 = 抗血清（如不同免疫参考血清），单元格 = 滴度数值（如 40、80、160、320、<10）
+  - 数值必须是整数；"<10"或"<20"等低于检出限的值填 0；"-"、空格、缺失填 null
+  - 每张独立表格单独输出一条记录；assay_type 只能取 hi / vnt / elisa 三选一
+  - confidence < 0.8 的表格会被转入人工审核，请如实评估表格结构完整性
 - **【P1-1 主估计/子估计】**：
   - 如果一个研究既有"总体/全省汇总"数据，又有"按年龄/地区/免疫史分组"的细分数据，则：
     - 总体汇总数据 → estimate_type="primary"，parent_group=null
@@ -325,6 +406,8 @@ class LLMExtractor:
         self._feedback_examples: list[str] = []
         # Token 用量累加器：{model_name: {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int, "call_count": int}}
         self._usage_accumulator: dict[str, dict] = {}
+        # P2-tt：titer_table 提取试点（LLM 返回的滴度矩阵，置信度 < 0.8 落人工）
+        self._titer_tables: list[dict] = []
 
     @staticmethod
     def _strip_vendor_prefix(model: str) -> str:
@@ -522,10 +605,14 @@ class LLMExtractor:
             # 1. 禁用 thinking 模式（避免生成思考链 token，推理时间 3-5 倍增加）
             # 2. 通过 Ollama 原生 num_predict 参数解除默认 512/2048 tokens 的生成上限（OpenAI SDK 的 max_tokens 对 Ollama 可能被忽略）
             # 3. 降低 temperature 让输出更稳定
+            # 注意：num_ctx 必须放在嵌套 options 中，Ollama /v1 接口才会生效
             if self._is_ollama_model():
                 kwargs["extra_body"] = {
-                    "think": False,
-                    "num_predict": 16384,
+                    "options": {
+                        "num_ctx": 16384,
+                        "num_predict": 16384,
+                        "think": False,
+                    }
                 }
                 kwargs["max_tokens"] = 16384
                 kwargs["temperature"] = 0.05
@@ -571,12 +658,15 @@ class LLMExtractor:
             if self._supports_response_format(self.model):
                 payload["response_format"] = {"type": "json_object"}
 
-            # 同步 Ollama 原生参数（兜底路径）
+            # 同步 Ollama 原生参数（兜底路径，num_ctx 需在嵌套 options 中）
             if self._is_ollama_model():
                 payload["max_tokens"] = 16384
                 payload["temperature"] = 0.05
-                payload["think"] = False
-                payload["num_predict"] = 16384
+                payload["options"] = {
+                    "num_ctx": 16384,
+                    "num_predict": 16384,
+                    "think": False,
+                }
 
             async with httpx.AsyncClient(timeout=self._llm_timeout) as client:
                 resp = await client.post(
@@ -807,6 +897,165 @@ class LLMExtractor:
         logger.error(f"响应长度: {len(content)}")
         return {}
 
+    @staticmethod
+    def _parse_float_field(val) -> Optional[float]:
+        """兼容本地模型（如 qwen2.5:14b）输出的多种数值格式。
+
+        支持：87.3、'87.3'、'87.3%'、'87.3％'、'>80'、'<10'、'1,234'、'(87.3)' 等。
+        无法解析返回 None。
+        """
+        if val is None:
+            return None
+        if isinstance(val, bool):
+            return None
+        if isinstance(val, (int, float)):
+            return float(val)
+        s = str(val).strip().replace("％", "%").replace(",", "").replace("，", "")
+        # 去掉百分比与无关字符
+        s = s.replace("%", "").strip()
+        m = re.search(r"-?\d+(?:\.\d+)?", s)
+        if m:
+            return float(m.group())
+        return None
+
+    @staticmethod
+    def _parse_ci_string(val) -> tuple[Optional[float], Optional[float]]:
+        """从 CI 字符串解析 (lower, upper)。
+
+        支持：'(95% CI 16.2%–19.5%)'、'95%CI: 16.2-19.5'、'[16.2, 19.5]' 等。
+        无法解析返回 (None, None)。
+        """
+        if val is None:
+            return None, None
+        t = str(val)
+        # 移除置信水平前缀（95%/90%/95%CI 等）
+        t = re.sub(r"9[05]\s*%?\s*(CI)?", "", t, flags=re.IGNORECASE)
+        t = t.replace("%", "").replace("％", "")
+        nums = re.findall(r"-?\d+(?:\.\d+)?", t)
+        if len(nums) >= 2:
+            vals = [float(n) for n in nums[-2:]]
+            return min(vals), max(vals)
+        return None, None
+
+    @staticmethod
+    def _normalize_aliases(item: dict) -> dict:
+        """将本地模型常见的非标准字段名映射到标准 schema。
+
+        背景：qwen2.5 等本地模型不支持 response_format=json_object，
+        经常用自己的字段名输出（如 seroprevalence 代替 positivity_rate）。
+        也处理复合字段名如 after_vaccination_positivity_rate_measles_IgG。
+        """
+        if not isinstance(item, dict):
+            return item
+        norm = dict(item)
+
+        # 阳性率简单别名
+        if norm.get("positivity_rate") is None:
+            for alias in ("seroprevalence", "positive_rate", "positivity",
+                          "seropositivity", "seroprevalence_rate"):
+                if norm.get(alias) is not None:
+                    norm["positivity_rate"] = norm[alias]
+                    break
+
+        # GMC/GMT 简单别名
+        if norm.get("gmc_value") is None:
+            for alias in ("gmc", "geometric_mean_concentration",
+                          "geometric_mean_titer", "gmt", "gmt_value"):
+                if norm.get(alias) is not None:
+                    norm["gmc_value"] = norm[alias]
+                    if alias in ("geometric_mean_titer", "gmt", "gmt_value"):
+                        norm.setdefault("gmc_unit", "titer")
+                    break
+
+        # 疾病名称简单别名
+        if not norm.get("disease_name"):
+            for alias in ("virus_strain", "virus", "pathogen", "antigen"):
+                if norm.get(alias):
+                    norm["disease_name"] = norm[alias]
+                    break
+
+        # 置信区间字符串解析
+        if norm.get("positivity_ci_lower") is None and norm.get("positivity_ci_upper") is None:
+            ci = norm.get("confidence_interval") or norm.get("ci") or norm.get("positivity_ci")
+            if ci:
+                lo, hi = LLMExtractor._parse_ci_string(ci)
+                if lo is not None:
+                    norm["positivity_ci_lower"] = lo
+                    norm["positivity_ci_upper"] = hi
+
+        # ===== 复合字段名智能匹配（宽格式数据） =====
+        # 本地模型常输出宽格式：每个组一行，列名包含 disease + indicator
+        # 如 after_vaccination_positivity_rate_measles_IgG
+        # 如果已有 positivity_rate 则跳过（避免覆盖）
+        if norm.get("positivity_rate") is not None:
+            return norm
+
+        # 扫描所有字段，找包含已知子串的复合字段名
+        compound_rate_val = None
+        compound_disease = None
+        for key, val in list(item.items()):
+            if val is None:
+                continue
+            if not isinstance(key, str):
+                continue
+            k = key.lower()
+            # 复合字段名包含 positivity_rate/seroprevalence/positivity/concentration
+            if any(sub in k for sub in ("positivity_rate", "positivity", "seroprevalence", "seropositivity")):
+                if compound_rate_val is None and LLMExtractor._parse_float_field(val) is not None:
+                    compound_rate_val = LLMExtractor._parse_float_field(val)
+                    if not compound_disease:
+                        compound_disease = LLMExtractor._extract_disease_from_key(key)
+                        break  # 取第一个匹配
+
+        if compound_rate_val is not None:
+            norm["positivity_rate"] = compound_rate_val
+            if compound_disease and not norm.get("disease_name"):
+                norm["disease_name"] = compound_disease
+
+        return norm
+
+    @staticmethod
+    def _extract_disease_from_key(key: str) -> Optional[str]:
+        """从复合字段名中提取疾病名称。
+
+        如 after_vaccination_positivity_rate_measles_IgG → measles
+           before_vaccination_concentration_rubella_IgG → rubella
+        """
+        known_diseases = {
+            "measles": "measles",
+            "rubella": "rubella", 
+            "mumps": "mumps",
+            "influenza": "influenza",
+            "flu": "influenza",
+            "covid": "covid-19",
+            "sars_cov_2": "covid-19",
+            "sars-cov-2": "covid-19",
+            "hbv": "hepatitis b",
+            "hcv": "hepatitis c",
+            "hav": "hepatitis a",
+            "hev": "hepatitis e",
+            "hpv": "hpv",
+            "hiv": "hiv",
+            "tb": "tuberculosis",
+            "diphtheria": "diphtheria",
+            "tetanus": "tetanus",
+            "pertussis": "pertussis",
+            "polio": "polio",
+            "japanese_encephalitis": "japanese encephalitis",
+            "je": "japanese encephalitis",
+            "rabies": "rabies",
+            "varicella": "varicella",
+            "zoster": "zoster",
+            "dengue": "dengue",
+            "zika": "zika",
+            "yellow_fever": "yellow fever",
+        }
+        kl = key.lower()
+        for eng, std in known_diseases.items():
+            if eng in kl:
+                return std
+        return None
+
     def _post_process(self, data: dict) -> list[dict]:
         """后处理：从数组格式中提取数据点列表，并进行标准化"""
         # 新格式：data_points 数组
@@ -820,6 +1069,8 @@ class LLMExtractor:
         for item in points:
             if not isinstance(item, dict):
                 continue
+            # 字段别名归一化（兼容本地模型非标准字段名）
+            item = self._normalize_aliases(item)
             dp = {}
             # 标准化疾病名称
             dp["disease_name"] = normalize_disease(item.get("disease_name"))
@@ -859,23 +1110,105 @@ class LLMExtractor:
                 else:
                     dp[field] = None
 
-            # 浮点数字段
+            # 浮点数字段（兼容本地模型的百分比字符串、CI 字符串等格式）
             for field in [
                 "positivity_rate", "positivity_ci_lower", "positivity_ci_upper",
                 "gmc_value", "gmc_ci_lower", "gmc_ci_upper",
             ]:
-                val = item.get(field)
-                if val is not None:
-                    try:
-                        dp[field] = float(val)
-                    except (ValueError, TypeError):
-                        dp[field] = None
-                else:
-                    dp[field] = None
+                dp[field] = self._parse_float_field(item.get(field))
 
             results.append(dp)
 
         return results
+
+    def _post_process_titer_tables(self, data: dict) -> list[dict]:
+        """P2-tt 试点：从 LLM 输出中提取并校验滴度矩阵（titer_tables）。
+
+        校验规则：
+        - ref_antisera / antigens 必须为非空字符串列表
+        - titers 必须是二维数值列表，且维度与 antigens×ref_antisera 一致
+        - assay_type 仅接受 hi/vnt/elisa
+        - confidence < 0.8 一律标记 review_status='pending' 落人工（由落库方判定）
+        """
+        if not isinstance(data, dict):
+            return []
+        raw_tables = data.get("titer_tables")
+        if not isinstance(raw_tables, list) or not raw_tables:
+            return []
+
+        tables: list[dict] = []
+        for i, item in enumerate(raw_tables):
+            if not isinstance(item, dict):
+                continue
+            antigens = item.get("antigens")
+            antisera = item.get("ref_antisera")
+            titers = item.get("titers")
+            # 基础结构校验
+            if not (isinstance(antigens, list) and isinstance(antisera, list)):
+                continue
+            if not (antigens and antisera):
+                continue
+            if not isinstance(titers, list) or len(titers) != len(antigens):
+                logger.warning(f"P2-tt 表格#{i+1} 行数不匹配，跳过: {len(titers)} != {len(antigens)}")
+                continue
+
+            # 逐单元格归一化数值
+            n_rows = len(titers)
+            n_cols = len(antisera)
+            norm_titers: list[list[Optional[float]]] = []
+            valid = True
+            for r in range(n_rows):
+                row = titers[r]
+                if not isinstance(row, list) or len(row) != n_cols:
+                    logger.warning(f"P2-tt 表格#{i+1} 第{r}行列数不匹配，跳过")
+                    valid = False
+                    break
+                norm_row: list[Optional[float]] = []
+                for cell in row:
+                    norm_row.append(_parse_titer_cell(cell))
+                norm_titers.append(norm_row)
+            if not valid:
+                continue
+
+            # assay_type 归一化
+            assay_raw = str(item.get("assay_type") or "").strip().lower()
+            assay_map = {"hi": "hi", "hai": "hi", "vnt": "vnt", "nt": "vnt", "elisa": "elisa"}
+            assay_type = assay_map.get(assay_raw)
+            if assay_type is None:
+                logger.warning(f"P2-tt 表格#{i+1} 未知 assay_type={assay_raw!r}，跳过")
+                continue
+
+            # 置信度归一化（0-1，非数值默认 0.5 落人工）
+            conf_raw = item.get("confidence")
+            try:
+                confidence = float(conf_raw)
+                if not (0 <= confidence <= 1):
+                    confidence = 0.5
+            except (TypeError, ValueError):
+                confidence = 0.5
+
+            tables.append({
+                "assay_type": assay_type,
+                "ref_antisera": [str(s).strip() for s in antisera],
+                "antigens": [str(a).strip() for a in antigens],
+                "titers": norm_titers,
+                "unit": item.get("unit"),
+                "source_page": item.get("source_page"),
+                "source_context": item.get("source_context"),
+                "confidence": round(confidence, 3),
+                # 置信度 < 0.8 一律落人工审核
+                "review_status": "pending",
+                "needs_manual_review": confidence < 0.8,
+                "quality_score": int(round(confidence * 100)),
+            })
+
+        if tables:
+            logger.info(f"P2-tt 试点: 提取到 {len(tables)} 张滴度矩阵表")
+        return tables
+
+    def get_titer_tables(self) -> list[dict]:
+        """返回本次提取累计的滴度矩阵结果（P2-tt 试点）。"""
+        return list(self._titer_tables)
 
     def _has_key_fields(self, points: list[dict]) -> bool:
         """检查是否包含关键字段"""
@@ -1123,6 +1456,10 @@ class LLMExtractor:
         data = self._parse_json(content)
         points = self._post_process(data)
 
+        # P2-tt 试点：累计本次输出中的滴度矩阵（confidence<0.8 已标记落人工）
+        for tt in self._post_process_titer_tables(data):
+            self._titer_tables.append(tt)
+
         # 补充元信息
         for p in points:
             if title and not p.get("_title"):
@@ -1205,6 +1542,9 @@ class LLMExtractor:
         - B8：多趟提取智能调度（覆盖率>90%跳过后续趟）
         """
         has_tables = bool(tables_md and tables_md.strip())
+
+        # P2-tt 试点：每次完整提取前重置滴度矩阵累加器
+        self._titer_tables = []
 
         # A1：表格优先提取 — 先从表格单独提取一轮
         all_points: list[dict] = []

@@ -88,6 +88,9 @@ def dp(**kwargs):
         parent_id=None,
         confidence="medium",
         review_status="approved",
+        # 质量分级（meta 合并默认过滤 A+B；mock 默认 A 表示已通过过滤）
+        quality_score=None,
+        quality_grade="A",
     )
     base.update(kwargs)
     return SimpleNamespace(**base)

@@ -39,9 +39,11 @@ const AdvancedCharts: React.FC<Props> = ({ appliedDisease, appliedDataType, appl
         getRegionCompare(params),
         getAgeStratify(params),
       ]);
-      setTrendData((trend.data as DataItem[]) || []);
-      setRegionData((region.data as DataItem[]) || []);
-      setAgeData((age.data as DataItem[]) || []);
+      setTrendData(((trend as { trend?: DataItem[] })?.trend) || []);
+      const regionRaw = region as { regions?: DataItem[] } | DataItem[] | null;
+      setRegionData(Array.isArray(regionRaw) ? regionRaw : (regionRaw?.regions || []));
+      const ageRaw = age as { age_groups?: DataItem[] } | DataItem[] | null;
+      setAgeData(Array.isArray(ageRaw) ? ageRaw : (ageRaw?.age_groups || []));
     } catch (err) {
       console.error('[AdvancedCharts] 数据加载失败:', err);
       message.error('数据加载失败');

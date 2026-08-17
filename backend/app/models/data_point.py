@@ -51,6 +51,10 @@ class DataPoint(Base):
     )
     confidence: Mapped[str] = mapped_column(String(10), default="medium")
     review_status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    # 质量分级（0-100 分 + A/B/C 三级 + 调查级别），由审核通过后异步评分任务自动写入
+    quality_score: Mapped[Optional[int]] = mapped_column(Integer, index=True)
+    quality_grade: Mapped[Optional[str]] = mapped_column(String(1), index=True)
+    estimate_grade: Mapped[Optional[str]] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

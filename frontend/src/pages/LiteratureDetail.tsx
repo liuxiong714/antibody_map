@@ -7,6 +7,7 @@ import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, Ro
 import type { ColumnsType } from 'antd/es/table';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
+import QualityBadge from '../components/QualityBadge';
 import {
   getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText,
 } from '../services/literature';
@@ -712,6 +713,18 @@ const LiteratureDetail: React.FC = () => {
           </Tooltip>
         );
       },
+    },
+    {
+      title: '质量', key: 'quality', width: 90,
+      sorter: (a, b) => (a.quality_score ?? -1) - (b.quality_score ?? -1),
+      render: (_: unknown, r: DataPoint) => (
+        <QualityBadge
+          qualityScore={r.quality_score}
+          qualityGrade={r.quality_grade}
+          estimateGrade={r.estimate_grade}
+          breakdown={r.quality_breakdown}
+        />
+      ),
     },
     {
       title: '状态', key: 'status', width: 80,

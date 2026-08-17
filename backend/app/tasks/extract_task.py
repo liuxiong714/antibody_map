@@ -16,6 +16,7 @@ from app.models.base import async_session
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
 from app.models.extraction_history import ExtractionHistory
+from app.models.titer_table import TiterTable
 from app.tasks.celery_app import celery_app
 from app.core.minio_client import get_minio_client
 from app.core.term_normalizer import normalize_province, CHINA_PROVINCE_NAMES
@@ -109,7 +110,8 @@ def _download_pdf(object_name: str) -> Optional[bytes]:
             logger.error(f"直接路径读取失败: {e}")
 
     # 策略2: 从 MinIO 路径中提取文件名，在本地存储目录查找
-    filename = Path(object_name).name  # 例如 "b0de4cfd-...pdf"
+    # 兼容 Windows 反斜杠路径（Linux 容器内 Path().name 不识别反斜杠）
+    filename = str(object_name).replace("\\", "/").split("/")[-1]
     local_candidate = _LOCAL_STORAGE_DIR / filename
     if local_candidate.exists():
         try:
@@ -378,7 +380,8 @@ async def _process_literature_async(
         logger.info(f"文件下载成功: {len(file_bytes)} bytes")
 
         # 3. 解析文件文本（按扩展名分发：PDF/CAJ/EPUB/DOCX/TXT/HTML）
-        file_ext = Path(literature.file_path).suffix.lower()
+        file_ext = ("." + str(literature.file_path).replace("\\", "/").split("/")[-1].split(".")[-1]).lower() \
+            if "." in str(literature.file_path).replace("\\", "/").split("/")[-1] else ""
         raw_text = extract_text(file_bytes, file_ext)
         if not raw_text or not raw_text.strip():
             raise RuntimeError(
@@ -458,6 +461,10 @@ async def _process_literature_async(
                     delete(DataPoint).where(DataPoint.literature_id == literature_id)
                 )
                 logger.info(f"已清除 {len(old_ids)} 个旧数据点（文献 {literature_id}）")
+            # P2-tt 试点：一并清除旧滴度矩阵
+            await db.execute(
+                delete(TiterTable).where(TiterTable.literature_id == literature_id)
+            )
         else:
             # 仅清除未审核和已驳回的数据点，保留已审核通过的
             old_dp_result = await db.execute(
@@ -475,6 +482,32 @@ async def _process_literature_async(
                     )
                 )
                 logger.info(f"已清除 {len(old_ids)} 个未审核/已驳回旧数据点，保留已审核数据点（文献 {literature_id}）")
+            # P2-tt 试点：未审核/已驳回的滴度矩阵一并清除，保留已审核
+            await db.execute(
+                delete(TiterTable).where(
+                    TiterTable.literature_id == literature_id,
+                    TiterTable.review_status.in_(["pending", "rejected"]),
+                )
+            )
+
+        # 5c. P2-tt 试点：持久化 LLM 提取到的滴度矩阵（TiterTable）
+        titer_tables = extractor.get_titer_tables()
+        for tt in titer_tables:
+            db.add(TiterTable(
+                literature_id=literature_id,
+                assay_type=tt["assay_type"],
+                ref_antisera=tt["ref_antisera"],
+                antigens=tt["antigens"],
+                titers=tt["titers"],
+                unit=tt.get("unit"),
+                quality_score=tt.get("quality_score"),
+                source_page=tt.get("source_page"),
+                source_context=tt.get("source_context"),
+                confidence=tt.get("confidence"),
+                review_status=tt.get("review_status", "pending"),
+            ))
+        if titer_tables:
+            logger.info(f"P2-tt 试点: 已持久化 {len(titer_tables)} 张滴度矩阵表（文献 {literature_id}）")
 
         # 6. 为每个提取数据点创建 DataPoint 记录（含 grounding + schema 校验）
         all_data_points = []
@@ -599,6 +632,24 @@ async def _process_literature_async(
             logger.warning(f"写入提取历史记录失败（不影响提取结果）: {e}")
 
         await db.commit()
+
+        # 质量精打：全文已可用，对已审核通过的数据点重新打分（幂等覆盖）
+        try:
+            approved_result = await db.execute(
+                select(DataPoint.id).where(
+                    DataPoint.literature_id == literature_id,
+                    DataPoint.review_status == "approved",
+                )
+            )
+            approved_ids = approved_result.scalars().all()
+            if approved_ids:
+                from app.tasks.quality_task import score_data_point_task
+
+                for dp_id in approved_ids:
+                    score_data_point_task.delay(str(dp_id))
+                logger.info(f"全文精打: 已提交 {len(approved_ids)} 个已审核数据点质量打分")
+        except Exception as e:
+            logger.warning(f"全文精打任务提交失败（不影响提取结果）: {e}")
 
         return {
             "literature_id": literature_id,

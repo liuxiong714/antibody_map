@@ -19,8 +19,11 @@
 | **强 Schema 约束** | LLM 输出经 JSON Schema 校验（省份枚举、阳性率 0-100% 范围、GMC 正值等），字段违规自动降级置信度 |
 | **数据审核与编辑** | 人工审核（通过/驳回）、行内编辑（疾病、地区、年龄段、数值、**原文依据、溯源字符区间**等字段）、**手动新增数据点**（提取失败时补录） |
 | **地图可视化** | 全国/省级/市级交互式抗体水平热力地图，点击省份钻取市级数据、**时间序列动画自动年份范围**、底部统计区分**已审核通过**（绿色）与**未审核**（橙色）两组数据点/覆盖省份/样本量 |
-| **数据分析** | 逐年趋势、区域对比、年龄分层、**免疫屏障评估**（复用 FOI 模块 R0/HIT 计算，新增年龄分层分析与省份对比矩阵，HIT 阈值优先级：FOI 估算>WHO 建议>文献 R0）、**数据覆盖度分析**、**多表单 Excel 数据导出**、**FOI 感染力分析**（催化模型 + R0 估算 + 群体免疫阈值 HIT，支持不选择疾病进行全量分析）、**疫苗效果 VE 分析**（已接种/未接种亚组拆分 + 保护率估算）、**接种率双轨分析**（NIP 参考表 + 血清阳性率反推隐含接种率） |
-| **报告生成** | LLM 生成抗体分析报告和疫苗接种策略研判报告，支持在线编辑和下载；**报告生成时可选模型**（本地 Ollama 模型 / 远程 API 模型，支持自定义 API Key 和 Base URL） |
+| **数据分析** | 逐年趋势、区域对比、年龄分层、**免疫屏障评估**（复用 FOI 模块 R0/HIT 计算，新增年龄分层分析与省份对比矩阵，HIT 阈值优先级：FOI 估算>WHO 建议>文献 R0）、**数据覆盖度分析**、**多表单 Excel 数据导出**、**FOI 感染力分析**（催化模型 + R0 估算 + 群体免疫阈值 HIT，支持不选择疾病进行全量分析）、**疫苗效果 VE 分析**（已接种/未接种亚组拆分 + 保护率估算）、**接种率双轨分析**（NIP 参考表 + 血清阳性率反推隐含接种率）、**省间公平性分析**（基尼系数/变异系数/达标省）、**数据质量评估**（主估计 A/B/C 分级+CI/溯源占比）、**目标达成追踪**（逐年达标省进度）、**年龄-抗体曲线**（惩罚样条平滑+年龄别 FOI）、**出生队列分析**（代际免疫/计划免疫史解读）、**同省多研究 Meta 合并**、**多文献 Meta 分析**（森林图/漏斗图/亚组）、**检测方法异质性**、**空间热点/冷点分析**（Moran's I + Getis-Ord Gi*）、**免疫屏障模拟**、**审核状态统计**，各统计均附 95% CI 与方法学脚注 |
+| **数据质量评分** | 每个数据点按六项信号（样本量/抽样方式/检测方法/人群代表性/调查级别/溯源置信度）自动打分（0-100 分 + A/B/C 三级），审核通过后异步重算，前端 Tooltip 展示六项得分明细 |
+| **分析快照与引用** | 每个分析请求生成带数据指纹（data_hash）的快照 token，同参数自动去重复用；支持 **GBT7714 / BibTeX** 引用文本导出，确保分析结果可复现、可溯源 |
+| **抗原图谱** | 基于 HI/VNT/ELISA 滴度矩阵（titer_table 表）的 **metric MDS 降维**，将抗原与抗血清映射到 2D 平面（参考 Smith 2004 / racmacs），前端独立「抗原图谱」页交互展示 |
+| **报告生成** | LLM 生成抗体分析报告和疫苗接种策略研判报告，支持在线编辑和下载；**报告生成时可选模型**（本地 Ollama 模型 / 远程 API 模型，支持自定义 API Key 和 Base URL），自动拼接统一方法学脚注 |
 | **文件夹监控** | 定期监测指定文件夹，自动导入新文件并触发信息提取 |
 | **Edge 浏览器插件** | 参考 Mendeley 设计，在浏览器中一键将文献添加到数据库并触发 AI 提取；支持 15+ 学术站点元数据自动识别、PDF 智能抓取上传、URL 网页导入、右键菜单、桌面通知 |
 | **多格式预览** | PDF 使用 pdf.js 渲染；TXT/HTML/DOCX/PPTX/XLSX/EPUB 显示解析后文本；CAJ 提示下载，支持分栏布局、面板折叠/展开 |
@@ -42,6 +45,8 @@ PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文
 - **交互式溯源查看**：点击数据点可查看原文上下文并高亮定位字符区间，方便人工核验 LLM 提取结果
 - **元数据自动聚合**：AI 提取完成后自动从数据点聚合文献的年份（取众数）和省份信息，同步到文献列表；支持批量同步历史文献的缺失元数据
 - **多格式导入导出与跨电脑迁移**：文献列表支持 CSV / Excel / JSON 三种格式导出；JSON 格式可完整包含数据点（含审核状态、estimate_type、溯源字段），在另一台电脑通过「导入文献」按钮一键导入，自动保留审核状态并在地图、分析模块中正常展示；支持仅导出选中的文献数据
+- **纯函数统计引擎**：全局置信区间（CI）引擎统一计算 Wilson/Clopper-Pearson 二项置信区间、样本量加权率、几何均数 GMC、双比例检验、年龄曲线样条与年龄别 FOI、Meta 合并（固定/随机效应 + I²/Q/τ²）、基尼系数、Moran's I / Getis-Ord Gi*、直接标准化率（标准人口归一）等，全部为无副作用纯函数且配套单元测试
+- **数据驱动常量表**：标准人口（中国 2020）、省份邻接矩阵、疾病解读注释等存于 `backend/app/core/reference_data/*.json`，带版本字段便于更新
 
 ## 技术栈
 
@@ -49,6 +54,7 @@ PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文
 |------|------|
 | **前端** | React 18 + TypeScript, Vite 6, Ant Design 5, ECharts 5, pdfjs-dist, Zustand, React Router 6 |
 | **后端** | Python 3.10+, FastAPI + Uvicorn, SQLAlchemy 2.0 (async), Celery + Redis, Pydantic 2.0 |
+| **统计/制图** | NumPy + SciPy + statsmodels + scikit-learn（统计引擎、Meta 分析、MDS 抗原制图、时间序列） |
 | **数据库** | PostgreSQL 15 |
 | **存储** | MinIO 对象存储 / 本地文件系统双模式 |
 | **AI/LLM** | OpenAI SDK 兼容协议，支持 DeepSeek / OpenAI / 通义千问 (Qwen) / **本地 Ollama** 多厂商；JSON Schema 强约束 + 精确字符级溯源；**报告生成支持模型选择**（本地 + 远程 API，可配置 API Key/Base URL） |
@@ -635,6 +641,48 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.8.0 (2026-08-17)
+
+#### 数据质量分级 · 抗原图谱 · 分析快照 · 统计引擎全面升级
+
+- **数据点质量评分体系**：新增 `quality_service.py`，每个数据点按六项信号自动打分（样本量 30 / 抽样方式 25 / 检测方法 15 / 人群代表性 15 / 调查级别 10 / 溯源置信度 5，满分 100），输出 0-100 分 + A/B/C 三级（A≥75、B 50–74、C<50）及调查级别（estimate_grade）；审核通过后经 Celery 异步幂等重算，前端 QualityBadge 在 Tooltip 展开六项得分明细。
+- **纯函数统计引擎 `stats_engine.py`**：统一实现趋势/区域/年龄/汇总端点的全局置信区间（CI）计算——Wilson / Clopper-Pearson 二项 CI、样本量加权率、几何均数 GMC（对数域 CI）、双比例检验、惩罚样条年龄曲线 P(a)+95% 置信带、年龄别 FOI λ(a)，以及 Meta 合并、Cochran-Armitage 趋势检验、直接标准化率（标准人口归一）、Moran's I / Getis-Ord Gi*、出生队列聚合等。
+- **分析快照与引用**：新增 `snapshot_service.py`，每个 `/analysis/*` 请求自动生成带数据指纹（data_hash）的快照 token，同参数去重复用；`/analysis/snapshot/{token}` 原样重放缓存响应，`/analysis/snapshot/{token}/citation` 导出 **GBT7714 / BibTeX** 引用文本，确保分析结果可复现、可溯源。
+- **统一方法学脚注**：新增 `methodology.py`，服务层与报告生成共用 `build_methodology_note()` 生成中文方法学段落，挂载到所有分析响应 `meta.methodology_note`，报告正文自动拼接「方法学」小节。
+- **新增分析模块与接口**：省间公平性（基尼/变异系数）、数据质量评估与全量重算 rescore、目标达成追踪、血清阳性率-年龄曲线、出生队列、同省多研究 Meta 合并（I²/Q/τ²）、多文献 Meta 分析（森林图/漏斗图、group_by 亚组 + Q_between）、检测方法异质性、省级空间热点/冷点（Moran's I + Gi*）、免疫屏障模拟、审核状态统计；报告导出 Excel 附带统计方法附录。
+- **数据驱动常量表**：新增 `backend/app/core/reference_data/`，含中国 2020 标准人口、省份邻接矩阵、疾病解读注释（计划免疫史分期提示）的 JSON，均带 version 字段。
+- **抗原图谱**：新增 `titer_table` 表与 `antigenic_cartography.py`（metric MDS 降维，参考 Smith 2004 / racmacs），前端新增独立「抗原图谱」页面（`/antigenic-map`）交互查看假想 2D 制图，图谱页含标签显隐开关。
+- **数据库迁移**：新增 `add_dp_quality_fields`（data_point 质量字段 + 索引）、`add_analysis_snapshot`、`add_titer_table` 三个迁移脚本。
+- **前端重构**：新增 `chartBuilders.ts` 图表配置工厂、`ChartWithSnapshot`/`QualityBadge`/`SnapshotCitation` 组件，分析页新增公平性/数据质量/目标达成/高级分析/证据合成/出生队列等 Tab，文献详情页展示质量分级徽标与引用。
+- **测试**：新增 `test_stats_engine`、`test_quality_service`、`test_snapshot_service`、`test_meta_analysis`、`test_antigenic_cartography`、`test_analysis_*` 等单元测试，统计核心均含已知答案解析用例。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/core/stats_engine.py` | 新增全局 CI/统计纯函数引擎 |
+| `backend/app/core/antigenic_cartography.py` | 新增抗原制图引擎（metric MDS） |
+| `backend/app/core/methodology.py` | 新增统一方法学脚注生成 |
+| `backend/app/core/reference_data/*.json` | 新增标准人口/省份邻接矩阵/疾病注释常量表 |
+| `backend/app/services/quality_service.py` | 新增数据点质量评分（0-100 分 + A/B/C） |
+| `backend/app/services/snapshot_service.py` | 新增分析快照（数据指纹/去重/重放/引用） |
+| `backend/app/models/data_point.py` | 新增 quality_score/quality_grade/estimate_grade 字段 |
+| `backend/app/models/analysis_snapshot.py` | 新增分析快照模型 |
+| `backend/app/models/titer_table.py` | 新增滴度矩阵模型 |
+| `backend/app/api/v1/analysis.py` | 新增 equity/quality/goal/age-curve/birth-cohort/meta-analysis/spatial-hotspots/assay/simulate/snapshot/titer-tables/antigenic-map 等接口 |
+| `backend/app/services/analysis_service.py` | 新增对应分析函数，接入 CI 引擎与方法学脚注 |
+| `backend/app/services/report_service.py` | 报告正文自动拼接方法学脚注 |
+| `backend/app/tasks/quality_task.py` | 新增审核通过后异步质量打分任务 |
+| `backend/alembic/versions/add_dp_quality_fields.py` 等 | 新增 3 个数据库迁移 |
+| `backend/requirements.txt` | 新增 statsmodels 等依赖 |
+| `frontend/src/pages/Analysis.tsx` | 新增公平性/质量/目标达成/高级分析/证据合成/出生队列 Tab |
+| `frontend/src/pages/AntigenicMap.tsx` | 新增抗原图谱页面 |
+| `frontend/src/utils/chartBuilders.ts` | 新增图表配置工厂 |
+| `frontend/src/components/` | 新增 ChartWithSnapshot / QualityBadge / SnapshotCitation / AgeCurveChart |
+| `frontend/src/layouts/MainLayout.tsx` | 新增「抗原图谱」导航项 |
+| `backend/tests/` | 新增 stats_engine / quality / snapshot / meta / antigenic 等测试 |
+| `backend/app/config.py` | APP_VERSION 升级至 1.8.0 |
 
 ### v1.7.5 (2026-08-14)
 

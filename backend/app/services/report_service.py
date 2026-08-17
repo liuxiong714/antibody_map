@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -8,6 +8,7 @@ from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.methodology import build_methodology_note
 from app.models.api_model_config import ApiModelConfig
 from app.models.data_point import DataPoint
 from app.models.report import Report
@@ -293,6 +294,30 @@ async def generate_report(
         )
 
     content = await _call_llm(db, prompt, model=model)
+
+    # 8.5 方法学小节：统一脚注（复用 build_methodology_note），拼接进报告正文
+    methodology_note = build_methodology_note(
+        "report",
+        {"disease": disease, "province": province, "data_type": data_type},
+        {"n_estimates": len(rows), "n_literatures": len(lit_ids), "quality_grades": True},
+    )
+    content = (content or "").rstrip()
+    if language == "zh":
+        content += f"\n\n## 方法学\n\n{methodology_note}"
+        content += (
+            f"\n\n## 引用\n\n"
+            f"抗体地图数据库分析报告[EB/OL]. 抗体地图数据库（版本 v1.0）. "
+            f"数据截至：{date.today().isoformat()}；[引用日期 {date.today().isoformat()}]. "
+            f"报告编号：{disease_name}_{province or '全国'}_{date.today().isoformat()}。"
+        )
+    else:
+        content += f"\n\n## Methodology\n\n{methodology_note}"
+        content += (
+            f"\n\n## Citation\n\n"
+            f"Antibody Map Database Analysis Report[EB/OL]. Antibody Map Database (Version v1.0). "
+            f"Data as of: {date.today().isoformat()}; [Accessed {date.today().isoformat()}]. "
+            f"Report ID: {disease_name}_{province or 'National'}_{date.today().isoformat()}."
+        )
 
     # 解析模型显示名称
     llm_model_name = await _resolve_model_name(db, model)

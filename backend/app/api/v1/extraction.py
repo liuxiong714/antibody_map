@@ -37,6 +37,7 @@ from app.core.traceability_html import (
 )
 
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES
+from app.tasks.quality_task import score_data_point_task
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn")
@@ -609,6 +610,14 @@ async def update_data_points(
         await _sync_approved_count(db, literature_id)
 
     await db.commit()
+
+    # 审核通过后异步质量打分（幂等，全文可用后精打覆盖）
+    approved_ids = [
+        item.id for item in req.data_points if item.review_status == "approved"
+    ]
+    for dp_id in approved_ids:
+        score_data_point_task.delay(dp_id)
+
     return ApiResponse(message="数据点已更新", data={"updated": updated})
 
 
@@ -630,6 +639,10 @@ async def batch_confirm(
 
     await _sync_approved_count(db, literature_id)
     await db.commit()
+
+    # 审核通过后异步质量打分（幂等，全文可用后精打覆盖）
+    for dp_id in req.ids:
+        score_data_point_task.delay(dp_id)
 
     return ApiResponse(message=f"已批量通过 {result.rowcount} 个数据点")
 

@@ -6,8 +6,8 @@ import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import MapSelector from '../components/MapSelector';
 import { useFilterStore } from '../store';
-import { getProvinceData, getYearlyProvinceData, getAvailableYears, getCityData, getPopulationOptions, getSummary } from '../services/map';
-import { MapDataPoint, YearlyMapData } from '../types';
+import { getProvinceData, getYearlyProvinceData, getAvailableYears, getCityData, getPopulationOptions, getSummary, getSpatialHotspots } from '../services/map';
+import { MapDataPoint, YearlyMapData, SpatialHotspotsResponse, SpatialHotspotProvince, HotspotCluster } from '../types';
 import { SERO_COLOR_STOPS, GMC_COLOR_STOPS, GENDER_OPTIONS, PROVINCE_GEOJSON_NAME, DISEASES } from '../utils/constants';
 
 // 英文 disease key → 中文名称
@@ -18,6 +18,21 @@ const diseaseToCn = (key?: string): string => {
   if (!key) return '';
   return DISEASE_CN_MAP[key] || key;
 };
+
+// 着色模式
+type ShadingMode = 'positivity' | 'hotspot';
+
+// 热点/冷点分类 → 颜色 + 中文标签（hot_* 深红→浅红，cold_* 深蓝→浅蓝，ns 灰）
+const HOTSPOT_CLUSTER_META: Record<HotspotCluster, { color: string; label: string }> = {
+  hot_99: { color: '#7f0000', label: '99% 置信热点' },
+  hot_95: { color: '#c62828', label: '95% 置信热点' },
+  hot_90: { color: '#ef5350', label: '90% 置信热点' },
+  cold_99: { color: '#0d47a1', label: '99% 置信冷点' },
+  cold_95: { color: '#1565c0', label: '95% 置信冷点' },
+  cold_90: { color: '#64b5f6', label: '90% 置信冷点' },
+  ns: { color: '#cfcfcf', label: '不显著 (ns)' },
+};
+const hotspotColor = (cluster: HotspotCluster): string => HOTSPOT_CLUSTER_META[cluster]?.color || '#cfcfcf';
 
 const MapOverview: React.FC = () => {
   const { disease, dataType, province, yearStart, yearEnd, ageMin, ageMax, gender, occupation,
@@ -35,6 +50,12 @@ const MapOverview: React.FC = () => {
   const [playSpeed, setPlaySpeed] = useState(1000);
   const playIntervalRef = useRef<number | null>(null);
   const yearRangeAutoRef = useRef<boolean>(false);  // 年份范围是否由系统自动管理
+
+  // 着色模式（阳性率 / 热点分析）与空间统计结果
+  const [shadingMode, setShadingMode] = useState<ShadingMode>('positivity');
+  const [hotspotData, setHotspotData] = useState<SpatialHotspotsResponse | null>(null);
+  const [hotspotLoading, setHotspotLoading] = useState(false);
+  const [hotspotError, setHotspotError] = useState<string | null>(null);
 
   // 省份详情相关状态
   const [selectedProvince, setSelectedProvince] = useState<string | null>(null);
@@ -112,6 +133,39 @@ const MapOverview: React.FC = () => {
   }, [disease, dataType, province, yearStart, yearEnd, ageMin, ageMax, gender, occupation]);
 
   useEffect(() => { fetchData(); }, []);
+
+  // 着色模式切换时加载热点数据
+  const fetchHotspotData = useCallback(async () => {
+    if (!disease) {
+      setHotspotError('请先选择疾病');
+      setHotspotData(null);
+      return;
+    }
+    setHotspotLoading(true);
+    setHotspotError(null);
+    try {
+      const params: Record<string, unknown> = { disease };
+      if (yearStart) params.year_start = yearStart;
+      if (yearEnd) params.year_end = yearEnd;
+      const resp = await getSpatialHotspots(params);
+      setHotspotData(resp);
+    } catch (err: any) {
+      if (err?.response?.status === 422) {
+        setHotspotError('有效数据省份不足，无法进行空间统计');
+      } else {
+        setHotspotError('热点数据加载失败');
+      }
+      setHotspotData(null);
+    } finally {
+      setHotspotLoading(false);
+    }
+  }, [disease, yearStart, yearEnd]);
+
+  useEffect(() => {
+    if (shadingMode === 'hotspot') {
+      fetchHotspotData();
+    }
+  }, [shadingMode, fetchHotspotData]);
 
   // 模式切换时自动加载对应数据，并自动设置年份范围
   useEffect(() => {
@@ -382,6 +436,12 @@ const MapOverview: React.FC = () => {
     const colorStops = dataType === 'gmc' ? GMC_COLOR_STOPS : SERO_COLOR_STOPS;
     const maxVal = Math.max(...currentData.map((d) => Number(d.weighted_positivity) || 0), 1);
 
+    // 热点模式数据：短名称 → 空间统计结果（用于着色与 tooltip）
+    const hotspotByProvince: Record<string, SpatialHotspotProvince> = {};
+    (hotspotData?.provinces || []).forEach((p) => {
+      hotspotByProvince[p.name] = p;
+    });
+
     // 构建短名称 → GeoJSON 全名的映射（用于 ECharts 精确匹配地图区域）
     const nameMap: Record<string, string> = {};
     currentData.forEach((d) => {
@@ -389,14 +449,32 @@ const MapOverview: React.FC = () => {
         nameMap[PROVINCE_GEOJSON_NAME[d.province]] = d.province;
       }
     });
+    // 热点模式下，纳入热点数据中的省份（可能超出当前 filtered 省份数据）
+    (hotspotData?.provinces || []).forEach((p) => {
+      if (PROVINCE_GEOJSON_NAME[p.name]) {
+        nameMap[PROVINCE_GEOJSON_NAME[p.name]] = p.name;
+      }
+    });
 
-    // 系列数据：将数据库短名称转换为 GeoJSON 全名
-    const seriesData = currentData
-      .filter((d): d is MapDataPoint & { province: string } => !!d.province && !!PROVINCE_GEOJSON_NAME[d.province!])
-      .map((d) => ({
-        name: PROVINCE_GEOJSON_NAME[d.province],
-        value: Number(d.weighted_positivity) || 0,
-      }));
+    // 系列数据：将短名称转换为 GeoJSON 全名
+    // 热点模式：以 hotspotData.provinces 为数据源并按 cluster 上色；
+    // 阳性率模式：沿用加权阳性率连续色。
+    const seriesData: any[] = shadingMode === 'hotspot'
+      ? (hotspotData?.provinces || [])
+          .filter((p) => !!PROVINCE_GEOJSON_NAME[p.name])
+          .map((p) => ({
+            name: PROVINCE_GEOJSON_NAME[p.name],
+            value: p.rate != null ? Number(p.rate) : 0,
+            cluster: p.cluster,
+            gi_z: p.gi_z,
+            itemStyle: { color: hotspotColor(p.cluster) },
+          }))
+      : currentData
+          .filter((d): d is MapDataPoint & { province: string } => !!d.province && !!PROVINCE_GEOJSON_NAME[d.province!])
+          .map((d) => ({
+            name: PROVINCE_GEOJSON_NAME[d.province],
+            value: Number(d.weighted_positivity) || 0,
+          }));
 
     // 地图中心点：下钻到省份时聚焦该省
     const provinceCenter: Record<string, [number, number]> = {
@@ -504,6 +582,16 @@ const MapOverview: React.FC = () => {
           // 散点图的 tooltip 由 scatter series 自行处理
           if (params.componentType === 'series') return undefined as any;
           const shortName = nameMap[params.name] || params.name;
+          // 热点模式：展示阳性率 + Gi* Z + 置信热点中文标签
+          if (shadingMode === 'hotspot') {
+            const hp = hotspotByProvince[shortName];
+            if (!hp) return `${params.name}<br/>暂无数据`;
+            const label = HOTSPOT_CLUSTER_META[hp.cluster]?.label || hp.cluster;
+            return `<b>${shortName}</b><br/>
+              阳性率: ${hp.rate != null ? Number(hp.rate).toFixed(2) + '%' : '-'}<br/>
+              Gi* Z: ${hp.gi_z != null ? Number(hp.gi_z).toFixed(3) : '-'}<br/>
+              ${label}`;
+          }
           const item = currentData.find((d) => d.province === shortName);
           if (!item) return `${params.name}<br/>暂无数据`;
           return `<b>${shortName}</b><br/>
@@ -513,29 +601,51 @@ const MapOverview: React.FC = () => {
             总样本量: ${item.total_sample.toLocaleString()}`;
         },
       },
-      visualMap: {
-        min: 0,
-        max: maxVal,
-        seriesIndex: 0,
-        text: ['高', '低'],
-        inRange: { color: colorStops.map((s) => s.color) },
-        calculable: true,
-        left: 'left',
-        bottom: 20,
-      },
+      visualMap: shadingMode === 'hotspot'
+        ? {
+            type: 'piecewise',
+            seriesIndex: 0,
+            pieces: [
+              { label: '99% 置信热点', color: '#7f0000' },
+              { label: '95% 置信热点', color: '#c62828' },
+              { label: '90% 置信热点', color: '#ef5350' },
+              { label: '90% 置信冷点', color: '#64b5f6' },
+              { label: '95% 置信冷点', color: '#1565c0' },
+              { label: '99% 置信冷点', color: '#0d47a1' },
+              { label: '不显著 (ns)', color: '#cfcfcf' },
+            ],
+            left: 'left',
+            bottom: 20,
+            textStyle: { fontSize: 10 },
+          }
+        : {
+            min: 0,
+            max: maxVal,
+            seriesIndex: 0,
+            text: ['高', '低'],
+            inRange: { color: colorStops.map((s) => s.color) },
+            calculable: true,
+            left: 'left',
+            bottom: 20,
+          },
       geo: {
         map: 'china',
         roam: true,
         center: center as [number, number],
         zoom: zoom,
         label: { show: !drillProvince, fontSize: 10, color: '#333' },
-        itemStyle: { areaColor: '#f3f3f3', borderColor: '#ccc' },
+        // 热点模式无数据省份显示白色
+        itemStyle: {
+          areaColor: shadingMode === 'hotspot' ? '#ffffff' : '#f3f3f3',
+          borderColor: '#ccc',
+        },
         emphasis: { itemStyle: { areaColor: '#a6c84c' } },
-        regions: currentData
-          .filter((d): d is MapDataPoint & { province: string } => !!d.province && !!PROVINCE_GEOJSON_NAME[d.province!])
-          .map((d) => ({
-            name: PROVINCE_GEOJSON_NAME[d.province],
-          })),
+        regions: (shadingMode === 'hotspot'
+          ? (hotspotData?.provinces || []).filter((p) => !!PROVINCE_GEOJSON_NAME[p.name]).map((p) => PROVINCE_GEOJSON_NAME[p.name])
+          : currentData
+              .filter((d): d is MapDataPoint & { province: string } => !!d.province && !!PROVINCE_GEOJSON_NAME[d.province!])
+              .map((d) => PROVINCE_GEOJSON_NAME[d.province])
+        ).map((name) => ({ name })),
       },
       series,
     };
@@ -588,7 +698,7 @@ const MapOverview: React.FC = () => {
     const instance = chartInstanceRef.current;
     if (!instance || !mapReady) return;
     instance.setOption(getOption(), true);
-  }, [mapReady, currentData, drillProvince, drillCityData, dataType, dynamicMode, selectedYear]);
+  }, [mapReady, currentData, drillProvince, drillCityData, dataType, dynamicMode, selectedYear, shadingMode, hotspotData]);
 
   // 趋势图管理
   useEffect(() => {
@@ -729,7 +839,25 @@ const MapOverview: React.FC = () => {
             }
           >
             {mapReady ? (
-              <div ref={chartContainerRef} style={{ height: 520, width: '100%' }} />
+              <div style={{ position: 'relative', height: 520, width: '100%' }}>
+                {/* 着色模式切换（地图左上角） */}
+                <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 10 }}>
+                  <Segmented
+                    value={shadingMode}
+                    onChange={(v) => setShadingMode(v as ShadingMode)}
+                    options={[
+                      { label: '阳性率', value: 'positivity' },
+                      { label: '热点分析', value: 'hotspot' },
+                    ]}
+                  />
+                </div>
+                {shadingMode === 'hotspot' && hotspotLoading && (
+                  <div style={{ position: 'absolute', top: 44, left: 12, zIndex: 10 }}>
+                    <Tag color="processing" style={{ margin: 0 }}>热点分析中...</Tag>
+                  </div>
+                )}
+                <div ref={chartContainerRef} style={{ height: 520, width: '100%' }} />
+              </div>
             ) : (
               <Spin tip="加载地图数据..." style={{ height: 520, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <div style={{ height: 520 }} />
@@ -827,6 +955,46 @@ const MapOverview: React.FC = () => {
           )}
         </Col>
         <Col span={6}>
+          {/* 全局 Moran's I 结果副卡（热点分析模式） */}
+          {shadingMode === 'hotspot' && (
+            <Card
+              size="small"
+              title="空间自相关 (Moran's I)"
+              style={{ marginBottom: 12 }}
+              extra={hotspotLoading ? <Tag color="processing">计算中</Tag> : undefined}
+            >
+              {hotspotError ? (
+                <div style={{ color: '#cf1322', fontSize: 13 }}>{hotspotError}</div>
+              ) : hotspotData?.global_moran ? (
+                <>
+                  <Row gutter={8} style={{ marginBottom: 8 }}>
+                    <Col span={8}>
+                      <Statistic title="Moran's I" value={hotspotData.global_moran.I} precision={3} valueStyle={{ fontSize: 18 }} />
+                    </Col>
+                    <Col span={8}>
+                      <Statistic
+                        title="p 值"
+                        value={hotspotData.global_moran.p_sim}
+                        precision={3}
+                        valueStyle={{ fontSize: 18, color: hotspotData.global_moran.p_sim < 0.05 ? '#cf1322' : undefined }}
+                      />
+                    </Col>
+                    <Col span={8}>
+                      <Statistic title="Z 值" value={hotspotData.global_moran.z} precision={2} valueStyle={{ fontSize: 18 }} />
+                    </Col>
+                  </Row>
+                  <div style={{ fontSize: 12, color: '#666', lineHeight: 1.6 }}>
+                    {hotspotData.global_moran.conclusion}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#999', marginTop: 6 }}>
+                    有效省份 {hotspotData.n_valid} 个 · 邻接矩阵 v{hotspotData.adjacency_version}
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: '#999', fontSize: 13 }}>暂无热点分析结果</div>
+              )}
+            </Card>
+          )}
           <Card
             title={
               <Space>

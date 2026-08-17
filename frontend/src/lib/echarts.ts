@@ -11,7 +11,7 @@
 import * as echarts from 'echarts/core';
 
 // 图表系列（series）
-import { LineChart, BarChart, ScatterChart, MapChart, BoxplotChart, HeatmapChart, RadarChart } from 'echarts/charts';
+import { LineChart, BarChart, ScatterChart, MapChart, BoxplotChart, HeatmapChart, RadarChart, CustomChart } from 'echarts/charts';
 
 // 组件
 import {
@@ -28,6 +28,7 @@ import {
   RadarComponent,
   PolarComponent,
   DatasetComponent,
+  GraphicComponent,
 } from 'echarts/components';
 
 // 渲染器
@@ -43,6 +44,7 @@ echarts.use([
   BoxplotChart,
   HeatmapChart,
   RadarChart,
+  CustomChart,
   // 组件
   TitleComponent,
   TooltipComponent,
@@ -57,6 +59,7 @@ echarts.use([
   RadarComponent,
   PolarComponent,
   DatasetComponent,
+  GraphicComponent,
   // 渲染器
   CanvasRenderer,
 ]);
