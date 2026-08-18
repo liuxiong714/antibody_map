@@ -13,7 +13,7 @@ import {
   listFolders, createFolder, updateFolder, deleteFolder, scanFolder, listFolderFiles,
 } from '../services/folderMonitor';
 import { listLiterature } from '../services/literature';
-import { MODEL_OPTIONS } from '../utils/constants';
+import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
 import type { MonitoredFolder, MonitoredFolderCreate, MonitoredFile, Literature } from '../types';
 
 const FolderMonitorPage: React.FC = () => {
@@ -24,6 +24,11 @@ const FolderMonitorPage: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [scanningIds, setScanningIds] = useState<Set<string>>(new Set());
   const [form] = Form.useForm();
+  const [modelOptions, setModelOptions] = useState<ExtendedModelOption[]>([]);
+
+  useEffect(() => {
+    buildModelOptions().then(setModelOptions);
+  }, []);
 
   // 文件记录 Drawer
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -500,7 +505,7 @@ const FolderMonitorPage: React.FC = () => {
             <Select
               allowClear
               placeholder="选择模型或留空使用默认"
-              options={MODEL_OPTIONS.map(o => ({ label: o.label, value: o.value }))}
+              options={modelOptions.map(o => ({ label: o.label, value: o.value }))}
             />
           </Form.Item>
 

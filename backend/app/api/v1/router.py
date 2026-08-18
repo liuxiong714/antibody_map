@@ -13,6 +13,7 @@ from app.api.v1.report import router as report_router
 from app.api.v1.folder_monitor import router as folder_monitor_router
 from app.api.v1.model_config import router as model_config_router
 from app.api.v1.tag import router as tag_router
+from app.api.v1.system import router as system_router
 
 router = APIRouter()
 
@@ -37,4 +38,5 @@ _protected.include_router(report_router, tags=["report"])
 _protected.include_router(folder_monitor_router, tags=["folder_monitor"])
 _protected.include_router(model_config_router, tags=["models"])
 _protected.include_router(tag_router, tags=["tags"])
+_protected.include_router(system_router, tags=["system"])
 router.include_router(_protected)

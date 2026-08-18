@@ -5,17 +5,22 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import get_db, require_admin
 from app.config import settings
 from app.core.crypto import mask
 from app.models.api_model_config import ApiModelConfig
+from app.models.local_model_config import LocalModelConfig
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.schemas.model_config import (
     ApiModelConfigCreate,
     ApiModelConfigUpdate,
     ApiModelConfigResponse,
+    LocalModelConfigCreate,
+    LocalModelConfigUpdate,
+    LocalModelConfigResponse,
     ModelOption,
     ModelsListResponse,
 )
@@ -24,13 +29,16 @@ logger = logging.getLogger("uvicorn")
 
 router = APIRouter()
 
-# 本地模型列表
-LOCAL_MODELS = [
-    {"value": "", "label": "默认 (qwen2.5:14b)"},
-    {"value": "qwen2.5:14b", "label": "Qwen2.5:14B"},
-    {"value": "qwen2.5:7b", "label": "Qwen2.5:7B"},
+# 默认模型选项（value 为空表示使用后端 .env 中 LLM_MODEL 配置的默认模型）
+DEFAULT_MODEL_OPTION = {"value": "", "label": "默认配置（后端配置的模型）"}
+
+# 本地模型回退列表（本地模型配置表为空时的兜底，保证旧环境不报错）
+FALLBACK_LOCAL_MODELS = [
+    {"value": "qwen3.8:27b", "label": "Qwen3.8:27B"},
     {"value": "qwen3:32b", "label": "Qwen3:32B"},
     {"value": "qwen3:8b", "label": "Qwen3:8B"},
+    {"value": "qwen2.5:14b", "label": "Qwen2.5:14B"},
+    {"value": "qwen2.5:7b", "label": "Qwen2.5:7B"},
     {"value": "deepseek-r1:14b", "label": "DeepSeek R1:14B"},
     {"value": "deepseek-r1:7b", "label": "DeepSeek R1:7B"},
     {"value": "llama3.1:8b", "label": "Llama 3.1:8B"},
@@ -43,11 +51,23 @@ LOCAL_MODELS = [
 @router.get("/models", response_model=ApiResponse, summary="获取可用模型列表", description="获取可用模型列表，包括本地模型（Ollama等）和远程API模型配置")
 async def list_models(db: AsyncSession = Depends(get_db)):
     """获取可用模型列表（本地 + 远程配置）"""
-    # 本地模型
-    local_list = [
-        {"value": m["value"], "label": m["label"], "group": "local", "is_default": (m["value"] == "")}
-        for m in LOCAL_MODELS
-    ]
+    # 本地模型：优先从本地模型配置表读取启用项，表为空时回退到静态列表
+    result = await db.execute(
+        select(LocalModelConfig).where(LocalModelConfig.is_active == True).order_by(LocalModelConfig.created_at)
+    )
+    local_rows = result.scalars().all()
+    if local_rows:
+        local_list = [
+            {**DEFAULT_MODEL_OPTION, "group": "local", "is_default": True},
+        ] + [
+            {"value": m.model_name, "label": m.name, "group": "local", "is_default": False}
+            for m in local_rows
+        ]
+    else:
+        local_list = [
+            {**m, "group": "local", "is_default": (m["value"] == "")}
+            for m in [{**DEFAULT_MODEL_OPTION}] + FALLBACK_LOCAL_MODELS
+        ]
 
     # 远程模型
     result = await db.execute(select(ApiModelConfig).where(ApiModelConfig.is_active == True))
@@ -154,3 +174,91 @@ def _config_to_dict(c: ApiModelConfig) -> dict:
         "created_at": c.created_at.isoformat(),
         "updated_at": c.updated_at.isoformat(),
     }
+
+
+# ── 本地模型配置管理（Ollama 等）────────────────────────────
+
+@router.get("/models/local", response_model=ApiResponse, summary="获取本地模型配置列表", description="获取所有本地模型配置，包括名称、模型名、描述、启用状态")
+async def list_local_models(db: AsyncSession = Depends(get_db)):
+    """获取所有本地模型配置"""
+    result = await db.execute(
+        select(LocalModelConfig).order_by(LocalModelConfig.created_at)
+    )
+    configs = result.scalars().all()
+    items = [
+        LocalModelConfigResponse.model_validate(c).model_dump()
+        for c in configs
+    ]
+    return ApiResponse(data=items)
+
+
+@router.post("/models/local", response_model=ApiResponse, summary="新增本地模型配置", description="管理员新增本地模型配置（Ollama 等），需指定显示名称和模型名")
+async def create_local_model(
+    req: LocalModelConfigCreate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """新增本地模型配置"""
+    config = LocalModelConfig(
+        name=req.name.strip(),
+        model_name=req.model_name.strip(),
+        description=req.description,
+    )
+    db.add(config)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=f"模型名 {req.model_name} 已存在")
+    await db.refresh(config)
+    return ApiResponse(message="本地模型配置已添加", data=LocalModelConfigResponse.model_validate(config).model_dump())
+
+
+@router.put("/models/local/{config_id}", response_model=ApiResponse, summary="更新本地模型配置", description="管理员更新本地模型配置，可以修改名称、模型名、描述、启用状态")
+async def update_local_model(
+    config_id: str,
+    req: LocalModelConfigUpdate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新本地模型配置"""
+    uid = UUID(config_id)
+    result = await db.execute(select(LocalModelConfig).where(LocalModelConfig.id == uid))
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="配置不存在")
+
+    if req.name is not None:
+        config.name = req.name.strip()
+    if req.model_name is not None:
+        config.model_name = req.model_name.strip()
+    if req.description is not None:
+        config.description = req.description
+    if req.is_active is not None:
+        config.is_active = req.is_active
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=f"模型名 {req.model_name} 已存在")
+    await db.refresh(config)
+    return ApiResponse(message="本地模型配置已更新", data=LocalModelConfigResponse.model_validate(config).model_dump())
+
+
+@router.delete("/models/local/{config_id}", response_model=ApiResponse, summary="删除本地模型配置", description="管理员删除指定的本地模型配置")
+async def delete_local_model(
+    config_id: str,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除本地模型配置"""
+    uid = UUID(config_id)
+    result = await db.execute(select(LocalModelConfig).where(LocalModelConfig.id == uid))
+    config = result.scalar_one_or_none()
+    if not config:
+        raise HTTPException(status_code=404, detail="配置不存在")
+
+    await db.delete(config)
+    await db.commit()
+    return ApiResponse(message="本地模型配置已删除")

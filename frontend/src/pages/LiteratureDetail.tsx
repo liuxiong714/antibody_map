@@ -13,7 +13,8 @@ import {
 } from '../services/literature';
 import PdfViewer from '../components/PdfViewer';
 import FilePreview from '../components/FilePreview';
-import { DATA_TYPE_LABEL, DISEASES, PROVINCES, MODEL_OPTIONS, VENDOR_INFO } from '../utils/constants';
+import { DATA_TYPE_LABEL, DISEASES, PROVINCES, VENDOR_INFO } from '../utils/constants';
+import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
 import type { Literature, DataPoint, ExtractionStatusWithUsage } from '../types';
 import type { ExtractionHistoryItem } from '../services/literature';
 import dayjs from 'dayjs';
@@ -38,6 +39,11 @@ const LiteratureDetail: React.FC = () => {
   const [extractModel, setExtractModel] = useState<string | undefined>(undefined);
   const [extractApiKey, setExtractApiKey] = useState('');
   const [extractBaseUrl, setExtractBaseUrl] = useState('');
+  // 统一模型候选项（本地模型来自后端 /models，与报告生成等功能保持一致）
+  const [modelOptions, setModelOptions] = useState<ExtendedModelOption[]>([]);
+  useEffect(() => {
+    buildModelOptions().then(setModelOptions);
+  }, []);
   // 提取时是否保留已审核数据
   const [clearExistingData, setClearExistingData] = useState(true);
   // 是否在本次提取完成后显示 token/费用/模型信息
@@ -1236,13 +1242,13 @@ const LiteratureDetail: React.FC = () => {
           value={extractModel}
           onChange={(v) => {
             setExtractModel(v);
-            const vendor = MODEL_OPTIONS.find((o) => o.value === v)?.vendor || '';
+            const vendor = modelOptions.find((o) => o.value === v)?.vendor || '';
             setExtractBaseUrl(VENDOR_INFO[vendor]?.defaultBaseUrl || '');
           }}
-          options={MODEL_OPTIONS}
+          options={modelOptions}
         />
         {extractModel && extractModel !== '' && (() => {
-          const vendor = MODEL_OPTIONS.find((o) => o.value === extractModel)?.vendor || '';
+          const vendor = modelOptions.find((o) => o.value === extractModel)?.vendor || '';
           const info = VENDOR_INFO[vendor];
           if (!vendor || !info.name) return null;
           return (
@@ -1694,7 +1700,7 @@ const LiteratureDetail: React.FC = () => {
                         if (r.model) {
                           setExtractModel(r.model);
                           // 自动根据模型匹配默认 baseUrl
-                          const vendor = MODEL_OPTIONS.find((o) => o.value === r.model)?.vendor || '';
+                          const vendor = modelOptions.find((o) => o.value === r.model)?.vendor || '';
                           setExtractBaseUrl(VENDOR_INFO[vendor]?.defaultBaseUrl || '');
                         } else {
                           setExtractModel(undefined);

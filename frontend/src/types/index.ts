@@ -256,6 +256,16 @@ export interface ApiModelConfig {
   updated_at: string;
 }
 
+export interface LocalModelConfig {
+  id: string;
+  name: string;
+  model_name: string;
+  description: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ModelOption {
   value: string;
   label: string;

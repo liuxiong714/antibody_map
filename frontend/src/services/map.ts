@@ -1,6 +1,6 @@
 import api from './api';
 import { cachedGet, clearApiCache } from '../lib/apiCache';
-import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, ApiModelConfig, ModelsListData, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, BirthCohortResponse, MetaMergeResponse, MetaAnalysisResponse, AssayHeterogeneityResponse, SimulationResponse, CoverageReviewResult, SpatialHotspotsResponse, AntigenicMapData, TiterTableListData } from '../types';
+import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, ApiModelConfig, LocalModelConfig, ModelsListData, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, BirthCohortResponse, MetaMergeResponse, MetaAnalysisResponse, AssayHeterogeneityResponse, SimulationResponse, CoverageReviewResult, SpatialHotspotsResponse, AntigenicMapData, TiterTableListData } from '../types';
 
 // 拦截器已将 ApiResponse.data 提升到 resp.data，此处解包 AxiosResponse
 
@@ -386,6 +386,26 @@ export async function updateRemoteModel(id: string, body: Partial<ApiModelConfig
 
 export async function deleteRemoteModel(id: string) {
   const { data } = await api.delete(`/models/remote/${id}`);
+  return data;
+}
+
+export async function listLocalModels() {
+  const { data } = await api.get<LocalModelConfig[]>('/models/local');
+  return data;
+}
+
+export async function createLocalModel(body: { name: string; model_name: string; description?: string }) {
+  const { data } = await api.post<LocalModelConfig>('/models/local', body);
+  return data;
+}
+
+export async function updateLocalModel(id: string, body: Partial<LocalModelConfig>) {
+  const { data } = await api.put<LocalModelConfig>(`/models/local/${id}`, body);
+  return data;
+}
+
+export async function deleteLocalModel(id: string) {
+  const { data } = await api.delete(`/models/local/${id}`);
   return data;
 }
 

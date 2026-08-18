@@ -1,6 +1,37 @@
-from celery import Celery
+from celery import Celery, signals
 
 from app.config import settings
+from app.core.logging_config import setup_logging
+
+_LOG_LEVEL = "DEBUG" if settings.APP_DEBUG else "INFO"
+
+
+def _configure_worker_logging(**kwargs):
+    """统一日志配置：连接 Celery 的 setup_logging 信号。
+
+    Celery 会在 worker 启动时触发该信号；只要有 receiver 被调用且返回
+    非空，Celery 就会跳过它自带的默认日志配置（否则会清空 root handler
+    并换成 Celery 自己的 stderr handler，导致标准 logging 无法落盘）。
+    """
+    setup_logging(level=_LOG_LEVEL)
+    return True
+
+
+# 连接 setup_logging 信号，阻止 Celery 覆盖我们的 loguru 拦截
+signals.setup_logging.connect(_configure_worker_logging)
+
+
+def _reconfigure_logging_in_child(**kwargs):
+    """在 fork 出的每个 ForkPoolWorker 子进程中重建 loguru sink。
+
+    loguru 的 enqueue=True sink 依赖后台线程写入，fork 后线程不会复制到
+    子进程，队列无人消费会导致日志丢失；因此需在子进程内重新初始化。
+    """
+    setup_logging(level=_LOG_LEVEL)
+
+
+# 连接 worker_process_init 信号，确保 AI 提取子进程日志也能落盘
+signals.worker_process_init.connect(_reconfigure_logging_in_child)
 
 celery_app = Celery(
     "antibody_map",

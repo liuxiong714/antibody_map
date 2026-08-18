@@ -54,6 +54,8 @@ services:
     env_file:
       - .env
     environment:
+      # 日志/时间与宿主机一致（北京时间）
+      TZ: Asia/Shanghai
       # 容器内通过服务名访问基础设施
       DATABASE_URL: postgresql+asyncpg://antibody:antibody123@postgres:5432/antibody_map
       REDIS_URL: redis://redis:6379/0
@@ -71,6 +73,7 @@ services:
         condition: service_started
     volumes:
       - ./backend/data:/app/backend/data
+      - ./backend/logs:/app/backend/logs
     networks:
       - antibody-net
 
@@ -85,6 +88,8 @@ services:
     env_file:
       - .env
     environment:
+      # 日志/时间与宿主机一致（北京时间）
+      TZ: Asia/Shanghai
       DATABASE_URL: postgresql+asyncpg://antibody:antibody123@postgres:5432/antibody_map
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
@@ -103,6 +108,7 @@ services:
         condition: service_started
     volumes:
       - ./backend/data:/app/backend/data
+      - ./backend/logs:/app/backend/logs
     command: celery -A app.tasks.celery_app worker --loglevel=info --pool=prefork --concurrency=1
     networks:
       - antibody-net

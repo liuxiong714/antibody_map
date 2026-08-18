@@ -21,6 +21,8 @@ frontend/tsconfig.tsbuildinfo
 # 测试监控文件夹
 backend/data/test_monitor/
 backend/data/
+# 后台运行日志（loguru 持久化输出，含 AI 提取记录）
+backend/logs/
 
 # 日志与临时文件
 *.log
@@ -40,4 +42,25 @@ out.txt
 # 临时开发/测试脚本
 backend/check_*.py
 backend/test_*.py
+
+# 临时脚本与调试文件（防止今后再混入版本控制）
+# 根目录/backend scripts 目录下的临时脚本
+scripts/*.sh
+scripts/*.py
+backend/scripts/*.sh
+backend/scripts/*.py
+# 下划线前缀的临时调试脚本
+backend/data/_*.py
+backend/data/_*.sh
+backend/data/_*.txt
+# 通用临时文件命名
+_tmp_*
+*.bak
+*.orig
+# 误创建的特殊文件/目录
+=*
+.obsidian/
+
+# 调试残留文件（分析用输入/输出）
+error.txt
 

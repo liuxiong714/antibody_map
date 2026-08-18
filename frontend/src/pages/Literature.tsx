@@ -14,7 +14,8 @@ import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
 import { listLiterature, deleteLiterature, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
-import { MODEL_OPTIONS, VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
+import { VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
+import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
 import { formatAuthors } from '../utils/format';
 import dayjs from 'dayjs';
 
@@ -22,16 +23,16 @@ const { Text } = Typography;
 
 // 列宽状态（可拖拽调整，标题列默认较宽以完整显示）
 const DEFAULT_COL_WIDTHS: Record<string, number> = {
-  title: 320,
-  authors: 140,
-  journal: 140,
-  year: 70,
-  province: 80,
-  file_format: 90,
-  status: 105,
-  review_status: 140,
-  created: 110,
-  actions: 200,
+  title: 175,
+  authors: 90,
+  journal: 85,
+  year: 55,
+  province: 65,
+  file_format: 70,
+  status: 80,
+  review_status: 120,
+  created: 80,
+  actions: 185,
 };
 
 // ===== 可调整宽度的表头 =====
@@ -191,6 +192,11 @@ const LiteraturePage: React.FC = () => {
   // 表格多选
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [selectedRows, setSelectedRows] = useState<Literature[]>([]);
+  // 统一模型候选项（本地模型来自后端 /models，与报告生成等功能保持一致）
+  const [modelOptions, setModelOptions] = useState<ExtendedModelOption[]>([]);
+  useEffect(() => {
+    buildModelOptions().then(setModelOptions);
+  }, []);
 
   // PDF 预览
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -427,7 +433,7 @@ const LiteraturePage: React.FC = () => {
       };
       saveDefaultModel(configToSave);
       setSavedDefault(configToSave);
-      message.info(`已将「${MODEL_OPTIONS.find((o) => o.value === values.model)?.label || '自定义模型'}」设为默认模型`);
+      message.info(`已将「${modelOptions.find((o) => o.value === values.model)?.label || '自定义模型'}」设为默认模型`);
     }
     const autoExtract = values.autoExtract !== false; // 默认 true
     const dupResults: { litId: string; litTitle: string; duplicates: DuplicateMatchItem[] }[] = [];
@@ -569,7 +575,7 @@ const LiteraturePage: React.FC = () => {
     const saved = loadSavedDefaultModel();
     if (saved && saved.model) {
       setExtractModel(saved.model);
-      const vendor = MODEL_OPTIONS.find((o) => o.value === saved.model)?.vendor || '';
+      const vendor = modelOptions.find((o) => o.value === saved.model)?.vendor || '';
       setExtractBaseUrl(saved.baseUrl || VENDOR_INFO[vendor]?.defaultBaseUrl || '');
       setExtractApiKey(saved.apiKey || '');
       setExtractCustomModel(saved.customModel || '');
@@ -593,7 +599,7 @@ const LiteraturePage: React.FC = () => {
     const saved = loadSavedDefaultModel();
     if (saved && saved.model) {
       setExtractModel(saved.model);
-      const vendor = MODEL_OPTIONS.find((o) => o.value === saved.model)?.vendor || '';
+      const vendor = modelOptions.find((o) => o.value === saved.model)?.vendor || '';
       setExtractBaseUrl(saved.baseUrl || VENDOR_INFO[vendor]?.defaultBaseUrl || '');
       setExtractApiKey(saved.apiKey || '');
       setExtractCustomModel(saved.customModel || '');
@@ -632,10 +638,10 @@ const LiteraturePage: React.FC = () => {
         };
         saveDefaultModel(configToSave);
         setSavedDefault(configToSave);
-        message.info(`已将「${MODEL_OPTIONS.find((o) => o.value === extractModel)?.label || '自定义模型'}」设为默认模型`);
+        message.info(`已将「${modelOptions.find((o) => o.value === extractModel)?.label || '自定义模型'}」设为默认模型`);
       }
 
-      const modelLabel = MODEL_OPTIONS.find((o) => o.value === extractModel)?.label
+      const modelLabel = modelOptions.find((o) => o.value === extractModel)?.label
         || (extractCustomModel ? `Ollama:${extractCustomModel}` : '默认模型');
       const options = (model && model !== '') ? {
         model,
@@ -730,6 +736,7 @@ const LiteraturePage: React.FC = () => {
       dataIndex: 'title',
       key: 'title',
       width: colWidths.title,
+      ellipsis: true,
       sorter: true,
       sortOrder: sortInfo.field === 'title' ? sortInfo.order : null,
       filteredValue: titleFilter ? [titleFilter] : null,
@@ -762,6 +769,7 @@ const LiteraturePage: React.FC = () => {
       dataIndex: 'authors',
       key: 'authors',
       width: colWidths.authors,
+      ellipsis: true,
       sorter: true,
       sortOrder: sortInfo.field === 'authors' ? sortInfo.order : null,
       filteredValue: authorsFilter ? [authorsFilter] : null,
@@ -792,6 +800,7 @@ const LiteraturePage: React.FC = () => {
       dataIndex: 'journal',
       key: 'journal',
       width: colWidths.journal,
+      ellipsis: true,
       sorter: true,
       sortOrder: sortInfo.field === 'journal' ? sortInfo.order : null,
       filteredValue: journal ? [journal] : null,
@@ -1098,7 +1107,7 @@ const LiteraturePage: React.FC = () => {
       width: colWidths.actions,
       onHeaderCell: () => ({ width: colWidths.actions, onResize: handleColumnResize('actions') }),
       render: (_: unknown, r: Literature) => (
-        <Space size="small">
+        <Space size={4} wrap>
           <Tooltip title="AI 提取">
             <Button
               size="small"
@@ -1176,7 +1185,13 @@ const LiteraturePage: React.FC = () => {
               />
             </Tooltip>
           )}
-          <Button size="small" onClick={() => saveStateAndNavigate(r.id)}>详情</Button>
+          <Tooltip title="详情">
+            <Button
+              size="small"
+              icon={<FileTextOutlined />}
+              onClick={() => saveStateAndNavigate(r.id)}
+            />
+          </Tooltip>
           <Popconfirm title="确定删除？" onConfirm={() => handleDelete(r.id)}>
             <Button size="small" danger icon={<DeleteOutlined />} />
           </Popconfirm>
@@ -1445,7 +1460,7 @@ const LiteraturePage: React.FC = () => {
             showSizeChanger: true,
             showTotal: (t) => `共 ${t} 条${selectedRowKeys.length > 0 ? `，已选 ${selectedRowKeys.length} 条` : ''}`,
           }}
-          scroll={{ x: 1100, y: 560 }}
+          scroll={{ x: 1045, y: 560 }}
           virtual={pageSize > 20}
           size="middle"
         />
@@ -1478,7 +1493,7 @@ const LiteraturePage: React.FC = () => {
           </Form.Item>
           <Form.Item name="model" label="AI 提取模型" tooltip="选择用于 AI 数据提取的大语言模型。默认配置使用后端 .env 中 LLM_MODEL 设定的模型（当前为 DeepSeek Chat 远程 API）。本地 Ollama 模型无需 API Key，但需先在本地安装并运行 Ollama 服务。">
             <Select placeholder="默认配置（后端配置的模型）" allowClear disabled={uploading} style={{ width: '100%' }}>
-              {MODEL_OPTIONS.map((opt) => (
+              {modelOptions.map((opt) => (
                 <Select.Option key={opt.value || '__default__'} value={opt.value}>{opt.label}</Select.Option>
               ))}
             </Select>
@@ -1486,7 +1501,7 @@ const LiteraturePage: React.FC = () => {
           <Form.Item noStyle dependencies={['model']}>
             {({ getFieldValue }) => {
               const m = getFieldValue('model');
-              const desc = MODEL_OPTIONS.find((o) => o.value === m)?.description;
+              const desc = modelOptions.find((o) => o.value === m)?.description;
               if (!desc) return null;
               return (
                 <div style={{ color: '#888', fontSize: 12, marginTop: -8, marginBottom: 8, paddingLeft: 2, paddingRight: 2 }}>
@@ -1522,7 +1537,7 @@ const LiteraturePage: React.FC = () => {
             {savedDefault && (
               <>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  当前默认：{MODEL_OPTIONS.find((o) => o.value === savedDefault.model)?.label || savedDefault.model || '后端配置'}
+                  当前默认：{modelOptions.find((o) => o.value === savedDefault.model)?.label || savedDefault.model || '后端配置'}
                 </Text>
                 <Button
                   type="link"
@@ -1539,7 +1554,7 @@ const LiteraturePage: React.FC = () => {
           <Form.Item noStyle dependencies={['model']}>
             {({ getFieldValue }) => {
               const model = getFieldValue('model');
-              const vendor = MODEL_OPTIONS.find((o) => o.value === model)?.vendor || '';
+              const vendor = modelOptions.find((o) => o.value === model)?.vendor || '';
               const info = VENDOR_INFO[vendor];
               if (!vendor || !info.name) return null;
               if (info.isLocal) {
@@ -1559,7 +1574,7 @@ const LiteraturePage: React.FC = () => {
           <Form.Item noStyle dependencies={['model']}>
             {({ getFieldValue }) => {
               const model = getFieldValue('model');
-              const vendor = MODEL_OPTIONS.find((o) => o.value === model)?.vendor || '';
+              const vendor = modelOptions.find((o) => o.value === model)?.vendor || '';
               const info = VENDOR_INFO[vendor];
               if (!vendor || !info.name || info.isLocal) return null;
               return (
@@ -1861,16 +1876,16 @@ const LiteraturePage: React.FC = () => {
           value={extractModel}
           onChange={(v) => {
             setExtractModel(v);
-            const vendor = MODEL_OPTIONS.find((o) => o.value === v)?.vendor || '';
+            const vendor = modelOptions.find((o) => o.value === v)?.vendor || '';
             setExtractBaseUrl(VENDOR_INFO[vendor]?.defaultBaseUrl || '');
           }}
         >
-          {MODEL_OPTIONS.map((opt) => (
+          {modelOptions.map((opt) => (
             <Select.Option key={opt.value || '__default__'} value={opt.value}>{opt.label}</Select.Option>
           ))}
         </Select>
         {extractModel && (() => {
-          const desc = MODEL_OPTIONS.find((o) => o.value === extractModel)?.description;
+          const desc = modelOptions.find((o) => o.value === extractModel)?.description;
           return desc ? <div style={{ color: '#888', fontSize: 12, marginBottom: 12 }}>{desc}</div> : null;
         })()}
         {extractModel === 'ollama:custom' && (
@@ -1881,7 +1896,7 @@ const LiteraturePage: React.FC = () => {
           />
         )}
         {extractModel && extractModel !== '' && (() => {
-          const vendor = MODEL_OPTIONS.find((o) => o.value === extractModel)?.vendor || '';
+          const vendor = modelOptions.find((o) => o.value === extractModel)?.vendor || '';
           const info = VENDOR_INFO[vendor];
           if (!vendor || !info.name) return null;
           if (info.isLocal) {
@@ -1920,7 +1935,7 @@ const LiteraturePage: React.FC = () => {
           {savedDefault && (
             <>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                当前默认：{MODEL_OPTIONS.find((o) => o.value === savedDefault.model)?.label || savedDefault.model || '后端配置'}
+                当前默认：{modelOptions.find((o) => o.value === savedDefault.model)?.label || savedDefault.model || '后端配置'}
               </Text>
               <Button
                 type="link"

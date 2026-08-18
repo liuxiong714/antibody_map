@@ -13,7 +13,7 @@
 | 模块 | 功能 |
 |------|------|
 | **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**多格式导入导出**（CSV/Excel/JSON，JSON 含数据点可跨电脑迁移导入、支持仅导出选中文献）、**元数据批量同步**（从数据点自动聚合年份/省份）、**文档格式标识列**（彩色 Tag 显示 PDF/CAJ/DOCX/HTML 等格式，点击即可预览）、**全列排序与筛选**（标题/作者模糊筛选、创建时间范围、文档格式下拉，筛选状态本地缓存）、**文献文件下载**（带 JWT 认证自动下载）、**修改关联文件**（替换已关联本地文档） |
-| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取**、**上传/提取时可重新选定默认模型**、**批量AI提取**（多选文献后统一设置模型重新提取，自动跳过 processing 中的文献）、**手动停止提取**（单篇卡住的 processing 强制重置为 failed）、**一键重置所有卡住的提取状态**（适用于服务器重启后任务丢失的场景）；提取完成后可选显示**Token 用量、费用估算及使用的大模型**；本地 Ollama 走**原生 JSON Schema 结构化输出强约束**，并做**关键数值回验**（阳性率/GMC/样本量必须在原文中可定位，否则自动降级低置信） |
+| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取**、**上传/提取时可重新选定默认模型**、**批量AI提取**（多选文献后统一设置模型重新提取，自动跳过 processing 中的文献）、**手动停止提取**（单篇卡住的 processing 强制重置为 failed）、**一键重置所有卡住的提取状态**（适用于服务器重启后任务丢失的场景）；提取完成后可选显示**Token 用量、费用估算及使用的大模型**；本地 Ollama 走**原生 JSON Schema 结构化输出强约束**，并做**关键数值回验**（阳性率/GMC/样本量必须在原文中可定位，否则自动降级低置信）；**模型选择统一**——文献提取、文件夹监控、报告生成的本地模型候选项统一来自后端 `/models`（系统设置「本地模型配置」维护），各功能始终一致 |
 | **精确字符溯源** | 每个数据点锚定到原文的精确字符区间（`source_char_start/end`），采用精确/模糊/关键短语三级匹配，未匹配自动降级置信度并红色高亮待审 |
 | **长文档分块并行提取** | 超过 2 万字符的文献按段落边界分块、并行调用 LLM 提取，结果自动合并去重 |
 | **强 Schema 约束** | LLM 输出经 JSON Schema 校验（省份枚举、阳性率 0-100% 范围、GMC 正值等），字段违规自动降级置信度 |
@@ -24,7 +24,8 @@
 | **分析快照与引用** | 每个分析请求生成带数据指纹（data_hash）的快照 token，同参数自动去重复用；支持 **GBT7714 / BibTeX** 引用文本导出，确保分析结果可复现、可溯源 |
 | **抗原图谱** | 基于 HI/VNT/ELISA 滴度矩阵（titer_table 表）的 **metric MDS 降维**，将抗原与抗血清映射到 2D 平面（参考 Smith 2004 / racmacs），前端独立「抗原图谱」页交互展示 |
 | **报告生成** | LLM 生成抗体分析报告和疫苗接种策略研判报告，支持在线编辑和下载；**报告生成时可选模型**（本地 Ollama 模型 / 远程 API 模型，支持自定义 API Key 和 Base URL），自动拼接统一方法学脚注 |
-| **文件夹监控** | 定期监测指定文件夹，自动导入新文件并触发信息提取 |
+| **文件夹监控** | 定期监测指定文件夹，自动导入新文件并触发信息提取（可指定提取模型，候选项与文献提取/报告生成统一） |
+| **系统设置** | 集中管理平台配置：**远程模型配置**（API Key/Base URL，仅管理员）、**本地模型配置**（新增 `local_model_config` 表，增删改查本地 Ollama 模型，`/models` 统一读取，各功能模型候选项一致）、**后台日志**（loguru 按日落盘 `backend/logs/`，支持文件切换/级别筛选/关键字搜索/自动滚动）、**系统信息**（版本号/运行环境/功能特性动态展示） |
 | **Edge 浏览器插件** | 参考 Mendeley 设计，在浏览器中一键将文献添加到数据库并触发 AI 提取；支持 15+ 学术站点元数据自动识别、PDF 智能抓取上传、URL 网页导入、右键菜单、桌面通知 |
 | **多格式预览** | PDF 使用 pdf.js 渲染；TXT/HTML/DOCX/PPTX/XLSX/EPUB 显示解析后文本；CAJ 提示下载，支持分栏布局、面板折叠/展开 |
 
@@ -425,6 +426,28 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | POST | `/folders/{folder_id}/scan` | 手动触发扫描文件夹 |
 | GET | `/folders/{folder_id}/files` | 查看文件处理记录 |
 
+### 模型配置
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/models` | 获取可用模型列表（本地 + 远程，本地优先读 `local_model_config` 表，空表回退静态列表） |
+| GET | `/models/local` | 获取本地模型配置列表 |
+| POST | `/models/local` | 新增本地模型配置（管理员，模型名唯一） |
+| PUT | `/models/local/{config_id}` | 更新本地模型配置（名称/模型名/描述/启用状态，管理员） |
+| DELETE | `/models/local/{config_id}` | 删除本地模型配置（管理员） |
+| GET | `/models/remote` | 获取远程 API 模型配置列表 |
+| POST | `/models/remote` | 新增远程模型配置（管理员，API Key 加密存储） |
+| PUT | `/models/remote/{config_id}` | 更新远程模型配置（管理员） |
+| DELETE | `/models/remote/{config_id}` | 删除远程模型配置（管理员） |
+
+### 系统
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/system/info` | 系统信息（版本号、运行环境、功能特性、日志目录、仓库地址） |
+| GET | `/system/logs` | 列出日志目录下所有日志文件（名称/大小/修改时间，倒序） |
+| GET | `/system/logs/content` | 读取日志文件尾部内容（支持 `file/lines/level/keyword` 参数过滤，防路径穿越） |
+
 ## 环境变量
 
 ### LLM 配置
@@ -641,6 +664,44 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.10.0 (2026-08-18)
+
+#### 本地模型配置 · 模型选择统一 · 系统信息与后台日志 · Celery 日志落盘
+
+- **本地模型配置功能（系统设置新增标签页）**：新增 `local_model_config` 数据库表与 Alembic 迁移（含默认种子：Qwen3.8:27B、Qwen3:32B、Qwen2.5 系列、DeepSeek R1、Llama、Mistral、GLM 等）；系统设置新增「本地模型配置」标签页（`LocalModelManager` 组件），管理员可增删改查本地 Ollama 模型（显示名称 / 模型名 / 备注 / 启用状态），模型名唯一约束，删除后从下拉候选项即时生效。
+- **模型选择统一**：后端 `/models` 改为优先从 `local_model_config` 表读取启用项（表为空时回退静态列表）；前端新增 `modelOptions.ts` 统一构建模型候选项（默认配置 + 静态远程 + 动态本地 + 自定义本地）；文献管理 AI 提取、文件夹监控自动提取等模块从硬编码静态 `MODEL_OPTIONS` 迁移为调用后端 `/models` API，与报告生成保持同一数据源——各功能模块的本地模型候选项始终一致；本地模型值统一带 `ollama:` 前缀，兼容原有 vendor 判定逻辑，不影响默认模型记忆与自定义本地模型。
+- **系统信息标签页**：新增 `/system/info` 接口（版本号、运行环境、功能特性、日志目录、仓库地址），前端「系统信息」标签页动态渲染，仅需维护后端一处即可同步更新。
+- **后台日志标签页**：新增 `/system/logs`（文件列表）与 `/system/logs/content`（尾部内容读取，支持 `file/lines/level/keyword` 过滤、防路径穿越）接口；前端「后台日志」标签页支持日志文件切换、级别筛选、关键字搜索、自动滚动到底部（向上滚动自动暂停）；日志由 loguru 按日写入 `backend/logs/`（大小轮转 + 7 天保留），docker-compose 挂载卷确保容器重启不丢失，前端可直接排查 AI 提取问题，无需再 `docker logs`。
+- **Celery 日志落盘修复**：连接 `setup_logging` 信号阻止 Celery 默认日志配置覆盖 loguru 拦截器；连接 `worker_process_init` 信号在 ForkPoolWorker 子进程重建 loguru `enqueue` sink，AI 提取子进程日志不再因线程丢失而丢失，全部落盘可查。
+- **容器时区统一**：backend / worker 容器设置 `TZ: Asia/Shanghai`，日志时间与系统时间（东八区）一致，不再相差 8 小时。
+- **文献管理交互优化**：「操作」列「详情」文字按钮改为 FileTextOutlined 图标按钮（带 Tooltip）；列宽整体压缩（1395→1005px），标题/作者/期刊列 `ellipsis` 省略，操作列 `Space size={4}` 收紧并允许换行——默认无横向滚动即可完整展示全部 10 列。
+- **远程模型配置保持**：远程模型 CRUD（`/models/remote`）与 API Key 加密存储逻辑不受影响，与本地模型配置在系统设置中并列展示。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/models/local_model_config.py` | 新增本地模型配置模型（name/model_name 唯一/is_active/description） |
+| `backend/alembic/versions/add_local_model_config.py` | 新增迁移：建表 + 默认种子本地模型 |
+| `backend/app/models/__init__.py` | 注册 `LocalModelConfig` |
+| `backend/app/schemas/model_config.py` | 新增 `LocalModelConfigCreate/Update/Response`（UUID→str 校验器） |
+| `backend/app/api/v1/model_config.py` | `/models` 改读本地配置表（空表回退）；新增 `/models/local` CRUD（管理员，IntegrityError 去重） |
+| `backend/app/api/v1/system.py` | 新增系统信息 + 后台日志接口（`/system/info`、`/system/logs`、`/system/logs/content`） |
+| `backend/app/api/v1/router.py` | 挂载 system 路由 |
+| `backend/app/tasks/celery_app.py` | 连接 `setup_logging` / `worker_process_init` 信号修复 Celery 日志落盘 |
+| `docker-compose.yml` | backend/worker 设置 `TZ: Asia/Shanghai`；挂载 `./backend/logs` 卷 |
+| `frontend/src/utils/modelOptions.ts` | 新增统一模型候选项构建器（默认+静态远程+动态本地+自定义） |
+| `frontend/src/components/LocalModelManager.tsx` | 新增本地模型管理组件（增删改查/启用开关） |
+| `frontend/src/services/system.ts` | 新增系统信息/日志接口封装 |
+| `frontend/src/services/map.ts` | 新增 `listLocalModels/createLocalModel/updateLocalModel/deleteLocalModel` |
+| `frontend/src/types/index.ts` | 新增 `LocalModelConfig` 类型 |
+| `frontend/src/pages/Settings.tsx` / `Settings.css` | 新增「本地模型配置」「后台日志」「系统信息」标签页及样式 |
+| `frontend/src/pages/Literature.tsx` | 模型候选项改用 `buildModelOptions`；列宽压缩 + ellipsis + 详情图标按钮 + `scroll.x=1045` |
+| `frontend/src/pages/FolderMonitor.tsx` | 模型候选项改用 `buildModelOptions` |
+| `frontend/src/pages/LiteratureDetail.tsx` | 模型候选与默认模型提示统一 |
+| `backend/app/config.py` | APP_VERSION 升级至 1.10.0 |
+| `.gitignore` | 补充临时脚本/调试文件忽略规则 |
 
 ### v1.9.0 (2026-08-18)
 

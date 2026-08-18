@@ -52,3 +52,57 @@
 .system-info-item .value a:hover {
   text-decoration: underline;
 }
+
+/* ── 后台日志 ── */
+.log-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+
+.log-summary {
+  margin: 4px 0 8px;
+}
+
+.log-body {
+  background: #1e1e1e;
+  border-radius: 6px;
+  padding: 10px 12px;
+  height: 480px;
+  overflow-y: auto;
+  font-family: Consolas, "SFMono-Regular", Menlo, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.log-empty {
+  color: #aaa;
+  text-align: center;
+  padding: 40px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.log-line {
+  display: flex;
+  gap: 10px;
+  padding: 1px 0;
+  word-break: break-all;
+}
+
+.log-level {
+  flex-shrink: 0;
+  width: 64px;
+  font-weight: 600;
+}
+
+.log-text {
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  flex: 1;
+}
+

@@ -5,6 +5,7 @@ from app.models.report import Report
 from app.models.disease_dict import DiseaseDict
 from app.models.monitored_folder import MonitoredFolder, MonitoredFile
 from app.models.api_model_config import ApiModelConfig
+from app.models.local_model_config import LocalModelConfig
 from app.models.user import User
 from app.models.audit_log import AuditLog
 from app.models.extraction_history import ExtractionHistory
@@ -16,7 +17,7 @@ __all__ = [
     "Base", "engine", "async_session", "get_async_session",
     "Literature", "DataPoint", "Report", "DiseaseDict",
     "MonitoredFolder", "MonitoredFile", "ApiModelConfig",
-    "User", "AuditLog", "ExtractionHistory",
+    "LocalModelConfig", "User", "AuditLog", "ExtractionHistory",
     "Tag", "literature_tag", "AnalysisSnapshot",
     "TiterTable",
 ]
