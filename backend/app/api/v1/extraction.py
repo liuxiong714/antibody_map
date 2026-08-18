@@ -1,7 +1,6 @@
 import logging
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -25,6 +24,7 @@ from app.api.deps import get_db
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
 from app.schemas.common import ApiResponse
+from app.services.literature_service import LOCAL_STORAGE_DIR
 from app.services.extraction_service import (
     trigger_extraction,
     get_extraction_status,
@@ -466,7 +466,7 @@ async def export_traceability_html(
         raise HTTPException(status_code=404, detail="该文献暂无提取数据点，无法生成溯源 HTML")
 
     # 3. 读取缓存的 clean_text（溯源文本）
-    text_path = Path("data/pdfs") / f"{literature_id}.txt"
+    text_path = LOCAL_STORAGE_DIR / f"{literature_id}.txt"
     if not text_path.exists():
         raise HTTPException(
             status_code=404,

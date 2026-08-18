@@ -1,5 +1,4 @@
 """数据点质量评分异步任务（审核通过后触发，幂等更新）。"""
-import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -10,6 +9,7 @@ from app.models.base import async_session
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
 from app.tasks.celery_app import celery_app
+from app.tasks.async_runner import run_async
 
 logger = logging.getLogger("celery.task")
 
@@ -80,7 +80,7 @@ def score_data_point_task(self, data_point_id: str):
             }
 
     try:
-        return asyncio.run(_run())
+        return run_async(_run())
     except Exception as e:
         logger.error(f"数据点质量打分失败 dp={data_point_id}: {e}")
         raise self.retry(exc=e)

@@ -1,0 +1,17 @@
+# MinerU 增强 PDF 解析依赖（torch 全家桶，镜像体积较大，仅 worker 镜像安装）
+# 版本组合已在 antibody-worker 容器验证（2026-08-18）
+# 注意：mineru 要求 transformers<5.0.0（>=4.57.3），对应 tokenizers<0.23
+#   （PyPI 无 tokenizers 0.23.0，故配 0.22.x）
+# 使用 mineru[pipeline] extra：自动补齐 ftfy/safetensors/shapely/pyclipper/
+#   onnxruntime/PyYAML 等 pipeline 依赖（纯 pip install mineru 不含这些，
+#   会导致 No module named 'ftfy' 报错）
+# accelerate 属于 mineru 的 vlm extra（pipeline 不携带），但 hybrid 后端加载
+#   VLM 模型使用 device_map 时必须依赖它，缺失报错：
+#   "Using a device_map ... requires accelerate"，故显式锁定
+mineru[pipeline]==3.4.5
+torch==2.13.0
+torchvision==0.28.0
+transformers==4.57.6
+tokenizers==0.22.2
+pypdfium2==5.10.1
+accelerate==1.14.0

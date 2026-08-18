@@ -76,6 +76,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
   { value: 'gpt-4o-mini', label: 'GPT-4o-mini（远程API）', vendor: 'openai', description: 'OpenAI GPT-4o-mini，速度快成本低，需填写 OpenAI API Key' },
   { value: 'gpt-4o', label: 'GPT-4o（远程API）', vendor: 'openai', description: 'OpenAI GPT-4o，提取精度最高，成本较高，需填写 OpenAI API Key' },
   { value: 'qwen2.5-7b', label: 'Qwen2.5-7B（远程API）', vendor: 'qwen', description: '阿里通义千问远程 API，需填写 DashScope API Key' },
+  { value: 'ollama:qwen3.8:27b', label: 'Qwen3.8:27B（本地·Ollama）', vendor: 'ollama', description: '通过 Ollama 本地部署的 Qwen3.8:27B 模型，无需 API Key，需先在本地运行 ollama serve' },
   { value: 'ollama:qwen3:32b', label: 'Qwen3:32B（本地·Ollama）', vendor: 'ollama', description: '通过 Ollama 本地部署的 Qwen3:32B 模型，无需 API Key，需先在本地运行 ollama serve' },
   { value: 'ollama:qwen2.5:14b', label: 'Qwen2.5:14B（本地·Ollama）', vendor: 'ollama', description: '通过 Ollama 本地部署的 Qwen2.5:14B 模型，无需 API Key，需先在本地运行 ollama serve' },
   { value: 'ollama:llama3.1:8b', label: 'Llama3.1:8B（本地·Ollama）', vendor: 'ollama', description: '通过 Ollama 本地部署的 Llama3.1:8B 模型，无需 API Key，需先在本地运行 ollama serve' },

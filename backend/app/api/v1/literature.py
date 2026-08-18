@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import logging
+import os  # os.startfile 回退方案（Windows 打开文件夹）
 import re
 import subprocess  # 打开文件夹使用
 import sys
@@ -203,17 +204,27 @@ async def list_literatures(
     year_start: Optional[int] = Query(None, description="起始年份"),
     year_end: Optional[int] = Query(None, description="结束年份"),
     journal: Optional[str] = Query(None, description="期刊名称"),
-    sort_by: Optional[str] = Query(None, description="排序字段: title, authors, journal, year, province, created, status"),
+    title: Optional[str] = Query(None, description="标题筛选（模糊匹配）"),
+    authors: Optional[str] = Query(None, description="作者筛选（模糊匹配）"),
+    created_start: Optional[datetime] = Query(None, description="创建时间起（含当日）"),
+    created_end: Optional[datetime] = Query(None, description="创建时间止（含当日）"),
+    sort_by: Optional[str] = Query(None, description="排序字段: title, authors, journal, year, province, created, status, file_format"),
     sort_order: Optional[str] = Query(None, description="排序方向: asc, desc"),
     review_status: Optional[str] = Query(None, description="审核状态: none, pending, partial, approved"),
     extraction_status: Optional[str] = Query(None, description="提取状态: pending, processing, done, done_no_data, failed"),
+    file_format: Optional[str] = Query(None, description="文档格式筛选: PDF, CAJ, EPUB, DOCX, PPTX, XLSX, TXT, HTML, URL"),
     tag_id: Optional[uuid.UUID] = Query(None, description="标签筛选：只显示有该标签的文献"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
     items, total = await list_literature(
-        db, keyword, disease, province, year_start, year_end, journal, sort_by, sort_order, review_status, extraction_status, tag_id, page, page_size
+        db=db, keyword=keyword, disease=disease, province=province,
+        year_start=year_start, year_end=year_end, journal=journal,
+        title=title, authors=authors, created_start=created_start, created_end=created_end,
+        sort_by=sort_by, sort_order=sort_order, review_status=review_status,
+        extraction_status=extraction_status, file_format=file_format, tag_id=tag_id,
+        page=page, page_size=page_size,
     )
 
     def _derive_file_format(lit) -> Optional[str]:
@@ -277,6 +288,7 @@ async def export_literatures(
     year_end: Optional[int] = Query(None, description="结束年份"),
     journal: Optional[str] = Query(None, description="期刊名称"),
     review_status: Optional[str] = Query(None, description="审核状态: none, pending, partial, approved"),
+    file_format: Optional[str] = Query(None, description="文档格式筛选: PDF, CAJ, EPUB, DOCX, PPTX, XLSX, TXT, HTML, URL"),
     format: str = Query("csv", description="导出格式: csv, xlsx, json"),
     include_data_points: bool = Query(False, description="是否包含数据点（JSON/Excel有效）"),
     literature_ids: Optional[str] = Query(None, description="逗号分隔的文献ID列表，指定时仅导出这些文献"),
@@ -297,6 +309,7 @@ async def export_literatures(
         items, _ = await list_literature(
             db, keyword, disease, province, year_start, year_end, journal,
             sort_by=None, sort_order=None, review_status=review_status,
+            file_format=file_format,
             page=1, page_size=10000,
         )
 
@@ -1010,36 +1023,223 @@ async def open_literature_folder(
         logger.warning(f"[打开文件夹] 文献不存在: id={literature_id}")
         raise HTTPException(status_code=404, detail="文献不存在")
 
+    # 解析文件真实路径（与预览/下载共用同一套回退逻辑）
     file_path = _resolve_literature_file(literature)
     if not file_path:
         logger.error(f"[打开文件夹] 文件在磁盘上不存在: id={literature_id}, path={literature.file_path}")
-        raise HTTPException(status_code=404, detail="文件不存在")
+        raise HTTPException(status_code=404, detail="文件不存在，无法打开所在文件夹")
 
-    resolved = str(file_path.resolve())
+    try:
+        resolved = str(file_path.resolve())
+        folder = str(file_path.parent)
+    except Exception as e:  # pragma: no cover
+        logger.error(f"[打开文件夹] 解析路径失败: id={literature_id}, path={file_path}, err={e}")
+        raise HTTPException(status_code=500, detail=f"文件路径解析失败: {e}")
 
-    if sys.platform == "win32":
-        # Windows：使用资源管理器打开并选中文件
-        try:
-            subprocess.Popen(
-                ["explorer", "/select,", resolved],
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except Exception as e:  # pragma: no cover
-            logger.error(f"[打开文件夹] 调用 explorer 失败: {e}")
-            raise HTTPException(status_code=500, detail=f"打开文件夹失败: {e}")
-    elif sys.platform == "darwin":
-        # macOS：在 Finder 中显示
-        subprocess.Popen(["open", "-R", resolved])
-    else:
-        # Linux 桌面：打开所在目录
-        subprocess.Popen(["xdg-open", str(file_path.parent)])
+    try:
+        _reveal_in_host_file_manager(resolved, folder)
+    except Exception as e:
+        logger.error(f"[打开文件夹] 打开文件夹失败: id={literature_id}, path={resolved}, err={e}")
+        raise HTTPException(status_code=500, detail=f"打开文件夹失败: {e}")
 
     logger.info(f"[打开文件夹] 已发起打开请求: id={literature_id}, path={resolved}")
     return ApiResponse(data={
         "opened": True,
         "path": resolved,
-        "folder": str(file_path.parent),
+        "folder": folder,
     })
+
+
+def _reveal_in_host_file_manager(resolved: str, folder: str) -> None:
+    """在宿主机上定位并选中文件（Windows 资源管理器 / macOS Finder / WSL 间调）。
+
+    关键点：
+    - Windows 资源管理器的 `/select,<路径>` 必须作为单个参数传入（中间不能有空格），
+      否则 explorer 无法正确识别并选中目标文件；此处分三段尝试，任一成功即返回。
+    - 后端可能运行在 WSL(Linux) 中：此时可通过 WSL 互操作将 Linux 路径转成 Windows
+      路径并调用 explorer.exe，从而在 Windows 宿主机上打开资源管理器并选中该文件。
+    - 若当前环境无法打开图形文件管理器（如无头服务器），不抛出未处理异常：
+      直接返回，由调用方给出文件路径提示。
+    """
+    if sys.platform == "win32":
+        # 原生 Windows：先 explorer /select 定位选中，失败则用关联程序打开所在目录
+        try:
+            subprocess.Popen(
+                ["explorer", f"/select,{resolved}"],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return
+        except Exception as e:  # pragma: no cover
+            logger.warning(f"[打开文件夹] explorer 选中失败({e})，回退为打开目录")
+        try:
+            os.startfile(folder)  # type: ignore[attr-defined]
+            return
+        except Exception as e:  # pragma: no cover
+            logger.warning(f"[打开文件夹] os.startfile 失败({e})，按环境处理")
+    elif sys.platform == "darwin":
+        # macOS：在 Finder 中显示
+        subprocess.Popen(["open", "-R", resolved])
+        return
+    else:
+        # 非 Windows / macOS：可能是 WSL(Linux) 或 Linux 桌面
+        win_path = _to_windows_path(resolved)
+        logger.info(f"[打开文件夹] WSL分支: sys.platform={sys.platform}, uid={os.getuid()}, resolved={resolved}, win_path={win_path}")
+        if win_path:
+            # WSL 环境下调用 explorer.exe 打开 Windows 资源管理器并选中文件
+            #
+            # 关键问题1：后端可能以 root 运行（sudo uvicorn），而 WSL interop 在 root 下
+            #   调用 Windows GUI 程序时无法在交互式桌面会话中显示窗口。
+            #   解决：若为 root，通过 runuser 切换到 WSL 默认非 root 用户再调用。
+            #
+            # 关键问题2：uvicorn 进程继承的 WSL_INTEROP socket 可能来自已失效的终端会话，
+            #   虽然 socket 文件仍在、explorer.exe 能启动，但窗口不会在当前桌面显示。
+            #   解决：优先使用 WSL 主会话的 interop socket（/run/WSL/1_interop 或 2_interop），
+            #   该 socket 始终关联当前的 Windows 交互式桌面会话。
+            interop_socket = _find_active_wsl_interop()
+            logger.info(f"[打开文件夹] interop_socket={interop_socket or '(继承当前)'}")
+
+            runuser = _get_wsl_runuser_prefix()
+            username = runuser[2] if runuser else None
+            if username:
+                cmd = ["runuser", "-u", username, "--", "explorer.exe", f"/select,{win_path}"]
+                logger.info(f"[打开文件夹] root用户，使用runuser({username})调用")
+            else:
+                cmd = ["explorer.exe", f"/select,{win_path}"]
+                logger.info(f"[打开文件夹] 非root用户，直接调用explorer.exe")
+            try:
+                env = os.environ.copy()
+                if interop_socket:
+                    env["WSL_INTEROP"] = interop_socket
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=env,
+                )
+                logger.info(f"[打开文件夹] explorer.exe 已启动: pid={proc.pid}")
+                return
+            except Exception as e:
+                logger.warning(f"[打开文件夹] explorer.exe 启动失败({e})")
+        try:
+            subprocess.Popen(["xdg-open", folder])
+            return
+        except Exception as e:  # pragma: no cover
+            logger.warning(f"[打开文件夹] xdg-open 失败({e})，当前环境无可用文件管理器")
+
+
+def _to_windows_path(path: str) -> str | None:
+    """将 Linux/WSL 路径转换为 Windows 盘符路径（如 /mnt/e/... -> E:\\...）。
+
+    仅在 WSL/Linux 且存在 wslpath 工具时返回 Windows 路径，否则返回 None。
+    """
+    try:
+        out = subprocess.run(
+            ["wslpath", "-w", path],
+            capture_output=True, text=True, timeout=10,
+        )
+        win = (out.stdout or "").strip()
+        return win if win else None
+    except Exception:  # pragma: no cover
+        return None
+
+
+def _get_wsl_runuser_prefix() -> list[str] | None:
+    """若当前进程以 root 运行且处于 WSL 环境，返回 runuser 命令前缀以切换到非 root 用户。
+
+    WSL interop 在 root 用户下调用 Windows GUI 程序（如 explorer.exe）时，
+    程序虽能启动但无法在交互式桌面会话中显示窗口。
+    通过 runuser 切换到 WSL 默认用户即可解决此问题。
+
+    返回示例: ["runuser", "-u", "liux", "--"]
+    非 root 或找不到合适用户时返回 None。
+    """
+    if os.getuid() != 0:
+        return None
+    # 查找 WSL 默认非 root 用户：优先从 who 命令获取当前登录用户
+    try:
+        out = subprocess.run(["who"], capture_output=True, text=True, timeout=5)
+        for line in (out.stdout or "").strip().splitlines():
+            username = line.split()[0] if line.split() else ""
+            if username and username != "root":
+                return ["runuser", "-u", username, "--"]
+    except Exception:  # pragma: no cover
+        pass
+    # 回退：从 /run/user 目录查找 uid>=1000 的用户
+    try:
+        import glob
+        for uid_dir in sorted(glob.glob("/run/user/*")):
+            uid_str = uid_dir.split("/")[-1]
+            if uid_str.isdigit() and int(uid_str) >= 1000:
+                import pwd
+                pw = pwd.getpwuid(int(uid_str))
+                if pw and pw.pw_name != "root":
+                    return ["runuser", "-u", pw.pw_name, "--"]
+    except Exception:  # pragma: no cover
+        pass
+    return None
+
+
+def _find_active_wsl_interop() -> str | None:
+    """查找当前 WSL 主会话的 interop socket 路径。
+
+    背景：每个 WSL 终端会话都会在 /run/WSL/ 下创建一个 <pid>_interop Unix socket，
+    用于 Linux <-> Windows 互操作（调用 explorer.exe 等）。uvicorn 进程继承的
+    WSL_INTEROP 可能来自一个已失效或非交互式的终端会话——socket 文件仍在、
+    explorer.exe 能启动，但窗口不会在当前 Windows 桌面显示。
+
+    WSL 主会话（PID 2 的 /init 进程）的 interop socket 始终关联当前的
+    Windows 交互式桌面会话，因此优先使用它。
+
+    查找顺序：
+      1. /run/WSL/1_interop（WSL 主会话的标准符号链接）
+      2. /run/WSL/2_interop（PID 2 的 /init 进程对应的 socket）
+      3. /run/WSL/ 下数字最小且对应 /init 进程仍存活的 socket
+      4. 返回 None（由调用方继承当前进程环境）
+    """
+    import glob as _glob
+
+    candidates: list[str] = []
+
+    # 优先1：标准符号链接 1_interop -> 2_interop
+    link = "/run/WSL/1_interop"
+    if os.path.islink(link):
+        target = os.path.realpath(link)
+        if os.path.exists(target):
+            candidates.append(target)
+
+    # 优先2：PID 2 的 /init 对应的 socket
+    candidates.append("/run/WSL/2_interop")
+
+    # 优先3：所有 <pid>_interop socket，按 pid 数字升序
+    try:
+        sockets = []
+        for path in _glob.glob("/run/WSL/*_interop"):
+            name = os.path.basename(path)
+            pid_str = name.replace("_interop", "")
+            if pid_str.isdigit():
+                sockets.append((int(pid_str), path))
+        sockets.sort(key=lambda x: x[0])
+        for _, path in sockets:
+            if path not in candidates:
+                candidates.append(path)
+    except Exception:  # pragma: no cover
+        pass
+
+    # 返回第一个存在且为 socket 的候选
+    for path in candidates:
+        try:
+            if stat_is_socket(path):
+                return path
+        except Exception:
+            continue
+    return None
+
+
+def stat_is_socket(path: str) -> bool:
+    """判断路径是否为一个有效的 Unix socket 文件。"""
+    import stat as _stat
+    st = os.stat(path)
+    return _stat.S_ISSOCK(st.st_mode)
 
 
 @router.get("/literatures/{literature_id}/source-text", response_model=ApiResponse, summary="获取文献溯源文本", description="返回文献的提取文本，支持按字符区间截取，供溯源查看高亮使用，可以获取全文或指定区间的片段")
@@ -1056,7 +1256,7 @@ async def get_source_text(
         raise HTTPException(status_code=404, detail="文献不存在")
 
     # 优先读取缓存的 clean_text 文件
-    text_path = Path("data/pdfs") / f"{literature_id}.txt"
+    text_path = LOCAL_STORAGE_DIR / f"{literature_id}.txt"
     if not text_path.exists():
         raise HTTPException(status_code=404, detail="溯源文本未缓存，请重新提取该文献")
 

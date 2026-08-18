@@ -22,7 +22,9 @@ const Settings = React.lazy(() => import('./pages/Settings'));
 
 const PageLoader: React.FC = () => (
   <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '40vh' }}>
-    <Spin size="large" tip="加载中..." />
+    <Spin size="large" tip="加载中...">
+      <div style={{ height: 40 }} />
+    </Spin>
   </div>
 );
 

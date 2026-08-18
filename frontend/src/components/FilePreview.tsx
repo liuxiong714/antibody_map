@@ -145,7 +145,9 @@ const FilePreview: React.FC<FilePreviewProps> = ({
     if (textLoading) {
       return (
         <div style={{ textAlign: 'center', padding: '60px 0' }}>
-          <Spin tip="加载文本内容中..." />
+          <Spin tip="加载文本内容中...">
+            <div style={{ height: 80 }} />
+          </Spin>
         </div>
       );
     }

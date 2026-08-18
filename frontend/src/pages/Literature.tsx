@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Dropdown, Switch,
+  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Dropdown, Switch, DatePicker,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined, PaperClipOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import { Resizable, ResizeCallbackData } from 'react-resizable';
@@ -12,9 +12,9 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, uploadLiterature, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder } from '../services/literature';
+import { listLiterature, deleteLiterature, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
-import { MODEL_OPTIONS, VENDOR_INFO, EXTRACTION_STATUS_META } from '../utils/constants';
+import { MODEL_OPTIONS, VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
 import { formatAuthors } from '../utils/format';
 import dayjs from 'dayjs';
 
@@ -137,6 +137,11 @@ const LiteraturePage: React.FC = () => {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(() => (_cachedState?.sortOrder as 'asc' | 'desc') || 'desc');
   const [reviewStatus, setReviewStatus] = useState<string>(() => (_cachedState?.reviewStatus as string) || '');
   const [extractionStatus, setExtractionStatus] = useState<string>(() => (_cachedState?.extractionStatus as string) || '');
+  const [fileFormat, setFileFormat] = useState<string>(() => (_cachedState?.fileFormat as string) || '');
+  const [titleFilter, setTitleFilter] = useState<string>(() => (_cachedState?.titleFilter as string) || '');
+  const [authorsFilter, setAuthorsFilter] = useState<string>(() => (_cachedState?.authorsFilter as string) || '');
+  const [createdStart, setCreatedStart] = useState<string | undefined>(() => _cachedState?.createdStart as string | undefined);
+  const [createdEnd, setCreatedEnd] = useState<string | undefined>(() => _cachedState?.createdEnd as string | undefined);
   const [sortInfo, setSortInfo] = useState<{ field: string | null; order: 'ascend' | 'descend' | null }>(() => (
     _cachedState?.sortInfo as { field: string | null; order: 'ascend' | 'descend' | null }
   ) || { field: 'created_at', order: 'descend' });
@@ -157,7 +162,8 @@ const LiteraturePage: React.FC = () => {
   const saveStateAndNavigate = (litId: string) => {
     const payload = {
       sortBy, sortOrder, sortInfo, page, pageSize,
-      keyword, disease, province, yearStart, yearEnd, journal, reviewStatus, extractionStatus,
+      keyword, disease, province, yearStart, yearEnd, journal, reviewStatus, extractionStatus, fileFormat,
+      titleFilter, authorsFilter, createdStart, createdEnd,
     };
     console.log('[文献列表] 进入详情页前保存状态:', payload);
     try {
@@ -217,6 +223,11 @@ const LiteraturePage: React.FC = () => {
   const [folderFiles, setFolderFiles] = useState<File[]>([]);
   const [folderImporting, setFolderImporting] = useState(false);
   const [folderImportResult, setFolderImportResult] = useState<BatchImportResult | null>(null);
+
+  // 修改关联文件（替换已有文献关联的本地文档）
+  const [replaceLit, setReplaceLit] = useState<Literature | null>(null);
+  const [replaceFile, setReplaceFile] = useState<File | null>(null);
+  const [replacing, setReplacing] = useState(false);
   const [folderImportTriggerExtraction, setFolderImportTriggerExtraction] = useState(true);
 
   const handleFolderImport = async () => {
@@ -259,6 +270,11 @@ const LiteraturePage: React.FC = () => {
       if (sortOrder) params.sort_order = sortOrder;
       if (reviewStatus) params.review_status = reviewStatus;
       if (extractionStatus) params.extraction_status = extractionStatus;
+      if (fileFormat) params.file_format = fileFormat;
+      if (titleFilter) params.title = titleFilter;
+      if (authorsFilter) params.authors = authorsFilter;
+      if (createdStart) params.created_start = createdStart;
+      if (createdEnd) params.created_end = createdEnd;
       const resp = await listLiterature(params);
       setItems(resp.items);
       setTotal(resp.total);
@@ -268,7 +284,7 @@ const LiteraturePage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, keyword, disease, province, yearStart, yearEnd, journal, sortBy, sortOrder, reviewStatus]);
+  }, [page, pageSize, keyword, disease, province, yearStart, yearEnd, journal, sortBy, sortOrder, reviewStatus, extractionStatus, fileFormat, titleFilter, authorsFilter, createdStart, createdEnd]);
 
   useEffect(() => { fetchList(); }, [fetchList]);
 
@@ -294,6 +310,49 @@ const LiteraturePage: React.FC = () => {
     }
   };
 
+  const handleDownload = async (r: Literature) => {
+    try {
+      await downloadLiteratureFile(r.id, r.title);
+    } catch (err: any) {
+      console.error('[Literature] 下载失败:', err);
+      const detail = err?.response?.data?.detail;
+      message.error(detail ? `下载失败：${detail}` : '下载失败，文件可能不存在');
+    }
+  };
+
+  const handleOpenReplacement = (lit: Literature) => {
+    setReplaceLit(lit);
+    setReplaceFile(null);
+  };
+
+  const handleReplaceCancel = () => {
+    if (replacing) return;
+    setReplaceLit(null);
+    setReplaceFile(null);
+  };
+
+  const handleReplaceFile = async () => {
+    if (!replaceLit) return;
+    if (!replaceFile) {
+      message.warning('请先选择要关联的文件');
+      return;
+    }
+    setReplacing(true);
+    try {
+      await uploadLiteratureFile(replaceLit.id, replaceFile);
+      message.success('文件关联已更新');
+      setReplaceLit(null);
+      setReplaceFile(null);
+      fetchList();
+    } catch (err: any) {
+      console.error('[Literature] 修改关联文件失败:', err);
+      const detail = err?.response?.data?.detail;
+      message.error(detail ? `更新失败：${detail}` : '更新失败，请检查文件格式与大小');
+    } finally {
+      setReplacing(false);
+    }
+  };
+
   const handleSyncMetadata = async (id: string) => {
     try {
       const result = await syncMetadata(id);
@@ -311,7 +370,6 @@ const LiteraturePage: React.FC = () => {
       message.error('同步元数据失败');
     }
   };
-
   const [batchSyncing, setBatchSyncing] = useState(false);
   const handleSyncMetadataBatch = async () => {
     setBatchSyncing(true);
@@ -624,12 +682,25 @@ const LiteraturePage: React.FC = () => {
     }
   };
 
-  const handleTableChange = (pagination: any, _filters: unknown, sorter: any) => {
+  const handleTableChange = (pagination: any, filters: any, sorter: any) => {
     // 处理分页变更
     if (pagination.current !== page || pagination.pageSize !== pageSize) {
       setPage(pagination.current);
       setPageSize(pagination.pageSize);
     }
+    // 处理筛选变更
+    const f = filters || {};
+    setFileFormat(f.file_format?.[0] || '');
+    setTitleFilter(f.title?.[0] || '');
+    setAuthorsFilter(f.authors?.[0] || '');
+    setJournal(f.journal?.[0] || '');
+    setProvince(f.province?.[0] || '');
+    setYearStart(f.year?.[0] !== undefined ? Number(f.year?.[0]) : undefined);
+    setYearEnd(f.year?.[1] !== undefined ? Number(f.year?.[1]) : undefined);
+    setExtractionStatus(f.status?.[0] || '');
+    setReviewStatus(f.review_status?.[0] || '');
+    setCreatedStart(f.created?.[0] || undefined);
+    setCreatedEnd(f.created?.[1] || undefined);
     // 处理排序变更
     const s = Array.isArray(sorter) ? sorter[0] : sorter;
     if (s && s.field) {
@@ -661,6 +732,26 @@ const LiteraturePage: React.FC = () => {
       width: colWidths.title,
       sorter: true,
       sortOrder: sortInfo.field === 'title' ? sortInfo.order : null,
+      filteredValue: titleFilter ? [titleFilter] : null,
+      filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
+        <div style={{ padding: 8 }}>
+          <Input
+            placeholder="按标题模糊搜索"
+            value={selectedKeys[0] as string}
+            onChange={(e) => setSelectedKeys(e.target.value ? [e.target.value] : [])}
+            onPressEnter={() => confirm()}
+            style={{ width: 188, marginBottom: 8, display: 'block' }}
+            allowClear
+          />
+          <Space>
+            <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+            <Button
+              size="small"
+              onClick={() => { clearFilters?.(); setSelectedKeys([]); confirm(); }}
+            >重置</Button>
+          </Space>
+        </div>
+      ),
       onHeaderCell: () => ({ width: colWidths.title, onResize: handleColumnResize('title') }),
       render: (t: string, r: Literature) => (
         <a onClick={() => saveStateAndNavigate(r.id)} title={t}>{t}</a>
@@ -673,6 +764,26 @@ const LiteraturePage: React.FC = () => {
       width: colWidths.authors,
       sorter: true,
       sortOrder: sortInfo.field === 'authors' ? sortInfo.order : null,
+      filteredValue: authorsFilter ? [authorsFilter] : null,
+      filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
+        <div style={{ padding: 8 }}>
+          <Input
+            placeholder="按作者模糊搜索"
+            value={selectedKeys[0] as string}
+            onChange={(e) => setSelectedKeys(e.target.value ? [e.target.value] : [])}
+            onPressEnter={() => confirm()}
+            style={{ width: 188, marginBottom: 8, display: 'block' }}
+            allowClear
+          />
+          <Space>
+            <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+            <Button
+              size="small"
+              onClick={() => { clearFilters?.(); setSelectedKeys([]); confirm(); }}
+            >重置</Button>
+          </Space>
+        </div>
+      ),
       onHeaderCell: () => ({ width: colWidths.authors, onResize: handleColumnResize('authors') }),
       render: (v: string) => formatAuthors(v),
     },
@@ -683,16 +794,87 @@ const LiteraturePage: React.FC = () => {
       width: colWidths.journal,
       sorter: true,
       sortOrder: sortInfo.field === 'journal' ? sortInfo.order : null,
+      filteredValue: journal ? [journal] : null,
+      filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
+        <div style={{ padding: 8 }}>
+          <Input
+            placeholder="按期刊模糊搜索"
+            value={selectedKeys[0] as string}
+            onChange={(e) => setSelectedKeys(e.target.value ? [e.target.value] : [])}
+            onPressEnter={() => confirm()}
+            style={{ width: 188, marginBottom: 8, display: 'block' }}
+            allowClear
+          />
+          <Space>
+            <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+            <Button
+              size="small"
+              onClick={() => { clearFilters?.(); setSelectedKeys([]); confirm(); }}
+            >重置</Button>
+          </Space>
+        </div>
+      ),
       onHeaderCell: () => ({ width: colWidths.journal, onResize: handleColumnResize('journal') }),
       render: (v: string) => v || '-',
     },
     {
-      title: '年份',
+      title: (
+        <Tooltip title="文献的发表年份，与文献中样本的采集年份（数据点详情中的「采集年份」）不是同一个概念">
+          发表年份
+        </Tooltip>
+      ),
       dataIndex: 'pub_year',
       key: 'year',
       width: colWidths.year,
       sorter: true,
       sortOrder: sortInfo.field === 'pub_year' ? sortInfo.order : null,
+      filteredValue: (() => {
+        const arr: React.Key[] = [];
+        if (yearStart !== undefined) arr.push(yearStart);
+        if (yearEnd !== undefined) arr.push(yearEnd);
+        return arr.length ? arr : null;
+      })(),
+      filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => {
+        // 只保留有效年份，避免把 null/空串写入 filters（否则会被误筛成 0）
+        const applyYears = (start: number | string | null | undefined, end: number | string | null | undefined) => {
+          const keys: React.Key[] = [];
+          const s = typeof start === 'string' ? (start ? Number(start) : null) : start;
+          const e = typeof end === 'string' ? (end ? Number(end) : null) : end;
+          if (s !== null && s !== undefined) keys.push(s);
+          if (e !== null && e !== undefined) keys.push(e);
+          setSelectedKeys(keys);
+        };
+        return (
+          <div style={{ padding: 8 }}>
+            <Space>
+              <InputNumber
+                placeholder="起始年"
+                value={selectedKeys[0] ? Number(selectedKeys[0]) : undefined}
+                onChange={(v) => applyYears(v, (selectedKeys[1] as number | string | undefined) ?? null)}
+                style={{ width: 100 }}
+                min={1900}
+                max={2100}
+              />
+              <span style={{ padding: '0 4px' }}>~</span>
+              <InputNumber
+                placeholder="结束年"
+                value={selectedKeys[1] ? Number(selectedKeys[1]) : undefined}
+                onChange={(v) => applyYears((selectedKeys[0] as number | string | undefined) ?? null, v)}
+                style={{ width: 100 }}
+                min={1900}
+                max={2100}
+              />
+            </Space>
+            <Space style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+              <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+              <Button
+                size="small"
+                onClick={() => { clearFilters?.(); setSelectedKeys([]); }}
+              >重置</Button>
+            </Space>
+          </div>
+        );
+      },
       onHeaderCell: () => ({ width: colWidths.year, onResize: handleColumnResize('year') }),
       render: (v: number | null) => v || '-',
     },
@@ -703,6 +885,26 @@ const LiteraturePage: React.FC = () => {
       width: colWidths.province,
       sorter: true,
       sortOrder: sortInfo.field === 'province' ? sortInfo.order : null,
+      filteredValue: province ? [province] : null,
+      filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
+        <div style={{ padding: 8 }}>
+          <Select
+            placeholder="选择省份"
+            value={selectedKeys[0] as string}
+            onChange={(v) => setSelectedKeys(v ? [v] : [])}
+            style={{ width: 160, marginBottom: 8 }}
+            allowClear
+            options={PROVINCES.map((p) => ({ value: p, label: p }))}
+          />
+          <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+            <Button
+              size="small"
+              onClick={() => { clearFilters?.(); setSelectedKeys([]); confirm(); }}
+            >重置</Button>
+          </Space>
+        </div>
+      ),
       onHeaderCell: () => ({ width: colWidths.province, onResize: handleColumnResize('province') }),
       render: (v: string) => v || '-',
     },
@@ -713,6 +915,19 @@ const LiteraturePage: React.FC = () => {
       width: colWidths.file_format,
       sorter: true,
       sortOrder: sortInfo.field === 'file_format' ? sortInfo.order : null,
+      filters: [
+        { text: 'PDF', value: 'PDF' },
+        { text: 'CAJ', value: 'CAJ' },
+        { text: 'EPUB', value: 'EPUB' },
+        { text: 'DOCX', value: 'DOCX' },
+        { text: 'PPTX', value: 'PPTX' },
+        { text: 'XLSX', value: 'XLSX' },
+        { text: 'TXT', value: 'TXT' },
+        { text: 'HTML', value: 'HTML' },
+        { text: 'URL', value: 'URL' },
+      ],
+      filteredValue: fileFormat ? [fileFormat] : null,
+      onFilter: undefined,
       onHeaderCell: () => ({ width: colWidths.file_format, onResize: handleColumnResize('file_format') }),
       render: (_: unknown, r: Literature) => {
         const fmt = r.file_format;
@@ -791,6 +1006,8 @@ const LiteraturePage: React.FC = () => {
       width: colWidths.status,
       sorter: true,
       sortOrder: sortInfo.field === 'extraction_status' ? sortInfo.order : null,
+      filters: Object.entries(EXTRACTION_STATUS_META).map(([k, v]) => ({ text: v.label, value: k })),
+      filteredValue: extractionStatus ? [extractionStatus] : null,
       onHeaderCell: () => ({ width: colWidths.status, onResize: handleColumnResize('status') }),
       render: (s: string) => <StatusBadge status={s} />,
     },
@@ -800,6 +1017,13 @@ const LiteraturePage: React.FC = () => {
       width: colWidths.review_status,
       sorter: true,
       sortOrder: sortInfo.field === 'review_status' ? sortInfo.order : null,
+      filters: [
+        { text: '未审核', value: 'pending' },
+        { text: '部分审核', value: 'partial' },
+        { text: '已完成', value: 'approved' },
+        { text: '无数据', value: 'none' },
+      ],
+      filteredValue: reviewStatus ? [reviewStatus] : null,
       onHeaderCell: () => ({ width: colWidths.review_status, onResize: handleColumnResize('review_status') }),
       render: (_: unknown, r: Literature) => {
         const total = r.extracted_count || 0;
@@ -843,6 +1067,28 @@ const LiteraturePage: React.FC = () => {
       width: colWidths.created,
       sorter: true,
       sortOrder: sortInfo.field === 'created_at' ? sortInfo.order : null,
+      filteredValue: createdStart || createdEnd ? [createdStart ?? '', createdEnd ?? ''] : null,
+      filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
+        <div style={{ padding: 8 }}>
+          <DatePicker.RangePicker
+            value={[
+              selectedKeys[0] ? dayjs(selectedKeys[0] as string) : null,
+              selectedKeys[1] ? dayjs(selectedKeys[1] as string) : null,
+            ]}
+            onChange={(dates) => {
+              setSelectedKeys(dates && dates[0] ? [dates[0].format('YYYY-MM-DD'), dates[1] ? dates[1].format('YYYY-MM-DD') : ''] : []);
+            }}
+            style={{ width: 220, marginBottom: 8, display: 'block' }}
+          />
+          <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+            <Button
+              size="small"
+              onClick={() => { clearFilters?.(); setSelectedKeys([]); confirm(); }}
+            >重置</Button>
+          </Space>
+        </div>
+      ),
       onHeaderCell: () => ({ width: colWidths.created, onResize: handleColumnResize('created') }),
       render: (v: string) => dayjs(v).format('YYYY-MM-DD'),
     },
@@ -907,11 +1153,18 @@ const LiteraturePage: React.FC = () => {
               }}
             />
           </Tooltip>
+          <Tooltip title="修改关联文件（替换已有的本地文档）">
+            <Button
+              size="small"
+              icon={<PaperClipOutlined />}
+              onClick={() => handleOpenReplacement(r)}
+            />
+          </Tooltip>
           <Tooltip title="下载并用本地阅读器打开">
             <Button
               size="small"
               icon={<DownloadOutlined />}
-              onClick={() => window.open(`/api/v1/literatures/${r.id}/download`)}
+              onClick={() => handleDownload(r)}
             />
           </Tooltip>
           {r.file_path && (
@@ -1031,7 +1284,8 @@ const LiteraturePage: React.FC = () => {
           <Button icon={<ReloadOutlined />} onClick={() => {
             setKeyword(''); setDisease(''); setProvince(''); setYearStart(undefined);
             setYearEnd(undefined); setJournal(''); setSortBy('created'); setSortOrder('desc');
-            setReviewStatus(''); setExtractionStatus(''); setPage(1); setPageSize(20);
+            setReviewStatus(''); setExtractionStatus(''); setFileFormat(''); setPage(1); setPageSize(20);
+            setTitleFilter(''); setAuthorsFilter(''); setCreatedStart(undefined); setCreatedEnd(undefined);
             setSortInfo({ field: 'created_at', order: 'descend' });
           }}>重置筛选</Button>
           <Button type="primary" icon={<SearchOutlined />} onClick={fetchList}>查询</Button>
@@ -1140,6 +1394,7 @@ const LiteraturePage: React.FC = () => {
                 if (yearEnd) params.set('year_end', String(yearEnd));
                 if (journal) params.set('journal', journal);
                 if (reviewStatus) params.set('review_status', reviewStatus);
+                if (fileFormat) params.set('file_format', fileFormat);
                 return params;
               };
               const urls: Record<string, string> = {
@@ -1526,6 +1781,44 @@ const LiteraturePage: React.FC = () => {
           <Switch checked={importSkipDuplicates} onChange={setImportSkipDuplicates} size="small" />
           <Text style={{ fontSize: 13 }}>
             {importSkipDuplicates ? '跳过重复文献（按 DOI/标题匹配）' : '更新已有文献的数据'}
+          </Text>
+        </div>
+      </Modal>
+
+      {/* 修改关联文件 —— 替换已有文献关联的本地文档 */}
+      <Modal
+        title={<>修改关联文件</>}
+        open={!!replaceLit}
+        onCancel={handleReplaceCancel}
+        onOk={handleReplaceFile}
+        confirmLoading={replacing}
+        okText="确认修改"
+        cancelText="取消"
+        width={520}
+        maskClosable={!replacing}
+      >
+        {replaceLit && (
+          <div style={{ marginBottom: 12, padding: '10px 12px', background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 6 }}>
+            <Text style={{ fontSize: 13 }}>
+              当前文献：<strong>{replaceLit.title}</strong>
+              <br />
+              原有文档：{replaceLit.file_format ? `${replaceLit.file_format}（${replaceLit.file_path || ''}）` : '无'}
+            </Text>
+          </div>
+        )}
+        <Upload
+          accept=".pdf,.caj,.epub,.docx,.pptx,.xlsx,.txt,.html,.htm,.doc,.wps,.ps,.md"
+          maxCount={1}
+          beforeUpload={(file) => { setReplaceFile(file); return false; }}
+          onRemove={() => setReplaceFile(null)}
+          fileList={replaceFile ? [{ uid: '-1', name: replaceFile.name, status: 'done' }] : []}
+          disabled={replacing}
+        >
+          <Button icon={<PaperClipOutlined />} disabled={replacing}>选择新关联文件</Button>
+        </Upload>
+        <div style={{ marginTop: 12 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            选择后将替换该文献原有的本地文档文件，支持 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 等格式。
           </Text>
         </div>
       </Modal>

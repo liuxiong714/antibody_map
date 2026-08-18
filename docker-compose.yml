@@ -78,6 +78,9 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        # worker 需要 MinerU 增强 PDF 解析（backend 不装，避免 torch 拖慢 API）
+        INSTALL_MINERU: "true"
     container_name: antibody-worker
     env_file:
       - .env

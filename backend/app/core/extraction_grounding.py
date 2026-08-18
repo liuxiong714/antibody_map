@@ -19,6 +19,9 @@ from app.core.term_normalizer import CHINA_PROVINCE_NAMES
 
 logger = logging.getLogger("uvicorn")
 
+# P2-4：数值回验关注的 key 字段
+_NUMERIC_GROUNDING_KEYS = ("positivity_rate", "gmc_value", "sample_size")
+
 # A3：从配置读取模糊匹配阈值，默认 0.72
 try:
     from app.config import settings as _settings
@@ -225,6 +228,76 @@ def _keyphrase_match(text_norm: str, ctx_norm: str, extract: dict) -> Optional[t
     return start, end, text_norm[start:end]
 
 
+def _numeric_grounding_forms(value) -> list[str]:
+    """把单个数值格式化为多种可定位的字符串形态（用于 in 匹配）。
+
+    - 整数（如 sample_size=215）→ ["215"]
+    - 小数（如 84.3）→ ["84.3", "84.3%", "84.3％", "84.3 %"]
+    - 不可解析的非数值（None / 空 / 非数字）→ 返回空列表（视为无需回验）
+    """
+    if value is None:
+        return []
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, (int, float)):
+        num = float(value)
+        if num != int(num):
+            s = f"{num}"
+        else:
+            s = str(int(num))
+    else:
+        text = str(value).strip()
+        if not text:
+            return []
+        try:
+            num = float(text)
+        except (TypeError, ValueError):
+            return []
+        if num != int(num):
+            s = f"{num}"
+        else:
+            s = str(int(num))
+
+    forms = [s]
+    # 若含小数点，补充百分比形态（英文半角 % / 中文全角 ％ / 带空格 %）
+    if "." in s:
+        forms += [f"{s}%", f"{s}％", f"{s} %"]
+    return forms
+
+
+def validate_numeric_grounding(dp: dict, text: str) -> bool:
+    """数值回验：提取出的关键数值必须在原文中可定位。
+
+    对 dp 中的 positivity_rate / gmc_value / sample_size 每个存在且非空的数值，
+    格式化成多种形态（如 84.3 → ["84.3", "84.3%", "84.3％", "84.3 %"]），
+    任一形态能在 dp 的 source_context 或全文 text 中被找到（简单 in 判断）即视为
+    该数值 grounded。所有存在的关键数值都 grounded 才返回 True，否则 False。
+
+    无任何待回验数值时返回 True（不因缺少数值而降级）。
+    """
+    if not dp:
+        return True
+
+    text = text or ""
+    source_context = dp.get("source_context") or ""
+    haystacks = [t for t in (source_context, text) if t]
+
+    for key in _NUMERIC_GROUNDING_KEYS:
+        forms = _numeric_grounding_forms(dp.get(key))
+        if not forms:
+            continue
+        if not any(
+            any(form in haystack for form in forms)
+            for haystack in haystacks
+        ):
+            logger.warning(
+                f"[grounding] 数值回验失败: {key}={dp.get(key)!r} 未能在原文中定位 "
+                f"(forms={forms})"
+            )
+            return False
+    return True
+
+
 def ground_extraction(
     source_text: str,
     source_context: Optional[str],
@@ -269,36 +342,47 @@ def ground_extraction(
         res.matched_snippet = matched
         res.method = "exact"
         logger.info(f"[grounding] exact match @ [{s},{e}): {matched[:40]!r}")
-        return res
 
     # Strategy 2: fuzzy match on source_context
-    fuzzy = _fuzzy_match(text_norm, ctx_norm, threshold=threshold)
-    if fuzzy is not None:
-        s, e, matched = fuzzy
-        res.is_grounded = True
-        res.source_char_start = s
-        res.source_char_end = e
-        res.matched_snippet = matched
-        res.method = "fuzzy"
-        logger.info(f"[grounding] fuzzy match @ [{s},{e}): len={e-s}")
-        return res
+    if not res.is_grounded:
+        fuzzy = _fuzzy_match(text_norm, ctx_norm, threshold=threshold)
+        if fuzzy is not None:
+            s, e, matched = fuzzy
+            res.is_grounded = True
+            res.source_char_start = s
+            res.source_char_end = e
+            res.matched_snippet = matched
+            res.method = "fuzzy"
+            logger.info(f"[grounding] fuzzy match @ [{s},{e}): len={e-s}")
 
     # Strategy 3: key-phrase overlap match
-    kp = _keyphrase_match(text_norm, ctx_norm, extract_item or {})
-    if kp is not None:
-        s, e, matched = kp
-        res.is_grounded = True
-        res.source_char_start = s
-        res.source_char_end = e
-        res.matched_snippet = matched
-        res.method = "keyphrase"
-        logger.info(f"[grounding] keyphrase match @ [{s},{e}): len={e-s}")
-        return res
+    if not res.is_grounded:
+        kp = _keyphrase_match(text_norm, ctx_norm, extract_item or {})
+        if kp is not None:
+            s, e, matched = kp
+            res.is_grounded = True
+            res.source_char_start = s
+            res.source_char_end = e
+            res.matched_snippet = matched
+            res.method = "keyphrase"
+            logger.info(f"[grounding] keyphrase match @ [{s},{e}): len={e-s}")
 
-    logger.warning(
-        f"[grounding] failed to locate evidence in source: "
-        f"source_context[:40]={(source_context or '')[:40]!r}"
-    )
+    if not res.is_grounded:
+        logger.warning(
+            f"[grounding] failed to locate evidence in source: "
+            f"source_context[:40]={(source_context or '')[:40]!r}"
+        )
+
+    # P2-4：字符级 grounding 之后做数值回验——关键数值必须在原文中可定位。
+    # 回验失败 → 标记为未 grounded + 低置信（即使字符级片段匹配上了）。
+    item = extract_item if isinstance(extract_item, dict) else {}
+    if not validate_numeric_grounding(item, source_text):
+        res.is_grounded = False
+        if isinstance(extract_item, dict):
+            extract_item["is_grounded"] = False
+            if "confidence" in extract_item:
+                extract_item["confidence"] = "low"
+
     return res
 
 

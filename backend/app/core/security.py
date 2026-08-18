@@ -1,4 +1,5 @@
 """认证安全工具：密码哈希 + JWT 令牌签发/验证"""
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -15,8 +16,12 @@ REFRESH_TOKEN_EXPIRE_DAYS = 7       # 刷新令牌有效期 7 天
 
 
 def _get_secret() -> str:
-    """获取 JWT 签名密钥，SECRET_KEY 为空时使用开发回退密钥"""
-    return settings.SECRET_KEY or "antibody-map-dev-fallback"
+    """获取 JWT 签名密钥：开发环境随机生成，生产环境必须显式配置。"""
+    if settings.SECRET_KEY:
+        return settings.SECRET_KEY
+    if settings.APP_ENV == "development":
+        return secrets.token_hex(32)  # 本地开发：每次启动随机，不持久
+    raise RuntimeError("生产环境必须配置 SECRET_KEY")
 
 
 def hash_password(password: str, rounds: int = 12) -> str:

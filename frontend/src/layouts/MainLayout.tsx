@@ -26,7 +26,10 @@ const { Sider, Content, Header } = Layout;
 const MainLayout: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
   const [username, setUsername] = useState('');
-  const [isAdmin, setIsAdmin] = useState(false);
+  // 登录时已将 is_admin 写入 storage，这里同步初始化，避免菜单项延迟出现（不同步）
+  const [isAdmin, setIsAdmin] = useState<boolean>(
+    () => localStorage.getItem('is_admin') === 'true' || sessionStorage.getItem('is_admin') === 'true'
+  );
   const [pwdModalOpen, setPwdModalOpen] = useState(false);
   const [pwdLoading, setPwdLoading] = useState(false);
   const [oldPwd, setOldPwd] = useState('');

@@ -19,7 +19,7 @@ CREATE TABLE literature (
     source_db VARCHAR(50),
     file_path VARCHAR(500),
     has_fulltext BOOLEAN DEFAULT FALSE,
-    extraction_status VARCHAR(20) DEFAULT 'pending' CHECK (extraction_status IN ('pending','processing','done','failed')),
+    extraction_status VARCHAR(20) DEFAULT 'pending' CHECK (extraction_status IN ('pending','processing','done','done_no_data','failed')),
     extracted_count INTEGER DEFAULT 0,
     approved_count INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

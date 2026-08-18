@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import io
 import os
@@ -134,6 +135,26 @@ def ocr_tesseract(image_bytes: bytes, lang: str = "chi_sim+eng") -> Optional[str
         return result
     except Exception as e:
         logger.error(f"Tesseract OCR 失败: {e}")
+        return None
+
+
+async def ocr_tesseract_with_timeout(
+    image_bytes: bytes,
+    lang: str = "chi_sim+eng",
+    timeout: float = 60,
+) -> Optional[str]:
+    """带超时的 Tesseract OCR 包装：超时返回 None，不抛异常中断整篇。
+
+    ocr_tesseract 是阻塞同步调用，用 asyncio.to_thread 放到独立线程中执行，
+    使 asyncio.wait_for 的超时真正生效（否则阻塞调用无法被取消/超时）。
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(ocr_tesseract, image_bytes, lang),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"Tesseract OCR 超时（>{timeout}s），该页返回 None")
         return None
 
 

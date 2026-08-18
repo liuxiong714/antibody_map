@@ -12,8 +12,8 @@
 
 | 模块 | 功能 |
 |------|------|
-| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**多格式导入导出**（CSV/Excel/JSON，JSON 含数据点可跨电脑迁移导入、支持仅导出选中文献）、**元数据批量同步**（从数据点自动聚合年份/省份）、**文档格式标识列**（彩色 Tag 显示 PDF/CAJ/DOCX/HTML 等格式，点击即可预览） |
-| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取**、**上传/提取时可重新选定默认模型**、**批量AI提取**（多选文献后统一设置模型重新提取，自动跳过 processing 中的文献）、**手动停止提取**（单篇卡住的 processing 强制重置为 failed）、**一键重置所有卡住的提取状态**（适用于服务器重启后任务丢失的场景）；提取完成后可选显示**Token 用量、费用估算及使用的大模型** |
+| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**多格式导入导出**（CSV/Excel/JSON，JSON 含数据点可跨电脑迁移导入、支持仅导出选中文献）、**元数据批量同步**（从数据点自动聚合年份/省份）、**文档格式标识列**（彩色 Tag 显示 PDF/CAJ/DOCX/HTML 等格式，点击即可预览）、**全列排序与筛选**（标题/作者模糊筛选、创建时间范围、文档格式下拉，筛选状态本地缓存）、**文献文件下载**（带 JWT 认证自动下载）、**修改关联文件**（替换已关联本地文档） |
+| **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取**、**上传/提取时可重新选定默认模型**、**批量AI提取**（多选文献后统一设置模型重新提取，自动跳过 processing 中的文献）、**手动停止提取**（单篇卡住的 processing 强制重置为 failed）、**一键重置所有卡住的提取状态**（适用于服务器重启后任务丢失的场景）；提取完成后可选显示**Token 用量、费用估算及使用的大模型**；本地 Ollama 走**原生 JSON Schema 结构化输出强约束**，并做**关键数值回验**（阳性率/GMC/样本量必须在原文中可定位，否则自动降级低置信） |
 | **精确字符溯源** | 每个数据点锚定到原文的精确字符区间（`source_char_start/end`），采用精确/模糊/关键短语三级匹配，未匹配自动降级置信度并红色高亮待审 |
 | **长文档分块并行提取** | 超过 2 万字符的文献按段落边界分块、并行调用 LLM 提取，结果自动合并去重 |
 | **强 Schema 约束** | LLM 输出经 JSON Schema 校验（省份枚举、阳性率 0-100% 范围、GMC 正值等），字段违规自动降级置信度 |
@@ -34,7 +34,7 @@
 
 ### 支持的文件格式
 
-PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文文献，解析采用**策略模式**：各格式独立解析器 + 统一注册表分发）
+PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文文献，解析采用**策略模式**：各格式独立解析器 + 统一注册表分发；PDF 可选 **MinerU 增强解析**，结构化输出保留表格/公式，超时自动回退 PyMuPDF）
 
 ### 智能特性
 
@@ -58,7 +58,7 @@ PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文
 | **数据库** | PostgreSQL 15 |
 | **存储** | MinIO 对象存储 / 本地文件系统双模式 |
 | **AI/LLM** | OpenAI SDK 兼容协议，支持 DeepSeek / OpenAI / 通义千问 (Qwen) / **本地 Ollama** 多厂商；JSON Schema 强约束 + 精确字符级溯源；**报告生成支持模型选择**（本地 + 远程 API，可配置 API Key/Base URL） |
-| **文档解析** | 策略模式解析器注册表：PyMuPDF (fitz) + pdfplumber、python-docx、python-pptx、openpyxl、ebooklib、BeautifulSoup、caj2pdf |
+| **文档解析** | 策略模式解析器注册表：PyMuPDF (fitz) + pdfplumber、python-docx、python-pptx、openpyxl、ebooklib、BeautifulSoup、caj2pdf；**MinerU 增强解析**（PDF→结构化 Markdown，仅 worker 容器安装） |
 | **OCR** | Tesseract OCR (中文/英文，自动探测安装路径) + 百度 OCR 云端回退 |
 | **运维** | Docker Compose (PostgreSQL + Redis + MinIO), start.sh / start.ps1 一键启动 |
 
@@ -641,6 +641,49 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.9.0 (2026-08-18)
+
+#### 文献全列排序筛选 · MinerU 增强解析固化 · 提取健壮性与安全加固
+
+- **文献列表全列排序与筛选**：标题 / 作者模糊筛选、创建时间范围筛选、文档格式下拉筛选（PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML/URL）；文档格式排序按派生格式名分组、无文件记录恒排最后；筛选状态本地缓存，刷新不丢失，不影响其他功能。
+- **文献文件下载与关联替换**：新增带 JWT 认证的 blob 下载（避免裸跳转 401），自动解析服务器文件名；支持「修改关联文件」替换文献已关联的本地文档。
+- **MinerU 增强 PDF 解析固化**：新增 `requirements-mineru.txt` 锁定版本（`mineru[pipeline]==3.4.5` + torch 2.13 + transformers 4.57 等），Dockerfile 新增 `INSTALL_MINERU` 构建参数（仅 worker 容器安装，backend 不装避免 torch 拖慢 API）；适配 MinerU 3.x 输出结构（官方 `union_make` 生成结构化 Markdown，保留表格/公式）；新增 `MINERU_PARSE_TIMEOUT` 超时保护，超时自动回退 PyMuPDF。
+- **PDF 解析结果缓存**：按文件字节 sha256 缓存解析文本（`parse_cache.py`），命中直接复用，避免重复触发最慢的 MinerU / OCR。
+- **OCR 并发与超时保护**：扫描页 OCR 改为并发执行（复用 `LLM_CONCURRENCY` 限流），单页 OCR 超时隔离、不再阻塞整篇。
+- **Ollama 连接修复与强约束**：容器内 worker 的 `localhost`/`127.0.0.1:11434` 自动改写为配置的可达主机（如 WSL 网关 IP）；本地 Ollama 走原生 JSON Schema 结构化输出强约束（顶层 `format` 字段）；前端新增 Qwen3.8:27B 本地模型选项。
+- **关键数值回验**：提取出的 `positivity_rate` / `gmc_value` / `sample_size` 必须在原文中可定位（多形态匹配），否则自动降级低置信，减少幻觉数据。
+- **Celery 异步修复**：worker 任务改用常驻事件循环的 `run_async`（`async_runner.py`），修复 `asyncio.run` 复用 asyncpg 连接池失败问题。
+- **安全加固**：移除 JWT 硬编码回退密钥（生产环境必须显式配置 `SECRET_KEY`，开发环境启动随机生成）；Swagger/Redoc 文档仅开发环境开放。
+- **提取状态约束修复**：`literature.extraction_status` 校验补充 `done_no_data` 状态（`init_db.sql` 与数据库同步），修复无数据文献提取时报 CheckViolation 并无限重试的问题。
+- **前端体验**：管理员菜单权限从 localStorage 同步初始化（避免延迟闪现）；Spin 加载提示适配新版 AntD（补充子元素避免控制台警告）。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `frontend/src/pages/Literature.tsx` | 全列排序/筛选（标题/作者/创建时间/文档格式）、下载按钮、修改关联文件 |
+| `frontend/src/services/literature.ts` | 新增 `downloadLiteratureFile`（JWT blob 下载，解析 Content-Disposition 文件名） |
+| `backend/app/services/literature_service.py` | 列表接口新增 title/authors/created_start/created_end/file_format 筛选；文档格式 CASE 派生排序（NULL 恒排最后） |
+| `backend/app/api/v1/literature.py` | 列表筛选参数透传；溯源文本路径统一 `LOCAL_STORAGE_DIR`；「打开所在文件夹」支持 WSL/root 场景（runuser + interop socket） |
+| `backend/app/core/pdf_parser.py` | MinerU 3.x `union_make` 适配 + 超时保护 + 解析缓存 + OCR 并发化 |
+| `backend/app/core/parse_cache.py` | 新增 PDF 解析结果缓存（sha256 key） |
+| `backend/app/core/ocr_service.py` | 新增 `ocr_tesseract_with_timeout` 超时包装 |
+| `backend/app/core/llm_extractor.py` | `_normalize_ollama_url` 容器内可达主机改写；`EXTRACTION_JSON_SCHEMA` 原生结构化输出强约束 |
+| `backend/app/core/extraction_grounding.py` | 关键数值回验 `validate_numeric_grounding`（未定位降级低置信） |
+| `backend/app/tasks/async_runner.py` | 新增 Celery worker 常驻事件循环调度 `run_async` |
+| `backend/app/tasks/extract_task.py` / `quality_task.py` | 改用 `run_async` 替代 `asyncio.run` |
+| `backend/app/core/security.py` | 移除 JWT 硬编码回退密钥，生产环境强制显式配置 |
+| `backend/app/main.py` | Swagger/Redoc 仅开发环境开放 |
+| `backend/requirements-mineru.txt` | 新增 MinerU 增强解析依赖锁（仅 worker 安装） |
+| `backend/Dockerfile` | 新增 `INSTALL_MINERU` 构建参数 + libgl1/libglib2.0-0 系统库 |
+| `docker-compose.yml` | worker 服务传入 `INSTALL_MINERU: "true"` 构建参数 |
+| `backend/scripts/init_db.sql` | `extraction_status` 约束补充 `done_no_data` |
+| `backend/app/config.py` | 新增 `MINERU_PARSE_TIMEOUT`；APP_VERSION 升级至 1.9.0 |
+| `frontend/src/layouts/MainLayout.tsx` | 管理员权限从 storage 同步初始化 |
+| `frontend/src/utils/constants.ts` | 新增 Qwen3.8:27B 本地 Ollama 模型选项 |
+| `frontend/src/App.tsx` / `FilePreview.tsx` / `LiteratureDetail.tsx` | Spin 加载提示适配新版 AntD |
+| `frontend/package-lock.json` | 依赖锁更新 |
 
 ### v1.8.0 (2026-08-17)
 

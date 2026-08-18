@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import hashlib
@@ -18,6 +17,7 @@ from app.models.literature import Literature
 from app.models.extraction_history import ExtractionHistory
 from app.models.titer_table import TiterTable
 from app.tasks.celery_app import celery_app
+from app.tasks.async_runner import run_async
 from app.core.minio_client import get_minio_client
 from app.core.term_normalizer import normalize_province, CHINA_PROVINCE_NAMES
 from app.core.extraction_grounding import (
@@ -669,7 +669,7 @@ def process_literature(
 ):
     """Celery 任务：文献处理（PDF 解析 + AI 提取）"""
     try:
-        result = asyncio.run(
+        result = run_async(
             _process_literature_async(
                 literature_id, model, api_key, base_url, clear_existing_data
             )
@@ -704,7 +704,7 @@ def process_literature(
                     await db.commit()
 
         try:
-            asyncio.run(_mark_failed())
+            run_async(_mark_failed())
         except Exception:
             pass
 

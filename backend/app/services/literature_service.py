@@ -6,7 +6,7 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import case, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,6 +85,34 @@ def _dp_to_dict(dp: "DataPoint") -> dict:
     }
 
 
+# 文档格式筛选/排序使用的已知格式集合（与派生逻辑 _derive_file_format 保持一致）
+FILE_FORMATS = ["PDF", "CAJ", "EPUB", "DOCX", "PPTX", "XLSX", "TXT", "HTML", "URL"]
+
+
+def _build_file_format_expr(file_path_expr):
+    """将 file_path 列映射为可排序/可筛选的文档格式 CASE 表达式（大写格式名）。
+
+    与列表接口的 _derive_file_format 保持逻辑一致：
+    - 本地文件路径按扩展名（.pdf/.caj/.docx...）判定；
+    - URL：带 .pdf 等后缀的按扩展名判定，否则视为 URL/HTML。
+    无文件（file_path 为空）时结果为 NULL。
+    """
+    low = func.lower(file_path_expr)
+    return case(
+        (low.like("%.pdf"), "PDF"),
+        (low.like("%.caj"), "CAJ"),
+        (low.like("%.epub"), "EPUB"),
+        (low.like("%.docx"), "DOCX"),
+        (low.like("%.pptx"), "PPTX"),
+        (low.like("%.xlsx"), "XLSX"),
+        (low.like("%.txt"), "TXT"),
+        (low.like("%.htm"), "HTML"),
+        (low.like("http://%"), "URL"),
+        (low.like("https://%"), "URL"),
+        else_=None,
+    )
+
+
 async def list_literature(
     db: AsyncSession,
     keyword: Optional[str] = None,
@@ -93,10 +121,15 @@ async def list_literature(
     year_start: Optional[int] = None,
     year_end: Optional[int] = None,
     journal: Optional[str] = None,
+    title: Optional[str] = None,
+    authors: Optional[str] = None,
+    created_start: Optional[datetime] = None,
+    created_end: Optional[datetime] = None,
     sort_by: Optional[str] = None,
     sort_order: Optional[str] = None,
     review_status: Optional[str] = None,
     extraction_status: Optional[str] = None,
+    file_format: Optional[str] = None,
     tag_id: Optional[uuid.UUID] = None,
     page: int = 1,
     page_size: int = 20,
@@ -142,6 +175,25 @@ async def list_literature(
         query = query.where(Literature.journal.ilike(f"%{journal}%"))
         count_query = count_query.where(Literature.journal.ilike(f"%{journal}%"))
 
+    # 列级筛选：标题 / 作者（模糊匹配）
+    if title:
+        query = query.where(Literature.title.ilike(f"%{title}%"))
+        count_query = count_query.where(Literature.title.ilike(f"%{title}%"))
+
+    if authors:
+        query = query.where(Literature.authors.ilike(f"%{authors}%"))
+        count_query = count_query.where(Literature.authors.ilike(f"%{authors}%"))
+
+    # 创建时间范围筛选（created_end 视为当天 23:59:59 截止，含当日）
+    if created_start:
+        query = query.where(Literature.created_at >= created_start)
+        count_query = count_query.where(Literature.created_at >= created_start)
+
+    if created_end:
+        _end = created_end + timedelta(days=1)
+        query = query.where(Literature.created_at < _end)
+        count_query = count_query.where(Literature.created_at < _end)
+
     # 审核状态筛选
     if review_status:
         if review_status == "none":
@@ -166,6 +218,14 @@ async def list_literature(
         query = query.where(Literature.extraction_status == extraction_status)
         count_query = count_query.where(Literature.extraction_status == extraction_status)
 
+    # 文档格式筛选（PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML/URL）
+    if file_format:
+        fmt = file_format.strip().upper()
+        if fmt in FILE_FORMATS:
+            fexpr = _build_file_format_expr(Literature.file_path)
+            query = query.where(fexpr == fmt)
+            count_query = count_query.where(fexpr == fmt)
+
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
@@ -173,32 +233,42 @@ async def list_literature(
     sort_desc = True
 
     if sort_by:
-        sort_map: dict[str, Any] = {
-            "title": Literature.title,
-            "authors": Literature.authors,
-            "journal": Literature.journal,
-            "year": Literature.pub_year,
-            "province": Literature.province,
-            "created": Literature.created_at,
-            "status": Literature.extraction_status,
-            "file_format": Literature.file_path,
-        }
-        if sort_by == "review_status":
-            # 审核状态排序：提取总数为 0 → 排最后；按审核比例 approved/extracted 从小到大；
-            # 使用 case when 计算一个排序键：0(无数据) < 1(部分审核)，而区间内部用比例区分
-            ratio = case(
-                (Literature.extracted_count == None, 0),
-                (Literature.extracted_count == 0, 0),
-                else_=func.coalesce(Literature.approved_count, 0) * 1.0 / Literature.extracted_count,
-            )
-            sort_column = ratio
+        # 文档格式排序：按派生的格式名（CAJ/PDF/...）分组排序，而不是按完整 file_path
+        if sort_by == "file_format":
+            sort_column = _build_file_format_expr(Literature.file_path)
         else:
-            sort_column = sort_map.get(sort_by, Literature.created_at)
+            sort_map: dict[str, Any] = {
+                "title": Literature.title,
+                "authors": Literature.authors,
+                "journal": Literature.journal,
+                "year": Literature.pub_year,
+                "province": Literature.province,
+                "created": Literature.created_at,
+                "status": Literature.extraction_status,
+            }
+            if sort_by == "review_status":
+                # 审核状态排序：提取总数为 0 → 排最后；按审核比例 approved/extracted 从小到大；
+                # 使用 case when 计算一个排序键：0(无数据) < 1(部分审核)，而区间内部用比例区分
+                ratio = case(
+                    (Literature.extracted_count == None, 0),
+                    (Literature.extracted_count == 0, 0),
+                    else_=func.coalesce(Literature.approved_count, 0) * 1.0 / Literature.extracted_count,
+                )
+                sort_column = ratio
+            else:
+                sort_column = sort_map.get(sort_by, Literature.created_at)
+            sort_html = False
 
     if sort_order:
         sort_desc = sort_order.lower() == "desc"
 
-    query = query.order_by(sort_column.desc() if sort_desc else sort_column.asc())
+    # 文档格式排序时，无文件（NULL）始终排在最后，无论升降序
+    if sort_by == "file_format":
+        query = query.order_by(
+            sort_column.desc().nulls_last() if sort_desc else sort_column.asc().nulls_last()
+        )
+    else:
+        query = query.order_by(sort_column.desc() if sort_desc else sort_column.asc())
     query = query.offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     items = list(result.scalars().all())

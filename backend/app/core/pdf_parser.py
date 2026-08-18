@@ -1,3 +1,6 @@
+import asyncio
+import concurrent.futures
+import hashlib
 import logging
 import io
 import re
@@ -20,7 +23,11 @@ MINERU_AVAILABLE_MSG = ""
 try:
     import torch
     from mineru.backend.hybrid.hybrid_analyze import doc_analyze as mineru_doc_analyze
+    from mineru.backend.pipeline.pipeline_middle_json_mkcontent import (
+        union_make as mineru_union_make,
+    )
     from mineru.data.data_reader_writer import FileBasedDataWriter
+    from mineru.utils.enum_class import MakeMode
     from mineru.utils.pdfium_guard import (
         open_pdfium_document,
         get_pdfium_document_page_count,
@@ -31,79 +38,116 @@ try:
 except ImportError as e:
     MINERU_AVAILABLE_MSG = f" ({e})"
 
-from app.core.ocr_service import ocr_pdf_pages
+from app.core.ocr_service import ocr_tesseract_with_timeout
 from app.config import settings
+from app.core.parse_cache import get_cache, set_cache
 
 logger = logging.getLogger("uvicorn")
+
+
+def _run_cache_coro(coro):
+    """在同步函数中执行异步缓存协程。
+
+    无运行中的事件循环时直接用 asyncio.run；若已处于事件循环内（如 Celery 异步
+    任务中调用 extract_text），则另起临时线程运行，避免 asyncio.run 报错。
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result(timeout=30)
+
+
+async def _ocr_pages_async(
+    page_images: list[bytes],
+    *,
+    lang: str = "chi_sim+eng",
+    timeout: float = 60,
+) -> list[str]:
+    """并发对多页执行 OCR（asyncio.gather），保持页顺序；超时/失败页被跳过。
+
+    并发上限复用 settings.LLM_CONCURRENCY（不新造配置）；gather 返回顺序与传入
+    页顺序一致，因此无需额外排序。
+    """
+    concurrency = max(1, int(getattr(settings, "LLM_CONCURRENCY", 4)))
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _ocr_one(page_bytes: bytes) -> Optional[str]:
+        async with sem:
+            return await ocr_tesseract_with_timeout(page_bytes, lang=lang, timeout=timeout)
+
+    results = await asyncio.gather(*(_ocr_one(pb) for pb in page_images))
+    return [r for r in results if r]
+
+
+def _run_ocr_gather(page_images: list[bytes]) -> Optional[str]:
+    """在同步的 extract_text 中执行并发 OCR，兼容有无运行中事件循环。
+
+    复用 _run_cache_coro 的调度思路：无运行中循环用 asyncio.run；已处于循环内
+    则另起临时线程跑独立循环。每页超时由 ocr_tesseract_with_timeout 隔离，因此
+    单页卡死不会阻塞整篇。
+    """
+    async def _run() -> Optional[str]:
+        texts = await _ocr_pages_async(page_images)
+        if not texts:
+            return None
+        return "\n\n--- PAGE SEPARATOR ---\n\n".join(texts)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_run())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, _run).result()
 
 
 def _extract_with_mineru(file_bytes: bytes) -> Optional[str]:
     """使用 MinerU 增强解析 PDF，返回结构化 Markdown 文本。"""
     if not HAS_MINERU or not settings.ENABLE_MINERU_PDF_PARSER:
         return None
+
+    timeout = getattr(settings, "MINERU_PARSE_TIMEOUT", 600)
+    # 解析可能耗时较长（首次还含模型下载），放入线程池执行。注意不能用 with 语法，
+    # 否则超时后退出块仍会 shutdown(wait=True) 阻塞等待；这里用 finally 分离后台线程，
+    # 超时放弃等待后由进程自然回收（Python 无法强杀线程）。
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
         logger.info("[MinerU] 开始增强 PDF 解析...")
-        # MinerU 首次运行会自动下载模型（pp_doclayout_v2, unimernet_small 等）
-        middle_json, model_list = mineru_doc_analyze(
+        future = pool.submit(
+            mineru_doc_analyze,
             pdf_bytes=file_bytes,
             image_writer=None,
             backend="transformers",
             parse_method="auto",
         )
+        middle_json, model_list = future.result(timeout=timeout)
+
         pdf_info = middle_json.get("pdf_info", [])
         if not pdf_info:
             logger.warning("[MinerU] 解析结果为空")
             return None
 
-        # 从 MinerU 的 middle_json 中提取文本
-        text_parts = []
-        for page in pdf_info:
-            page_text = page.get("text", "").strip()
-            if page_text:
-                text_parts.append(page_text)
-            # 同时提取表格 Markdown 表示
-            for block in page.get("blocks", []):
-                if block.get("type") == "table":
-                    table_md = _mineru_table_to_markdown(block)
-                    if table_md:
-                        text_parts.append(table_md)
+        # 使用 MinerU 官方 union_make 将 pdf_info 转为结构化 Markdown
+        # MakeMode.MM_MD 模式：保留图片/表格/公式等视觉元素
+        logger.info("[MinerU] 使用 union_make 生成 Markdown...")
+        future = pool.submit(mineru_union_make, pdf_info, MakeMode.MM_MD, "")
+        markdown_text = future.result(timeout=max(60, timeout // 3))
 
-        combined = "\n\n".join(text_parts)
-        logger.info(f"[MinerU] 增强解析完成: {len(combined)} 字符")
-        return combined
+        if not markdown_text or not markdown_text.strip():
+            logger.warning("[MinerU] union_make 输出为空")
+            return None
+
+        logger.info(f"[MinerU] 增强解析完成: {len(markdown_text)} 字符")
+        return markdown_text
+    except concurrent.futures.TimeoutError:
+        logger.warning(f"[MinerU] 解析超时（>{timeout}s），回退到 PyMuPDF")
+        return None
     except Exception as e:
         logger.warning(f"[MinerU] 解析失败，回退到 PyMuPDF: {e}")
         return None
-
-
-def _mineru_table_to_markdown(table_block: dict) -> str:
-    """将 MinerU 的表格 block 转为 Markdown 格式。"""
-    try:
-        rows = []
-        for cell in table_block.get("cells", []):
-            row_idx = cell.get("row_idx", 0)
-            col_idx = cell.get("col_idx", 0)
-            text = cell.get("text", "").strip()
-            # 按行号组织
-            while len(rows) <= row_idx:
-                rows.append([])
-            while len(rows[row_idx]) <= col_idx:
-                rows[row_idx].append("")
-            rows[row_idx][col_idx] = text
-
-        if not rows:
-            return ""
-
-        md_lines = []
-        # 表头分隔线
-        header_sep = "|" + "|".join(["---"] * len(rows[0])) + "|"
-        md_lines.append("|" + "|".join(rows[0]) + "|")
-        md_lines.append(header_sep)
-        for row in rows[1:]:
-            md_lines.append("|" + "|".join(row) + "|")
-        return "\n".join(md_lines)
-    except Exception:
-        return ""
+    finally:
+        pool.shutdown(wait=False)
 
 
 def extract_text(file_bytes: bytes) -> str:
@@ -112,11 +156,24 @@ def extract_text(file_bytes: bytes) -> str:
     优先使用 MinerU 增强解析（若已安装且启用），
     否则回退到 PyMuPDF + OCR 兜底。
     """
+    # 缓存：以文件字节 sha256 为 key，命中则直接复用，避免重复跑最慢的 MinerU/OCR
+    cache_key = hashlib.sha256(file_bytes).hexdigest()
+    cached = _run_cache_coro(get_cache(cache_key))
+    if cached is not None:
+        logger.info(f"[解析缓存] 命中: key={cache_key[:12]}…, 文本 {len(cached)} 字符")
+        return cached
+
+    def _cache_result(result: str) -> str:
+        """解析成功后写入缓存（空结果不缓存），并原样返回。"""
+        if result:
+            _run_cache_coro(set_cache(cache_key, result))
+        return result
+
     # 尝试 MinerU 增强解析
     if HAS_MINERU and settings.ENABLE_MINERU_PDF_PARSER:
         mineru_text = _extract_with_mineru(file_bytes)
         if mineru_text:
-            return mineru_text
+            return _cache_result(mineru_text)
     elif not HAS_MINERU and settings.ENABLE_MINERU_PDF_PARSER:
         logger.warning(
             "[MinerU] 已启用但不可用，请安装 PyTorch 和 mineru："
@@ -156,22 +213,18 @@ def extract_text(file_bytes: bytes) -> str:
 
         combined_text = "\n\n".join(full_text_parts)
 
-        # 存在扫描页/文字层损坏页时，执行 OCR 兜底并合并结果
+        # 存在扫描页/文字层损坏页时，并发执行 OCR 兜底并合并结果
         if page_images_for_ocr:
             logger.info(
-                f"检测到 {len(page_images_for_ocr)} 个页面文本过短，尝试 OCR 兜底..."
+                f"检测到 {len(page_images_for_ocr)} 个页面文本过短，尝试 OCR 兜底"
+                f"（并发={max(1, int(getattr(settings, 'LLM_CONCURRENCY', 4)))}）..."
             )
-            ocr_text = ocr_pdf_pages(
-                page_images_for_ocr,
-                fallback_to_baidu=settings.OCR_FALLBACK_TO_BAIDU,
-                baidu_api_key=settings.BAIDU_OCR_API_KEY,
-                baidu_secret_key=settings.BAIDU_OCR_SECRET_KEY,
-            )
+            ocr_text = _run_ocr_gather(page_images_for_ocr)
             if ocr_text:
                 parts = full_text_parts + [ocr_text] if full_text_parts else [ocr_text]
-                return "\n\n".join(parts)
+                return _cache_result("\n\n".join(parts))
 
-        return combined_text if combined_text.strip() else ""
+        return _cache_result(combined_text if combined_text.strip() else "")
 
     except Exception as e:
         logger.error(f"PDF 解析失败: {e}")

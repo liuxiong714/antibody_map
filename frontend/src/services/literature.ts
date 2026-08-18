@@ -35,6 +35,54 @@ export async function openLiteratureFolder(id: string) {
   return data;
 }
 
+/**
+ * 下载文献文件（带 JWT 认证，经浏览器自动触发下载）。
+ * 说明：不能用 window.open('/api/.../download') 裸跳转——后端要求 JWT，
+ * 裸跳转不带 Authorization 头会返回 401。这里走 axios(自带 token) 取 blob 后触发下载。
+ */
+export async function downloadLiteratureFile(id: string, title?: string) {
+  const resp = await api.get<Blob>(`/literatures/${id}/download`, {
+    responseType: 'blob',
+  });
+  const blob = resp.data as Blob;
+  // 优先从 Content-Disposition 解析服务器返回的文件名，其次用标题兜底
+  let filename = '';
+  const cd = (resp.headers?.['content-disposition'] as string) || '';
+  const utf8Match = cd.match(/filename\*=utf-8''([^;]+)/i);
+  if (utf8Match) {
+    filename = decodeURIComponent(utf8Match[1]);
+  } else {
+    const plainMatch = cd.match(/filename="?([^"]+)"?/i);
+    if (plainMatch) filename = plainMatch[1];
+  }
+  if (!filename) {
+    const base = (title || `literature_${id}`).replace(/[\\/:*?"<>|]+/g, '_');
+    filename = `${base}.${extFromContentType(blob.type)}`;
+  }
+
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+}
+
+function extFromContentType(type: string): string {
+  const map: Record<string, string> = {
+    'application/pdf': 'pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+    'text/html': 'html',
+    'text/plain': 'txt',
+    'application/epub+zip': 'epub',
+  };
+  return map[type] || type.split('/')[1] || 'download';
+}
+
 export async function deleteLiterature(id: string) {
   const { data } = await api.delete<{ message: string }>(`/literatures/${id}`);
   return data;

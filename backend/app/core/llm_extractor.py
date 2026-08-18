@@ -14,6 +14,7 @@ from app.core.term_normalizer import (
     normalize_method,
     normalize_antibody_type,
     normalize_province,
+    CHINA_PROVINCE_NAMES,
     PROVINCE_NAMES_ZH,
 )
 
@@ -134,6 +135,74 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
 
 文献文本：
 {text}"""
+
+# ===== 本地 Ollama 原生 JSON Schema 结构化输出强约束 =====
+# format 是 Ollama /v1 请求体的【顶层字段】（不可放进 options 字典里）。
+# 仅用于 Ollama 分支；OllamaProvider.supports_response_format() 返回 False，
+# 因此不会与 OpenAI 兼容的 response_format 分支冲突。
+
+EXTRACTION_JSON_SCHEMA = {
+    "type": "object",
+    "required": ["data_points", "titer_tables"],
+    "additionalProperties": False,
+    "properties": {
+        "data_points": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["province"],
+                "additionalProperties": False,
+                "properties": {
+                    "disease_name": {"type": ["string", "null"]},
+                    "province": {"type": ["string", "null"], "enum": CHINA_PROVINCE_NAMES + [None]},
+                    "city": {"type": ["string", "null"]},
+                    "study_start_year": {"type": ["integer", "null"]},
+                    "study_end_year": {"type": ["integer", "null"]},
+                    "sample_year": {"type": ["integer", "null"]},
+                    "population_type": {"type": ["string", "null"]},
+                    "age_min": {"type": ["integer", "null"]},
+                    "age_max": {"type": ["integer", "null"]},
+                    "sample_size": {"type": ["integer", "null"]},
+                    "detection_method": {"type": ["string", "null"]},
+                    "antibody_type": {"type": ["string", "null"]},
+                    "positivity_rate": {"type": ["number", "null"]},
+                    "positivity_ci_lower": {"type": ["number", "null"]},
+                    "positivity_ci_upper": {"type": ["number", "null"]},
+                    "gmc_value": {"type": ["number", "null"]},
+                    "gmc_unit": {"type": ["string", "null"]},
+                    "gmc_ci_lower": {"type": ["number", "null"]},
+                    "gmc_ci_upper": {"type": ["number", "null"]},
+                    "journal": {"type": ["string", "null"]},
+                    "authors": {"type": ["string", "null"]},
+                    "author_affiliations": {"type": ["string", "null"]},
+                    "source_page": {"type": ["string", "null"]},
+                    "source_context": {"type": ["string", "null"]},
+                    "estimate_type": {"type": "string", "enum": ["primary", "subgroup", "null"]},
+                    "parent_group": {"type": ["string", "null"]},
+                },
+            },
+        },
+        "titer_tables": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "assay_type": {"type": "string", "enum": ["hi", "vnt", "elisa"]},
+                    "ref_antisera": {"type": ["array", "null"], "items": {"type": ["string", "null"]}},
+                    "antigens": {"type": ["array", "null"], "items": {"type": ["string", "null"]}},
+                    "titers": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"type": ["integer", "null"]}},
+                    },
+                    "unit": {"type": ["string", "null"]},
+                    "source_page": {"type": ["string", "null"]},
+                    "source_context": {"type": ["string", "null"]},
+                    "confidence": {"type": ["number", "null"]},
+                },
+            },
+        },
+    },
+}
 
 PROMPT_EN = """You are a professional epidemiological literature data extraction expert. Carefully read the following literature and extract ALL antibody serological data points. A single paper may contain multiple data points (different regions, populations, time periods, or assay types) — extract ALL of them.
 
@@ -379,7 +448,33 @@ class LLMExtractor:
     def _is_ollama_model(self) -> bool:
         """判断当前是否使用 Ollama 本地模型（用于决定是否透传 think=False 等参数）。"""
         base_url = (self._resolved_url or "").lower()
-        return "localhost:11434" in base_url or "127.0.0.1:11434" in base_url
+        return ":11434" in base_url or "localhost" in base_url or "127.0.0.1" in base_url
+
+    @staticmethod
+    def _normalize_ollama_url(url: str) -> str:
+        """将指向 localhost/127.0.0.1 的 Ollama 地址改写为当前运行环境可达的主机。
+
+        Celery worker 运行在容器内，localhost 指向容器自身而非宿主机，
+        无法访问宿主机的 Ollama。当 settings.OLLAMA_BASE_URL 配置了可达主机
+        （如 WSL 网关 IP）时，用它替换 localhost/127.0.0.1 主机。
+        浏览器直连场景 localhost 语义正确，不受影响。
+        """
+        try:
+            from urllib.parse import urlparse, urlunparse
+
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            if host in ("localhost", "127.0.0.1") and ":11434" in url:
+                cfg = (getattr(settings, "OLLAMA_BASE_URL", "") or "").strip()
+                if cfg:
+                    c_parsed = urlparse(cfg)
+                    c_host = (c_parsed.hostname or "").lower()
+                    if c_host and c_host not in ("localhost", "127.0.0.1"):
+                        port = parsed.port or c_parsed.port or 11434
+                        return urlunparse(parsed._replace(netloc=f"{c_host}:{port}"))
+        except Exception:
+            pass
+        return url
 
     def __init__(
         self,
@@ -391,6 +486,8 @@ class LLMExtractor:
         resolved_key, resolved_url = self._resolve_api_config(self.model)
         self._resolved_key = api_key or resolved_key
         self._resolved_url = base_url or resolved_url
+        # P1-3：改写 localhost/127.0.0.1 的 Ollama 地址，使容器内 worker 可达宿主机 Ollama
+        self._resolved_url = self._normalize_ollama_url(self._resolved_url)
         # 本地大模型（如 qwen3:32b）推理较慢，给足 10 分钟超时
         self._llm_timeout = float(getattr(settings, "LLM_REQUEST_TIMEOUT", 600))
         # 剥离 vendor 前缀（如 ollama:qwen3:32b → qwen3:32b），用于实际 API 调用
@@ -612,7 +709,9 @@ class LLMExtractor:
                         "num_ctx": 16384,
                         "num_predict": 16384,
                         "think": False,
-                    }
+                    },
+                    # P2-3：Ollama 原生 JSON Schema 结构化输出强约束（顶层字段）
+                    "format": EXTRACTION_JSON_SCHEMA,
                 }
                 kwargs["max_tokens"] = 16384
                 kwargs["temperature"] = 0.05
@@ -667,6 +766,8 @@ class LLMExtractor:
                     "num_predict": 16384,
                     "think": False,
                 }
+                # P2-3：Ollama 原生 JSON Schema 结构化输出强约束（顶层字段，不放 options 里）
+                payload["format"] = EXTRACTION_JSON_SCHEMA
 
             async with httpx.AsyncClient(timeout=self._llm_timeout) as client:
                 resp = await client.post(

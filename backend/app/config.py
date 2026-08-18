@@ -58,6 +58,8 @@ class Settings(BaseSettings):
 
     # MinerU 增强 PDF 解析（需安装 PyTorch + mineru 包，首次使用会自动下载模型约 2-3GB）
     ENABLE_MINERU_PDF_PARSER: bool = False
+    # MinerU 解析超时（秒）。首次解析需下载模型，CPU/GPU 推理较慢，超时后回退 PyMuPDF
+    MINERU_PARSE_TIMEOUT: int = 600
 
     # ===== 提取准确度 & 性价比优化配置 =====
     # A3：grounding 模糊匹配阈值（0-1，越高越严格）
@@ -112,7 +114,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.8.0"
+    APP_VERSION: str = "1.9.0"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
 

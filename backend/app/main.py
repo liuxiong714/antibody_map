@@ -98,8 +98,8 @@ Authorization: Bearer <your_access_token>
         "name": "MIT",
         "url": "https://opensource.org/licenses/MIT",
     },
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if settings.APP_ENV == "development" else None,
+    redoc_url="/redoc" if settings.APP_ENV == "development" else None,
     openapi_tags=[
         {"name": "auth", "description": "用户认证、登录、Token管理、用户CRUD"},
         {"name": "literature", "description": "文献上传、检索、查重、合并、标签管理"},

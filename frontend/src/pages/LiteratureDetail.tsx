@@ -1554,7 +1554,9 @@ const LiteratureDetail: React.FC = () => {
       >
         {sourceLoading ? (
           <div style={{ textAlign: 'center', padding: '40px 0' }}>
-            <Spin tip="加载原文中..." />
+            <Spin tip="加载原文中...">
+              <div style={{ height: 80 }} />
+            </Spin>
           </div>
         ) : sourceText ? (
           <div
