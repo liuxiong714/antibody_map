@@ -58,8 +58,8 @@ PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文
 | **统计/制图** | NumPy + SciPy + statsmodels + scikit-learn（统计引擎、Meta 分析、MDS 抗原制图、时间序列） |
 | **数据库** | PostgreSQL 15 |
 | **存储** | MinIO 对象存储 / 本地文件系统双模式 |
-| **AI/LLM** | OpenAI SDK 兼容协议，支持 DeepSeek / OpenAI / 通义千问 (Qwen) / **本地 Ollama** 多厂商；JSON Schema 强约束 + 精确字符级溯源；**报告生成支持模型选择**（本地 + 远程 API，可配置 API Key/Base URL） |
-| **文档解析** | 策略模式解析器注册表：PyMuPDF (fitz) + pdfplumber、python-docx、python-pptx、openpyxl、ebooklib、BeautifulSoup、caj2pdf；**MinerU 增强解析**（PDF→结构化 Markdown，仅 worker 容器安装） |
+| **AI/LLM** | OpenAI SDK 兼容协议，支持 DeepSeek / OpenAI / 通义千问 (Qwen) / **本地 Ollama** 多厂商；JSON Schema 强约束 + 精确字符级溯源；**报告生成支持模型选择**（本地 + 远程 API，可配置 API Key/Base URL）；错误分类 + **URL 候选链自动切换** + 连接类错误短退避快速重试（防网关 IP 漂移导致提取失败） |
+| **文档解析** | 策略模式解析器注册表：PyMuPDF (fitz) + pdfplumber、python-docx、python-pptx、openpyxl、ebooklib、BeautifulSoup、caj2pdf；**MinerU 增强解析**（PDF→结构化 Markdown，仅 worker 容器安装，**子进程隔离执行** + 模型缓存本地化，不拖垮 worker 主进程） |
 | **OCR** | Tesseract OCR (中文/英文，自动探测安装路径) + 百度 OCR 云端回退 |
 | **运维** | Docker Compose (PostgreSQL + Redis + MinIO), start.sh / start.ps1 一键启动 |
 
@@ -460,6 +460,8 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | `DEEPSEEK_API_KEY` | DeepSeek 独立 API 密钥 | 回退到 `LLM_API_KEY` |
 | `OPENAI_API_KEY` | OpenAI 独立 API 密钥 | 回退到 `LLM_API_KEY` |
 | `QWEN_API_KEY` | 通义千问独立 API 密钥 | 回退到 `LLM_API_KEY` |
+| `LLM_FALLBACK_BASE_URLS` | 主 `LLM_BASE_URL` 连接失败时的备用地址（逗号分隔，可选） | - |
+| `LLM_CONNECT_RETRIES` | 连接类错误（DNS/连接/超时）的快速重试次数（短退避，仅作用于连接错误，不消耗 token） | `2` |
 
 ### 数据库与存储
 
@@ -478,6 +480,10 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | `TESSERACT_CMD` | Tesseract 可执行文件路径 | 自动探测 (PATH + Windows 常见安装位置) |
 | `TESSERACT_DATA_DIR` | Tesseract 语言包 (tessdata) 目录 | 自动探测 (可执行文件同级 tessdata) |
 | `PDF_STORAGE` | PDF 存储模式 | `local` (或 `minio`) |
+| `ORPHAN_CLEANUP_ENABLED` | 是否启用后台定时清理孤儿文献文件 | `true` |
+| `ORPHAN_CLEANUP_INTERVAL` | 后台定时清理间隔（秒） | `86400`（每天） |
+| `ORPHAN_TRASH_DIR` | 孤儿文件回收目录（可指定绝对路径） | `backend/data/pdf_orphan_trash` |
+| `ORPHAN_TRASH_RETENTION_DAYS` | 回收目录保留天数，超过后自动物理删除 | `30` |
 
 ### CAJ 格式支持
 
@@ -664,6 +670,50 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.11.0 (2026-08-19)
+
+#### 孤儿文件定时清理与回收
+
+- **孤儿文件清理服务**：新增 `file_cleanup_service.py`，后台定时扫描 `backend/data/pdfs`，识别并清理已不在数据库中的残留文献文件。覆盖两类遗留场景——文献删除/合并后文件未随之一并删除（如合并保留 source 的 `file_path` 时 target 原文件成为孤儿）、提取文本 `{文献id}.txt` 对应文献已不存在。
+- **回收目录安全策略**：清理时孤儿文件先移入回收目录（默认 `backend/data/pdf_orphan_trash`），保留 `ORPHAN_TRASH_RETENTION_DAYS`（默认 30）天后自动物理删除，误删可找回，不会立即释放空间造成不可恢复损失。
+- **后台自动定时**：backend 启动时随 lifespan 启动清理循环（与文件夹监控同款模式），按 `ORPHAN_CLEANUP_INTERVAL`（默认每天一次）自动执行，可配置 `ORPHAN_CLEANUP_ENABLED=false` 关闭。
+- **手动触发接口（管理员）**：`GET /literatures/cleanup-orphan-files/preview` 预览孤儿文件（不执行任何移动）；`POST /literatures/cleanup-orphan-files` 立即执行清理 + 清理过期回收文件。
+- **识别机制**：以 `literature.file_path` 提取的文件名 + `{id}.txt` 模式 + 存在的文献 id 集合三重判定，兼容 Windows 绝对路径 / 容器相对路径两种存储形态。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/services/file_cleanup_service.py` | 新增孤儿文件清理服务：`scan_orphan_files` / `cleanup_orphan_files` / `purge_trash` / `_cleanup_loop` |
+| `backend/app/api/v1/literature.py` | 新增管理员接口：`GET /literatures/cleanup-orphan-files/preview`、`POST /literatures/cleanup-orphan-files` |
+| `backend/app/main.py` | lifespan 启动/停止孤儿文件清理后台循环（受 `ORPHAN_CLEANUP_ENABLED` 控制） |
+| `backend/app/config.py` | 新增 `ORPHAN_CLEANUP_ENABLED` / `ORPHAN_CLEANUP_INTERVAL` / `ORPHAN_TRASH_DIR` / `ORPHAN_TRASH_RETENTION_DAYS`；APP_VERSION 升级至 1.11.0 |
+| `.env.example` | 补充孤儿文件清理配置说明 |
+
+### v1.10.1 (2026-08-19)
+
+#### 提取稳定性增强 · MinerU 子进程隔离 · 模型缓存本地化
+
+- **LLM 错误分类机制**：新增 `_classify_llm_error` 对 LLM 调用异常分类（`connection_error` / `auth_error` / `rate_limit` / `json_error` / `other`，沿异常链收集消息），为不同错误类型制定差异化处理策略，日志诊断更清晰。
+- **URL 候选链自动切换**：新增 `_build_url_chain` 构建「主地址 + 备用地址 + 自动探测地址」多级 URL 链；主地址连接失败时自动切换下一个候选，应对 WSL 重启导致 Ollama 网关 IP 漂移、远程 API 短暂不可达等场景。新增环境变量 `LLM_FALLBACK_BASE_URLS`（备用地址，逗号分隔）。
+- **连接类错误快速重试**：连接类错误采用短退避（15s/30s/45s）跨候选 URL 快速重试，不消耗 token；非连接错误保留原有 60s/120s/240s 退避重试。新增 `LLM_CONNECT_RETRIES` 控制快速重试次数（默认 2）。
+- **Celery 任务状态管理优化**：连接类错误重试期间保持文献 `processing` 状态，仅在快速重试耗尽时才标记 `failed`，避免瞬时网络故障误判失败；失败历史记录 `error_message` 带错误类型前缀便于排查。
+- **MinerU 子进程隔离执行**：修复 MinerU 在 Celery prefork（daemonic）进程中无法运行的问题（内部 spawn 子进程触发 `daemonic processes are not allowed to have children`，静默回退 PyMuPDF）。新增独立子进程入口 `app/core/mineru_worker.py`，通过 `subprocess.Popen` 隔离执行（`start_new_session` 独立进程组 + 超时整组清理），MinerU 崩溃/超时不再拖垮 worker 主进程。
+- **MinerU 模型缓存本地化**：docker-compose 将容器内 `/root/.cache/modelscope` 挂载到宿主机 `./backend/data/mineru_cache`，容器重建后无需重新下载模型（约 2.2G），避免反复下载。
+- **SDK 兼容性修复**：修复 OpenAI SDK `client.base_url` 为 `URL` 对象而非字符串导致 `_is_ollama_model` 调用 `.lower()` 抛 `AttributeError` 的问题（先转字符串再判定）。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/core/llm_extractor.py` | 新增 `_classify_llm_error` 错误分类、`_build_url_chain` URL 链构建；重构 `_call_llm_api` / `_fallback_http_call` 支持 URL 链切换与短退避重试；修复 `client.base_url` URL 对象 `.lower()` 报错 |
+| `backend/app/tasks/extract_task.py` | 引入错误分类；连接类错误保持 `processing` 状态短退避快速重试，耗尽才标记 `failed`；失败历史带错误类型前缀 |
+| `backend/app/core/pdf_parser.py` | MinerU 解析改为子进程隔离执行（`subprocess.Popen` 调用 `mineru_worker`，超时整组清理） |
+| `backend/app/core/mineru_worker.py` | 新增 MinerU 解析独立子进程入口（非 daemonic，可正常派生进程，随 worker 镜像打包） |
+| `backend/app/config.py` | 新增 `LLM_FALLBACK_BASE_URLS` / `LLM_CONNECT_RETRIES`；APP_VERSION 升级至 1.10.1 |
+| `docker-compose.yml` | worker 新增 `./backend/data/mineru_cache:/root/.cache/modelscope` 挂载（MinerU 模型缓存持久化） |
+| `.env.example` | 补充 `LLM_FALLBACK_BASE_URLS` / `LLM_CONNECT_RETRIES` 配置说明 |
 
 ### v1.10.0 (2026-08-18)
 

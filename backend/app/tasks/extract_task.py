@@ -7,7 +7,7 @@ from typing import Optional
 from sqlalchemy import select, func, delete
 
 from app.config import settings
-from app.core.llm_extractor import LLMExtractor
+from app.core.llm_extractor import LLMExtractor, _classify_llm_error
 from app.core.document_parser import extract_text
 from app.core.pdf_table_parser import extract_tables_markdown
 from app.core.text_preprocessor import preprocess
@@ -678,9 +678,15 @@ def process_literature(
         return result
 
     except Exception as e:
-        logger.error(f"文献 {literature_id} 提取失败: {e}")
+        err = _classify_llm_error(e)
+        err_type = err["type"]
+        logger.error(f"文献 {literature_id} 提取失败: [{err_type}] {err['message'][:500]}")
 
-        # 更新状态为 failed
+        # 连接类错误：保持 processing 状态快速重试（15s/30s/45s），
+        # 只有重试耗尽时才标记 failed，避免瞬时网络故障直接把文献判死。
+        is_conn = err_type == "connection_error"
+
+        # 更新状态为 failed（连接类错误在最后一次重试耗尽时才标记）
         async def _mark_failed():
             async with async_session() as db:
                 result = await db.execute(
@@ -689,25 +695,35 @@ def process_literature(
                 lit = result.scalar_one_or_none()
                 if lit:
                     lit.extraction_status = "failed"
-                    # 写入失败历史记录
+                    # 写入失败历史记录（错误信息带类型前缀，便于前端/日志诊断）
                     try:
                         history = ExtractionHistory(
                             literature_id=lit.id,
                             model=lit.llm_model_used,
                             status="failed",
                             data_point_count=0,
-                            error_message=str(e)[:2000],
+                            error_message=f"[{err_type}] {err['message'][:2000]}",
                         )
                         db.add(history)
                     except Exception as he:
                         logger.warning(f"写入失败历史记录出错: {he}")
                     await db.commit()
 
-        try:
-            run_async(_mark_failed())
-        except Exception:
-            pass
+        if not is_conn or self.request.retries >= self.max_retries:
+            try:
+                run_async(_mark_failed())
+            except Exception:
+                pass
 
-        # 重试
+        if is_conn:
+            # 连接类错误：短退避快速重试（避免 60s/120s/240s 的长时间空等）
+            retry_in = 15 * (self.request.retries + 1)
+            logger.warning(
+                f"文献 {literature_id} 连接类错误，{retry_in}s 后快速重试 "
+                f"(第 {self.request.retries + 1}/{self.max_retries + 1} 次)"
+            )
+            raise self.retry(exc=e, countdown=retry_in)
+
+        # 非连接错误：保留原有 60/120/240s 退避重试
         retry_in = 60 * (2 ** self.request.retries)
         raise self.retry(exc=e, countdown=retry_in)

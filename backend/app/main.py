@@ -5,6 +5,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,7 +53,21 @@ async def lifespan(app: FastAPI):
     from app.services.folder_monitor_service import _folder_monitor_loop
     monitor_task = asyncio.create_task(_folder_monitor_loop())
 
+    # 启动孤儿文件清理后台任务（默认每天一次，可配置 ORPHAN_CLEANUP_ENABLED 关闭）
+    cleanup_task: Optional[asyncio.Task] = None
+    if settings.ORPHAN_CLEANUP_ENABLED:
+        from app.services.file_cleanup_service import _cleanup_loop
+        cleanup_task = asyncio.create_task(_cleanup_loop())
+
     yield
+
+    # 停止孤儿文件清理后台任务
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
     # 停止文件夹监控后台任务
     monitor_task.cancel()

@@ -19,10 +19,11 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import get_db, require_admin
 from app.config import settings
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
+from app.models.user import User
 from app.schemas.common import ApiResponse, PagedResponse
 from app.schemas.literature import (
     LiteratureCreate, LiteratureResponse, LiteratureUpdate,
@@ -46,6 +47,7 @@ from app.services.literature_service import (
     LOCAL_STORAGE_DIR,
 )
 from app.services.extraction_service import trigger_extraction
+from app.services.file_cleanup_service import cleanup_orphan_files, scan_orphan_files
 
 router = APIRouter()
 
@@ -1385,4 +1387,41 @@ async def merge(
             "deleted_conflict_data_points": result["deleted_conflict_data_points"],
             "deleted_source_id": result["deleted_source_id"],
         },
+    )
+
+
+# ===== 孤儿文件清理 API =====
+
+@router.get("/literatures/cleanup-orphan-files/preview", response_model=ApiResponse, summary="预览孤儿文件清理", description="（管理员）扫描 backend/data/pdfs，列出已不在数据库中的孤儿文件，不执行任何移动/删除")
+async def preview_orphan_files_cleanup(
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理员：预览孤儿文件（dry-run），列出待清理文件而不移动。"""
+    scan = await scan_orphan_files(db)
+    return ApiResponse(
+        message=f"扫描完成：共 {scan['total']} 个文件，其中孤儿文件 {len(scan['orphan'])} 个",
+        data={
+            "scanned": scan["total"],
+            "orphan_count": len(scan["orphan"]),
+            "orphan_files": scan["orphan"],
+        },
+    )
+
+
+@router.post("/literatures/cleanup-orphan-files", response_model=ApiResponse, summary="清理孤儿文件", description="（管理员）将 backend/data/pdfs 中已不在数据库的孤儿文件移入回收目录（默认保留 30 天后自动删除），可配合 preview 接口先预览")
+async def cleanup_orphan_files_endpoint(
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理员：执行孤儿文件清理（移入回收目录 + 清理过期回收）。"""
+    try:
+        result = await cleanup_orphan_files(db, dry_run=False)
+    except Exception as e:
+        logger.error(f"[清理孤儿文件] 执行失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"清理失败: {e}")
+    return ApiResponse(
+        message=f"清理完成：扫描 {result['scanned']} 个文件，孤儿 {result['orphan_count']} 个，"
+                f"移入回收 {result['moved']} 个，失败 {result['failed']} 个",
+        data=result,
     )

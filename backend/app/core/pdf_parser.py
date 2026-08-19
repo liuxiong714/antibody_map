@@ -103,51 +103,78 @@ def _run_ocr_gather(page_images: list[bytes]) -> Optional[str]:
 
 
 def _extract_with_mineru(file_bytes: bytes) -> Optional[str]:
-    """使用 MinerU 增强解析 PDF，返回结构化 Markdown 文本。"""
+    """使用 MinerU 增强解析 PDF，返回结构化 Markdown 文本。
+
+    MinerU 在 Celery prefork（daemonic）进程中无法直接运行——内部会 spawn 子进程，
+    触发 "daemonic processes are not allowed to have children" 异常。因此通过独立
+    子进程隔离执行（app.core.mineru_worker）：子进程非 daemonic，可正常派生进程，
+    且 MinerU 崩溃/超时不会拖垮 worker 主进程。
+    """
     if not HAS_MINERU or not settings.ENABLE_MINERU_PDF_PARSER:
         return None
 
     timeout = getattr(settings, "MINERU_PARSE_TIMEOUT", 600)
-    # 解析可能耗时较长（首次还含模型下载），放入线程池执行。注意不能用 with 语法，
-    # 否则超时后退出块仍会 shutdown(wait=True) 阻塞等待；这里用 finally 分离后台线程，
-    # 超时放弃等待后由进程自然回收（Python 无法强杀线程）。
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    logger.info("[MinerU] 开始增强 PDF 解析（子进程隔离）...")
+    tmp_path = None
     try:
-        logger.info("[MinerU] 开始增强 PDF 解析...")
-        future = pool.submit(
-            mineru_doc_analyze,
-            pdf_bytes=file_bytes,
-            image_writer=None,
-            backend="transformers",
-            parse_method="auto",
-        )
-        middle_json, model_list = future.result(timeout=timeout)
+        import subprocess
+        import sys as _sys
+        import tempfile
+        import os as _os
+        import signal as _signal
+        from pathlib import Path as _Path
 
-        pdf_info = middle_json.get("pdf_info", [])
-        if not pdf_info:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+            tf.write(file_bytes)
+            tmp_path = tf.name
+
+        # 工作目录指向 backend 根目录（如 /app/backend），保证 `-m app.core...` 可导入
+        cwd = _Path(__file__).resolve().parent.parent.parent
+        env = dict(_os.environ)
+        env["PYTHONPATH"] = str(cwd)
+
+        proc = subprocess.Popen(
+            [_sys.executable, "-m", "app.core.mineru_worker", tmp_path],
+            cwd=str(cwd),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,  # 独立进程组，便于超时后整组清理
+        )
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.warning(f"[MinerU] 解析超时（>{timeout}s），终止子进程并回退 PyMuPDF")
+            try:
+                _os.killpg(_os.getpgid(proc.pid), _signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            proc.wait(timeout=10)
+            return None
+
+        if proc.returncode != 0:
+            err_txt = err.decode("utf-8", errors="replace").strip()[-500:]
+            logger.warning(f"[MinerU] 子进程退出码 {proc.returncode}，回退 PyMuPDF: {err_txt}")
+            return None
+
+        markdown_text = out.decode("utf-8", errors="replace")
+        if not markdown_text.strip():
             logger.warning("[MinerU] 解析结果为空")
             return None
-
-        # 使用 MinerU 官方 union_make 将 pdf_info 转为结构化 Markdown
-        # MakeMode.MM_MD 模式：保留图片/表格/公式等视觉元素
-        logger.info("[MinerU] 使用 union_make 生成 Markdown...")
-        future = pool.submit(mineru_union_make, pdf_info, MakeMode.MM_MD, "")
-        markdown_text = future.result(timeout=max(60, timeout // 3))
-
-        if not markdown_text or not markdown_text.strip():
-            logger.warning("[MinerU] union_make 输出为空")
-            return None
-
         logger.info(f"[MinerU] 增强解析完成: {len(markdown_text)} 字符")
         return markdown_text
-    except concurrent.futures.TimeoutError:
-        logger.warning(f"[MinerU] 解析超时（>{timeout}s），回退到 PyMuPDF")
-        return None
     except Exception as e:
         logger.warning(f"[MinerU] 解析失败，回退到 PyMuPDF: {e}")
         return None
     finally:
-        pool.shutdown(wait=False)
+        if tmp_path:
+            try:
+                _os.unlink(tmp_path)
+            except Exception:
+                pass
 
 
 def extract_text(file_bytes: bytes) -> str:

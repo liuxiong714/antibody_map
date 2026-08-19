@@ -109,6 +109,8 @@ services:
     volumes:
       - ./backend/data:/app/backend/data
       - ./backend/logs:/app/backend/logs
+      # MinerU 模型缓存持久化：挂载到宿主机，容器重建后无需重新下载模型（约 2.2G）
+      - ./backend/data/mineru_cache:/root/.cache/modelscope
     command: celery -A app.tasks.celery_app worker --loglevel=info --pool=prefork --concurrency=1
     networks:
       - antibody-net

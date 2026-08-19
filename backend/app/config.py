@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     # RTX 4090/5090 实测 4 并发为吞吐与延迟最优拐点（参考 2026 基准测试）
     LLM_CONCURRENCY: int = 4
 
+    # 连接容错：主 base_url 连接失败时的备用地址（逗号分隔，可选）。
+    # 场景：WSL 重启导致 Ollama 网关 IP 漂移 / 远程 API 短暂不可达时自动切换。
+    LLM_FALLBACK_BASE_URLS: str = ""
+    # 连接类错误（DNS/连接/超时）的快速重试次数（短退避 2s/5s），
+    # 仅作用于连接错误，不消耗 token；非连接错误不重试。
+    LLM_CONNECT_RETRIES: int = 2
+
     # P2：长文档分块阈值（字符数），超过此值触发分块并发提取
     LLM_CHUNK_THRESHOLD: int = 20000
     # P2：单块最大字符数
@@ -60,6 +67,16 @@ class Settings(BaseSettings):
     ENABLE_MINERU_PDF_PARSER: bool = False
     # MinerU 解析超时（秒）。首次解析需下载模型，CPU/GPU 推理较慢，超时后回退 PyMuPDF
     MINERU_PARSE_TIMEOUT: int = 600
+
+    # ===== 孤儿文件清理配置 =====
+    # 是否启用后台定时清理（backend/data/pdfs 中已不在数据库的残留文件）
+    ORPHAN_CLEANUP_ENABLED: bool = True
+    # 后台定时清理间隔（秒），默认每天一次
+    ORPHAN_CLEANUP_INTERVAL: int = 86400
+    # 孤儿文件回收目录（默认 backend/data/pdf_orphan_trash），可自定义绝对路径
+    ORPHAN_TRASH_DIR: str = ""
+    # 回收目录保留天数，超过后自动物理删除，默认 30 天
+    ORPHAN_TRASH_RETENTION_DAYS: int = 30
 
     # ===== 提取准确度 & 性价比优化配置 =====
     # A3：grounding 模糊匹配阈值（0-1，越高越严格）
@@ -114,7 +131,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.10.0"
+    APP_VERSION: str = "1.11.0"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
 
