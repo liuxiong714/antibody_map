@@ -158,6 +158,7 @@ antibody_map01/
 - Docker Desktop (Windows / macOS) 或 Docker & Docker Compose (Linux)
 - Tesseract OCR (可选，用于扫描版 PDF 的文字识别，安装与配置见 [docs/tesseract_setup.md](docs/tesseract_setup.md))
 - **CAJ 转换工具** (可选，用于解析 CAJ 格式文献，见下方 [CAJ 格式支持](#caj-格式支持) 说明)
+- **NVIDIA GPU + NVIDIA Container Toolkit**（可选但推荐）：worker 容器通过 `deploy.resources.reservations` 透传 GPU，MinerU 文档解析 / torch 推理使用 GPU 加速（未配置则回退 CPU 模式，解析速度大幅下降）。Windows 下需在 WSL2 中安装 NVIDIA Container Toolkit 后重启 Docker。
 
 ### Windows 一键部署（推荐）
 
@@ -670,6 +671,22 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.11.1 (2026-08-20)
+
+#### worker 容器 NVIDIA GPU 透传
+
+- **GPU 加速 MinerU 解析**：docker-compose 为 worker 服务新增 `deploy.resources.reservations` NVIDIA GPU 透传（`driver: nvidia` / `count: all` / `capabilities: [gpu]`），MinerU 文档解析与 torch 推理从 CPU 模式切换为 GPU 加速。修复此前 MinerU 检测到 `vram=1GB` 以 CPU 模式运行的性能问题。
+- **前置条件**：宿主机需安装 NVIDIA Container Toolkit（Windows 在 WSL2 中安装后重启 Docker），未安装时该配置会被忽略，worker 回退 CPU 模式。
+- **实测**：RTX 5090 Laptop（24GB）下容器内 `nvidia-smi` / `torch.cuda.is_available()` 均正常识别，50KB 3 页 PDF 解析成功输出结构化 Markdown，推理全程使用 GPU（显存占用约 23GB）。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `docker-compose.yml` | worker 服务新增 NVIDIA GPU 透传 `deploy.resources.reservations` |
+| `backend/app/config.py` | APP_VERSION 升级至 1.11.1 |
+| `README.md` | 环境要求补充 GPU + NVIDIA Container Toolkit 说明；新增 v1.11.1 变更日志 |
 
 ### v1.11.0 (2026-08-19)
 
