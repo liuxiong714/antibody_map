@@ -10,6 +10,7 @@ import {
   RadarChartOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
+  SearchOutlined,
   UserOutlined,
   LogoutOutlined,
   KeyOutlined,
@@ -60,6 +61,7 @@ const MainLayout: React.FC = () => {
     { key: '/antigenic-map', icon: <RadarChartOutlined />, label: '抗原图谱' },
     { key: '/report', icon: <FileTextOutlined />, label: t('nav.report') },
     { key: '/folders', icon: <FolderOpenOutlined />, label: t('nav.folders') },
+    { key: '/pubmed', icon: <SearchOutlined />, label: t('nav.pubmed') },
   ];
 
   const menuItems = isAdmin

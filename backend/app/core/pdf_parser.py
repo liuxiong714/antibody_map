@@ -220,6 +220,7 @@ def extract_text(file_bytes: bytes) -> str:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         full_text_parts = []
         page_images_for_ocr = []
+        page_images_for_vision = []
 
         for page_num in range(len(doc)):
             page = doc[page_num]
@@ -235,8 +236,30 @@ def extract_text(file_bytes: bytes) -> str:
                     full_text_parts.append(page_text)
                 pix = page.get_pixmap(dpi=200)
                 page_images_for_ocr.append(pix.tobytes("png"))
+                # 扫描页额外渲染成图片（dpi=150），供视觉提取器使用（OCR 之外的增强）
+                pix_vision = page.get_pixmap(dpi=150)
+                page_images_for_vision.append(pix_vision.tobytes("png"))
 
         doc.close()
+
+        # 扫描页额外交给视觉提取器（OCR 之外的增强）。局部导入避免循环导入
+        # （vl_extractor → llm_extractor → pdf_parser）。
+        if page_images_for_vision:
+            try:
+                from app.core.vl_extractor import extract_with_vision
+                from app.core.llm_extractor import EXTRACTION_JSON_SCHEMA
+
+                logger.info(
+                    f"检测到 {len(page_images_for_vision)} 个扫描页，调用视觉提取器增强..."
+                )
+                vision_text = _run_cache_coro(
+                    extract_with_vision(page_images_for_vision, EXTRACTION_JSON_SCHEMA)
+                )
+                if vision_text and vision_text.strip():
+                    full_text_parts.append(vision_text)
+                    logger.info(f"[视觉增强] 视觉提取返回 {len(vision_text)} 字符，已追加")
+            except Exception as e:
+                logger.warning(f"[视觉增强] 视觉提取失败，忽略: {e}")
 
         combined_text = "\n\n".join(full_text_parts)
 
@@ -249,8 +272,11 @@ def extract_text(file_bytes: bytes) -> str:
             ocr_text = _run_ocr_gather(page_images_for_ocr)
             if ocr_text:
                 parts = full_text_parts + [ocr_text] if full_text_parts else [ocr_text]
-                return _cache_result("\n\n".join(parts))
+                result = "\n\n".join(parts)
+                logger.info(f"[PyMuPDF+OCR] 解析完成: {len(result)} 字符（含 OCR 兜底）")
+                return _cache_result(result)
 
+        logger.info(f"[PyMuPDF] 解析完成: {len(combined_text)} 字符")
         return _cache_result(combined_text if combined_text.strip() else "")
 
     except Exception as e:

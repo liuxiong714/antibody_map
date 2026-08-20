@@ -9,6 +9,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from app.config import settings
+from app.core.extraction_grounding import ground_extraction
 from app.core.term_normalizer import (
     normalize_disease,
     normalize_method,
@@ -1793,6 +1794,47 @@ class LLMExtractor:
             else:
                 merged.append((s, e))
         return merged
+
+    async def extract_visual(self, page_images: list[bytes], full_text: str = "") -> list[dict]:
+        """视觉多模态提取：让本地视觉模型直接读 PDF 页面图片提取数据。
+
+        调用 vl_extractor.extract_with_vision 得到 JSON 字符串，然后复用现有的
+        _parse_json（解析）与 _post_process（后处理），与文本提取完全一致；
+        不重复造后处理逻辑。对后处理出的每个数据点调用 ground_extraction 做
+        grounding 溯源，并把 is_grounded / source_char_start / source_char_end
+        回写到数据点 dict 上。
+
+        参数：
+            page_images: 每页渲染出的图片字节列表（PNG）
+            full_text:   文献全文，用于 grounding 溯源
+        """
+        if not page_images:
+            logger.warning("[VL] extract_visual: page_images 为空，返回空列表")
+            return []
+
+        # 局部导入避免潜在循环导入；EXTRACTION_JSON_SCHEMA 为本模块模块级常量，直接使用
+        from app.core.vl_extractor import extract_with_vision
+
+        raw = await extract_with_vision(page_images, EXTRACTION_JSON_SCHEMA)
+        data = self._parse_json(raw)
+        if not isinstance(data, dict) or not data:
+            logger.warning("[VL] 视觉输出解析失败或为空，返回空列表")
+            return []
+
+        points = self._post_process(data)
+        # grounding 溯源：对每个数据点调用 ground_extraction，并回写结果字段
+        for dp in points:
+            if not isinstance(dp, dict):
+                continue
+            res = ground_extraction(
+                source_text=full_text,
+                source_context=dp.get("source_context"),
+                extract_item=dp,
+            )
+            dp["is_grounded"] = res.is_grounded
+            dp["source_char_start"] = res.source_char_start
+            dp["source_char_end"] = res.source_char_end
+        return points
 
     async def extract_with_retry(
         self,

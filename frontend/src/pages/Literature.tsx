@@ -12,7 +12,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder } from '../services/literature';
+import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
@@ -302,6 +302,21 @@ const LiteraturePage: React.FC = () => {
     } catch (err) {
       console.error('[Literature] 删除文献失败:', err);
       message.error('删除失败');
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedRowKeys.length === 0) return;
+    try {
+      const ids = selectedRowKeys.map((k) => String(k));
+      await batchDeleteLiteratures(ids);
+      message.success(`已删除 ${ids.length} 篇文献`);
+      setSelectedRowKeys([]);
+      setSelectedRows([]);
+      fetchList();
+    } catch (err) {
+      console.error('[Literature] 批量删除文献失败:', err);
+      message.error('批量删除失败');
     }
   };
 
@@ -1366,6 +1381,17 @@ const LiteraturePage: React.FC = () => {
           >
             合并选中 {selectedRowKeys.length > 0 ? `(${selectedRowKeys.length})` : ''}
           </Button>
+          <Popconfirm
+            title={`批量删除 ${selectedRowKeys.length > 0 ? selectedRowKeys.length : ''} 篇文献`}
+            description="将删除选中文献的记录、关联文件及数据点，此操作不可恢复。确定继续？"
+            onConfirm={handleBatchDelete}
+            disabled={selectedRowKeys.length === 0}
+            okButtonProps={{ danger: true }}
+          >
+            <Button icon={<DeleteOutlined />} danger disabled={selectedRowKeys.length === 0}>
+              批量删除 {selectedRowKeys.length > 0 ? `(${selectedRowKeys.length})` : ''}
+            </Button>
+          </Popconfirm>
           <Popconfirm
             title="批量同步元数据"
             description="将所有提取完成但缺少年份/省份的文献，从数据点自动聚合元数据。确定继续？"

@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     # 回收目录保留天数，超过后自动物理删除，默认 30 天
     ORPHAN_TRASH_RETENTION_DAYS: int = 30
 
+    # PubMed 开放获取 PDF 下载目录；为空时回退到 LOCAL_STORAGE_DIR
+    PDF_DOWNLOAD_DIR: str = ""
+
     # ===== 提取准确度 & 性价比优化配置 =====
     # A3：grounding 模糊匹配阈值（0-1，越高越严格）
     GROUNDING_FUZZY_THRESHOLD: float = 0.72
@@ -131,7 +134,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.11.1"
+    APP_VERSION: str = "1.13.0"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
 

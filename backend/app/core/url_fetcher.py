@@ -1,7 +1,10 @@
 """URL 抓取模块：从 URL 获取 HTML 内容。"""
 
+import ipaddress
 import logging
+import socket
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -19,16 +22,33 @@ _DEFAULT_HEADERS = {
 }
 
 
+def _host_is_safe(host: str) -> bool:
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return False
+    return True
+
+
 async def fetch_url(url: str, timeout: int = DEFAULT_TIMEOUT) -> bytes:
     """从 URL 获取内容，返回字节数据。
 
     自动跟随重定向，超时由 timeout 参数控制。
     失败时抛 httpx.HTTPError 或 httpx.TimeoutException。
     """
+    # SSRF 防护：拒绝访问内网/回环/链路本地地址（hostname 解析出的任一 IP 不安全即拒绝）
+    host = urlparse(url).hostname
+    if not host or not _host_is_safe(host):
+        raise ValueError("目标地址不安全，已拒绝访问")
+
     logger.info(f"[URL 抓取] 开始抓取: {url}, 超时={timeout}s")
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(timeout),
-        follow_redirects=True,
+        follow_redirects=False,
         headers=_DEFAULT_HEADERS,
     ) as client:
         resp = await client.get(url)

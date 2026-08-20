@@ -12,7 +12,8 @@
 
 | 模块 | 功能 |
 |------|------|
-| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**多格式导入导出**（CSV/Excel/JSON，JSON 含数据点可跨电脑迁移导入、支持仅导出选中文献）、**元数据批量同步**（从数据点自动聚合年份/省份）、**文档格式标识列**（彩色 Tag 显示 PDF/CAJ/DOCX/HTML 等格式，点击即可预览）、**全列排序与筛选**（标题/作者模糊筛选、创建时间范围、文档格式下拉，筛选状态本地缓存）、**文献文件下载**（带 JWT 认证自动下载）、**修改关联文件**（替换已关联本地文档） |
+| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、**题录批量导入**（RIS / EndNote(.enw) / PubMed 文本 / WoS 纯文本 / WoS CSV / 读秀超星 多格式自动识别，按 PMID/DOI 查重）、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**多格式导入导出**（CSV/Excel/JSON，JSON 含数据点可跨电脑迁移导入、支持仅导出选中文献）、**元数据批量同步**（从数据点自动聚合年份/省份）、**文档格式标识列**（彩色 Tag 显示 PDF/CAJ/DOCX/HTML 等格式，点击即可预览）、**全列排序与筛选**（标题/作者模糊筛选、创建时间范围、文档格式下拉，筛选状态本地缓存）、**文献文件下载**（带 JWT 认证自动下载）、**修改关联文件**（替换已关联本地文档）、**批量删除**（多选后一键删除，含关联文件与数据点） |
+| **PubMed 检索** | 侧边栏「PubMed 检索」页支持关键词检索 PubMed（NCBI E-utilities）、**多源检索**（Crossref / OpenAlex / Europe PMC 来源下拉切换，统一结果结构）、勾选结果一键**纳入数据库**（写入文献库）与**下载开放获取 PDF**（Europe PMC 全文直链，下载目录可配置 `PDF_DOWNLOAD_DIR`） |
 | **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取**、**上传/提取时可重新选定默认模型**、**批量AI提取**（多选文献后统一设置模型重新提取，自动跳过 processing 中的文献）、**手动停止提取**（单篇卡住的 processing 强制重置为 failed）、**一键重置所有卡住的提取状态**（适用于服务器重启后任务丢失的场景）；提取完成后可选显示**Token 用量、费用估算及使用的大模型**；本地 Ollama 走**原生 JSON Schema 结构化输出强约束**，并做**关键数值回验**（阳性率/GMC/样本量必须在原文中可定位，否则自动降级低置信）；**模型选择统一**——文献提取、文件夹监控、报告生成的本地模型候选项统一来自后端 `/models`（系统设置「本地模型配置」维护），各功能始终一致 |
 | **精确字符溯源** | 每个数据点锚定到原文的精确字符区间（`source_char_start/end`），采用精确/模糊/关键短语三级匹配，未匹配自动降级置信度并红色高亮待审 |
 | **长文档分块并行提取** | 超过 2 万字符的文献按段落边界分块、并行调用 LLM 提取，结果自动合并去重 |
@@ -344,6 +345,18 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | POST | `/literatures/scan-duplicates` | 扫描全库重复文献 |
 | POST | `/literatures/merge/preview` | 合并前预览冲突 |
 | POST | `/literatures/{id}/merge` | 合并重复文献 |
+| POST | `/literatures/import-references` | **导入题录**：解析 RIS / EndNote(.enw) / PubMed / WoS / 读秀超星 题录文本（`ref_text` + `fmt=auto` 自动探测），按 PMID/DOI 查重，返回 `imported/skipped/total/errors` |
+| POST | `/literatures/batch-delete` | **批量删除**：按 `literature_ids` 列表批量删除文献及关联文件/数据点，自动跳过不存在的记录 |
+
+### PubMed 检索
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/pubmed/search` | PubMed 检索（NCBI E-utilities esearch+esummary，返回 `items/total/page/page_size`） |
+| GET | `/pubmed/search/multi` | **多源检索**：按 `source`（crossref / openalex / europepmc，缺省 crossref）调用对应服务，统一返回 `{items, total, page, page_size, source}` |
+| GET | `/pubmed/abstract/{pmid}` | 获取 PubMed 摘要（efetch） |
+| POST | `/pubmed/import` | 将 PMID 列表纳入文献库（esummary 取元数据），返回 `success_count/fail_count` |
+| POST | `/pubmed/download-pdf` | 下载开放获取 PDF 到 `PDF_DOWNLOAD_DIR`（缺省回退 `LOCAL_STORAGE_DIR`），返回 `downloaded/no_oa/failed/dir` |
 
 ### 数据提取与审核
 
@@ -481,6 +494,7 @@ docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d a
 | `TESSERACT_CMD` | Tesseract 可执行文件路径 | 自动探测 (PATH + Windows 常见安装位置) |
 | `TESSERACT_DATA_DIR` | Tesseract 语言包 (tessdata) 目录 | 自动探测 (可执行文件同级 tessdata) |
 | `PDF_STORAGE` | PDF 存储模式 | `local` (或 `minio`) |
+| `PDF_DOWNLOAD_DIR` | PubMed 开放获取 PDF 下载目录（为空时回退 `LOCAL_STORAGE_DIR`） | - |
 | `ORPHAN_CLEANUP_ENABLED` | 是否启用后台定时清理孤儿文献文件 | `true` |
 | `ORPHAN_CLEANUP_INTERVAL` | 后台定时清理间隔（秒） | `86400`（每天） |
 | `ORPHAN_TRASH_DIR` | 孤儿文件回收目录（可指定绝对路径） | `backend/data/pdf_orphan_trash` |
@@ -671,6 +685,87 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.13.0 (2026-08-20)
+
+#### 题录批量导入与统一解析器
+
+- **统一题录解析器**：新增 `reference_parser.py`，支持 **7 种题录格式**自动识别与解析——RIS、EndNote(.enw)、PubMed 文本（PMID: 摘要）、PubMed「Save → RIS」、WoS 纯文本、WoS CSV/Excel、读秀/超星（duxiu）。`parse_references(text, fmt="auto")` 按内容特征自动探测格式（正则 `^TY\s*-` / `^%0` 等），统一输出 `title/authors/journal/year/doi/abstract/pmid/keywords/source` 字段，缺失字段安全回退空串。
+- **多行字段续行拼接**：修复 RIS/EndNote 解析仅取首行问题，摘要(AB)、标题(TI)、期刊(JO) 等多行字段自动跨行拼接；PubMed 文本解析修正记录头切分逻辑（仅识别从 1 起的连续递增序号，识别 `©` 版权块），支持不定长标签（PMID/TI/AB/FAU/JT/DP/LID/PMC/AD 等）并提取 PMID、URL、DOI、PMCID、机构；WoS 纯文本与 CSV 提取 DE 关键词字段。
+- **来源映射与查重**：`POST /literatures/import-references` 接收 `ref_text`（+ `fmt=auto` 显式指定），按统一字段构造文献入库；`source_db` 取解析来源（pubmed/cnki/wos/duxiu），`source_id` 取 PMID（为空则用 DOI）用于查重，标题为空自动跳过，返回 `imported/skipped/total/errors`。
+- **前端导入入口**：PubMed 检索页「纳入数据库」新增来源下拉（自动识别 / PubMed / 知网 / Web of Science），支持读取本地上传题录文件后调用导入接口，展示导入/跳过结果。
+
+#### 文献批量删除
+
+- **后端接口**：新增 `POST /literatures/batch-delete`，接收 `literature_ids` 列表，复用现有删除逻辑批量删除文献及其关联文件/数据点，自动跳过不存在的记录，返回成功删除数量（幂等）。
+- **前端入口**：文献列表工具栏新增危险样式「批量删除」按钮，勾选多篇后弹出二次确认，成功后清空选中并刷新列表。
+
+#### 无 PDF 摘要提取
+
+- **提取输入双源支持**：`extract_task.py` / `extraction_service.py` 放宽校验——无 PDF 但有摘要（`abstract` 非空）的文献直接用摘要文本作为 LLM 提取输入（此前无关联文件直接报错），PDF 文献仍走全文提取；仅当既无文件也无摘要时才判定无法提取。批量提取接口同步受益，可对纯题录导入（无 PDF）的文献触发提取。
+
+#### 文献详情摘要展示
+
+- 前端文献详情页新增「摘要」标签页展示完整摘要（多行题录导入文献也可查看），并调整行距提升可读性。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/services/reference_parser.py` | 新增统一题录解析器：`parse_references` 自动探测 + RIS/ENW/PubMed/PubMed-RIS/WoS/WoS-CSV/读秀 子解析器 |
+| `backend/app/api/v1/literature.py` | 新增 `POST /literatures/import-references`（题录导入，按 PMID/DOI 查重）、`POST /literatures/batch-delete`（批量删除） |
+| `backend/app/api/v1/router.py` | 文献路由更新 |
+| `backend/app/tasks/extract_task.py` | 提取输入双源支持：无 PDF 时用摘要提取 |
+| `backend/app/services/extraction_service.py` | 校验放宽：无 PDF 但有摘要可提取 |
+| `backend/app/config.py` | APP_VERSION 升级至 1.13.0 |
+| `frontend/src/pages/PubmedSearch.tsx` | 纳入数据库来源下拉（自动/PubMed/知网/WoS）+ 题录文件导入入口 |
+| `frontend/src/pages/Literature.tsx` | 工具栏新增「批量删除」按钮（二次确认） |
+| `frontend/src/services/literature.ts` | 新增 `batchDeleteLiteratures` 服务 |
+| `frontend/src/pages/LiteratureDetail.tsx` | 新增「摘要」标签页展示完整摘要 |
+| `README.md` | 核心功能/API 一览补充题录导入与批量删除；新增 v1.13.0 变更日志 |
+
+### v1.12.0 (2026-08-20)
+
+#### PubMed 检索页 · 多源文献检索
+
+- **PubMed 检索页（前端新增）**：侧边栏新增「PubMed 检索」入口，支持关键词检索 PubMed（NCBI E-utilities esearch + esummary）、勾选结果后一键「纳入数据库」（esummary 取元数据写入文献库）与「下载 PDF」（经 Europe PMC 查询开放获取全文直链并下载到本地目录），操作期间按钮 loading、无勾选时禁用。
+- **多源文献检索服务**：新增 Crossref / OpenAlex / Europe PMC 三个异步检索服务（`crossref_service.py` / `openalex_service.py` / `europepmc_service.py`），统一输出 `{items, total, page, page_size}` 结构，item 字段固定为 `id/source/title/authors/year/journal/doi/abstract/oa_pdf_url`，缺失字段安全回退空值。
+- **统一多源检索接口**：新增 `GET /pubmed/search/multi?source=&q=&page=&page_size=`，按 `source`（crossref / openalex / europepmc，缺省 crossref）分发到对应服务，不支持的来源返回 400。
+- **检索来源下拉切换**：PubMed 检索页搜索框旁新增来源下拉（PubMed / Crossref / OpenAlex / Europe PMC，默认 PubMed）；选择非 PubMed 来源时自动调用 `/pubmed/search/multi`，结果表格新增「来源」列，原有 PubMed 检索、纳入/下载逻辑不受影响。
+- **OA PDF 下载配置**：新增 `PDF_DOWNLOAD_DIR` 环境变量指定下载目录，未配置时回退到 `LOCAL_STORAGE_DIR`。
+
+#### 安全加固
+
+- **URL 抓取 SSRF 防护**：`url_fetcher.py` 新增 `_host_is_safe` 校验，拒绝访问内网 / 回环 / 链路本地地址（hostname 解析出任一不安全 IP 即拒绝）；`follow_redirects` 改为 `False`，防止 302 跳转绕过安检。
+- **「打开文件夹」接口权限收紧**：仅管理员可调用，且仅在 `APP_ENV == "development"` 开发环境启用，生产环境返回 403。
+
+#### 视觉多模态提取增强
+
+- **视觉提取器骨架**：新增 `vl_extractor.py`，调用本地视觉模型（默认 `qwen3.8:27b`）直接读 PDF 页面图片、按 JSON Schema 输出 JSON；`LLMExtractor.extract_visual` 复用现有 `_parse_json` / `_post_process` 后处理逻辑，并对每个数据点做 grounding 溯源（回写 `is_grounded` / `source_char_start/end`）。
+- **扫描页视觉增强**：PyMuPDF 解析扫描页时额外渲染页面图片（dpi=150）调用视觉提取器增强（OCR 之外的补充），失败静默忽略不影响主流程。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/api/v1/pubmed.py` | 新增 PubMed 检索代理：`GET /pubmed/search`、`GET /pubmed/abstract/{pmid}`、`POST /pubmed/import`、`POST /pubmed/download-pdf`、`GET /pubmed/search/multi` |
+| `backend/app/services/pubmed_service.py` | 新增 PubMed 检索服务（NCBI E-utilities esearch+esummary+efetch） |
+| `backend/app/services/pubmed_pdf.py` | 新增 OA PDF 直链查询（Europe PMC REST）与下载 |
+| `backend/app/services/crossref_service.py` | 新增 Crossref 检索服务 |
+| `backend/app/services/openalex_service.py` | 新增 OpenAlex 检索服务 |
+| `backend/app/services/europepmc_service.py` | 新增 Europe PMC 检索服务 |
+| `backend/app/core/vl_extractor.py` | 新增视觉多模态提取器（读页面图片 + JSON Schema 强约束） |
+| `backend/app/core/llm_extractor.py` | 新增 `extract_visual`（复用解析/后处理 + grounding 溯源回写） |
+| `backend/app/core/pdf_parser.py` | 扫描页额外渲染图片调视觉提取器增强；明确 MinerU/PyMuPDF/OCR 路径日志 |
+| `backend/app/core/url_fetcher.py` | URL 抓取 SSRF 防护（`_host_is_safe` + 关闭重定向） |
+| `backend/app/api/v1/literature.py` | 「打开文件夹」接口增加管理员鉴权 + 仅开发环境 |
+| `backend/app/api/v1/router.py` | 注册 pubmed 路由 |
+| `backend/app/config.py` | 新增 `PDF_DOWNLOAD_DIR`；APP_VERSION 升级至 1.12.0 |
+| `frontend/src/pages/PubmedSearch.tsx` | 新增 PubMed 检索页（检索/纳入/下载 + 来源下拉切换） |
+| `frontend/src/App.tsx` | 注册 `/pubmed` 路由 |
+| `frontend/src/layouts/MainLayout.tsx` | 侧边栏新增「PubMed 检索」菜单项 |
+| `frontend/src/i18n/zh.json` / `en.json` | 新增 `nav.pubmed` 文案 |
+| `README.md` | 核心功能补充 PubMed 检索；API 一览补充 pubmed 接口；新增 v1.12.0 变更日志 |
 
 ### v1.11.1 (2026-08-20)
 

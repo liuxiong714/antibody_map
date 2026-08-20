@@ -69,7 +69,8 @@ def extract_text(file_bytes: bytes, file_ext: str = ".pdf") -> str:
         if ext == ".pdf":
             result = pdf_extract_text(file_bytes)
             text_len = len(result)
-            logger.info(f"[文档解析] PDF 解析完成: {text_len} 字符 (含 OCR 兜底)")
+            # 具体走 MinerU 还是 PyMuPDF+OCR 的路径日志，由 pdf_parser 内部打印
+            logger.info(f"[文档解析] PDF 解析完成: {text_len} 字符")
             return result
 
         if ext == ".caj":

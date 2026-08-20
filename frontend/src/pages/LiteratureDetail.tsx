@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip, Switch, Typography,
+  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip, Switch, Typography, Alert,
 } from 'antd';
 import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined, DownloadOutlined, PlusOutlined, HistoryOutlined, ClockCircleOutlined, FileTextOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -949,7 +949,19 @@ const LiteratureDetail: React.FC = () => {
                       </Descriptions.Item>
                     </Descriptions>
                     {literature?.abstract && (
-                      <p style={{ color: '#666', marginTop: 12 }}>{literature.abstract}</p>
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>摘要</div>
+                        <p style={{ color: '#666', margin: 0, lineHeight: 1.8 }}>{literature.abstract}</p>
+                      </div>
+                    )}
+                    {literature && !literature.file_path && literature.abstract && (
+                      <Alert
+                        type="info"
+                        showIcon
+                        style={{ marginTop: 12 }}
+                        message="当前仅基于摘要提取"
+                        description="该文献暂无关联 PDF，当前基于摘要提取数据。关联 PDF 后可重新提取，获得更完整的全文数据。"
+                      />
                     )}
                     <Space style={{ marginTop: 12 }}>
                       <Button icon={<ExperimentOutlined />} onClick={handleExtract} loading={extracting}>

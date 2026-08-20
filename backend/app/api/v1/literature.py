@@ -16,6 +16,7 @@ logger = logging.getLogger("uvicorn")
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,11 +44,13 @@ from app.services.literature_service import (
     scan_duplicates,
     preview_merge,
     merge_literatures,
+    _find_existing_by_title,
     _clean_filename_title,
     LOCAL_STORAGE_DIR,
 )
 from app.services.extraction_service import trigger_extraction
 from app.services.file_cleanup_service import cleanup_orphan_files, scan_orphan_files
+from app.services.reference_parser import parse_references
 
 router = APIRouter()
 
@@ -646,6 +649,99 @@ async def import_literatures(
     )
 
 
+class ImportReferencesBody(BaseModel):
+    """题录导入的请求体（前端读取文件后传全文文本）。"""
+
+    ref_text: str
+    fmt: str = "auto"  # 格式：auto / ris / enw / pubmed / wos / woscsv / duxiu，auto 时自动探测
+
+
+@router.post("/literatures/import-references", response_model=ApiResponse, summary="导入题录文件", description="解析 RIS / EndNote(.enw) / PubMed 文本 / WoS 纯文本 / WoS CSV / 读秀超星 题录并批量导入文献库，自动跳过标题为空与已存在的重复记录")
+async def import_references(
+    body: ImportReferencesBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """解析题录文本并入库。
+
+    - 格式自动探测（reference_parser.parse_references，支持 fmt 显式指定）
+    - 每条记录映射统一字段：title/authors/journal/year/doi/keywords 直接映射；
+      source_db 取 parsed["source"]（pubmed/cnki/wos/duxiu）；source_id 取 pmid（为空则用 doi）
+    - 跳过条件：标题为空；source_id（pmid，兜底 doi）已存在
+    - 复用 create_literature 入库
+    """
+    ref_text = (body.ref_text or "").strip()
+    if not ref_text:
+        raise HTTPException(status_code=400, detail="题录文本为空")
+
+    refs = parse_references(ref_text, body.fmt)
+    if not refs:
+        raise HTTPException(status_code=400, detail="未解析到有效题录（支持 RIS / EndNote / PubMed / WoS / 读秀超星 格式）")
+
+    imported = 0
+    skipped = 0
+    errors: list[dict] = []
+    for idx, ref in enumerate(refs):
+        title = (ref.get("title") or "").strip()
+        if not title:
+            skipped += 1
+            errors.append({"index": idx, "reason": "标题为空"})
+            continue
+        try:
+            # 来源标识：source_id = pmid（为空则用 doi），用于查重
+            pmid = (ref.get("pmid") or "").strip() or None
+            doi = (ref.get("doi") or "").strip() or None
+            source_id = pmid or doi
+            existing = None
+            if source_id:
+                if pmid:
+                    r = await db.execute(select(Literature).where(Literature.pmid == pmid))
+                    existing = r.scalar_one_or_none()
+                if not existing and doi:
+                    r = await db.execute(select(Literature).where(Literature.doi == doi))
+                    existing = r.scalar_one_or_none()
+            if not existing:
+                existing = await _find_existing_by_title(db, title)
+            if existing:
+                skipped += 1
+                logger.info(f"[ImportReferences] 跳过重复文献: title={title}, source_id={source_id}")
+                continue
+
+            year_str = (ref.get("year") or "").strip()
+            pub_year = int(year_str) if year_str.isdigit() else None
+            # 关键词：分号分隔的字符串 → 列表
+            kw_str = (ref.get("keywords") or "").strip()
+            keywords_list = [k.strip() for k in re.split(r"[;；]", kw_str) if k.strip()] if kw_str else None
+            await create_literature(
+                db,
+                LiteratureCreate(
+                    title=title,
+                    authors=(ref.get("authors") or "").strip() or None,
+                    journal=(ref.get("journal") or "").strip() or None,
+                    pub_year=pub_year,
+                    doi=doi,
+                    pmid=pmid,
+                    abstract=(ref.get("abstract") or "").strip() or None,
+                    keywords=keywords_list,
+                    source_db=(ref.get("source") or "cnki"),
+                ),
+            )
+            imported += 1
+        except Exception as e:
+            logger.error(f"[ImportReferences] 第 {idx} 条入库失败: {e}", exc_info=True)
+            errors.append({"index": idx, "title": title, "reason": str(e)[:200]})
+
+    logger.info(f"[ImportReferences] 导入完成: 解析 {len(refs)} 条, 导入 {imported} 条, 跳过 {skipped} 条, 失败 {len(errors)} 条")
+    return ApiResponse(
+        message=f"导入完成：成功 {imported} 篇，跳过 {skipped} 篇（重复或标题为空）",
+        data={
+            "imported": imported,
+            "skipped": skipped,
+            "total": len(refs),
+            "errors": errors[:20],
+        },
+    )
+
+
 @router.post("/literatures/batch-import-from-folder", response_model=ApiResponse, summary="从文件夹批量导入", description="从服务器本地文件夹批量导入文件，自动匹配已有文献或新建文献记录，支持导入后自动触发AI提取")
 async def batch_import_from_folder(
     folder_path: str = Form(..., description="服务器上的文件夹路径，包含要导入的 PDF 等文件"),
@@ -955,6 +1051,28 @@ async def delete(
     return ApiResponse(message="删除成功")
 
 
+class BatchDeleteRequest(BaseModel):
+    """批量删除文献请求体"""
+    literature_ids: list[uuid.UUID]
+
+
+@router.post("/literatures/batch-delete", response_model=ApiResponse, summary="批量删除文献", description="根据文献ID列表批量删除文献记录及其关联的文件和数据点，自动跳过不存在的记录")
+async def batch_delete(
+    req: BatchDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    if not req.literature_ids:
+        raise HTTPException(status_code=400, detail="未提供要删除的文献ID")
+    deleted = 0
+    for lit_id in req.literature_ids:
+        try:
+            if await delete_literature(db, lit_id):
+                deleted += 1
+        except Exception as e:
+            logger.warning(f"[文献] 批量删除失败跳过: id={lit_id}, err={e}")
+    return ApiResponse(message=f"成功删除 {deleted} 篇文献")
+
+
 @router.get("/literatures/{literature_id}/file", summary="预览文献文件", description="返回文件流供前端预览（仅PDF支持浏览器内预览，其余格式前端会禁用预览按钮）")
 async def get_pdf_file(
     literature_id: uuid.UUID,
@@ -1017,9 +1135,13 @@ async def download_pdf_file(
 async def open_literature_folder(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
 ):
     """在宿主机上打开文件所在文件夹并选中该文件（Windows 资源管理器）"""
     logger.info(f"[打开文件夹] 请求: literature_id={literature_id}")
+    # 仅开发环境启用：生产环境拒绝该宿主机操作
+    if settings.APP_ENV != "development":
+        raise HTTPException(status_code=403, detail="该功能仅在开发环境可用")
     literature = await get_literature(db, literature_id)
     if not literature:
         logger.warning(f"[打开文件夹] 文献不存在: id={literature_id}")

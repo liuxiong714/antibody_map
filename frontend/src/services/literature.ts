@@ -88,6 +88,11 @@ export async function deleteLiterature(id: string) {
   return data;
 }
 
+export async function batchDeleteLiteratures(ids: string[]) {
+  const { data } = await api.post<{ message: string }>('/literatures/batch-delete', { literature_ids: ids });
+  return data;
+}
+
 export async function updateLiterature(id: string, updates: Record<string, unknown>) {
   const { data } = await api.put<Literature>(`/literatures/${id}`, updates);
   return data;

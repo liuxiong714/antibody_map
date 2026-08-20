@@ -362,32 +362,39 @@ async def _process_literature_async(
         if not literature:
             raise ValueError(f"文献不存在: {literature_id}")
 
-        if not literature.file_path:
-            raise ValueError(f"文献 {literature_id} 无关联文件")
+        if not literature.file_path and not literature.abstract:
+            raise ValueError(f"文献 {literature_id} 既无关联文件也无摘要，无法提取")
 
         logger.info(
             f"开始处理文献 {literature_id}: title={literature.title}, "
             f"file_path={literature.file_path}, model={model or 'default'}"
         )
 
-        # 2. 下载文件
-        file_bytes = _download_pdf(literature.file_path)
-        if not file_bytes:
-            raise RuntimeError(
-                f"文件下载失败: file_path={literature.file_path}, "
-                f"请确认文件存在于本地或 MinIO"
-            )
-        logger.info(f"文件下载成功: {len(file_bytes)} bytes")
+        # 2. 获取提取输入：有 PDF 下载全文，无 PDF 但有摘要则直接用摘要
+        if literature.file_path:
+            file_bytes = _download_pdf(literature.file_path)
+            if not file_bytes:
+                raise RuntimeError(
+                    f"文件下载失败: file_path={literature.file_path}, "
+                    f"请确认文件存在于本地或 MinIO"
+                )
+            logger.info(f"文件下载成功: {len(file_bytes)} bytes")
 
-        # 3. 解析文件文本（按扩展名分发：PDF/CAJ/EPUB/DOCX/TXT/HTML）
-        file_ext = ("." + str(literature.file_path).replace("\\", "/").split("/")[-1].split(".")[-1]).lower() \
-            if "." in str(literature.file_path).replace("\\", "/").split("/")[-1] else ""
-        raw_text = extract_text(file_bytes, file_ext)
-        if not raw_text or not raw_text.strip():
-            raise RuntimeError(
-                "文件解析后文本为空，可能为扫描件或不支持的格式"
-            )
-        logger.info(f"文件解析成功: {len(raw_text)} 字符")
+            # 3. 解析文件文本（按扩展名分发：PDF/CAJ/EPUB/DOCX/TXT/HTML）
+            file_ext = ("." + str(literature.file_path).replace("\\", "/").split("/")[-1].split(".")[-1]).lower() \
+                if "." in str(literature.file_path).replace("\\", "/").split("/")[-1] else ""
+            raw_text = extract_text(file_bytes, file_ext)
+            if not raw_text or not raw_text.strip():
+                raise RuntimeError(
+                    "文件解析后文本为空，可能为扫描件或不支持的格式"
+                )
+            logger.info(f"文件解析成功: {len(raw_text)} 字符")
+        else:
+            # 无 PDF，但有摘要：直接用摘要作为提取输入
+            raw_text = literature.abstract or ""
+            file_ext = ""
+            tables_md = ""
+            logger.info(f"无 PDF，使用摘要作为提取输入: {len(raw_text)} 字符")
 
         # 3b. P0-1：PDF/CAJ 文件额外提取结构化表格 Markdown，注入 LLM 提示词
         # B6：表格 Markdown 哈希缓存，同一文件重抽时跳过 pdfplumber 提取

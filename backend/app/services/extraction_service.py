@@ -46,8 +46,8 @@ async def trigger_extraction(
     if not literature:
         raise ValueError("文献不存在")
 
-    if not literature.file_path:
-        raise ValueError("文献无关联 PDF 文件，无法提取")
+    if not literature.file_path and not literature.abstract:
+        raise ValueError("文献既无 PDF 文件也无摘要，无法提取")
 
     # == 竞态防护：检查当前状态，防止重复触发提取 ==
     if literature.extraction_status == "processing":
