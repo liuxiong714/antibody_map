@@ -166,7 +166,7 @@ async def start_extraction(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/literatures/extraction/batch", response_model=ApiResponse, summary="批量触发AI提取", description="批量触发多篇文献的AI数据提取任务，自动跳过无关联文件或正在提取中的文献")
+@router.post("/literatures/extraction/batch", response_model=ApiResponse, summary="批量触发AI提取", description="批量触发多篇文献的AI数据提取任务：有 PDF 走全文提取，无 PDF 但有摘要的题录文献用摘要提取；仅无 PDF 且无摘要、或正在提取中的文献会被跳过")
 async def start_batch_extraction(
     req: BatchExtractionRequest,
     db: AsyncSession = Depends(get_db),
@@ -190,8 +190,9 @@ async def start_batch_extraction(
             if not literature:
                 errors.append({"id": lit_id_str, "reason": "文献不存在"})
                 continue
-            if not literature.file_path:
-                skipped.append({"id": lit_id_str, "title": literature.title, "reason": "无关联文件，无法提取"})
+            # 有 PDF 走全文提取，无 PDF 但有摘要时用摘要提取；两者皆无才跳过
+            if not literature.file_path and not literature.abstract:
+                skipped.append({"id": lit_id_str, "title": literature.title, "reason": "既无 PDF 也无摘要，无法提取"})
                 continue
             if literature.extraction_status == "processing":
                 skipped.append({"id": lit_id_str, "title": literature.title, "reason": "正在提取中，跳过"})

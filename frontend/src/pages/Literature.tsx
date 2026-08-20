@@ -706,6 +706,8 @@ const LiteraturePage: React.FC = () => {
   const handleTableChange = (pagination: any, filters: any, sorter: any) => {
     // 处理分页变更
     if (pagination.current !== page || pagination.pageSize !== pageSize) {
+      // 切换分页参数时清空旧数据，避免 dataSource 与新 pageSize 不匹配触发 antd 警告
+      setItems([]);
       setPage(pagination.current);
       setPageSize(pagination.pageSize);
     }
@@ -1480,14 +1482,13 @@ const LiteraturePage: React.FC = () => {
           }}
           pagination={{
             current: page,
-            total: loading ? items.length : total,
+            total,
             pageSize,
             pageSizeOptions: [10, 20, 50, 100],
             showSizeChanger: true,
             showTotal: (t) => `共 ${t} 条${selectedRowKeys.length > 0 ? `，已选 ${selectedRowKeys.length} 条` : ''}`,
           }}
           scroll={{ x: 1045, y: 560 }}
-          virtual={pageSize > 20}
           size="middle"
         />
       </Card>

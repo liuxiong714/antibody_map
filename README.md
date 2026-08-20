@@ -686,6 +686,27 @@ MIT
 
 ## 更新日志
 
+### v1.13.1 (2026-08-20)
+
+#### 批量提取支持无 PDF 的题录文献
+
+- **批量提取双源校验修复**：`POST /literatures/extraction/batch` 此前对所有无 `file_path` 的文献一律跳过（提示"无关联文件，无法提取"），与单篇提取的双源逻辑不一致。现已放宽校验——**有 PDF 走全文提取，无 PDF 但有摘要的题录文献直接用摘要提取**，仅当既无 PDF 也无摘要时才跳过。文献管理模块现在可以一次批量提取多篇无 PDF 的题录导入文献。
+
+#### 文献列表分页与列宽稳定性
+
+- **去除虚拟滚动导致的列宽跳动**：此前 `virtual={pageSize > 20}` 使每页 50/100 条时启用虚拟滚动，其列宽按 `column.width` 严格渲染不拉伸，而 20 条/页的普通模式会拉伸列填满表格宽度，两种渲染模式交替导致各列宽度异常变化。已移除虚拟滚动，所有 pageSize 下渲染模式一致，列宽稳定。
+- **修复 antd 分页警告**：切换每页条数时清空旧 dataSource，避免残留数据与新 pageSize 不匹配触发 `dataSource length is less than pagination.total but larger than pagination.pageSize` 警告。
+- **分页总数稳定**：去掉加载中 `total` 临时取 `items.length` 的写法，直接用真实总数，消除切换页时的总数跳动。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/api/v1/extraction.py` | 批量提取校验放宽：无 PDF 但有摘要的文献可提交（与单篇提取双源逻辑一致） |
+| `frontend/src/pages/Literature.tsx` | 移除虚拟滚动、切换分页时清空旧数据、分页 total 用真实总数 |
+| `backend/app/config.py` | APP_VERSION 升级至 1.13.1 |
+| `README.md` | 新增 v1.13.1 变更日志 |
+
 ### v1.13.0 (2026-08-20)
 
 #### 题录批量导入与统一解析器
