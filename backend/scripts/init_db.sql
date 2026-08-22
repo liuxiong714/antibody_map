@@ -23,7 +23,9 @@ CREATE TABLE literature (
     extracted_count INTEGER DEFAULT 0,
     approved_count INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    deleted_by UUID
 );
 
 -- 数据点表 data_point（核心数据表）

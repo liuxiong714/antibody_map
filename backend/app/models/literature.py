@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import Boolean, Integer, String, Text, ARRAY, DateTime, CheckConstraint, Numeric
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -47,6 +48,14 @@ class Literature(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    # 软删除：deleted_at 非空时表示已移入回收站
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True, default=None
+    )
+    deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID,  # 仅记录删除者，不设外键约束
+        nullable=True
     )
 
     __table_args__ = (

@@ -77,6 +77,8 @@ class LiteratureResponse(BaseModel):
     tags: Optional[list[dict]] = None
     created_at: datetime
     updated_at: datetime
+    deleted_at: Optional[datetime] = None
+    deleted_by: Optional[UUID] = None
 
     model_config = {"from_attributes": True}
 

@@ -82,6 +82,14 @@ async def lifespan(app: FastAPI):
         from app.services.file_cleanup_service import _cleanup_loop
         cleanup_task = asyncio.create_task(_cleanup_loop())
 
+    # 启动回收站自动清理后台任务（每天检查一次，永久删除超过30天的软删除文献）
+    trash_cleanup_task: Optional[asyncio.Task] = None
+    try:
+        from app.services.literature_service import _trash_cleanup_loop
+        trash_cleanup_task = asyncio.create_task(_trash_cleanup_loop())
+    except Exception as e:
+        logger.error(f"启动回收站清理任务失败: {e}")
+
     # 启动 Prometheus 指标后台采集任务（每 60 秒刷新 data_point_count / celery 队列深度）
     metrics_tasks: list = []
     if settings.METRICS_ENABLED:
@@ -103,6 +111,14 @@ async def lifespan(app: FastAPI):
         cleanup_task.cancel()
         try:
             await cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+    # 停止回收站自动清理后台任务
+    if trash_cleanup_task:
+        trash_cleanup_task.cancel()
+        try:
+            await trash_cleanup_task
         except asyncio.CancelledError:
             pass
 

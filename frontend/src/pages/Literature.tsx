@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Dropdown, Switch, DatePicker,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined, PaperClipOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined, PaperClipOutlined, RestOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import { Resizable, ResizeCallbackData } from 'react-resizable';
@@ -12,7 +12,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult } from '../services/literature';
+import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
@@ -149,6 +149,15 @@ const LiteraturePage: React.FC = () => {
   ) || { field: 'created_at', order: 'descend' });
   const [hasAbstract, setHasAbstract] = useState<string>((_cachedState?.hasAbstract as string) || '');
   const [loading, setLoading] = useState(false);
+
+  // === 回收站状态 ===
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
+  const [trashTotal, setTrashTotal] = useState(0);
+  const [trashPage, setTrashPage] = useState(1);
+  const [trashPageSize, setTrashPageSize] = useState(20);
+  const [trashKeyword, setTrashKeyword] = useState('');
+  const [trashLoading, setTrashLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0, fileName: '' });
@@ -297,6 +306,26 @@ const LiteraturePage: React.FC = () => {
   }, [page, pageSize, keyword, disease, province, yearStart, yearEnd, journal, sortBy, sortOrder, reviewStatus, extractionStatus, fileFormat, titleFilter, authorsFilter, createdStart, createdEnd, hasAbstract]);
 
   useEffect(() => { fetchList(); }, [fetchList]);
+
+  // === 回收站列表 ===
+  const fetchTrashList = useCallback(async () => {
+    setTrashLoading(true);
+    try {
+      const result = await listTrash(trashPage, trashPageSize, trashKeyword || undefined);
+      setTrashItems(result.items);
+      setTrashTotal(result.total);
+    } catch (err) {
+      console.error('[Literature] 加载回收站列表失败:', err);
+      message.error('加载回收站列表失败');
+    } finally {
+      setTrashLoading(false);
+    }
+  }, [trashPage, trashPageSize, trashKeyword]);
+
+  // 打开回收站时自动加载
+  useEffect(() => {
+    if (trashOpen) fetchTrashList();
+  }, [trashOpen, fetchTrashList]);
 
   const handleDelete = async (id: string) => {
     try {
@@ -1466,6 +1495,9 @@ const LiteraturePage: React.FC = () => {
           >
             清理无文件文献
           </Button>
+          <Button icon={<RestOutlined />} onClick={() => setTrashOpen(true)}>
+            回收站
+          </Button>
           <Button
             icon={<ExperimentOutlined />}
             onClick={handleBatchExtract}
@@ -2197,6 +2229,115 @@ const LiteraturePage: React.FC = () => {
           fetchList();
         }}
       />
+
+      {/* 回收站弹窗 */}
+      <Modal
+        title={<><RestOutlined /> 回收站</>}
+        open={trashOpen}
+        onCancel={() => setTrashOpen(false)}
+        width={900}
+        footer={[
+          <Button key="refresh" icon={<ReloadOutlined />} onClick={fetchTrashList}>
+            刷新
+          </Button>,
+          <Popconfirm
+            key="empty"
+            title="清空回收站"
+            description="将永久删除回收站中所有超过30天的文献，此操作不可恢复。确定继续？"
+            onConfirm={async () => {
+              try {
+                const result = await emptyTrash(30);
+                message.success(`已永久删除 ${result.permanently_deleted} 篇超过30天的文献，回收站剩余 ${result.remaining} 篇`);
+                fetchTrashList();
+              } catch (err: any) {
+                message.error(err?.response?.data?.detail || '清空回收站失败');
+              }
+            }}
+            okButtonProps={{ danger: true }}
+          >
+            <Button danger icon={<DeleteOutlined />}>清空回收站</Button>
+          </Popconfirm>,
+          <Button key="close" onClick={() => setTrashOpen(false)}>关闭</Button>,
+        ]}
+      >
+        <Space style={{ marginBottom: 16 }}>
+          <Input.Search
+            placeholder="搜索标题/作者/期刊"
+            allowClear
+            value={trashKeyword}
+            onChange={(e) => setTrashKeyword(e.target.value)}
+            onSearch={(val) => { setTrashKeyword(val); setTrashPage(1); }}
+            style={{ width: 300 }}
+          />
+        </Space>
+        <Table
+          rowKey="id"
+          dataSource={trashItems}
+          loading={trashLoading}
+          pagination={{
+            current: trashPage,
+            total: trashTotal,
+            pageSize: trashPageSize,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50],
+            onChange: (p, ps) => { setTrashPage(p); setTrashPageSize(ps); },
+            showTotal: (t) => `共 ${t} 条`,
+          }}
+          scroll={{ x: 700 }}
+          size="middle"
+          columns={[
+            { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true, width: 300 },
+            { title: '作者', dataIndex: 'authors', key: 'authors', ellipsis: true, width: 150, render: (v: string) => v || '-' },
+            { title: '期刊', dataIndex: 'journal', key: 'journal', ellipsis: true, width: 150, render: (v: string) => v || '-' },
+            { title: '年份', dataIndex: 'pub_year', key: 'pub_year', width: 60, render: (v: number) => v || '-' },
+            {
+              title: '删除时间', dataIndex: 'deleted_at', key: 'deleted_at', width: 160,
+              render: (v: string) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-',
+            },
+            {
+              title: '操作', key: 'actions', width: 180, fixed: 'right' as const,
+              render: (_: any, record: TrashItem) => (
+                <Space>
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<ReloadOutlined />}
+                    onClick={async () => {
+                      try {
+                        await restoreLiterature(record.id);
+                        message.success('还原成功');
+                        fetchTrashList();
+                      } catch (err: any) {
+                        message.error(err?.response?.data?.detail || '还原失败');
+                      }
+                    }}
+                  >
+                    还原
+                  </Button>
+                  <Popconfirm
+                    title="永久删除"
+                    description="此操作不可恢复，确定永久删除？"
+                    onConfirm={async () => {
+                      try {
+                        await permanentlyDeleteLiterature(record.id);
+                        message.success('已永久删除');
+                        fetchTrashList();
+                      } catch (err: any) {
+                        message.error(err?.response?.data?.detail || '删除失败');
+                      }
+                    }}
+                    okButtonProps={{ danger: true }}
+                  >
+                    <Button size="small" danger icon={<DeleteOutlined />}>
+                      永久删除
+                    </Button>
+                  </Popconfirm>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Modal>
     </>
   );
 };

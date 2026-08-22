@@ -12,7 +12,7 @@
 
 | 模块 | 功能 |
 |------|------|
-| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、**题录批量导入**（RIS / EndNote(.enw) / PubMed 文本 / WoS 纯文本 / WoS CSV / 读秀超星 多格式自动识别，按 PMID/DOI 查重）、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**多格式导入导出**（CSV/Excel/JSON，JSON 含数据点可跨电脑迁移导入、支持仅导出选中文献）、**元数据批量同步**（从数据点自动聚合年份/省份）、**文档格式标识列**（彩色 Tag 显示 PDF/CAJ/DOCX/HTML 等格式，点击即可预览）、**全列排序与筛选**（标题/作者模糊筛选、创建时间范围、文档格式下拉，筛选状态本地缓存）、**文献文件下载**（带 JWT 认证自动下载）、**修改关联文件**（替换已关联本地文档）、**批量删除**（多选后一键删除，含关联文件与数据点） |
+| **文献管理** | 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献、**URL 网页导入**、**题录批量导入**（RIS / EndNote(.enw) / PubMed 文本 / WoS 纯文本 / WoS CSV / 读秀超星 多格式自动识别，按 PMID/DOI 查重）、元数据管理、关键词/疾病/省份筛选、在线预览、**表头点击排序**、**文献重复检测与合并**、**多格式导入导出**（CSV/Excel/JSON，JSON 含数据点可跨电脑迁移导入、支持仅导出选中文献）、**元数据批量同步**（从数据点自动聚合年份/省份）、**文档格式标识列**（彩色 Tag 显示 PDF/CAJ/DOCX/HTML 等格式，点击即可预览）、**全列排序与筛选**（标题/作者模糊筛选、创建时间范围、文档格式下拉，筛选状态本地缓存）、**文献文件下载**（带 JWT 认证自动下载）、**修改关联文件**（替换已关联本地文档）、**软删除回收站**（删除后移入回收站，30 天内可还原，到期自动清理）、**批量删除**（多选后移入回收站） |
 | **PubMed 检索** | 侧边栏「PubMed 检索」页支持关键词检索 PubMed（NCBI E-utilities）、**多源检索**（Crossref / OpenAlex / Europe PMC 来源下拉切换，统一结果结构）、勾选结果一键**纳入数据库**（写入文献库）与**下载开放获取 PDF**（Europe PMC 全文直链，下载目录可配置 `PDF_DOWNLOAD_DIR`） |
 | **AI 数据提取** | LLM 自动从文献提取血清阳性率、GMC 等数据点，支持 DeepSeek/OpenAI/Qwen 多厂商，支持**上传后手动选择是否自动提取**、**上传/提取时可重新选定默认模型**、**批量AI提取**（多选文献后统一设置模型重新提取，自动跳过 processing 中的文献）、**手动停止提取**（单篇卡住的 processing 强制重置为 failed）、**一键重置所有卡住的提取状态**（适用于服务器重启后任务丢失的场景）；提取完成后可选显示**Token 用量、费用估算及使用的大模型**；本地 Ollama 走**原生 JSON Schema 结构化输出强约束**，并做**关键数值回验**（阳性率/GMC/样本量必须在原文中可定位，否则自动降级低置信）；**模型选择统一**——文献提取、文件夹监控、报告生成的本地模型候选项统一来自后端 `/models`（系统设置「本地模型配置」维护），各功能始终一致 |
 | **精确字符溯源** | 每个数据点锚定到原文的精确字符区间（`source_char_start/end`），采用精确/模糊/关键短语三级匹配，未匹配自动降级置信度并红色高亮待审 |
@@ -769,6 +769,32 @@ MIT
 | `frontend/vite.config.ts` | 构建优化配置 |
 | `docker-compose.yml` | 服务配置优化 |
 | `README.md` | 核心功能补充报告模板/森林图/摘要列/清理空文献；新增 v1.15.0 变更日志 |
+
+### v1.16.0 (2026-08-22)
+
+#### 文献回收站（软删除）
+
+- **软删除机制**：文献删除改为软删除（设置 `deleted_at` 时间戳），将文献移入回收站而非直接物理删除，保留文件，30 天内可随时还原。
+- **回收站管理**：新增回收站列表（`GET /literatures/trash`，支持分页/关键词搜索）、还原（`POST /literatures/trash/{id}/restore`）、永久删除（`DELETE /literatures/trash/{id}`，含文件）、清空回收站（`POST /literatures/trash/empty`，支持按保留天数过滤）接口。
+- **后台自动清理**：随 backend lifespan 启动回收站自动清理任务，每 86400 秒检查一次，永久删除超过 30 天的软删除文献及其关联文件。
+- **前端回收站弹窗**：文献管理工具栏新增「回收站」按钮，弹出 Modal 展示回收站文献列表，支持搜索、分页、逐篇还原/永久删除、一键清空超过 30 天的回收站内容。
+- **批量删除适配**：批量删除操作同样改为软删除，将选中文献移入回收站，统一受回收站管理约束。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/models/literature.py` | Literature 模型新增 `deleted_at` / `deleted_by` 字段 |
+| `backend/app/schemas/literature.py` | LiteratureResponse 新增 `deleted_at` / `deleted_by` 序列化字段 |
+| `backend/scripts/init_db.sql` | 补充 `deleted_at` / `deleted_by` 字段 DDL |
+| `backend/alembic/versions/add_soft_delete.py` | 数据库迁移：添加软删除字段与索引 |
+| `backend/app/services/literature_service.py` | 新增 `list_trash_literatures` / `restore_literature` / `permanently_delete_literature` / `empty_trash` / `permanently_delete_all_trash` / `_trash_cleanup_loop`；修改 `delete_literature` / `batch_delete_literatures` 为软删除；`list_literature` 查询过滤已删除记录 |
+| `backend/app/api/v1/literature.py` | 新增回收站 CRUD 接口：`GET /literatures/trash` / `POST /literatures/trash/{id}/restore` / `DELETE /literatures/trash/{id}` / `POST /literatures/trash/empty` |
+| `backend/app/main.py` | lifespan 新增回收站自动清理后台任务 |
+| `backend/app/config.py` | APP_VERSION 升级至 1.16.0 |
+| `frontend/src/services/literature.ts` | 新增回收站 API：`listTrash` / `restoreLiterature` / `permanentlyDeleteLiterature` / `emptyTrash` |
+| `frontend/src/pages/Literature.tsx` | 新增回收站弹窗（列表/搜索/还原/永久删除/清空）、工具栏回收站按钮 |
+| `README.md` | 核心功能补充回收站/软删除；新增 v1.16.0 变更日志 |
 
 ### v1.14.0 (2026-08-21)
 

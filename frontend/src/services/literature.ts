@@ -500,3 +500,47 @@ export async function cleanupEmpty(dryRun: boolean = true): Promise<CleanupEmpty
   const { data } = await api.post<CleanupEmptyResult>(`/literatures/cleanup-empty?dry_run=${dryRun}`);
   return data;
 }
+
+// ===== 回收站管理 =====
+
+export interface TrashItem {
+  id: string;
+  title: string;
+  authors?: string;
+  journal?: string;
+  pub_year?: number;
+  deleted_at: string;
+  [key: string]: any;
+}
+
+export interface TrashListResult {
+  items: TrashItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface EmptyTrashResult {
+  permanently_deleted: number;
+  remaining: number;
+}
+
+export async function listTrash(page: number = 1, pageSize: number = 20, keyword?: string): Promise<TrashListResult> {
+  const params: any = { page, page_size: pageSize };
+  if (keyword) params.keyword = keyword;
+  const { data } = await api.get<TrashListResult>('/literatures/trash', { params });
+  return data;
+}
+
+export async function restoreLiterature(literatureId: string): Promise<void> {
+  await api.post(`/literatures/trash/${literatureId}/restore`);
+}
+
+export async function permanentlyDeleteLiterature(literatureId: string): Promise<void> {
+  await api.delete(`/literatures/trash/${literatureId}`);
+}
+
+export async function emptyTrash(olderThanDays: number = 30): Promise<EmptyTrashResult> {
+  const { data } = await api.post<EmptyTrashResult>(`/literatures/trash/empty?older_than_days=${olderThanDays}`);
+  return data;
+}

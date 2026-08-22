@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import hashlib
 import io
@@ -142,8 +143,8 @@ async def list_literature(
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[Literature], int]:
-    query = select(Literature)
-    count_query = select(func.count(Literature.id))
+    query = select(Literature).where(Literature.deleted_at.is_(None))
+    count_query = select(func.count(Literature.id)).where(Literature.deleted_at.is_(None))
 
     if tag_id:
         from app.models.literature_tag import literature_tag
@@ -299,7 +300,7 @@ async def list_literature(
 
 async def get_literature(db: AsyncSession, literature_id: uuid.UUID) -> Optional[Literature]:
     result = await db.execute(
-        select(Literature).where(Literature.id == literature_id)
+        select(Literature).where(Literature.id == literature_id, Literature.deleted_at.is_(None))
     )
     return result.scalar_one_or_none()
 
@@ -353,28 +354,162 @@ async def update_literature(
     return literature
 
 
-async def delete_literature(db: AsyncSession, literature_id: uuid.UUID) -> bool:
+async def delete_literature(
+    db: AsyncSession,
+    literature_id: uuid.UUID,
+    deleted_by: Optional[uuid.UUID] = None,
+) -> bool:
+    """软删除文献：设置 deleted_at 时间戳，将文献移入回收站。
+    保留文件，30天内可还原。
+    """
     literature = await get_literature(db, literature_id)
     if not literature:
+        return False
+    if literature.deleted_at is not None:
+        return False  # 已在回收站中，不再重复删除
+
+    literature.deleted_at = datetime.now(timezone.utc)
+    literature.deleted_by = deleted_by
+    await db.commit()
+    return True
+
+
+# ===== 回收站管理 =====
+
+TRASH_RETENTION_DAYS: int = 30
+
+
+async def get_literature_from_trash(db: AsyncSession, literature_id: uuid.UUID) -> Optional[Literature]:
+    """从回收站获取文献（不过滤 deleted_at）。"""
+    result = await db.execute(
+        select(Literature).where(Literature.id == literature_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_trash_literatures(
+    db: AsyncSession,
+    page: int = 1,
+    page_size: int = 20,
+    keyword: Optional[str] = None,
+) -> tuple[list[Literature], int]:
+    """列出回收站中的文献（已软删除的）。"""
+    query = select(Literature).where(Literature.deleted_at.is_not(None))
+    count_query = select(func.count(Literature.id)).where(Literature.deleted_at.is_not(None))
+
+    if keyword:
+        like = f"%{keyword}%"
+        query = query.where(
+            Literature.title.ilike(like)
+            | Literature.authors.ilike(like)
+            | Literature.journal.ilike(like)
+        )
+        count_query = count_query.where(
+            Literature.title.ilike(like)
+            | Literature.authors.ilike(like)
+            | Literature.journal.ilike(like)
+        )
+
+    query = query.order_by(Literature.deleted_at.desc())
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    items = list(result.scalars().all())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+    return items, total
+
+
+async def restore_literature(db: AsyncSession, literature_id: uuid.UUID) -> bool:
+    """从回收站还原文献：清除 deleted_at 和 deleted_by。"""
+    literature = await get_literature_from_trash(db, literature_id)
+    if not literature or literature.deleted_at is None:
+        return False
+    literature.deleted_at = None
+    literature.deleted_by = None
+    await db.commit()
+    return True
+
+
+async def permanently_delete_literature(db: AsyncSession, literature_id: uuid.UUID) -> bool:
+    """永久删除文献（从回收站中彻底删除，含文件）。"""
+    literature = await get_literature_from_trash(db, literature_id)
+    if not literature or literature.deleted_at is None:
         return False
 
     # 删除文件（MinIO 或本地）
     if literature.file_path:
-        # 如果是本地文件路径
         local_path = Path(literature.file_path)
         if local_path.exists():
             try:
                 os.remove(local_path)
-                logger.info(f"Local file deleted: {local_path}")
+                logger.info(f"Local file permanently deleted: {local_path}")
             except Exception as e:
                 logger.warning(f"Failed to delete local file: {e}")
         else:
-            # 尝试从 MinIO 删除
             delete_file(literature.file_path)
 
     await db.delete(literature)
     await db.commit()
     return True
+
+
+async def empty_trash(db: AsyncSession, older_than_days: int = TRASH_RETENTION_DAYS) -> dict:
+    """清空回收站中超过指定天数的文献（永久删除，含文件）。
+    返回 {"permanently_deleted": int, "remaining": int}。
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    query = select(Literature).where(
+        Literature.deleted_at.is_not(None),
+        Literature.deleted_at < cutoff,
+    )
+    result = await db.execute(query)
+    items = list(result.scalars().all())
+
+    count = 0
+    for lit in items:
+        try:
+            if lit.file_path:
+                local_path = Path(lit.file_path)
+                if local_path.exists():
+                    os.remove(local_path)
+                else:
+                    delete_file(lit.file_path)
+            await db.delete(lit)
+            count += 1
+        except Exception as e:
+            logger.warning(f"[回收站] 永久删除失败: id={lit.id}, err={e}")
+    await db.commit()
+
+    # 统计剩余
+    remaining_query = select(func.count(Literature.id)).where(Literature.deleted_at.is_not(None))
+    remaining_result = await db.execute(remaining_query)
+    remaining = remaining_result.scalar() or 0
+    return {"permanently_deleted": count, "remaining": remaining}
+
+
+async def permanently_delete_all_trash(db: AsyncSession) -> dict:
+    """永久删除回收站中所有文献（含文件）。
+    返回 {"permanently_deleted": int}。
+    """
+    query = select(Literature).where(Literature.deleted_at.is_not(None))
+    result = await db.execute(query)
+    items = list(result.scalars().all())
+
+    count = 0
+    for lit in items:
+        try:
+            if lit.file_path:
+                local_path = Path(lit.file_path)
+                if local_path.exists():
+                    os.remove(local_path)
+                else:
+                    delete_file(lit.file_path)
+            await db.delete(lit)
+            count += 1
+        except Exception as e:
+            logger.warning(f"[回收站] 永久删除全部失败: id={lit.id}, err={e}")
+    await db.commit()
+    return {"permanently_deleted": count}
 
 
 # 文件扩展名正则，用于从文件名中提取标题
@@ -392,8 +527,11 @@ _TITLE_SUFFIX = re.compile(r"\s*\([0-9]+\)\s*$|_副本\s*$")
 
 
 def _clean_filename_title(filename: str) -> str:
-    """从文件名中提取干净标题：去除文件后缀、年份/日期前缀和序号后缀"""
+    """从文件名中提取干净标题：去除路径前缀、文件后缀、年份/日期前缀和序号后缀"""
     t = filename.strip()
+    # 防御性路径净化：取 basename，兼容 / 和 \ 两种分隔符
+    if "/" in t or "\\" in t:
+        t = t.replace("\\", "/").rsplit("/", 1)[-1]
     t = _TITLE_EXT_PATTERN.sub("", t).strip()
     # 去除序号后缀
     t = _TITLE_SUFFIX.sub("", t).strip()
@@ -997,17 +1135,18 @@ async def merge_literatures(
 async def batch_delete_literatures(
     db: AsyncSession,
     literature_ids: list[uuid.UUID],
+    deleted_by: Optional[uuid.UUID] = None,
 ) -> int:
-    """批量删除文献：逐篇调用 delete_literature，跳过不存在的记录，返回实际删除数。"""
+    """批量软删除文献：逐篇设置 deleted_at，跳过已在回收站中的记录，返回实际删除数。"""
     if not literature_ids:
         return 0
     deleted = 0
     for lit_id in literature_ids:
         try:
-            if await delete_literature(db, lit_id):
+            if await delete_literature(db, lit_id, deleted_by=deleted_by):
                 deleted += 1
         except Exception as e:
-            logger.warning(f"[文献] 批量删除失败跳过: id={lit_id}, err={e}")
+            logger.warning(f"[文献] 批量软删除失败跳过: id={lit_id}, err={e}")
     return deleted
 
 
@@ -1894,3 +2033,31 @@ def stat_is_socket(path: str) -> bool:
     import stat as _stat
     st = os.stat(path)
     return _stat.S_ISSOCK(st.st_mode)
+
+
+# ===== 回收站后台自动清理 =====
+
+TRASH_CLEANUP_INTERVAL: int = 86400  # 每天检查一次
+
+
+async def _trash_cleanup_loop():
+    """后台循环：每隔 TRASH_CLEANUP_INTERVAL 秒检查并永久删除回收站中超过 TRASH_RETENTION_DAYS 天的文献。"""
+    from app.models.base import async_session
+
+    logger.info("[回收站] 后台自动清理任务已启动，每 %d 秒检查一次", TRASH_CLEANUP_INTERVAL)
+    while True:
+        try:
+            async with async_session() as db:
+                result = await empty_trash(db, older_than_days=TRASH_RETENTION_DAYS)
+                if result["permanently_deleted"] > 0:
+                    logger.info(
+                        "[回收站] 自动清理: 永久删除 %d 篇超过 %d 天的文献，剩余 %d 篇",
+                        result["permanently_deleted"],
+                        TRASH_RETENTION_DAYS,
+                        result["remaining"],
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[回收站] 自动清理检查异常: %s", e)
+        await asyncio.sleep(TRASH_CLEANUP_INTERVAL)
