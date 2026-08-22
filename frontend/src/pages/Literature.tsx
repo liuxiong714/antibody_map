@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Dropdown, Switch, DatePicker, Badge, Divider,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined, PaperClipOutlined, RestOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined, PaperClipOutlined, RestOutlined, EditOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import { Resizable, ResizeCallbackData } from 'react-resizable';
@@ -12,7 +12,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, previewOrphanCleanup, executeOrphanCleanup, OrphanCleanupPreview, OrphanCleanupResult, getExtractionQueueStatus, ExtractionQueueStatus, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult } from '../services/literature';
+import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, previewOrphanCleanup, executeOrphanCleanup, OrphanCleanupPreview, OrphanCleanupResult, fixTitles, FixTitlesResult, aiVerifyTitles, AiVerifyTitlesResult, getExtractionQueueStatus, ExtractionQueueStatus, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
@@ -1540,6 +1540,80 @@ const LiteraturePage: React.FC = () => {
           >
             清理孤儿文件
           </Button>
+          <Dropdown menu={{ items: [
+            { key: 'heuristic', label: '规则清理（年份前缀、_作者名等）', icon: <EditOutlined />, onClick: () => {
+              fixTitles(true).then((result: FixTitlesResult) => {
+                if (result.preview_count === 0) {
+                  message.info('所有文献标题均无需修正');
+                  return;
+                }
+                const changeList = result.changes.map((c, i) => (
+                  <div key={c.id} style={{ marginBottom: 8, padding: '4px 0', borderBottom: i < result.changes.length - 1 ? '1px solid #f0f0f0' : 'none' }}>
+                    <div style={{ color: '#999', fontSize: 12, marginBottom: 2 }}>{c.id}</div>
+                    <div style={{ color: '#f5222d', fontSize: 13 }}><del>{c.old_title}</del></div>
+                    <div style={{ color: '#52c41a', fontSize: 13 }}>{c.new_title}</div>
+                  </div>
+                ));
+                Modal.confirm({
+                  title: `确认修正 ${result.preview_count} 条文献标题？`,
+                  width: 600,
+                  content: (
+                    <div style={{ maxHeight: 400, overflow: 'auto' }}>
+                      {changeList}
+                    </div>
+                  ),
+                  okText: '确认修正',
+                  cancelText: '取消',
+                  onOk: async () => {
+                    try {
+                      const fixResult = await fixTitles(false);
+                      message.success(`成功修正 ${fixResult.fixed_count} 条文献标题`);
+                      fetchList();
+                    } catch (err: any) {
+                      message.error(err?.response?.data?.detail || '修正失败');
+                    }
+                  },
+                });
+              }).catch((err: any) => {
+                message.error(err?.response?.data?.detail || '预览失败');
+              });
+            }},
+            { key: 'ai', label: 'AI 验证标题（LLM 从文档提取比对）', icon: <RobotOutlined />, onClick: async () => {
+              message.loading({ content: 'AI 验证中，请稍候...', key: 'aiVerify', duration: 0 });
+              try {
+                const result = await aiVerifyTitles(50);
+                message.destroy('aiVerify');
+                if (result.mismatches.length === 0) {
+                  message.success('已扫描文献标题均与文档内容一致');
+                  return;
+                }
+                const mismatchList = result.mismatches.map((m, i) => (
+                  <div key={m.id} style={{ marginBottom: 8, padding: '4px 0', borderBottom: i < result.mismatches.length - 1 ? '1px solid #f0f0f0' : 'none' }}>
+                    <div style={{ color: '#999', fontSize: 12, marginBottom: 2 }}>{m.id} (相似度: {m.similarity.toFixed(2)})</div>
+                    <div style={{ color: '#f5222d', fontSize: 13 }}><del>{m.stored_title}</del></div>
+                    <div style={{ color: '#52c41a', fontSize: 13 }}>{m.ai_title}</div>
+                  </div>
+                ));
+                Modal.info({
+                  title: `AI 发现 ${result.mismatches.length} 篇标题与文档不一致`,
+                  width: 600,
+                  content: (
+                    <div>
+                      <p style={{ marginBottom: 12, color: '#888' }}>扫描 {result.verified} 篇有文档的文献，其中 {result.mismatches.length} 篇标题与文档内容不符。存储标题（红）→ AI 提取标题（绿）。</p>
+                      <div style={{ maxHeight: 400, overflow: 'auto' }}>{mismatchList}</div>
+                    </div>
+                  ),
+                });
+              } catch (err: any) {
+                message.destroy('aiVerify');
+                message.error(err?.response?.data?.detail || 'AI 验证失败');
+              }
+            }},
+          ]}}>
+          <Button icon={<EditOutlined />}>
+            清理文献标题
+          </Button>
+          </Dropdown>
           <Button icon={<RestOutlined />} onClick={() => setTrashOpen(true)}>
             回收站
           </Button>

@@ -528,6 +528,45 @@ export async function executeOrphanCleanup(): Promise<OrphanCleanupResult> {
   return data;
 }
 
+// ===== 标题修正 =====
+
+export interface FixTitleChange {
+  id: string;
+  old_title: string;
+  new_title: string;
+}
+
+export interface FixTitlesResult {
+  preview_count: number;
+  fixed_count: number;
+  changes: FixTitleChange[];
+}
+
+export async function fixTitles(dryRun: boolean = true): Promise<FixTitlesResult> {
+  const { data } = await api.post<FixTitlesResult>(`/literatures/fix-titles?dry_run=${dryRun}`);
+  return data;
+}
+
+// ===== AI 标题验证 =====
+
+export interface AiTitleMismatch {
+  id: string;
+  stored_title: string;
+  ai_title: string;
+  similarity: number;
+}
+
+export interface AiVerifyTitlesResult {
+  total: number;
+  verified: number;
+  mismatches: AiTitleMismatch[];
+}
+
+export async function aiVerifyTitles(limit: number = 50): Promise<AiVerifyTitlesResult> {
+  const { data } = await api.post<AiVerifyTitlesResult>(`/literatures/ai-verify-titles?limit=${limit}`);
+  return data;
+}
+
 export interface ExtractionQueueStatus {
   pending_count: number;
   queued_count: number;

@@ -38,6 +38,8 @@ from app.services.literature_service import (
     import_references_from_text,
     preview_import_references,
     cleanup_empty_literatures,
+    fix_titles,
+    ai_verify_titles,
     batch_import_files_from_folder,
     batch_import_uploaded_files,
     import_literatures_from_json,
@@ -636,6 +638,37 @@ async def cleanup_empty(
         return ApiResponse(message=f"发现 {count} 篇既无文档又无摘要的文献，可清理删除", data=result)
     deleted = result["deleted_count"]
     return ApiResponse(message=f"成功将 {deleted} 篇既无文档又无摘要的文献移入回收站", data=result)
+
+
+@router.post("/literatures/fix-titles", response_model=ApiResponse, summary="修正文件名来源的文献标题", description="扫描并修正文件名来源的文献标题（年份前缀、中文字符间下划线等），支持 dry_run 预览")
+async def fix_titles_endpoint(
+    dry_run: bool = True,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    result = await fix_titles(db, dry_run=dry_run)
+    count = result["preview_count"]
+    if dry_run:
+        if count == 0:
+            return ApiResponse(message="所有文献标题均无需修正", data=result)
+        return ApiResponse(message=f"发现 {count} 条文献标题可修正，请确认后执行", data=result)
+    return ApiResponse(message=f"成功修正 {result['fixed_count']} 条文献标题", data=result)
+
+
+@router.post("/literatures/ai-verify-titles", response_model=ApiResponse, summary="AI 验证文献标题", description="从文献文档中用 LLM 提取真实标题，与数据库存储标题比对，标记差异较大的标题")
+async def ai_verify_titles_endpoint(
+    limit: int = 50,
+    model: Optional[str] = Query(None, description="LLM 模型名称"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    result = await ai_verify_titles(db, limit=limit, model=model)
+    dc = result["mismatches"]
+    if dc:
+        msg = f"已扫描 {result['verified']} 篇文献，发现 {len(dc)} 篇标题与文档内容不一致"
+    else:
+        msg = f"已扫描 {result['verified']} 篇文献，所有标题均与文档内容一致"
+    return ApiResponse(message=msg, data=result)
 
 
 @router.get("/literatures/{literature_id}/file", summary="预览文献文件", description="返回文件流供前端预览（仅PDF支持浏览器内预览，其余格式前端会禁用预览按钮）")

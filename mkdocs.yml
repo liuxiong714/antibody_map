@@ -1,0 +1,48 @@
+site_name: Antibody Map
+site_description: 血清抗体流行病学数据管理与分析平台 — 血清抗体水平时空分布、统计分析、抗原制图与报告生成
+site_author: Antibody Map Team
+repo_url: https://github.com/liuxiong/antibody-map
+repo_name: liuxiong/antibody-map
+edit_uri: blob/main/docs/
+copyright: Copyright &copy; 2024-2026 Antibody Map Team
+
+theme:
+  name: material
+  language: zh
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - toc.integrate
+    - search.suggest
+    - content.code.copy
+
+nav:
+  - 首页: index.md
+  - 使用指南:
+    - 快速开始: guide/getting-started.md
+    - 核心功能: guide/features.md
+    - 项目架构: guide/architecture.md
+    - 配置参考: guide/configuration.md
+    - API 参考: guide/api-reference.md
+    - 部署指南: guide/deployment.md
+  - 运维:
+    - Tesseract OCR 配置: tesseract_setup.md
+  - 变更日志: changelog.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/liuxiong/antibody-map
