@@ -450,6 +450,10 @@ async def _process_literature_async(
         if not literature.file_path and not literature.abstract:
             raise ValueError(f"文献 {literature_id} 既无关联文件也无摘要，无法提取")
 
+        # 设置为提取中状态，以便前端实时显示
+        literature.extraction_status = "processing"
+        await db.commit()
+
         logger.info(
             f"开始处理文献 {literature_id}: title={literature.title}, "
             f"file_path={literature.file_path}, model={model or 'default'}"
