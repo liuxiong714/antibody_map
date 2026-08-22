@@ -12,7 +12,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder } from '../services/literature';
+import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
@@ -29,6 +29,7 @@ const DEFAULT_COL_WIDTHS: Record<string, number> = {
   year: 55,
   province: 65,
   file_format: 70,
+  has_abstract: 60,
   status: 80,
   review_status: 120,
   created: 80,
@@ -146,6 +147,7 @@ const LiteraturePage: React.FC = () => {
   const [sortInfo, setSortInfo] = useState<{ field: string | null; order: 'ascend' | 'descend' | null }>(() => (
     _cachedState?.sortInfo as { field: string | null; order: 'ascend' | 'descend' | null }
   ) || { field: 'created_at', order: 'descend' });
+  const [hasAbstract, setHasAbstract] = useState<string>((_cachedState?.hasAbstract as string) || '');
   const [loading, setLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -164,7 +166,7 @@ const LiteraturePage: React.FC = () => {
     const payload = {
       sortBy, sortOrder, sortInfo, page, pageSize,
       keyword, disease, province, yearStart, yearEnd, journal, reviewStatus, extractionStatus, fileFormat,
-      titleFilter, authorsFilter, createdStart, createdEnd,
+      titleFilter, authorsFilter, createdStart, createdEnd, hasAbstract,
     };
     console.log('[文献列表] 进入详情页前保存状态:', payload);
     try {
@@ -281,6 +283,8 @@ const LiteraturePage: React.FC = () => {
       if (authorsFilter) params.authors = authorsFilter;
       if (createdStart) params.created_start = createdStart;
       if (createdEnd) params.created_end = createdEnd;
+      if (hasAbstract === 'has') params.has_abstract = true;
+      if (hasAbstract === 'none') params.has_abstract = false;
       const resp = await listLiterature(params);
       setItems(resp.items);
       setTotal(resp.total);
@@ -290,7 +294,7 @@ const LiteraturePage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, keyword, disease, province, yearStart, yearEnd, journal, sortBy, sortOrder, reviewStatus, extractionStatus, fileFormat, titleFilter, authorsFilter, createdStart, createdEnd]);
+  }, [page, pageSize, keyword, disease, province, yearStart, yearEnd, journal, sortBy, sortOrder, reviewStatus, extractionStatus, fileFormat, titleFilter, authorsFilter, createdStart, createdEnd, hasAbstract]);
 
   useEffect(() => { fetchList(); }, [fetchList]);
 
@@ -951,6 +955,7 @@ const LiteraturePage: React.FC = () => {
         { text: 'TXT', value: 'TXT' },
         { text: 'HTML', value: 'HTML' },
         { text: 'URL', value: 'URL' },
+        { text: '无', value: '__none__' },
       ],
       filteredValue: fileFormat ? [fileFormat] : null,
       onFilter: undefined,
@@ -1020,6 +1025,75 @@ const LiteraturePage: React.FC = () => {
             >
               <span style={{ marginRight: 3 }}>{icon}</span>
               {fmt}
+            </Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: '摘要',
+      dataIndex: 'abstract',
+      key: 'has_abstract',
+      width: colWidths.has_abstract,
+      sorter: true,
+      filteredValue: hasAbstract ? [hasAbstract] : null,
+      filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }) => (
+        <div style={{ padding: 8 }}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Button
+              type={hasAbstract === 'has' ? 'primary' : 'default'}
+              size="small"
+              block
+              onClick={() => {
+                setHasAbstract('has');
+                setSelectedKeys(['has']);
+                confirm();
+              }}
+            >
+              有摘要
+            </Button>
+            <Button
+              type={hasAbstract === 'none' ? 'primary' : 'default'}
+              size="small"
+              block
+              onClick={() => {
+                setHasAbstract('none');
+                setSelectedKeys(['none']);
+                confirm();
+              }}
+            >
+              无摘要
+            </Button>
+            <Button
+              size="small"
+              block
+              onClick={() => {
+                setHasAbstract('');
+                setSelectedKeys([]);
+                clearFilters?.();
+                confirm();
+              }}
+            >
+              重置
+            </Button>
+          </Space>
+        </div>
+      ),
+      onHeaderCell: () => ({ width: colWidths.has_abstract, onResize: handleColumnResize('has_abstract') }),
+      render: (v: string | null) => {
+        const _hasAbstract = !!(v && v.trim());
+        return _hasAbstract ? (
+          <Tooltip title="有摘要">
+            <Tag color="green" style={{ borderRadius: 4 }}>
+              <FileTextOutlined style={{ marginRight: 2 }} />
+              有
+            </Tag>
+          </Tooltip>
+        ) : (
+          <Tooltip title="无摘要">
+            <Tag color="default" style={{ border: '1px dashed #d9d9d9', borderRadius: 4 }}>
+              <FileUnknownOutlined style={{ marginRight: 2 }} />
+              无
             </Tag>
           </Tooltip>
         );
@@ -1354,6 +1428,43 @@ const LiteraturePage: React.FC = () => {
           </Button>
           <Button icon={<CopyOutlined />} onClick={() => setScanOpen(true)}>
             扫描重复
+          </Button>
+          <Button
+            icon={<DeleteOutlined />}
+            onClick={() => {
+              // 先预览，确认后再执行
+              cleanupEmpty(true).then((result) => {
+                if (result.preview_count === 0) {
+                  message.info('没有需要清理的文献（所有文献均有文档或摘要）');
+                  return;
+                }
+                Modal.confirm({
+                  title: '确认清理无文档无摘要的文献',
+                  content: (
+                    <div>
+                      <p>发现 <strong>{result.preview_count}</strong> 篇既无文档文件又无摘要内容的文献。</p>
+                      <p>删除后不可恢复，确定继续？</p>
+                    </div>
+                  ),
+                  okText: '确认清理',
+                  cancelText: '取消',
+                  okButtonProps: { danger: true },
+                  onOk: async () => {
+                    try {
+                      const delResult = await cleanupEmpty(false);
+                      message.success(`成功清理 ${delResult.deleted_count} 篇文献`);
+                      fetchList();
+                    } catch (err: any) {
+                      message.error(err?.response?.data?.detail || '清理失败');
+                    }
+                  },
+                });
+              }).catch((err: any) => {
+                message.error(err?.response?.data?.detail || '预览失败');
+              });
+            }}
+          >
+            清理无文件文献
           </Button>
           <Button
             icon={<ExperimentOutlined />}

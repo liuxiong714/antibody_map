@@ -51,6 +51,9 @@ CREATE TABLE data_point (
     collection_year INTEGER,
     confidence VARCHAR(10) DEFAULT 'medium' CHECK (confidence IN ('high','medium','low')),
     review_status VARCHAR(20) DEFAULT 'pending' CHECK (review_status IN ('pending','approved','rejected')),
+    review_comment TEXT,
+    reviewer_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
+    reviewed_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

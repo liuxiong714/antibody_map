@@ -51,6 +51,14 @@ class DataPoint(Base):
     )
     confidence: Mapped[str] = mapped_column(String(10), default="medium")
     review_status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    # 审核意见（可空）
+    review_comment: Mapped[Optional[str]] = mapped_column(Text)
+    # 审核人（可空，外键到 user.id；用户被删除时置空而非级联删除数据点）
+    reviewer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # 审核时间（可空）
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
     # 质量分级（0-100 分 + A/B/C 三级 + 调查级别），由审核通过后异步评分任务自动写入
     quality_score: Mapped[Optional[int]] = mapped_column(Integer, index=True)
     quality_grade: Mapped[Optional[str]] = mapped_column(String(1), index=True)

@@ -9,7 +9,7 @@ import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
 import QualityBadge from '../components/QualityBadge';
 import {
-  getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText,
+  getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText, confirmDataPoints, disputeDataPoints,
 } from '../services/literature';
 import PdfViewer from '../components/PdfViewer';
 import FilePreview from '../components/FilePreview';
@@ -190,6 +190,8 @@ const LiteratureDetail: React.FC = () => {
         'confidence', 'method', 'assay', 'source_page', 'source_context',
         // P0 新增：精确字符级溯源字段（允许手动修复）
         'source_char_start', 'source_char_end', 'is_grounded',
+        // 审核意见
+        'review_comment',
       ];
       fields.forEach((f) => {
         if (editRowData[f] !== undefined) {
@@ -496,9 +498,18 @@ const LiteratureDetail: React.FC = () => {
 
   const handleBatchReview = async () => {
     if (!id || selectedRowKeys.length === 0) return;
+    // 驳回必须填写审核意见
+    if (modalAction === 'rejected' && !reviewNote.trim()) {
+      message.warning('驳回必须填写审核意见');
+      return;
+    }
     try {
-      const items = selectedRowKeys.map((k) => ({ id: k as string, review_status: modalAction }));
-      await updateDataPoints(id, items);
+      const ids = selectedRowKeys.map((k) => k as string);
+      if (modalAction === 'approved') {
+        await confirmDataPoints(id, ids, reviewNote.trim() || undefined);
+      } else {
+        await disputeDataPoints(id, ids, reviewNote.trim());
+      }
       message.success(`已${modalAction === 'approved' ? '通过' : '驳回'} ${selectedRowKeys.length} 个数据点`);
       setSelectedRowKeys([]);
       setModalOpen(false);
@@ -743,6 +754,30 @@ const LiteratureDetail: React.FC = () => {
           {r.review_status === 'approved' ? '已通过' : r.review_status === 'rejected' ? '已驳回' : '待审核'}
         </Tag>
       ),
+    },
+    {
+      title: '审核人', key: 'reviewer', width: 90,
+      render: (_: unknown, r: DataPoint) => (r.reviewer_name || r.reviewer_id || '-'),
+    },
+    {
+      title: '审核时间', key: 'reviewed_at', width: 150,
+      sorter: (a, b) => (a.reviewed_at || '').localeCompare(b.reviewed_at || ''),
+      render: (_: unknown, r: DataPoint) => (r.reviewed_at ? dayjs(r.reviewed_at).format('YYYY-MM-DD HH:mm') : '-'),
+    },
+    {
+      title: '审核意见', key: 'review_comment', width: 180,
+      render: (_: unknown, r: DataPoint) =>
+        isEditing(r) ? (
+          <Input.TextArea size="small" value={editRowData?.review_comment ?? ''}
+            onChange={(e) => updateEditField('review_comment', e.target.value || null)}
+            autoSize={{ minRows: 1, maxRows: 4 }} placeholder="审核意见（选填）" />
+        ) : (
+          <Tooltip title={r.review_comment || '暂无'} placement="topLeft">
+            <span style={{ color: r.review_comment ? undefined : '#bbb' }}>
+              {(r.review_comment || '').length > 20 ? `${(r.review_comment || '').slice(0, 20)}…` : (r.review_comment || '-')}
+            </span>
+          </Tooltip>
+        ),
     },
     {
       title: '操作', key: 'actions', width: 140,
@@ -1123,7 +1158,8 @@ const LiteratureDetail: React.FC = () => {
                       selectedRowKeys,
                       onChange: (keys) => setSelectedRowKeys(keys),
                       getCheckboxProps: (r: DataPoint) => ({
-                        disabled: r.review_status !== 'pending' || isEditing(r),
+                        // 允许勾选任意状态的数据点（含已审核）进行批量通过/驳回，便于改判/重审；仅正在编辑的行禁用
+                        disabled: isEditing(r),
                       }),
                     }}
                     pagination={false}
@@ -1228,9 +1264,10 @@ const LiteratureDetail: React.FC = () => {
       >
         <p style={{ marginBottom: 12 }}>
           将对选中的 {selectedRowKeys.length} 个数据点{modalAction === 'approved' ? '通过' : '驳回'}审核。
+          {modalAction === 'rejected' && <span style={{ color: '#cf1322' }}> 驳回必须填写审核意见。</span>}
         </p>
         <Input.TextArea
-          placeholder="审核备注（选填）"
+          placeholder={modalAction === 'rejected' ? '审核意见（必填）' : '审核意见（选填）'}
           value={reviewNote}
           onChange={(e) => setReviewNote(e.target.value)}
           rows={3}

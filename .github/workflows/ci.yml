@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    name: Backend & Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          # pytest 及异步测试支持未包含在 requirements.txt 中
+          pip install pytest pytest-asyncio
+
+      - name: Run offline backend tests
+        run: |
+          cd backend
+          # 说明：忽略以下文件——均依赖运行时服务（DB/Redis/OLLAMA），
+          # 无法在 CI 沙箱中离线运行，故排除以免误报。
+          python -m pytest \
+            --ignore=tests/test_api_literature.py \
+            --ignore=tests/test_api_dictionary.py \
+            --ignore=tests/test_llm_extractor.py \
+            --ignore=tests/test_p1_3_ollama_provider.py \
+            -p no:cacheprovider \
+            -q
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Type-check frontend
+        run: cd frontend && npx tsc --noEmit
+
+      - name: Build frontend
+        run: cd frontend && npm run build
+        env:
+          # 生产构建使用相对路径 /api/v1（见 services/api.ts 的 baseURL），后端经反向代理提供，
+          # 此处置空可确保构建不依赖任何外部服务
+          VITE_API_BASE: ''

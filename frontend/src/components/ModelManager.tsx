@@ -116,6 +116,7 @@ const ModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
       <Modal
         title={editing ? '编辑远程模型' : '添加远程模型'}
         open={formVisible}
+        forceRender
         onCancel={() => setFormVisible(false)}
         onOk={handleSave}
         confirmLoading={saving}

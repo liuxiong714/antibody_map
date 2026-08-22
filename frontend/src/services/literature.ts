@@ -295,6 +295,32 @@ export async function updateDataPoints(
   return data;
 }
 
+// 批量审核通过（comment 可选）
+export async function confirmDataPoints(
+  literatureId: string,
+  ids: string[],
+  comment?: string,
+) {
+  const { data } = await api.post(`/literatures/${literatureId}/extraction/confirm`, {
+    ids,
+    comment: comment ?? undefined,
+  });
+  return data;
+}
+
+// 批量驳回（comment 必填，后端强制）
+export async function disputeDataPoints(
+  literatureId: string,
+  ids: string[],
+  comment: string,
+) {
+  const { data } = await api.post(`/literatures/${literatureId}/extraction/dispute`, {
+    ids,
+    comment,
+  });
+  return data;
+}
+
 export async function createDataPoint(
   literatureId: string,
   dataPoint: {
@@ -462,5 +488,15 @@ export async function batchUploadFiles(
     timeout: 300_000, // 大文件上传给 5 分钟超时
     headers: { 'Content-Type': 'multipart/form-data' },
   });
+  return data;
+}
+
+export interface CleanupEmptyResult {
+  preview_count: number;
+  deleted_count: number;
+}
+
+export async function cleanupEmpty(dryRun: boolean = true): Promise<CleanupEmptyResult> {
+  const { data } = await api.post<CleanupEmptyResult>(`/literatures/cleanup-empty?dry_run=${dryRun}`);
   return data;
 }

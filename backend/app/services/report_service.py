@@ -12,6 +12,7 @@ from app.core.methodology import build_methodology_note
 from app.models.api_model_config import ApiModelConfig
 from app.models.data_point import DataPoint
 from app.models.report import Report
+from app.models.report_template import ReportTemplate
 
 logger = logging.getLogger("uvicorn")
 
@@ -153,6 +154,483 @@ async def _resolve_model_name(db: AsyncSession, model: Optional[str] = None) -> 
     return model
 
 
+DEFAULT_TEMPLATES = [
+    {
+        "name": "抗体水平分析报告（默认）",
+        "report_type": "antibody_analysis",
+        "is_default": True,
+        "desc": "含数据概况、时间/地区/年龄分析、总体概况与免疫学建议的标准抗体分析报告。",
+        "sections": [
+            {"title": "数据概览", "type": "kpi", "order": 0, "kpi": ["literature_count", "point_count", "province_count", "total_samples", "weighted_rate"]},
+            {"title": "总体概况", "type": "text", "order": 1, "content_template": "请基于数据概况与分省/分年/分年龄摘要，撰写报告《总体概况》章节，给出整体抗体水平的判断与解读。"},
+            {"title": "时间趋势分析", "type": "chart", "order": 2, "analysis": "trend"},
+            {"title": "地区分布分析", "type": "chart", "order": 3, "analysis": "region"},
+            {"title": "年龄分布特征", "type": "chart", "order": 4, "analysis": "age_curve"},
+            {"title": "免疫学参考意见", "type": "text", "order": 5, "content_template": "请基于以上数据撰写《免疫学参考意见》章节，给出专业的免疫学分析与防控/接种建议，不要编造不存在的数据。"},
+        ],
+    },
+    {
+        "name": "疫苗接种策略报告（默认）",
+        "report_type": "vaccination_strategy",
+        "is_default": True,
+        "desc": "含任务概况、疾病流行现状、年龄分布与接种方案建议的策略研判报告。",
+        "sections": [
+            {"title": "任务与数据概况", "type": "kpi", "order": 0, "kpi": ["literature_count", "point_count", "province_count", "weighted_rate"]},
+            {"title": "传染病风险评估", "type": "text", "order": 1, "content_template": "请结合任务类型、时间、地点与当地传染病流行数据，撰写《传染病风险评估》章节，识别高风险传染病。"},
+            {"title": "疾病流行现状分析", "type": "chart", "order": 2, "analysis": "disease"},
+            {"title": "人群年龄分布特征", "type": "chart", "order": 3, "analysis": "age_curve"},
+            {"title": "推荐疫苗接种方案", "type": "text", "order": 4, "content_template": "请基于当地流行情况与人员特点，撰写《推荐疫苗接种方案》章节，按优先级给出可操作性建议。"},
+        ],
+    },
+]
+
+
+# ===================== 报告模板相关 =====================
+
+
+async def list_templates(db: AsyncSession, report_type: Optional[str] = None) -> list[dict]:
+    """列出报告模板"""
+    query = select(ReportTemplate)
+    if report_type:
+        query = query.where(ReportTemplate.report_type == report_type)
+    templates = (await db.execute(query)).scalars().all()
+    return [
+        {
+            "id": str(t.id),
+            "name": t.name,
+            "report_type": t.report_type,
+            "sections": t.sections or [],
+            "is_default": t.is_default,
+            "desc": t.desc,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        }
+        for t in templates
+    ]
+
+
+async def get_template_by_id(db: AsyncSession, template_id: str) -> Optional[ReportTemplate]:
+    from uuid import UUID
+    try:
+        uid = UUID(template_id)
+    except (ValueError, AttributeError):
+        return None
+    return (await db.execute(select(ReportTemplate).where(ReportTemplate.id == uid))).scalar_one_or_none()
+
+
+async def get_default_template(db: AsyncSession, report_type: str) -> Optional[ReportTemplate]:
+    """获取指定类型的默认模板（优先 is_default，否则取首个）"""
+    t = (await db.execute(
+        select(ReportTemplate)
+        .where(ReportTemplate.report_type == report_type, ReportTemplate.is_default.is_(True))
+        .limit(1)
+    )).scalar_one_or_none()
+    if t:
+        return t
+    return (await db.execute(
+        select(ReportTemplate).where(ReportTemplate.report_type == report_type).limit(1)
+    )).scalar_one_or_none()
+
+
+async def seed_default_templates(db: AsyncSession) -> int:
+    """若库中无任何模板，写入内置默认模板。返回写入数量。"""
+    existing = (await db.execute(select(ReportTemplate).limit(1))).scalar_one_or_none()
+    if existing:
+        return 0
+    count = 0
+    for data in DEFAULT_TEMPLATES:
+        db.add(ReportTemplate(**data))
+        count += 1
+    await db.commit()
+    return count
+
+
+async def create_template(
+    db: AsyncSession,
+    name: str,
+    report_type: str,
+    sections: list,
+    is_default: bool = False,
+    desc: Optional[str] = None,
+) -> dict:
+    if report_type not in ("antibody_analysis", "vaccination_strategy"):
+        raise ValueError("report_type 必须是 antibody_analysis 或 vaccination_strategy")
+    # 确保 sections 有序且含必要字段
+    for i, s in enumerate(sections):
+        if "title" not in s or "type" not in s:
+            raise ValueError("每个章节必须包含 title 和 type")
+        s.setdefault("order", i)
+        s.setdefault("content_template", "")
+    if is_default:
+        # 同类型取消原默认标记
+        await db.execute(
+            _update_defaults_stmt(report_type)
+        )
+    t = ReportTemplate(name=name, report_type=report_type, sections=sections, is_default=is_default, desc=desc)
+    db.add(t)
+    await db.commit()
+    await db.refresh(t)
+    return _template_to_dict(t)
+
+
+async def update_template(
+    db: AsyncSession,
+    template_id: str,
+    name: Optional[str] = None,
+    sections: Optional[list] = None,
+    is_default: Optional[bool] = None,
+    desc: Optional[str] = None,
+) -> Optional[dict]:
+    t = await get_template_by_id(db, template_id)
+    if not t:
+        return None
+    if name is not None:
+        t.name = name
+    if sections is not None:
+        for i, s in enumerate(sections):
+            s.setdefault("order", i)
+            s.setdefault("content_template", "")
+        t.sections = sections
+    if desc is not None:
+        t.desc = desc
+    if is_default is not None:
+        if is_default:
+            await db.execute(_update_defaults_stmt(t.report_type))
+        t.is_default = is_default
+    t.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(t)
+    return _template_to_dict(t)
+
+
+async def delete_template(db: AsyncSession, template_id: str) -> bool:
+    from sqlalchemy import delete
+    result = await db.execute(delete(ReportTemplate).where(ReportTemplate.id == UUID(template_id)))
+    await db.commit()
+    return result.rowcount > 0
+
+
+def _update_defaults_stmt(report_type: str):
+    from sqlalchemy import update
+    return update(ReportTemplate).where(
+        ReportTemplate.report_type == report_type, ReportTemplate.is_default.is_(True)
+    ).values(is_default=False)
+
+
+def _template_to_dict(t: ReportTemplate) -> dict:
+    return {
+        "id": str(t.id),
+        "name": t.name,
+        "report_type": t.report_type,
+        "sections": t.sections or [],
+        "is_default": t.is_default,
+        "desc": t.desc,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+    }
+
+
+# ===================== 模板章节渲染 =====================
+
+
+def _build_context(rows: list, disease: Optional[str] = None, language: str = "zh") -> dict:
+    """从审核通过数据点构建统一上下文，供各类型章节渲染使用。"""
+    import ast
+
+    lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+    provinces_set = set()
+    for r in rows:
+        for p in (r.province or "").split(";"):
+            p = p.strip()
+            if p:
+                provinces_set.add(p)
+    total_sample = sum(r.sample_size or 0 for r in rows)
+    overall_rate = _calc_weighted_rate(rows)[0]
+
+    # 分省
+    province_map: dict = {}
+    for r in rows:
+        for p in (r.province or "").split(";"):
+            p = p.strip() or "未知"
+            province_map.setdefault(p, []).append(r)
+    province_rows = []
+    for p, group in sorted(province_map.items()):
+        wpr, ps = _calc_weighted_rate(group)
+        province_rows.append((p, wpr, ps, len(group)))
+    province_rows.sort(key=lambda x: -x[1])
+
+    # 分年
+    year_map: dict = {}
+    for r in rows:
+        if r.collection_year is not None:
+            year_map.setdefault(r.collection_year, []).append(r)
+    year_rows = []
+    for y in sorted(year_map.keys()):
+        group = year_map[y]
+        wpr, ps = _calc_weighted_rate(group)
+        year_rows.append((y, wpr, ps, len(group)))
+
+    # 分年龄
+    age_labels = AGE_GROUPS if language == "zh" else AGE_GROUPS_EN
+    age_map: dict = {}
+    for r in rows:
+        matched = False
+        for label, lo, hi in age_labels:
+            if r.age_min is not None and r.age_max is not None and r.age_min >= lo and r.age_max <= hi:
+                age_map.setdefault(label, []).append(r)
+                matched = True
+                break
+        if not matched:
+            other_label = "其他" if language == "zh" else "Other"
+            age_map.setdefault(other_label, []).append(r)
+    age_rows = []
+    for label, _lo, _hi in age_labels:
+        group = age_map.get(label, [])
+        if group:
+            wpr, ps = _calc_weighted_rate(group)
+            age_rows.append((label, wpr, ps))
+    other_label = "其他" if language == "zh" else "Other"
+    if age_map.get(other_label):
+        group = age_map[other_label]
+        wpr, ps = _calc_weighted_rate(group)
+        age_rows.append((other_label, wpr, ps))
+
+    # 分疾病（疫苗接种策略场景）
+    disease_map: dict = {}
+    for r in rows:
+        key = r.disease or "未知"
+        disease_map.setdefault(key, []).append(r)
+    disease_rows = []
+    for key, group in disease_map.items():
+        wpr, ps = _calc_weighted_rate(group)
+        gmc_rows = [r for r in group if r.data_type == "gmc" and r.value is not None]
+        avg_gmc = round(sum(r.value for r in gmc_rows) / len(gmc_rows), 2) if gmc_rows else None
+        disease_rows.append((DISEASE_NAMES.get(key, key), wpr, ps, len(group), avg_gmc))
+    disease_rows.sort(key=lambda x: -x[1])
+
+    disease_name = ""
+    if disease:
+        disease_name = DISEASE_NAMES.get(disease, disease)
+    else:
+        top = disease_rows[0][0] if disease_rows else "未知疾病"
+
+    return {
+        "disease_name": disease,
+        "language": language,
+        "literature_count": len(lit_ids),
+        "point_count": len(rows),
+        "province_count": len(provinces_set),
+        "total_samples": total_sample,
+        "weighted_rate": overall_rate,
+        "province_rows": province_rows,
+        "year_rows": year_rows,
+        "age_rows": age_rows,
+        "disease_rows": disease_rows,
+    }
+
+
+def _fmt_rate(v) -> str:
+    return f"{v}%" if v is not None else "-"
+
+
+def _render_kpi(section: dict, ctx: dict) -> str:
+    keys = section.get("kpi") or []
+    labels = {
+        "literature_count": ("文献数", lambda c: str(c)),
+        "point_count": ("数据点", lambda c: str(c)),
+        "province_count": ("覆盖省份", lambda c: str(c)),
+        "total_samples": ("样本量", lambda c: str(c)),
+        "weighted_rate": ("加权阳性率", lambda c: _fmt_rate(c)),
+    }
+    lines = []
+    for k in keys:
+        if k not in labels or k not in ctx:
+            continue
+        label, fmt = labels[k]
+        lines.append(f"  - **{label}**：{fmt(ctx[k])}")
+    if not lines:
+        return "暂无关键指标数据。"
+    return "\n".join(lines)
+
+
+def _render_table(section: dict, ctx: dict) -> str:
+    data = section.get("data", "province")
+    if data == "year":
+        rows, headers = ctx["year_rows"], ("年份", "加权阳性率", "样本量", "数据点")
+    elif data == "age":
+        rows, headers = ctx["age_rows"], ("年龄段", "加权阳性率", "样本量")
+    elif data == "disease":
+        rows, headers = ctx["disease_rows"], ("疾病", "加权阳性率", "样本量", "数据点", "GMC")
+    else:
+        rows, headers = ctx["province_rows"], ("省份", "加权阳性率", "样本量", "数据点")
+
+    if not rows:
+        return "暂无该维度数据。"
+
+    def _cell(v):
+        return "-" if v is None else str(v)
+
+    body = "\n".join(
+        "| " + " | ".join(_cell(c if i == 0 else (round(c, 2) if isinstance(c, float) else c)) if i == 0 else _cell(c) for i, c in enumerate(r)) + " |"
+        for r in rows
+    )
+    header = "| " + " | ".join(headers) + " |"
+    sep = "| " + " | ".join(["---"] * len(headers)) + " |"
+    return f"{header}\n{sep}\n{body}"
+
+
+def _render_chart(section: dict, ctx: dict) -> str:
+    analysis = section.get("analysis", "trend")
+    if analysis == "region":
+        rows = ctx["province_rows"]
+        title = "地区分布"
+        if not rows:
+            return "暂无地区分布数据。"
+        rates = [r[1] for r in rows if r[1] is not None]
+        note = f"共覆盖 {len(rows)} 个省份/地区"
+        if rates:
+            note += f"，加权阳性率区间 {min(rates)}% ~ {max(rates)}%"
+        note += "。"
+        return f"根据地区分布数据：{note}\n\n" + _render_table({**section, "data": "province"}, ctx)
+    if analysis == "age_curve":
+        rows = ctx["age_rows"]
+        if not rows:
+            return "暂无年龄分布数据。"
+        rates = [r[1] for r in rows if r[1] is not None]
+        note = f"共 {len(rows)} 个年龄段"
+        if rates:
+            note += f"，加权阳性率区间 {min(rates)}% ~ {max(rates)}%"
+        note += "。"
+        return f"根据年龄分布数据：{note}\n\n" + _render_table({**section, "data": "age"}, ctx)
+    if analysis == "disease":
+        rows = ctx["disease_rows"]
+        if not rows:
+            return "暂无疾病流行数据。"
+        rates = [r[1] for r in rows if r[1] is not None]
+        note = f"共 {len(rows)} 类疾病"
+        if rates:
+            note += f"，加权阳性率区间 {min(rates)}% ~ {max(rates)}%"
+        note += "。"
+        return f"根据疾病流行数据：{note}\n\n" + _render_table({**section, "data": "disease"}, ctx)
+    # 默认 trend
+    rows = ctx["year_rows"]
+    if not rows:
+        return "暂无年份趋势数据。"
+    rates = [r[1] for r in rows if r[1] is not None]
+    note = f"共 {len(rows)} 个年份"
+    if rates:
+        note += f"，加权阳性率区间 {min(rates)}% ~ {max(rates)}%"
+    note += "。"
+    return f"根据年份趋势数据：{note}\n\n" + _render_table({**section, "data": "year"}, ctx)
+
+
+def _context_text(ctx: dict) -> str:
+    """把上下文汇总为纯文本，供 LLM 章节提示使用。"""
+    lines = [
+        f"- 数据来源：{ctx['literature_count']} 篇文献，{ctx['point_count']} 个数据点",
+        f"- 覆盖省份：{ctx['province_count']} 个；总样本量：{ctx['total_samples']} 人；加权阳性率：{_fmt_rate(ctx['weighted_rate'])}",
+    ]
+    lines.append("\n分省：")
+    lines += [f"  - {p}：阳性率 {wpr}%，样本量 {ps}，数据点 {n} 个" for p, wpr, ps, n in ctx["province_rows"]]
+    if ctx["year_rows"]:
+        lines.append("\n分年：")
+        lines += [f"  - {y}年：阳性率 {wpr}%，样本量 {ps}" for y, wpr, ps, _ in ctx["year_rows"]]
+    if ctx["age_rows"]:
+        lines.append("\n分年龄：")
+        lines += [f"  - {label}：阳性率 {wpr}%，样本量 {ps}" for label, wpr, ps in ctx["age_rows"]]
+    if ctx["disease_rows"] and len(ctx["disease_rows"]) > 1:
+        lines.append("\n分疾病：")
+        lines += [f"  - {name}：阳性率 {wpr}%，样本量 {ps}，数据点 {n} 个" for name, wpr, ps, n, _ in ctx["disease_rows"]]
+    return "\n".join(lines)
+
+
+async def _render_template_report(
+    db: AsyncSession,
+    ctx: dict,
+    template: ReportTemplate,
+    model: Optional[str],
+    language: str,
+) -> str:
+    """按模板 sections 顺序渲染报告 Markdown。"""
+    blocks = []
+    context_text = _context_text(ctx)
+    sections = sorted(template.sections or [], key=lambda s: s.get("order", 0))
+    for s in sections:
+        stype = s.get("type", "text")
+        title = s.get("title", "章节")
+        if stype == "kpi":
+            body = _render_kpi(s, ctx)
+        elif stype == "table":
+            body = _render_table(s, ctx)
+        elif stype == "chart":
+            body = _render_chart(s, ctx)
+        else:  # text
+            instruction = s.get("content_template") or "请基于以下数据撰写本章节的分析内容。"
+            prompt = (
+                f"你是一位流行病学专家。请撰写报告章节《{title}》。\n"
+                f"章节要求：{instruction}\n\n"
+                f"可用数据：\n{context_text}\n\n"
+                f"请直接输出该章节的正文内容（Markdown），不要输出章节标题，不要编造不存在的数据。"
+            )
+            body = await _call_llm(db, prompt, model=model)
+        blocks.append(f"## {title}\n\n{body.strip()}")
+    return "\n\n".join(blocks)
+
+
+def _build_legacy_inline_text(rows: list, language: str = "zh") -> tuple[str, str, str]:
+    """按内置 Prompt 所需的文本格式，构建分省/分年/分年龄摘要（兜底路径）。"""
+    province_lines = []
+    province_map: dict[str, list[DataPoint]] = {}
+    for r in rows:
+        for p in (r.province or "").split(";"):
+            p = p.strip() or "未知"
+            province_map.setdefault(p, []).append(r)
+    for prov, group in sorted(province_map.items()):
+        wpr, ps = _calc_weighted_rate(group)
+        province_lines.append(f"- {prov}：阳性率 {wpr}%，样本量 {ps}，数据点 {len(group)} 个")
+    province_table = "\n".join(province_lines) if province_lines else "暂无数据"
+
+    year_map: dict[int, list[DataPoint]] = {}
+    for r in rows:
+        y = r.collection_year
+        if y is None:
+            continue
+        year_map.setdefault(y, []).append(r)
+    year_lines = []
+    for year in sorted(year_map.keys()):
+        group = year_map[year]
+        wpr, ps = _calc_weighted_rate(group)
+        year_lines.append(f"- {year}年：阳性率 {wpr}%，样本量 {ps}，数据点 {len(group)} 个")
+    year_trend = "\n".join(year_lines) if year_lines else "暂无数据"
+
+    age_labels = AGE_GROUPS if language == "zh" else AGE_GROUPS_EN
+    age_map: dict[str, list[DataPoint]] = {label: [] for label, _, _ in age_labels}
+    other_label = "其他" if language == "zh" else "Other"
+    age_map.setdefault(other_label, [])
+    for r in rows:
+        matched = False
+        for label, lo, hi in age_labels:
+            if r.age_min is not None and r.age_max is not None and r.age_min >= lo and r.age_max <= hi:
+                age_map[label].append(r)
+                matched = True
+                break
+        if not matched:
+            age_map[other_label].append(r)
+    age_lines = []
+    for label, _lo, _hi in age_labels:
+        group = age_map.get(label, [])
+        if group:
+            wpr, ps = _calc_weighted_rate(group)
+            age_lines.append(f"- {label}：阳性率 {wpr}%，样本量 {ps}")
+    if age_map.get(other_label):
+        group = age_map[other_label]
+        wpr, ps = _calc_weighted_rate(group)
+        age_lines.append(f"- {other_label}：阳性率 {wpr}%，样本量 {ps}")
+    age_distribution = "\n".join(age_lines) if age_lines else "暂无数据"
+
+    return province_table, year_trend, age_distribution
+
+
 async def generate_report(
     db: AsyncSession,
     disease: Optional[str] = None,
@@ -161,8 +639,22 @@ async def generate_report(
     language: str = "zh",
     title: Optional[str] = None,
     model: Optional[str] = None,
+    template_id: Optional[str] = None,
 ) -> dict:
-    """生成报告"""
+    """生成报告。
+
+    若提供 template_id，则按模板的 sections 顺序渲染（支持 text/chart/table/kpi 章节）；
+    否则使用内置默认 Prompt 结构生成。
+    """
+    # 0. 解析模板（template_id 缺省时使用抗体分析默认模板）
+    template = None
+    if template_id:
+        template = await get_template_by_id(db, template_id)
+        if not template:
+            raise ValueError("指定的报告模板不存在")
+    else:
+        template = await get_default_template(db, "antibody_analysis")
+
     # 1. 查询审核通过的数据点
     query = select(DataPoint).where(DataPoint.review_status == "approved")
     if disease:
@@ -178,90 +670,9 @@ async def generate_report(
     if not rows:
         raise ValueError("没有找到审核通过的数据，无法生成报告")
 
-    # 2. 统计概况
-    lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
-    provinces_set = set()
-    for r in rows:
-        for p in (r.province or "").split(";"):
-            p = p.strip()
-            if p:
-                provinces_set.add(p)
-
-    total_sample = sum(r.sample_size or 0 for r in rows)
-
-    # 3. 省份对比数据
-    province_map: dict[str, list[DataPoint]] = {}
-    for r in rows:
-        for p in (r.province or "").split(";"):
-            p = p.strip()
-            if not p:
-                p = "未知"
-            if p not in province_map:
-                province_map[p] = []
-            province_map[p].append(r)
-
-    province_lines = []
-    for prov, group in sorted(province_map.items()):
-        wpr, ps = _calc_weighted_rate(group)
-        province_lines.append(f"- {prov}：阳性率 {wpr}%，样本量 {ps}，数据点 {len(group)} 个")
-
-    province_table = "\n".join(province_lines) if province_lines else "暂无数据"
-
-    # 4. 年份趋势
-    year_map: dict[int, list[DataPoint]] = {}
-    for r in rows:
-        y = r.collection_year
-        if y is None:
-            continue
-        if y not in year_map:
-            year_map[y] = []
-        year_map[y].append(r)
-
-    year_lines = []
-    for year in sorted(year_map.keys()):
-        group = year_map[year]
-        wpr, ps = _calc_weighted_rate(group)
-        year_lines.append(f"- {year}年：阳性率 {wpr}%，样本量 {ps}，数据点 {len(group)} 个")
-
-    year_trend = "\n".join(year_lines) if year_lines else "暂无数据"
-
-    # 5. 年龄分布
-    age_labels = AGE_GROUPS if language == "zh" else AGE_GROUPS_EN
-    age_map: dict[str, list[DataPoint]] = {}
-    for label, _, _ in age_labels:
-        age_map[label] = []
-
-    for r in rows:
-        matched = False
-        for label, lo, hi in age_labels:
-            if r.age_min is not None and r.age_max is not None:
-                if r.age_min >= lo and r.age_max <= hi:
-                    age_map[label].append(r)
-                    matched = True
-                    break
-        if not matched:
-            if "其他" not in age_map:
-                age_map["其他" if language == "zh" else "Other"] = []
-            age_map["其他" if language == "zh" else "Other"].append(r)
-
-    age_lines = []
-    for label, _lo, _hi in age_labels:
-        group = age_map.get(label, [])
-        if group:
-            wpr, ps = _calc_weighted_rate(group)
-            age_lines.append(f"- {label}：阳性率 {wpr}%，样本量 {ps}")
-    other_label = "其他" if language == "zh" else "Other"
-    if age_map.get(other_label):
-        group = age_map[other_label]
-        wpr, ps = _calc_weighted_rate(group)
-        age_lines.append(f"- {other_label}：阳性率 {wpr}%，样本量 {ps}")
-
-    age_distribution = "\n".join(age_lines) if age_lines else "暂无数据"
-
-    # 6. 生成疾病名称
+    # 2. 生成疾病名称与报告标题
     disease_name = DISEASE_NAMES.get(disease or "", disease or "未知疾病")
 
-    # 7. 报告标题
     if title:
         report_title = title
         report_title_en = title
@@ -269,33 +680,50 @@ async def generate_report(
         report_title = f"{disease_name}抗体水平分析报告"
         report_title_en = f"{disease_name} Antibody Level Analysis Report"
 
-    # 8. 构建 Prompt 并调用 LLM
-    if language == "zh":
-        prompt = REPORT_PROMPT_ZH.format(
-            title=report_title,
-            literature_count=len(lit_ids),
-            point_count=len(rows),
-            province_count=len(provinces_set),
-            total_samples=total_sample,
-            province_table=province_table,
-            year_trend=year_trend,
-            age_distribution=age_distribution,
-        )
+    # 8. 生成正文：template_id 走模板渲染，否则走内置 Prompt
+    if template:
+        ctx = _build_context(rows, disease=disease, language=language)
+        content = await _render_template_report(db, ctx, template, model=model, language=language)
     else:
-        prompt = REPORT_PROMPT_EN.format(
-            title_en=report_title_en,
-            literature_count=len(lit_ids),
-            point_count=len(rows),
-            province_count=len(provinces_set),
-            total_samples=total_sample,
-            province_table=province_table,
-            year_trend=year_trend,
-            age_distribution=age_distribution,
-        )
+        content = None
 
-    content = await _call_llm(db, prompt, model=model)
+    if content is None:
+        # 使用内置 Prompt（无可用模板时的兜底路径）
+        lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+        provinces_set = set()
+        for r in rows:
+            for p in (r.province or "").split(";"):
+                p = p.strip()
+                if p:
+                    provinces_set.add(p)
+        total_sample = sum(r.sample_size or 0 for r in rows)
+        province_table, year_trend, age_distribution = _build_legacy_inline_text(rows, language)
+        if language == "zh":
+            prompt = REPORT_PROMPT_ZH.format(
+                title=report_title,
+                literature_count=len(lit_ids),
+                point_count=len(rows),
+                province_count=len(provinces_set),
+                total_samples=total_sample,
+                province_table=province_table,
+                year_trend=year_trend,
+                age_distribution=age_distribution,
+            )
+        else:
+            prompt = REPORT_PROMPT_EN.format(
+                title_en=report_title_en,
+                literature_count=len(lit_ids),
+                point_count=len(rows),
+                province_count=len(provinces_set),
+                total_samples=total_sample,
+                province_table=province_table,
+                year_trend=year_trend,
+                age_distribution=age_distribution,
+            )
+        content = await _call_llm(db, prompt, model=model)
 
     # 8.5 方法学小节：统一脚注（复用 build_methodology_note），拼接进报告正文
+    lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
     methodology_note = build_methodology_note(
         "report",
         {"disease": disease, "province": province, "data_type": data_type},
@@ -365,8 +793,9 @@ async def generate_vaccination_strategy_report(
     personnel_age: str = "",
     personnel_vaccination_history: str = "",
     title: Optional[str] = None,
+    template_id: Optional[str] = None,
 ) -> dict:
-    """生成疫苗接种策略研判报告"""
+    """生成疫苗接种策略研判报告。template_id 缺省时使用内置 Prompt；指定时按模板 sections 渲染。"""
     # 1. 查询任务地点的传染病流行数据
     query = select(DataPoint).where(DataPoint.review_status == "approved")
     if task_location:
@@ -452,19 +881,34 @@ async def generate_vaccination_strategy_report(
     else:
         report_title = f"{task_location}任务人员疫苗接种策略研判报告"
 
-    # 4. 构建 Prompt
-    prompt = VACCINATION_STRATEGY_PROMPT_ZH.format(
-        task_type=task_type,
-        task_time=task_time,
-        task_location=task_location,
-        personnel_count=personnel_count,
-        personnel_gender=personnel_gender or "未提供",
-        personnel_age=personnel_age or "未提供",
-        personnel_vaccination_history=personnel_vaccination_history or "未提供",
-        epidemic_data=epidemic_data,
-    )
+    # 3.5 若指定模板，按模板 sections 渲染
+    template = None
+    if template_id:
+        template = await get_template_by_id(db, template_id)
+        if not template:
+            raise ValueError("指定的报告模板不存在")
 
-    content = await _call_llm(db, prompt)
+    # 4. 构建 Prompt 或渲染模板
+    if template:
+        ctx = _build_context(rows, language="zh")
+        ctx["task_info"] = (
+            f"任务类型：{task_type}；任务时间：{task_time}；任务地点：{task_location}；"
+            f"人员人数：{personnel_count}人；年龄范围：{personnel_age or '未提供'}；"
+            f"疫苗接种史：{personnel_vaccination_history or '未提供'}"
+        )
+        content = await _render_template_report(db, ctx, template, model=None, language="zh")
+    else:
+        prompt = VACCINATION_STRATEGY_PROMPT_ZH.format(
+            task_type=task_type,
+            task_time=task_time,
+            task_location=task_location,
+            personnel_count=personnel_count,
+            personnel_gender=personnel_gender or "未提供",
+            personnel_age=personnel_age or "未提供",
+            personnel_vaccination_history=personnel_vaccination_history or "未提供",
+            epidemic_data=epidemic_data,
+        )
+        content = await _call_llm(db, prompt)
 
     # 5. Save to database
     try:

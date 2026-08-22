@@ -18,9 +18,9 @@
 | **精确字符溯源** | 每个数据点锚定到原文的精确字符区间（`source_char_start/end`），采用精确/模糊/关键短语三级匹配，未匹配自动降级置信度并红色高亮待审 |
 | **长文档分块并行提取** | 超过 2 万字符的文献按段落边界分块、并行调用 LLM 提取，结果自动合并去重 |
 | **强 Schema 约束** | LLM 输出经 JSON Schema 校验（省份枚举、阳性率 0-100% 范围、GMC 正值等），字段违规自动降级置信度 |
-| **数据审核与编辑** | 人工审核（通过/驳回）、行内编辑（疾病、地区、年龄段、数值、**原文依据、溯源字符区间**等字段）、**手动新增数据点**（提取失败时补录） |
+| **数据审核与编辑** | 人工审核（通过/驳回）、**审核意见**（可留存每条数据点的审核批注）、**审核人与审核时间自动记录**（操作者身份与审核时间随审核落库）、**批量驳回强制填写意见**、行内编辑（疾病、地区、年龄段、数值、**原文依据、溯源字符区间、审核意见**等字段）、**手动新增数据点**（提取失败时补录） |
 | **地图可视化** | 全国/省级/市级交互式抗体水平热力地图，点击省份钻取市级数据、**时间序列动画自动年份范围**、底部统计区分**已审核通过**（绿色）与**未审核**（橙色）两组数据点/覆盖省份/样本量 |
-| **数据分析** | 逐年趋势、区域对比、年龄分层、**免疫屏障评估**（复用 FOI 模块 R0/HIT 计算，新增年龄分层分析与省份对比矩阵，HIT 阈值优先级：FOI 估算>WHO 建议>文献 R0）、**数据覆盖度分析**、**多表单 Excel 数据导出**、**FOI 感染力分析**（催化模型 + R0 估算 + 群体免疫阈值 HIT，支持不选择疾病进行全量分析）、**疫苗效果 VE 分析**（已接种/未接种亚组拆分 + 保护率估算）、**接种率双轨分析**（NIP 参考表 + 血清阳性率反推隐含接种率）、**省间公平性分析**（基尼系数/变异系数/达标省）、**数据质量评估**（主估计 A/B/C 分级+CI/溯源占比）、**目标达成追踪**（逐年达标省进度）、**年龄-抗体曲线**（惩罚样条平滑+年龄别 FOI）、**出生队列分析**（代际免疫/计划免疫史解读）、**同省多研究 Meta 合并**、**多文献 Meta 分析**（森林图/漏斗图/亚组）、**检测方法异质性**、**空间热点/冷点分析**（Moran's I + Getis-Ord Gi*）、**免疫屏障模拟**、**审核状态统计**，各统计均附 95% CI 与方法学脚注 |
+| **数据分析** | 逐年趋势、区域对比、年龄分层、**免疫屏障评估**（复用 FOI 模块 R0/HIT 计算，新增年龄分层分析与省份对比矩阵，HIT 阈值优先级：FOI 估算>WHO 建议>文献 R0）、**数据覆盖度分析**、**多表单 Excel 数据导出**、**FOI 感染力分析**（催化模型 + R0 估算 + 群体免疫阈值 HIT，支持不选择疾病进行全量分析）、**疫苗效果 VE 分析**（已接种/未接种亚组拆分 + 保护率估算）、**接种率双轨分析**（NIP 参考表 + 血清阳性率反推隐含接种率）、**省间公平性分析**（基尼系数/变异系数/达标省）、**数据质量评估**（主估计 A/B/C 分级+CI/溯源占比）、**目标达成追踪**（逐年达标省进度）、**年龄-抗体曲线**（惩罚样条平滑+年龄别 FOI）、**出生队列分析**（代际免疫/计划免疫史解读）、**同省多研究 Meta 合并**、**多文献 Meta 分析**（森林图/漏斗图/亚组）、**检测方法异质性**、**空间热点/冷点分析**（Moran's I + Getis-Ord Gi*）、**免疫屏障模拟**、**审核状态统计**、**审核统计仪表盘**（按疾病/审核人聚合审核量、通过率、平均审核时间），各统计均附 95% CI 与方法学脚注 |
 | **数据质量评分** | 每个数据点按六项信号（样本量/抽样方式/检测方法/人群代表性/调查级别/溯源置信度）自动打分（0-100 分 + A/B/C 三级），审核通过后异步重算，前端 Tooltip 展示六项得分明细 |
 | **分析快照与引用** | 每个分析请求生成带数据指纹（data_hash）的快照 token，同参数自动去重复用；支持 **GBT7714 / BibTeX** 引用文本导出，确保分析结果可复现、可溯源 |
 | **抗原图谱** | 基于 HI/VNT/ELISA 滴度矩阵（titer_table 表）的 **metric MDS 降维**，将抗原与抗血清映射到 2D 平面（参考 Smith 2004 / racmacs），前端独立「抗原图谱」页交互展示 |
@@ -685,6 +685,125 @@ MIT
 **Liu Xiong** - [liuxiong714@163.com](mailto:liuxiong714@163.com)
 
 ## 更新日志
+
+### v1.15.0 (2026-08-22)
+
+#### 后端核心重构：提取器模块化、分析服务拆分与统一异常体系
+
+- **LLM 提取器模块化**：将原 `llm_extractor.py`（~2200 行）拆分为 `extraction/` 包——`llm_client.py`（LLM 调用封装、错误分类、URL 容错链）、`orchestrator.py`（提取调度主引擎）、`json_parser.py`（JSON 解析与智能截断修复）、`post_processor.py`（后处理与置信度降级）、`schema.py`（Schema 定义与校验）、`usage_tracker.py`（Token 用量追踪），各模块职责单一、可独立测试。
+- **分析服务模块化**：将原 `analysis_service.py`（~3600 行）拆分为 `analysis/` 包——`basic.py`（基础统计与趋势）、`meta.py`（Meta 合并与异质性）、`infectious_disease.py`（FOI/VE/接种率）、`equity_quality.py`（公平性与质量评估）、`data_management.py`（数据管理与审核）、`export.py`（Excel 多表单导出）、`spatial.py`（空间热点/冷点）、`_common.py`（共享工具函数），各模块职责清晰、可独立维护。
+- **统一异常体系**：新增 `exceptions.py`，定义 `AppError`（`code/status_code/message/details`）基类及 `LLMExtractionError`、`DocumentParseError`、`ExternalAPIError` 子类，全局异常处理器统一渲染标准 JSON 错误响应，消除散落各处的裸 `HTTPException`。
+
+#### Prometheus 业务指标
+
+- **自定义指标采集**：新增 `metrics.py`，采用惰性初始化（依赖缺失静默降级为 no-op），定义 `llm_extraction_total`、`llm_tokens_total`、`llm_cost_usd_total`、`extraction_duration_seconds`、`celery_task_queue_depth`、`data_point_count` 等指标，覆盖 LLM 提取、Token 消耗、费用估算、队列积压、数据点总量。
+- **后台定时采集**：随 backend lifespan 启动 60 秒间隔的指标采集任务，持续更新 `data_point_count` 和 `celery_task_queue_depth`。
+- **指标端点访问控制**：`/metrics` 端点通过 `metrics_access_guard` 中间件限制访问，仅在开发环境或 `METRICS_ALLOW_IPS` 白名单内可访问。
+- **提取耗时与用量记录**：提取完成回调中记录 Token 用量、费用到 Prometheus 指标，提取耗时在 `extract_task.py` 中记录。
+
+#### 报告模板管理
+
+- **报告模板模型**：新增 `ReportTemplate` 模型（`report_template` 表），支持 `antibody_analysis` 与 `vaccination_strategy` 两类报告，通过 JSON `sections` 配置报告章节结构（标题/类型/排序/内容指引），支持 `is_default` 标记。
+- **模板 CRUD 接口**：新增 `GET /report/templates`（列表，可按类型筛选）、`POST /report/templates`（创建，管理员）、`PUT /report/templates/{id}`（更新，管理员）、`DELETE /report/templates/{id}`（删除，管理员）四个接口。
+- **默认模板种子**：lifespan 启动时自动检测并写入两类内置默认模板（抗体分析 5 章节 / 疫苗接种策略 4 章节），首次部署无需手动创建。
+- **报告生成可选模板**：`POST /reports/generate` 和 `POST /reports/generate-vaccination-strategy` 新增 `template_id` 参数，缺省使用对应类型的默认模板。
+- **前端模板管理器**：新增 `TemplateManager.tsx` 组件，支持模板列表、新建、编辑、删除、章节增删移、保存/校验；Report 页新增模板下拉选择与「管理模板」入口。
+
+#### 前端增强
+
+- **Meta 森林图组件**：新增 `ForestPlot.tsx`，基于 ECharts 渲染研究效应量、95% CI、合并效应菱形、I² 异质性标题、Tooltip 与响应式布局，直接对接 Meta 分析结果。
+- **文献摘要列**：文献列表新增「摘要」列，用绿色标签「有」和灰色虚线标签「无」标识，支持筛选（有/无/全部）和列宽拖拽。
+- **清理无文件文献**：文献工具栏新增「清理无文件文献」按钮，通过 `POST /literatures/cleanup-empty` 端点预览和删除既无文档文件又无摘要内容的空白文献记录。
+- **题录导入预览确认**：`POST /literatures/import-references/preview` 接口解析题录文本并返回统计（总条数/重复/可导入），前端弹出确认对话框展示数据，用户确认后再执行实际导入。
+- **QualityBadge 增强**：组件新增 `estimateGrade` 属性，展示调查级别（如国家级/省级/市级/县级），丰富质量评分卡片信息。
+
+#### 基础设施
+
+- **CAJ2PDF 包装脚本**：新增 `caj2pdf-wrapper` 脚本，切换到 `/opt/caj2pdf` 目录执行 `caj2pdf`，解决共享库相对路径加载问题，确保 CAJ 格式文献解析稳定。
+- **Dockerfile 优化**：apt/pip 切换清华 TUNA 国内镜像源（已在 v1.14.0 基础上持续优化），构建缓存分层更精细。
+- **测试矩阵扩展**：新增 `test_api_auth_matrix.py` 覆盖各 API 路由的认证鉴权矩阵测试。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/core/exceptions.py` | 新增统一异常体系：`AppError` / `LLMExtractionError` / `DocumentParseError` / `ExternalAPIError` |
+| `backend/app/core/extraction/` | 新增提取器模块包：`llm_client.py` / `orchestrator.py` / `json_parser.py` / `post_processor.py` / `schema.py` / `usage_tracker.py` |
+| `backend/app/core/llm_extractor.py` | 提取逻辑迁移至 `extraction/` 包，保留兼容引用 |
+| `backend/app/core/metrics.py` | 新增 Prometheus 业务指标（惰性初始化 + 后台采集） |
+| `backend/app/services/analysis/` | 新增分析服务模块包：`basic.py` / `meta.py` / `infectious_disease.py` / `equity_quality.py` / `data_management.py` / `export.py` / `spatial.py` / `_common.py` |
+| `backend/app/services/analysis_service.py` | 分析逻辑迁移至 `analysis/` 包，保留兼容引用 |
+| `backend/app/services/literature_service.py` | 新增 `cleanup_empty_literatures`、import-references 预览支持 |
+| `backend/app/api/v1/literature.py` | 新增 `POST /literatures/import-references/preview`、`POST /literatures/cleanup-empty`；文献列表新增 `has_abstract` 筛选 |
+| `backend/app/api/v1/report.py` | 新增报告模板 CRUD 接口；`generate` 端点新增 `template_id` 参数 |
+| `backend/app/api/v1/analysis.py` | 导入 `analysis/` 模块包；新增审核统计相关调用 |
+| `backend/app/api/v1/extraction.py` | 导入 `extraction/` 模块包 |
+| `backend/app/services/report_service.py` | 新增 `ReportTemplate` CRUD、`get_default_template`、`seed_default_templates` |
+| `backend/app/services/extraction_service.py` | 导入 `extraction/` 模块包 |
+| `backend/app/services/reference_parser.py` | 导入修复 |
+| `backend/app/models/report_template.py` | 新增报告模板 ORM 模型 |
+| `backend/app/models/__init__.py` | 注册 `ReportTemplate` |
+| `backend/alembic/versions/add_report_template.py` | 数据库迁移：创建 `report_template` 表 |
+| `backend/scripts/init_db.sql` | 补充 `report_template` 建表 SQL |
+| `backend/scripts/caj2pdf-wrapper` | 新增 CAJ 转换包装脚本（共享库路径修复） |
+| `backend/app/main.py` | lifespan 新增默认模板种子、指标后台采集；注册全局异常处理器；挂载 metrics 端点 |
+| `backend/app/config.py` | 新增 Prometheus 相关配置项；APP_VERSION 升级至 1.15.0 |
+| `backend/requirements.txt` | 新增 `prometheus-client` 依赖 |
+| `backend/Dockerfile` | 构建优化（持续 TUNA 镜像源） |
+| `backend/tests/test_api_auth_matrix.py` | 新增 API 认证鉴权矩阵测试 |
+| `backend/tests/test_analysis_advanced.py` | 适配模块化重构 |
+| `backend/tests/test_llm_extractor.py` / test_p0_* / test_p1_3_* | 适配模块化重构 |
+| `frontend/src/components/ForestPlot.tsx` | 新增 Meta 森林图组件（ECharts 渲染） |
+| `frontend/src/components/TemplateManager.tsx` | 新增报告模板管理器（列表/新建/编辑/删除/章节管理） |
+| `frontend/src/components/QualityBadge.tsx` | 增强：新增 `estimateGrade` 调查级别展示 |
+| `frontend/src/pages/Report.tsx` | 集成模板下拉选择与模板管理器入口 |
+| `frontend/src/pages/Literature.tsx` | 新增摘要列（筛选/排序）、清理无文件文献按钮、题录导入预览确认 |
+| `frontend/src/pages/LiteratureDetail.tsx` | 模板集成 |
+| `frontend/src/pages/Analysis.tsx` | 分析模块重构适配 |
+| `frontend/src/pages/PubmedSearch.tsx` | 导入预览确认适配 |
+| `frontend/src/services/literature.ts` | 新增 `cleanupEmpty` / `previewImportReferences` |
+| `frontend/src/services/api.ts` | 适配模块化 |
+| `frontend/src/services/map.ts` | 新增 `listTemplates` / `createTemplate` / `updateTemplate` / `deleteTemplate` |
+| `frontend/src/types/index.ts` | 新增 `ReportTemplate` / `CleanupEmptyResult` 类型 |
+| `frontend/package.json` | 依赖更新 |
+| `frontend/vite.config.ts` | 构建优化配置 |
+| `docker-compose.yml` | 服务配置优化 |
+| `README.md` | 核心功能补充报告模板/森林图/摘要列/清理空文献；新增 v1.15.0 变更日志 |
+
+### v1.14.0 (2026-08-21)
+
+#### 数据点审核工作流增强：审核意见、审核人/审核时间追踪与审核统计
+
+- **数据点审核意见字段**：`data_point` 表新增 `review_comment`（Text，可空）字段，每条数据点可留存审核意见批注；前端数据点行内编辑支持填写/修改审核意见。
+- **审核人与审核时间自动记录**：`data_point` 表新增 `reviewer_id`（UUID，外键 → `user.id`，用户删除时置空而非级联删数据点）与 `reviewed_at`（DateTime，带时区）。通过/驳回/行内审核变动时，自动写入当前操作者身份与审核时间，数据点表格新增「审核人」「审核时间」列展示。
+- **批量驳回强制填写意见**：`POST /literatures/{id}/extraction/dispute` 的 `comment` 参数必填（空则 400），前端批量驳回模态框同步强制校验；批量通过 `confirm` 的 `comment` 为可选。新增 `confirmDataPoints` / `disputeDataPoints` 前端服务，批量审批改走专门端点（旧 `note` 字段保留兼容）。
+- **审核统计仪表盘**：新增 `GET /analysis/review-stats` 端点，按**疾病/审核人**聚合已审核数据点的审核量、通过量、驳回量、通过率、平均审核时间；前端 Analysis 页新增「审核统计」Tab（KPI 卡片 + 按审核人/按疾病表格）。
+- **抽取结果透出审核字段**：`GET /literatures/{id}/extraction` 序列化补充 `review_comment / reviewer_id / reviewer_name / reviewed_at`，供前端列表与详情展示。
+- **数据库迁移**：新增 Alembic 迁移 `add_data_point_review_fields`，为 `data_point` 增加上述三字段、外键与索引；`init_db.sql` 同步补齐列定义。
+
+#### Docker 构建加速（国内镜像源）
+
+- **apt 切换清华 TUNA 源**：Dockerfile 在安装系统依赖前后将 `deb.debian.org` 替换为 `mirrors.tuna.tsinghua.edu.cn`（含后端基础层与 MinerU 运行时层），apt 包下载速度明显提升。
+- **pip 切换清华 TUNA 源**：Dockerfile 通过 `pip config set global.index-url` 统一指向 `pypi.tuna.tsinghua.edu.cn/simple`，Python 依赖安装提速。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/alembic/versions/add_data_point_review_fields.py` | 数据库迁移：`data_point` 新增 `review_comment/reviewer_id/reviewed_at` + 外键 + 索引 |
+| `backend/app/models/data_point.py` | 模型同步新增审核字段 |
+| `backend/scripts/init_db.sql` | `data_point` 建表 SQL 补齐审核列 |
+| `backend/app/api/v1/extraction.py` | PUT 支持 `review_comment`；批量通过/驳回支持 `comment`（驳回必填）；审核变动自动写 `reviewer_id/reviewed_at` |
+| `backend/app/services/extraction_service.py` | 新增 `review_data_points`（审核写入）、`get_review_stats`（审核统计）；抽取结果序列化补审核字段 |
+| `backend/app/api/v1/analysis.py` | 新增 `GET /analysis/review-stats` 端点 |
+| `frontend/src/services/literature.ts` | 新增 `confirmDataPoints` / `disputeDataPoints` |
+| `frontend/src/services/map.ts` | 新增 `fetchReviewStats` |
+| `frontend/src/pages/LiteratureDetail.tsx` | 编辑支持审核意见；批量驳回强制填意见并改走 confirm/dispute 端点；表格新增审核人/审核时间/审核意见列 |
+| `frontend/src/pages/Analysis.tsx` | 新增「审核统计」Tab（KPI + 按审核人/疾病表格） |
+| `frontend/src/types/index.ts` | DataPoint 补审核字段；新增 `ReviewStatsResult` 等类型 |
+| `backend/Dockerfile` | apt / pip 切换清华 TUNA 国内镜像源加速构建 |
+| `backend/app/config.py` | APP_VERSION 升级至 1.14.0 |
+| `README.md` | 核心功能补充审核意见/审核统计；新增 v1.14.0 变更日志 |
 
 ### v1.13.1 (2026-08-20)
 

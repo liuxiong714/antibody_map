@@ -3,7 +3,7 @@ import uuid
 from typing import Optional
 from datetime import datetime, timezone
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.literature import Literature
@@ -36,6 +36,7 @@ async def trigger_extraction(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     clear_existing_data: bool = True,
+    use_cache: bool = True,
 ) -> dict:
     """触发文献 AI 提取任务（通过 Celery 异步执行）"""
     # 检查文献存在
@@ -66,6 +67,7 @@ async def trigger_extraction(
         api_key=api_key,
         base_url=base_url,
         clear_existing_data=clear_existing_data,
+        use_cache=use_cache,
     )
 
     return {
@@ -123,6 +125,17 @@ async def get_extraction_results(
     )
     data_points = result.scalars().all()
 
+    # 一次性解析审核人姓名（reviewer_id -> display_name/username）
+    from app.models.user import User
+
+    reviewer_ids = {dp.reviewer_id for dp in data_points if dp.reviewer_id}
+    reviewer_names: dict[uuid.UUID, str] = {}
+    if reviewer_ids:
+        users = (
+            await db.execute(select(User).where(User.id.in_(reviewer_ids)))
+        ).scalars().all()
+        reviewer_names = {u.id: (u.display_name or u.username) for u in users}
+
     return [
         {
             "id": str(dp.id),
@@ -150,6 +163,10 @@ async def get_extraction_results(
             "is_grounded": bool(dp.is_grounded),
             "confidence": dp.confidence,
             "review_status": dp.review_status,
+            "review_comment": dp.review_comment,
+            "reviewer_id": str(dp.reviewer_id) if dp.reviewer_id else None,
+            "reviewer_name": reviewer_names.get(dp.reviewer_id) if dp.reviewer_id else None,
+            "reviewed_at": dp.reviewed_at.isoformat() if dp.reviewed_at else None,
             # 质量分级（审核通过后异步打分写入；breakdown 为元数据级实时估算，用于前端 Tooltip 明细）
             "quality_score": dp.quality_score,
             "quality_grade": dp.quality_grade,
@@ -191,3 +208,114 @@ async def get_extraction_history(
         }
         for h in history_list
     ]
+
+
+async def review_data_points(
+    db: AsyncSession,
+    literature_id: uuid.UUID,
+    ids: list[str],
+    status: str,
+    comment: Optional[str],
+    reviewer_id: uuid.UUID,
+) -> int:
+    """批量审核数据点：写入审核意见、审核人与审核时间。
+
+    审核状态固定为 status（approved/rejected），仅覆盖给定 ids 且属于该文献的数据点。
+    返回受影响行数。调用方负责 commit。
+    """
+    uuids = [uuid.UUID(i) for i in ids]
+    now = datetime.now(timezone.utc)
+    stmt = (
+        update(DataPoint)
+        .where(DataPoint.id.in_(uuids))
+        .where(DataPoint.literature_id == literature_id)
+        .values(
+            review_status=status,
+            review_comment=comment,
+            reviewer_id=reviewer_id,
+            reviewed_at=now,
+        )
+    )
+    result = await db.execute(stmt)
+    return result.rowcount
+
+
+async def get_review_stats(db: AsyncSession) -> dict:
+    """审核统计：按疾病 / 审核人维度聚合审核量、通过率、平均审核时间。
+
+    平均审核时间 = approved 与 rejected 均视为已审核，取 reviewed_at 与 created_at 的分钟差均值。
+    """
+    from app.models.user import User
+
+    reviewed_rows = (
+        select(
+            DataPoint.disease,
+            DataPoint.reviewer_id,
+            DataPoint.review_status,
+            DataPoint.reviewed_at,
+            DataPoint.created_at,
+        )
+        .where(DataPoint.review_status.in_(("approved", "rejected")))
+        .where(DataPoint.reviewed_at.is_not(None))
+    )
+    rows = (await db.execute(reviewed_rows)).all()
+
+    def _fold(items):
+        total = len(items)
+        approved = sum(1 for st, _, _ in items if st == "approved")
+        durations = [
+            (rv - created).total_seconds() / 60.0
+            for st, rv, created in items
+            if rv and created and rv > created
+        ]
+        avg_min = round(sum(durations) / len(durations), 2) if durations else None
+        return {
+            "reviewed": total,
+            "approved": approved,
+            "rejected": total - approved,
+            "pass_rate": round(approved / total, 4) if total else 0.0,
+            "avg_review_minutes": avg_min,
+        }
+
+    # 按疾病聚合
+    by_disease: dict[str, list] = {}
+    for disease, _rid, st, rv, created in rows:
+        key = disease or "未知"
+        by_disease.setdefault(key, []).append((st, rv, created))
+    total_by_disease = [
+        {"disease": key, **_fold(items)} for key, items in by_disease.items()
+    ]
+    total_by_disease.sort(key=lambda x: x["reviewed"], reverse=True)
+
+    # 按审核人聚合（汇总用户 id -> 名称）
+    reviewer_ids = {r.reviewer_id for r in rows if r.reviewer_id}
+    reviewer_names: dict[uuid.UUID, str] = {}
+    if reviewer_ids:
+        users = (
+            await db.execute(select(User).where(User.id.in_(reviewer_ids)))
+        ).scalars().all()
+        reviewer_names = {
+            u.id: (u.display_name or u.username or str(u.id)) for u in users
+        }
+
+    by_reviewer: dict[uuid.UUID, list] = {}
+    for _disease, rid, st, rv, created in rows:
+        if not rid:
+            continue
+        by_reviewer.setdefault(rid, []).append((st, rv, created))
+    total_by_reviewer = [
+        {
+            "reviewer_id": str(rid),
+            "reviewer_name": reviewer_names.get(rid, "未知用户"),
+            **_fold(items),
+        }
+        for rid, items in by_reviewer.items()
+    ]
+    total_by_reviewer.sort(key=lambda x: x["reviewed"], reverse=True)
+
+    all_items = [(st, rv, created) for _d, _r, st, rv, created in rows]
+    return {
+        "grand_total": _fold(all_items),
+        "by_disease": total_by_disease,
+        "by_reviewer": total_by_reviewer,
+    }

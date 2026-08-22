@@ -138,7 +138,7 @@ def test_extractor_uses_provider_registry():
 
     # Ollama 模型应通过 provider 解析
     key, url = LLMExtractor._resolve_api_config("llama3")
-    assert url == "http://localhost:11434/v1"
+    assert url == settings.OLLAMA_BASE_URL
     assert key == "ollama"
 
     # DeepSeek 模型

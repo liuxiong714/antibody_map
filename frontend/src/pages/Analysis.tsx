@@ -18,12 +18,14 @@ import GoalTrackingChart from '../components/GoalTrackingChart';
 import SimulationPanel from '../components/SimulationPanel';
 import CoverageReviewTable from '../components/CoverageReviewTable';
 import CoverageReviewChart from '../components/CoverageReviewChart';
-import { getTrend, getRegionCompare, getAgeStratify, getApprovedDataPoints, getDataGapAnalysis, getFoiHerdImmunity, getVaccineEffectivenessCoverage, getEquityAnalysis, getQualityAssessment, getGoalTracking, getAgeCurve, getMetaMerge, getMetaAnalysis, getAssayHeterogeneity, getSimulation, getProvinceData, fetchCoverageReview, getBirthCohort } from '../services/map';
+import { getTrend, getRegionCompare, getAgeStratify, getApprovedDataPoints, getDataGapAnalysis, getFoiHerdImmunity, getVaccineEffectivenessCoverage, getEquityAnalysis, getQualityAssessment, getGoalTracking, getAgeCurve, getMetaMerge, getMetaAnalysis, getAssayHeterogeneity, getSimulation, getProvinceData, fetchCoverageReview, getBirthCohort, fetchReviewStats } from '../services/map';
 import { useFilterStore } from '../store';
 import type { TableRowSelection } from 'antd/es/table/interface';
-import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, MetaMergeResponse, AssayHeterogeneityResponse, SimulationResponse, MapDataPoint, MetaMergeProvinceResult, AssayHeterogeneityRow, HeterogeneityLevel, CoverageReviewResult, MetaAnalysisResponse, MetaAnalysisGroup, BirthCohortResponse } from '../types';
+import type { ColumnsType } from 'antd/es/table';
+import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, MetaMergeResponse, AssayHeterogeneityResponse, SimulationResponse, MapDataPoint, MetaMergeProvinceResult, AssayHeterogeneityRow, HeterogeneityLevel, CoverageReviewResult, ReviewStatsResult, MetaAnalysisResponse, MetaAnalysisGroup, BirthCohortResponse } from '../types';
 import { DISEASES, PROVINCE_GEOJSON_NAME } from '../utils/constants';
-import { lineWithBand, barWithError, forestPlotOption, funnelPlotOption, wilsonCi, ftTransform, birthCohortHeatmapOption, birthCohortLinesOption } from '../utils/chartBuilders';
+import { lineWithBand, barWithError, funnelPlotOption, wilsonCi, ftTransform, birthCohortHeatmapOption, birthCohortLinesOption } from '../utils/chartBuilders';
+import ForestPlot from '../components/ForestPlot';
 
 type DataItem = Record<string, unknown>;
 
@@ -111,6 +113,10 @@ const Analysis: React.FC = () => {
   const [coverageReviewLoading, setCoverageReviewLoading] = useState(false);
   const [coverageReviewDisease, setCoverageReviewDisease] = useState('');
   const [gapLoading, setGapLoading] = useState(false);
+
+  // 审核统计（审核量/通过率/平均审核时间，按疾病/审核人）
+  const [reviewStats, setReviewStats] = useState<ReviewStatsResult | null>(null);
+  const [reviewLoading, setReviewLoading] = useState(false);
 
   // FOI（感染力）+ 群体免疫阈值分析
   const [foiData, setFoiData] = useState<FoiHerdImmunityResult | null>(null);
@@ -251,6 +257,25 @@ const Analysis: React.FC = () => {
       fetchCoverageReviewData();
     }
   }, [activeTab, fetchCoverageReviewData]);
+
+  // 获取审核统计（按疾病/审核人）
+  const fetchReviewStatsData = useCallback(async () => {
+    setReviewLoading(true);
+    try {
+      setReviewStats(await fetchReviewStats());
+    } catch (err) {
+      console.error('[Analysis] 审核统计加载失败:', err);
+      message.error('审核统计加载失败');
+    } finally {
+      setReviewLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'review') {
+      fetchReviewStatsData();
+    }
+  }, [activeTab, fetchReviewStatsData]);
 
   // 获取 FOI 感染力 + 群体免疫阈值分析
   const fetchFoiData = useCallback(async () => {
@@ -2539,28 +2564,31 @@ const Analysis: React.FC = () => {
       );
     }
 
-    const studies = meta.per_study.map((s) => {
+    const studies = meta.per_study.map((s, idx) => {
       const ci = wilsonCi(s.x, s.n);
       return {
-        label: s.label,
-        p: s.p * 100,
-        ci_lower: ci.lower * 100,
-        ci_upper: ci.upper * 100,
+        id: String(idx),
+        name: s.label,
+        estimate: s.p,          // 0-1 比例
+        ci_lower: ci.lower,     // 0-1 比例
+        ci_upper: ci.upper,     // 0-1 比例
         weight: s.weight,
+        sample_size: s.n,
       };
     });
 
-    const forestOption = forestPlotOption(studies, {
-      rate: pooled.rate,
-      ci_lower: pooled.ci_lower,
-      ci_upper: pooled.ci_upper,
-      model: pooled.model,
-      tau2: pooled.tau2,
-      Q: pooled.Q,
-      Q_p: pooled.Q_p,
-      I2: pooled.I2,
-      k: pooled.k,
-    });
+    // 池化率为 %，ForestPlot 内部按 0-1 比例处理，需除以 100
+    const pooledEstimate =
+      pooled.rate != null
+        ? pooled.rate / 100
+        : pooled.ci_lower != null
+          ? pooled.ci_lower / 100
+          : 0;
+    const pooledForest = {
+      estimate: pooledEstimate,
+      ci_lower: pooled.ci_lower != null ? pooled.ci_lower / 100 : pooledEstimate,
+      ci_upper: pooled.ci_upper != null ? pooled.ci_upper / 100 : pooledEstimate,
+    };
 
     const tCenter =
       pooled.n_rep != null && pooled.rate != null ? ftTransform(pooled.rate / 100, pooled.n_rep) : null;
@@ -2606,12 +2634,15 @@ const Analysis: React.FC = () => {
             </Col>
           </Row>
         </Card>
-        <ChartWithSnapshot
-          title={`森林图 — ${groupTitle}`}
-          token={tokenOf(metaAnalysisData)}
-          option={forestOption}
-          height={Math.max(280, 60 + studies.length * 32)}
-        />
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <ForestPlot
+            studies={studies}
+            pooled={pooledForest}
+            i_squared={pooled.I2}
+            title={`森林图 — ${groupTitle}`}
+            height={Math.max(280, 60 + studies.length * 32)}
+          />
+        </Card>
         {funnelOption && (
           <ChartWithSnapshot
             title={`漏斗图 — ${groupTitle}`}
@@ -2703,6 +2734,71 @@ const Analysis: React.FC = () => {
     </Spin>
   );
 
+  // ===================== 审核统计内容（审核量/通过率/平均审核时间） =====================
+  const diseaseLabel = (key: string) =>
+    DISEASES.find((d) => d.key === key)?.name_cn || key || '-';
+
+  const passRateText = (rate: number | null | undefined) =>
+    rate != null ? `${(rate * 100).toFixed(1)}%` : '-';
+  const avgTimeText = (min: number | null | undefined) =>
+    min != null ? `${min.toFixed(1)} 分钟` : '-';
+
+  const reviewStatsColumns: ColumnsType<any> = [
+    { title: '维度', key: 'name', width: 220, fixed: 'left' as const, render: (_: unknown, r: any) => r._name },
+    { title: '审核量', dataIndex: 'reviewed', key: 'reviewed', width: 90, sorter: (a: any, b: any) => a.reviewed - b.reviewed },
+    { title: '通过', dataIndex: 'approved', key: 'approved', width: 80 },
+    { title: '驳回', dataIndex: 'rejected', key: 'rejected', width: 80 },
+    { title: '通过率', dataIndex: 'pass_rate', key: 'pass_rate', width: 90, render: (v: number) => passRateText(v) },
+    { title: '平均审核时间', dataIndex: 'avg_review_minutes', key: 'avg_review_minutes', width: 130, render: (v: number | null) => avgTimeText(v) },
+  ];
+
+  const reviewContent = (
+    <Spin spinning={reviewLoading}>
+      {reviewStats ? (
+        <div>
+          <Row gutter={16} style={{ marginBottom: 16 }}>
+            <Col xs={12} md={6}>
+              <Card size="small"><Statistic title="累计审核数据点" value={reviewStats.grand_total.reviewed} /></Card>
+            </Col>
+            <Col xs={12} md={6}>
+              <Card size="small"><Statistic title="已通过" value={reviewStats.grand_total.approved} valueStyle={{ color: '#52c41a' }} /></Card>
+            </Col>
+            <Col xs={12} md={6}>
+              <Card size="small"><Statistic title="已驳回" value={reviewStats.grand_total.rejected} valueStyle={{ color: '#cf1322' }} /></Card>
+            </Col>
+            <Col xs={12} md={6}>
+              <Card size="small">
+                <Statistic title="总通过率" value={passRateText(reviewStats.grand_total.pass_rate)} />
+              </Card>
+            </Col>
+          </Row>
+          <Card size="small" title="按审核人统计" style={{ marginBottom: 16 }}>
+            <Table
+              rowKey="reviewer_id"
+              dataSource={reviewStats.by_reviewer.map((r) => ({ ...r, _name: r.reviewer_name }))}
+              columns={reviewStatsColumns}
+              size="small"
+              pagination={false}
+              scroll={{ x: 'max-content' }}
+            />
+          </Card>
+          <Card size="small" title="按疾病统计">
+            <Table
+              rowKey="disease"
+              dataSource={reviewStats.by_disease.map((r) => ({ ...r, _name: diseaseLabel(r.disease) }))}
+              columns={reviewStatsColumns}
+              size="small"
+              pagination={false}
+              scroll={{ x: 'max-content' }}
+            />
+          </Card>
+        </div>
+      ) : (
+        <Empty description="暂无审核统计数据" style={{ padding: '60px 0' }} />
+      )}
+    </Spin>
+  );
+
   return (
     <>
       {filterPanel}
@@ -2729,6 +2825,16 @@ const Analysis: React.FC = () => {
             key: 'coverage',
             label: '数据覆盖度',
             children: coverageContent,
+          },
+          {
+            key: 'review',
+            label: (
+              <span>
+                <CheckCircleOutlined />
+                审核统计
+              </span>
+            ),
+            children: reviewContent,
           },
           {
             key: 'ageCurve',

@@ -1,6 +1,8 @@
 import logging
 import os
 import hashlib
+import json
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -52,6 +54,88 @@ def _compute_age_group(age_min: Optional[int], age_max: Optional[int]) -> Option
 
 # B6：表格 Markdown 哈希缓存（进程级，避免同一文件重抽时重复提取）
 _table_hash_cache: dict[str, str] = {}
+
+
+# ===== 提取结果缓存（降低 LLM API 成本，调度层实现，不侵入 LLMExtractor）=====
+# key = sha256(literature_id | model | passes | chunk_threshold | 文本前1000字符哈希)
+# 文本内容哈希保证文献内容更新后缓存自动失效。
+_CACHE_KEY_PREFIX = "extraction_cache:"
+_CACHE_TIMEOUT = 10.0
+
+
+def _build_extraction_cache_key(
+    literature_id: str,
+    model: str,
+    passes: int,
+    chunk_threshold: int,
+    clean_text: str,
+) -> str:
+    """构建提取结果缓存 key."""
+    text_fingerprint = hashlib.sha256(
+        clean_text[:1000].encode("utf-8")
+    ).hexdigest()
+    raw = f"{literature_id}|{model}|{passes}|{chunk_threshold}|{text_fingerprint}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _create_cache_redis():
+    """惰性创建 Redis 客户端（与 parse_cache 一致：用到才导入 redis.asyncio）。"""
+    from redis.asyncio import Redis
+
+    return Redis.from_url(
+        settings.REDIS_URL,
+        decode_responses=True,
+        socket_connect_timeout=_CACHE_TIMEOUT,
+        socket_timeout=_CACHE_TIMEOUT,
+    )
+
+
+async def _get_extraction_cache(key: str) -> Optional[dict]:
+    """读取提取结果缓存；未命中或 Redis 不可用时返回 None（不抛异常）。"""
+    if not getattr(settings, "EXTRACTION_CACHE_ENABLED", True):
+        return None
+    client = None
+    try:
+        client = _create_cache_redis()
+        raw = await client.get(f"{_CACHE_KEY_PREFIX}{key}")
+        if not raw:
+            return None
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        logger.debug(f"[提取缓存] 读取失败，静默降级为不缓存: {e}")
+        return None
+    finally:
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
+
+async def _set_extraction_cache(key: str, data: dict) -> None:
+    """写入提取结果缓存；Redis 不可用时静默忽略（不抛异常）。"""
+    if not getattr(settings, "EXTRACTION_CACHE_ENABLED", True):
+        return
+    client = None
+    try:
+        client = _create_cache_redis()
+        ttl_seconds = int(
+            getattr(settings, "EXTRACTION_CACHE_TTL_HOURS", 168) * 3600
+        )
+        await client.set(
+            f"{_CACHE_KEY_PREFIX}{key}",
+            json.dumps(data, ensure_ascii=False),
+            ex=ttl_seconds,
+        )
+    except Exception as e:
+        logger.debug(f"[提取缓存] 写入失败，静默降级为不缓存: {e}")
+    finally:
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
 
 
 async def _load_feedback_examples(db) -> list[str]:
@@ -351,6 +435,7 @@ async def _process_literature_async(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     clear_existing_data: bool = True,
+    use_cache: bool = True,
 ) -> dict:
     """异步文献处理：PDF 解析 → LLM 提取 → 保存数据点（含精确溯源和强 Schema）"""
     async with async_session() as db:
@@ -431,29 +516,66 @@ async def _process_literature_async(
             logger.warning(f"缓存溯源文本失败（不影响提取）: {e}")
 
         # 5. LLM 提取（返回数据点列表）
-        extractor = LLMExtractor(model=model, api_key=api_key, base_url=base_url)
-
-        # B9：加载审核反馈示例（rejected 数据点），注入 prompt 提升准确度
-        if getattr(settings, "LLM_FEEDBACK_FEW_SHOT", True):
-            try:
-                feedback_examples = await _load_feedback_examples(db)
-                if feedback_examples:
-                    extractor.set_feedback_examples(feedback_examples)
-            except Exception as e:
-                logger.warning(f"B9 加载审核反馈示例失败（不影响提取）: {e}")
-
+        effective_model = model or settings.LLM_MODEL
         passes = getattr(settings, "LLM_EXTRACTION_PASSES", 2)
-        logger.info(f"开始 LLM 提取: model={model or settings.LLM_MODEL}, extraction_passes={passes}")
-        extract_results = await extractor.extract_with_retry(
-            text=clean_text,
-            language="zh",
-            title=literature.title or "",
-            journal=literature.journal or "",
-            pub_year=literature.pub_year,
-            tables_md=tables_md,
-            extraction_passes=passes,
-        )
-        logger.info(f"LLM 提取完成: {len(extract_results)} 个数据点")
+        cache_hit = False
+        cache_key: Optional[str] = None
+
+        # 5a. 先查提取结果缓存；命中则跳过 LLM 调用，直接重建数据点
+        if use_cache and getattr(settings, "EXTRACTION_CACHE_ENABLED", True):
+            cache_key = _build_extraction_cache_key(
+                literature_id, effective_model, passes,
+                settings.LLM_CHUNK_THRESHOLD, clean_text,
+            )
+            cached = await _get_extraction_cache(cache_key)
+            if cached is not None:
+                cache_hit = True
+                logger.info(f"Extraction cache hit for literature {literature_id}")
+                extract_results = cached.get("extract_results") or []
+                titer_tables = cached.get("titer_tables") or []
+                usage_summary = cached.get("usage_summary") or {}
+                extractor = None
+            else:
+                extractor = LLMExtractor(model=model, api_key=api_key, base_url=base_url)
+        else:
+            extractor = LLMExtractor(model=model, api_key=api_key, base_url=base_url)
+
+        if not cache_hit:
+            # B9：加载审核反馈示例（rejected 数据点），注入 prompt 提升准确度
+            if getattr(settings, "LLM_FEEDBACK_FEW_SHOT", True):
+                try:
+                    feedback_examples = await _load_feedback_examples(db)
+                    if feedback_examples:
+                        extractor.set_feedback_examples(feedback_examples)
+                except Exception as e:
+                    logger.warning(f"B9 加载审核反馈示例失败（不影响提取）: {e}")
+
+            logger.info(f"开始 LLM 提取: model={effective_model}, extraction_passes={passes}")
+            from app.core.metrics import record_llm_completion, observe_extraction_duration
+
+            _extract_start = time.perf_counter()
+            try:
+                extract_results = await extractor.extract_with_retry(
+                    text=clean_text,
+                    language="zh",
+                    title=literature.title or "",
+                    journal=literature.journal or "",
+                    pub_year=literature.pub_year,
+                    tables_md=tables_md,
+                    extraction_passes=passes,
+                )
+            except Exception:
+                # 记录提取失败耗时与结局（非阻塞，绝不影响失败回抛）
+                observe_extraction_duration(effective_model, time.perf_counter() - _extract_start)
+                record_llm_completion(effective_model, "error", None)
+                raise
+            _extract_seconds = time.perf_counter() - _extract_start
+            logger.info(f"LLM 提取完成: {len(extract_results)} 个数据点")
+            usage_summary = extractor.get_usage_summary()
+            titer_tables = extractor.get_titer_tables()
+            # 记录 Prometheus 指标：提取耗时 + LLM token/费用/结局
+            observe_extraction_duration(effective_model, _extract_seconds)
+            record_llm_completion(effective_model, "success", usage_summary)
 
         # 5b. 清除该文献下已有的旧数据点（防止重新提取时新旧叠加）
         # 使用 ORM delete 确保 cascade 正确处理
@@ -498,7 +620,7 @@ async def _process_literature_async(
             )
 
         # 5c. P2-tt 试点：持久化 LLM 提取到的滴度矩阵（TiterTable）
-        titer_tables = extractor.get_titer_tables()
+        # 缓存命中时 titer_tables 直接取自缓存，无需再读 extractor
         for tt in titer_tables:
             db.add(TiterTable(
                 literature_id=literature_id,
@@ -587,8 +709,7 @@ async def _process_literature_async(
 
         # 7b. 记录 LLM token 用量与费用到 literature 表
         try:
-            usage_summary = extractor.get_usage_summary()
-            literature.llm_model_used = usage_summary.get("primary_model")
+            literature.llm_model_used = usage_summary.get("primary_model") or effective_model
             literature.prompt_tokens = usage_summary.get("total_prompt_tokens", 0)
             literature.completion_tokens = usage_summary.get("total_completion_tokens", 0)
             literature.total_tokens = usage_summary.get("total_tokens", 0)
@@ -608,7 +729,7 @@ async def _process_literature_async(
             logger.warning(f"记录 token 用量失败（不影响提取结果）: {e}")
 
         # 8. 更新 literature 状态
-        usage_summary = extractor.get_usage_summary() if extract_results else {}
+        usage_summary = usage_summary or {}
         history_status = "success"
         if len(all_data_points) > 0:
             literature.extraction_status = "done"
@@ -622,9 +743,13 @@ async def _process_literature_async(
 
         # 8b. 写入提取历史记录
         try:
+            history_model = literature.llm_model_used or effective_model
+            if cache_hit:
+                # 缓存命中时在历史中标记，便于区分是否走了缓存
+                history_model = f"{history_model} (cached)"
             history = ExtractionHistory(
                 literature_id=literature_id,
-                model=literature.llm_model_used,
+                model=history_model,
                 status=history_status,
                 data_point_count=len(all_data_points),
                 prompt_tokens=usage_summary.get("total_prompt_tokens", 0),
@@ -639,6 +764,18 @@ async def _process_literature_async(
             logger.warning(f"写入提取历史记录失败（不影响提取结果）: {e}")
 
         await db.commit()
+
+        # 8c. 提取成功后写入缓存（失败不缓存；命中时无需重写）
+        if not cache_hit and cache_key:
+            try:
+                await _set_extraction_cache(cache_key, {
+                    "extract_results": extract_results,
+                    "titer_tables": titer_tables,
+                    "usage_summary": usage_summary,
+                })
+                logger.info(f"提取结果已写入缓存（文献 {literature_id}）")
+            except Exception as e:
+                logger.warning(f"写入提取结果缓存失败（不影响提取）: {e}")
 
         # 质量精打：全文已可用，对已审核通过的数据点重新打分（幂等覆盖）
         try:
@@ -673,12 +810,13 @@ def process_literature(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     clear_existing_data: bool = True,
+    use_cache: bool = True,
 ):
     """Celery 任务：文献处理（PDF 解析 + AI 提取）"""
     try:
         result = run_async(
             _process_literature_async(
-                literature_id, model, api_key, base_url, clear_existing_data
+                literature_id, model, api_key, base_url, clear_existing_data, use_cache
             )
         )
         logger.info(f"文献 {literature_id} 提取完成，数据点: {result['extracted_count']}")

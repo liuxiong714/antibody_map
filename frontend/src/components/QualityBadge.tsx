@@ -36,7 +36,9 @@ const QualityBadge: React.FC<Props> = ({
   if (!qualityGrade || qualityScore == null) {
     return (
       <Tooltip title="审核通过后自动打分（未评分）" placement="topLeft">
-        <Badge status="default" text="-" />
+        <span>
+          <Badge status="default" text="-" />
+        </span>
       </Tooltip>
     );
   }
@@ -58,14 +60,16 @@ const QualityBadge: React.FC<Props> = ({
 
   return (
     <Tooltip title={lines.join('\n')} placement="topLeft">
-      <Badge
-        color={meta.color}
-        text={
-          <Text style={{ fontSize: 12 }}>
-            {qualityScore} · {qualityGrade}
-          </Text>
-        }
-      />
+      <span>
+        <Badge
+          color={meta.color}
+          text={
+            <Text style={{ fontSize: 12 }}>
+              {qualityScore} · {qualityGrade}
+            </Text>
+          }
+        />
+      </span>
     </Tooltip>
   );
 };

@@ -20,9 +20,10 @@ from pydantic import BaseModel
 from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import get_db, get_current_user
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
+from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.services.literature_service import LOCAL_STORAGE_DIR
 from app.services.extraction_service import (
@@ -30,6 +31,8 @@ from app.services.extraction_service import (
     get_extraction_status,
     get_extraction_results,
     get_extraction_history,
+    review_data_points,
+    get_review_stats,
 )
 from app.core.traceability_html import (
     generate_traceability_html,
@@ -74,6 +77,7 @@ class DataPointReviewItem(BaseModel):
     id: str
     review_status: Optional[str] = None  # "approved" | "rejected" | None (仅编辑时不审核)
     review_note: Optional[str] = None
+    review_comment: Optional[str] = None  # 审核意见
     # 以下为可编辑的数据字段
     disease: Optional[str] = None
     province: Optional[str] = None
@@ -103,7 +107,8 @@ class UpdateDataPointsRequest(BaseModel):
 
 class BatchReviewRequest(BaseModel):
     ids: list[str]
-    note: Optional[str] = None
+    note: Optional[str] = None  # 兼容历史字段
+    comment: Optional[str] = None  # 审核意见（驳回时必填）
 
 
 class ExtractionRequest(BaseModel):
@@ -111,6 +116,8 @@ class ExtractionRequest(BaseModel):
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     clear_existing_data: bool = True
+    # 是否使用 Redis 提取结果缓存；False 时强制重新提取（跳过 LLM 缓存）
+    use_cache: bool = True
 
 
 class BatchExtractionRequest(BaseModel):
@@ -120,6 +127,8 @@ class BatchExtractionRequest(BaseModel):
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     clear_existing_data: bool = True
+    # 是否使用 Redis 提取结果缓存；False 时强制重新提取
+    use_cache: bool = True
 
 
 class CreateDataPointRequest(BaseModel):
@@ -160,7 +169,8 @@ async def start_extraction(
         api_key = req.api_key if req else None
         base_url = req.base_url if req else None
         clear_existing = req.clear_existing_data if req else True
-        result = await trigger_extraction(db, literature_id, model, api_key, base_url, clear_existing)
+        use_cache = req.use_cache if req else True
+        result = await trigger_extraction(db, literature_id, model, api_key, base_url, clear_existing, use_cache)
         return ApiResponse(message="提取任务已提交", data=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -205,6 +215,7 @@ async def start_batch_extraction(
                 api_key=req.api_key,
                 base_url=req.base_url,
                 clear_existing_data=req.clear_existing_data,
+                use_cache=req.use_cache,
             )
             submitted.append({
                 "id": str(lit_id),
@@ -566,6 +577,7 @@ async def update_data_points(
     literature_id: uuid.UUID,
     req: UpdateDataPointsRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """更新数据点（可编辑任意字段 + 审核状态）"""
     updated = []
@@ -577,15 +589,23 @@ async def update_data_points(
         "source_char_start", "source_char_end", "is_grounded",
     ]
 
+    now = datetime.now(timezone.utc)
+
     for item in req.data_points:
         # 构建要更新的字段
         values: dict[str, Any] = {}
 
-        # 审核状态
+        # 审核状态（写入审核人/审核时间）
         if item.review_status:
             if item.review_status not in ("approved", "rejected"):
                 raise HTTPException(status_code=400, detail=f"无效的审核状态: {item.review_status}")
             values["review_status"] = item.review_status
+            values["reviewer_id"] = current_user.id
+            values["reviewed_at"] = now
+
+        # 审核意见（仅当显式传入时更新，支持清空）
+        if "review_comment" in item.model_dump(exclude_unset=True):
+            values["review_comment"] = item.review_comment
 
         # 可编辑的数据字段（仅更新显式传入的字段，None 值表示清空）
         explicit = item.model_dump(exclude_unset=True, exclude={"id", "review_status", "review_note"})
@@ -622,21 +642,18 @@ async def update_data_points(
     return ApiResponse(message="数据点已更新", data={"updated": updated})
 
 
-@router.post("/literatures/{literature_id}/extraction/confirm", response_model=ApiResponse, summary="批量审核通过", description="批量将多个数据点审核通过，同步更新文献的已通过计数")
+@router.post("/literatures/{literature_id}/extraction/confirm", response_model=ApiResponse, summary="批量审核通过", description="批量将多个数据点审核通过，写入审核人/审核时间，同步更新文献的已通过计数")
 async def batch_confirm(
     literature_id: uuid.UUID,
     req: BatchReviewRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """批量审核通过"""
-    uuids = [uuid.UUID(i) for i in req.ids]
-    stmt = (
-        update(DataPoint)
-        .where(DataPoint.id.in_(uuids))
-        .where(DataPoint.literature_id == literature_id)
-        .values(review_status="approved")
+    comment = req.comment if req.comment is not None else req.note
+    result = await review_data_points(
+        db, literature_id, req.ids, "approved", comment, current_user.id
     )
-    result = await db.execute(stmt)
 
     await _sync_approved_count(db, literature_id)
     await db.commit()
@@ -645,29 +662,29 @@ async def batch_confirm(
     for dp_id in req.ids:
         score_data_point_task.delay(dp_id)
 
-    return ApiResponse(message=f"已批量通过 {result.rowcount} 个数据点")
+    return ApiResponse(message=f"已批量通过 {result} 个数据点")
 
 
-@router.post("/literatures/{literature_id}/extraction/dispute", response_model=ApiResponse, summary="批量驳回", description="批量驳回多个数据点，同步更新文献的已通过计数")
+@router.post("/literatures/{literature_id}/extraction/dispute", response_model=ApiResponse, summary="批量驳回", description="批量驳回多个数据点，驳回必须填写意见，写入审核人/审核时间，同步更新文献的已通过计数")
 async def batch_dispute(
     literature_id: uuid.UUID,
     req: BatchReviewRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """批量驳回"""
-    uuids = [uuid.UUID(i) for i in req.ids]
-    stmt = (
-        update(DataPoint)
-        .where(DataPoint.id.in_(uuids))
-        .where(DataPoint.literature_id == literature_id)
-        .values(review_status="rejected")
+    comment = req.comment if req.comment is not None else req.note
+    if not comment or not str(comment).strip():
+        raise HTTPException(status_code=400, detail="驳回必须填写审核意见")
+
+    result = await review_data_points(
+        db, literature_id, req.ids, "rejected", comment, current_user.id
     )
-    result = await db.execute(stmt)
 
     await _sync_approved_count(db, literature_id)
     await db.commit()
 
-    return ApiResponse(message=f"已批量驳回 {result.rowcount} 个数据点", data={"note": req.note})
+    return ApiResponse(message=f"已批量驳回 {result} 个数据点", data={"note": comment})
 
 
 async def _sync_approved_count(db: AsyncSession, literature_id: uuid.UUID):

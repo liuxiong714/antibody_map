@@ -12,6 +12,7 @@ from app.models.extraction_history import ExtractionHistory
 from app.models.literature_tag import Tag, literature_tag
 from app.models.analysis_snapshot import AnalysisSnapshot
 from app.models.titer_table import TiterTable
+from app.models.report_template import ReportTemplate
 
 __all__ = [
     "Base", "engine", "async_session", "get_async_session",
@@ -19,5 +20,5 @@ __all__ = [
     "MonitoredFolder", "MonitoredFile", "ApiModelConfig",
     "LocalModelConfig", "User", "AuditLog", "ExtractionHistory",
     "Tag", "literature_tag", "AnalysisSnapshot",
-    "TiterTable",
+    "TiterTable", "ReportTemplate",
 ]

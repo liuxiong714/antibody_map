@@ -1,0 +1,5 @@
+#!/bin/sh
+# caj2pdf 包装脚本：切换到 /opt/caj2pdf 目录再执行，
+# 确保 jbigdec.py / jbig2dec.py 能通过相对路径 ./libjbig*.so 加载共享库。
+cd /opt/caj2pdf
+exec /usr/local/bin/python3 /opt/caj2pdf/caj2pdf "$@"

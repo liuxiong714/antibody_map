@@ -1,12 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Row, Col, Button, Input, Select, Tag } from 'antd';
-import { FileTextOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons';
+import { Card, Row, Col, Button, Input, Select, Tag, Space } from 'antd';
+import { FileTextOutlined, RobotOutlined, SettingOutlined, ProfileOutlined } from '@ant-design/icons';
 import DiseaseSelector from './DiseaseSelector';
 import ProvinceSelector from './ProvinceSelector';
 import MapSelector from './MapSelector';
 import ModelManager from './ModelManager';
 import { getModels } from '../services/map';
 import { ModelOption } from '../types';
+
+interface TemplateOption {
+  value: string;
+  label: string;
+}
 
 interface Props {
   disease: string;
@@ -16,19 +21,26 @@ interface Props {
   title: string;
   model: string;
   loading: boolean;
+  templateId?: string;
+  templates?: TemplateOption[];
+  isAdmin?: boolean;
   onDiseaseChange: (v: string) => void;
   onDataTypeChange: (v: string) => void;
   onProvinceChange: (v: string) => void;
   onLanguageChange: (v: string) => void;
   onTitleChange: (v: string) => void;
   onModelChange: (v: string) => void;
+  onTemplateChange?: (v: string) => void;
+  onManageTemplates?: () => void;
   onGenerate: () => void;
 }
 
 const AntibodyReportForm: React.FC<Props> = ({
   disease, dataType, province, language, title, model, loading,
+  templateId, templates = [], isAdmin = false,
   onDiseaseChange, onDataTypeChange, onProvinceChange,
-  onLanguageChange, onTitleChange, onModelChange, onGenerate,
+  onLanguageChange, onTitleChange, onModelChange,
+  onTemplateChange, onManageTemplates, onGenerate,
 }) => {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelManagerVisible, setModelManagerVisible] = useState(false);
@@ -99,6 +111,22 @@ const AntibodyReportForm: React.FC<Props> = ({
           </Col>
           <Col><Input placeholder="自定义报告标题（选填）" value={title} onChange={(e) => onTitleChange(e.target.value)} style={{ width: 260 }} /></Col>
           <Col><Button type="primary" icon={<FileTextOutlined />} onClick={onGenerate} loading={loading}>生成报告</Button></Col>
+          <Col span={24}>
+            <Space wrap>
+              <Select
+                value={templateId || undefined}
+                onChange={onTemplateChange}
+                style={{ width: 300 }}
+                placeholder="选择报告模板（默认使用默认模板）"
+                prefix={<ProfileOutlined />}
+                allowClear
+                options={templates}
+              />
+              {isAdmin && (
+                <Button icon={<ProfileOutlined />} onClick={onManageTemplates}>管理模板</Button>
+              )}
+            </Space>
+          </Col>
         </Row>
         {selectedLabel && (
           <div style={{ marginTop: 8, color: '#888' }}>

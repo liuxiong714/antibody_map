@@ -1,6 +1,6 @@
 import api from './api';
 import { cachedGet, clearApiCache } from '../lib/apiCache';
-import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, ApiModelConfig, LocalModelConfig, ModelsListData, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, BirthCohortResponse, MetaMergeResponse, MetaAnalysisResponse, AssayHeterogeneityResponse, SimulationResponse, CoverageReviewResult, SpatialHotspotsResponse, AntigenicMapData, TiterTableListData } from '../types';
+import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, ReportTemplate, ReportSection, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, ApiModelConfig, LocalModelConfig, ModelsListData, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, BirthCohortResponse, MetaMergeResponse, MetaAnalysisResponse, AssayHeterogeneityResponse, SimulationResponse, CoverageReviewResult, ReviewStatsResult, SpatialHotspotsResponse, AntigenicMapData, TiterTableListData } from '../types';
 
 // 拦截器已将 ApiResponse.data 提升到 resp.data，此处解包 AxiosResponse
 
@@ -174,6 +174,17 @@ export async function fetchCoverageReview(params?: Record<string, unknown>) {
   );
 }
 
+// 审核统计（审核量/通过率/平均审核时间，按疾病/审核人）
+export async function fetchReviewStats() {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get<ReviewStatsResult>('/analysis/review-stats');
+      return data;
+    },
+    '/analysis/review-stats',
+  );
+}
+
 /** 数据变更（审核/提取/导入）后清除分析接口缓存，避免展示过期数据 */
 export function clearAnalysisApiCache() {
   clearApiCache('/analysis/');
@@ -212,6 +223,30 @@ export async function getReport(id: string) {
 
 export function getDownloadUrl(id: string) {
   return `/api/v1/reports/${id}/download`;
+}
+
+// ===== 报告模板管理 =====
+
+export async function listTemplates(report_type?: string) {
+  const params: Record<string, unknown> = {};
+  if (report_type) params.report_type = report_type;
+  const { data } = await api.get<ReportTemplate[]>('/report/templates', { params });
+  return data;
+}
+
+export async function createTemplate(body: Partial<ReportTemplate> & { sections: ReportSection[] }) {
+  const { data } = await api.post<ReportTemplate>('/report/templates', body);
+  return data;
+}
+
+export async function updateTemplate(id: string, body: Partial<ReportTemplate> & { sections: ReportSection[] }) {
+  const { data } = await api.put<ReportTemplate>(`/report/templates/${id}`, body);
+  return data;
+}
+
+export async function deleteTemplate(id: string) {
+  const { data } = await api.delete(`/report/templates/${id}`);
+  return data;
 }
 
 // P0: FOI 感染力 + 群体免疫阈值分析

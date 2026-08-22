@@ -9,11 +9,24 @@ from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.config import settings
-from app.models.base import engine
+from app.models.base import engine, async_session
 from app.api.v1.router import router as api_v1_router
 from app.core.logging_config import setup_logging, logger
+from app.core.exceptions import AppError
+from app.core.metrics import metrics_accessible, record_http_exception
+
+# Prometheus HTTP 指标收集（依赖缺失时静默跳过，不影响应用启动）
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+    from prometheus_fastapi_instrumentator.metrics import default as default_metrics
+    HAS_PROMETHEUS = True
+except Exception:  # pragma: no cover - 依赖缺失兜底
+    HAS_PROMETHEUS = False
 
 # 初始化统一结构化日志
 setup_logging(level="DEBUG" if settings.APP_DEBUG else "INFO")
@@ -49,6 +62,16 @@ async def lifespan(app: FastAPI):
         logger.error(f"Database migration failed: {e}")
         raise
 
+    # 初始化默认报告模板（仅当库中无任何模板时写入）
+    try:
+        from app.services import report_service
+        async with async_session() as session:
+            seeded = await report_service.seed_default_templates(session)
+            if seeded:
+                logger.info(f"已初始化默认报告模板 {seeded} 个")
+    except Exception as e:
+        logger.error(f"初始化默认报告模板失败: {e}")
+
     # 启动文件夹监控后台任务
     from app.services.folder_monitor_service import _folder_monitor_loop
     monitor_task = asyncio.create_task(_folder_monitor_loop())
@@ -59,7 +82,21 @@ async def lifespan(app: FastAPI):
         from app.services.file_cleanup_service import _cleanup_loop
         cleanup_task = asyncio.create_task(_cleanup_loop())
 
+    # 启动 Prometheus 指标后台采集任务（每 60 秒刷新 data_point_count / celery 队列深度）
+    metrics_tasks: list = []
+    if settings.METRICS_ENABLED:
+        from app.core.metrics import start_metrics_background_tasks
+        metrics_tasks = start_metrics_background_tasks()
+
     yield
+
+    # 停止 Prometheus 指标后台采集任务
+    for metrics_task in metrics_tasks:
+        metrics_task.cancel()
+        try:
+            await metrics_task
+        except asyncio.CancelledError:
+            pass
 
     # 停止孤儿文件清理后台任务
     if cleanup_task:
@@ -130,6 +167,77 @@ Authorization: Bearer <your_access_token>
     ],
 )
 
+# ---- 全局异常处理器：统一错误响应格式 ----
+# 响应统一为：{ "success": false, "code", "message", "data", "request_id" }
+
+
+def _error_response(
+    *,
+    code: str,
+    message: str,
+    data: Optional[dict] = None,
+    request_id: Optional[str] = None,
+) -> dict:
+    """构造统一格式的错误响应体。"""
+    body = {
+        "success": False,
+        "code": code,
+        "message": message,
+        "data": data,
+    }
+    if request_id:
+        body["request_id"] = request_id
+    return body
+
+
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError):
+    """业务异常：按异常携带的 code/message/details/status_code 渲染。"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_error_response(
+            code=exc.code,
+            message=exc.message,
+            data=exc.details,
+        ),
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
+    """数据库异常：记录日志并返回 500 标准格式，避免泄露底层细节。"""
+    logger.exception(f"Database error on {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content=_error_response(
+            code="DATABASE_ERROR",
+            message="数据库操作失败，请稍后重试",
+        ),
+    )
+
+
+@app.exception_handler(ValidationError)
+async def validation_error_handler(request: Request, exc: ValidationError):
+    """请求校验失败：返回 422，包含字段级错误详情。"""
+    errors = exc.errors()
+    details = [
+        {
+            "field": ".".join(str(p) for p in err.get("loc", ()) if p not in ("loc", "body")),
+            "message": err.get("msg", ""),
+            "type": err.get("type", ""),
+        }
+        for err in errors
+    ] if errors else None
+    return JSONResponse(
+        status_code=422,
+        content=_error_response(
+            code="VALIDATION_ERROR",
+            message="请求参数校验失败",
+            data=details,
+        ),
+    )
+
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     """记录每个 HTTP 请求的耗时与状态码（结构化日志）。"""
@@ -138,6 +246,7 @@ async def log_requests(request: Request, call_next):
         response = await call_next(request)
     except Exception:
         elapsed_ms = (time.perf_counter() - start) * 1000
+        record_http_exception(500)  # 记录 Prometheus 异常计数（非阻塞）
         logger.exception(
             "Request failed",
             method=request.method,
@@ -163,5 +272,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---- Prometheus /metrics 访问控制 ----
+# 未授权访问 /metrics 直接返回 403，不泄露内部指标（需在路由注册前生效）
+@app.middleware("http")
+async def metrics_access_guard(request: Request, call_next):
+    if request.url.path == "/metrics" and not metrics_accessible(request):
+        return JSONResponse(
+            status_code=403,
+            content=_error_response(
+                code="METRICS_FORBIDDEN",
+                message="无权访问指标端点",
+            ),
+        )
+    return await call_next(request)
+
+# ---- Prometheus 指标端点（放在业务路由注册之前）----
+# 自动收集 HTTP 请求量(按 method/status)、延迟直方图；METRICS_ENABLED 可整体关闭
+if settings.METRICS_ENABLED and HAS_PROMETHEUS:
+    Instrumentator().add(
+        default_metrics()
+    ).instrument(app).expose(
+        app,
+        endpoint="/metrics",
+        include_in_schema=settings.APP_ENV == "development",
+        tags=["monitoring"],
+    )
 
 app.include_router(api_v1_router, prefix="/api/v1")

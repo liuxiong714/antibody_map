@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath, URL } from 'node:url'
 
@@ -9,12 +9,32 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: ['./src/test/setup.ts'],
+    coverage: {
+      provider: 'v8',
+      thresholds: {
+        statements: 70,
+      },
+      include: [
+        'src/components/DiseaseSelector.tsx',
+        'src/components/QualityBadge.tsx',
+        'src/components/ConfidenceBadge.tsx',
+        'src/components/StatusBadge.tsx',
+        'src/utils/format.ts',
+      ],
+    },
+  },
   server: {
     port: 3000,
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        proxyTimeout: 120000,
+        timeout: 120000,
       },
     },
   },

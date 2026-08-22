@@ -17,9 +17,11 @@ python-pptx>=0.6.21
 ebooklib>=0.18
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
-# CAJ 转换：caj2pdf 不在 PyPI，需手动安装：
-#   git clone https://github.com/caj2pdf/caj2pdf && cd caj2pdf && pip install .
-# 另需系统安装 mutool（mupdf-tools）；二者未安装时 CAJ 提取安全降级为 failed
+# CAJ 转换：caj2pdf 不在 PyPI，且仓库无 setup.py 无法 pip 安装。
+# 已由 Dockerfile 自动处理：从 GitHub 拉取源码到 /opt/caj2pdf + 预编译共享库
+# (libjbig*.so, 见 caj2pdf-extra-libs 的 BUILD-0.1 release)，并 pip 安装其依赖
+# PyPDF2==2.2.0 与 imagesize==1.3.0（见 backend/scripts/caj2pdf-wrapper）。
+# 另需系统安装 mutool（mupdf-tools）；未安装时 CAJ 提取安全降级为 failed
 openai>=1.30.0
 httpx>=0.27.0
 jinja2>=3.1.0
@@ -37,6 +39,12 @@ bcrypt>=4.0.0
 
 # 结构化日志
 loguru>=0.7.0
+
+# Prometheus 指标采集（HTTP 指标自动收集 + /metrics 端点）
+prometheus-fastapi-instrumentator>=6.0.0
+
+# 测试：接口鉴权矩阵测试离线运行依赖（内存 SQLite 异步驱动）
+aiosqlite>=0.19.0
 
 # 统计分析（95% CI 引擎：Wilson score / Clopper-Pearson 精确法）
 statsmodels>=0.14.1

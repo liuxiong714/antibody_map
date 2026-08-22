@@ -1,13 +1,7 @@
-import csv
-import io
-import json
 import logging
-import os  # os.startfile 回退方案（Windows 打开文件夹）
 import re
-import subprocess  # 打开文件夹使用
-import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -17,17 +11,14 @@ logger = logging.getLogger("uvicorn")
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_admin
 from app.config import settings
-from app.models.data_point import DataPoint
-from app.models.literature import Literature
 from app.models.user import User
 from app.schemas.common import ApiResponse, PagedResponse
 from app.schemas.literature import (
-    LiteratureCreate, LiteratureResponse, LiteratureUpdate,
+    LiteratureResponse, LiteratureUpdate,
     CheckDuplicateRequest, MergePreviewRequest, MergeRequest,
 )
 from app.core.document_parser import ALLOWED_EXTS, get_mime_type
@@ -35,7 +26,6 @@ from app.core.url_fetcher import fetch_url, guess_title_from_html
 from app.services.literature_service import (
     list_literature,
     get_literature,
-    create_literature,
     update_literature,
     delete_literature,
     upload_literature,
@@ -44,13 +34,18 @@ from app.services.literature_service import (
     scan_duplicates,
     preview_merge,
     merge_literatures,
-    _find_existing_by_title,
-    _clean_filename_title,
+    batch_delete_literatures,
+    import_references_from_text,
+    preview_import_references,
+    cleanup_empty_literatures,
+    batch_import_files_from_folder,
+    batch_import_uploaded_files,
+    import_literatures_from_json,
+    build_literatures_export,
+    reveal_in_host_file_manager,
     LOCAL_STORAGE_DIR,
 )
-from app.services.extraction_service import trigger_extraction
 from app.services.file_cleanup_service import cleanup_orphan_files, scan_orphan_files
-from app.services.reference_parser import parse_references
 
 router = APIRouter()
 
@@ -219,6 +214,7 @@ async def list_literatures(
     extraction_status: Optional[str] = Query(None, description="提取状态: pending, processing, done, done_no_data, failed"),
     file_format: Optional[str] = Query(None, description="文档格式筛选: PDF, CAJ, EPUB, DOCX, PPTX, XLSX, TXT, HTML, URL"),
     tag_id: Optional[uuid.UUID] = Query(None, description="标签筛选：只显示有该标签的文献"),
+    has_abstract: Optional[bool] = Query(None, description="摘要筛选：true=有摘要，false=无摘要"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -229,7 +225,7 @@ async def list_literatures(
         title=title, authors=authors, created_start=created_start, created_end=created_end,
         sort_by=sort_by, sort_order=sort_order, review_status=review_status,
         extraction_status=extraction_status, file_format=file_format, tag_id=tag_id,
-        page=page, page_size=page_size,
+        has_abstract=has_abstract, page=page, page_size=page_size,
     )
 
     def _derive_file_format(lit) -> Optional[str]:
@@ -303,183 +299,21 @@ async def export_literatures(
 
     当 literature_ids 参数提供时，仅导出指定的文献及其数据点（忽略筛选条件）。
     """
-    if literature_ids:
-        # 按指定 ID 查询
-        ids = [uuid.UUID(s.strip()) for s in literature_ids.split(",") if s.strip()]
-        result = await db.execute(
-            select(Literature).where(Literature.id.in_(ids))
+    try:
+        payload = await build_literatures_export(
+            db=db, format=format, include_data_points=include_data_points,
+            keyword=keyword, disease=disease, province=province,
+            year_start=year_start, year_end=year_end, journal=journal,
+            review_status=review_status, file_format=file_format,
+            literature_ids=literature_ids,
         )
-        items = list(result.scalars().all())
-    else:
-        items, _ = await list_literature(
-            db, keyword, disease, province, year_start, year_end, journal,
-            sort_by=None, sort_order=None, review_status=review_status,
-            file_format=file_format,
-            page=1, page_size=10000,
-        )
-
-    # ── CSV 格式（仅文献元信息）──
-    if format == "csv":
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow([
-            "标题", "英文标题", "作者", "期刊", "出版年份", "DOI", "PMID",
-            "省份", "提取状态", "审核通过数", "数据点总数", "创建时间",
-        ])
-        for lit in items:
-            writer.writerow([
-                lit.title, lit.title_en, lit.authors, lit.journal, lit.pub_year,
-                lit.doi, lit.pmid, lit.province, lit.extraction_status,
-                lit.approved_count, lit.extracted_count, lit.created_at,
-            ])
-
-        return Response(
-            content=output.getvalue().encode("utf-8-sig"),
-            media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": "attachment; filename*=UTF-8''literatures.csv"},
-        )
-
-    # ── JSON 格式（可含数据点，用于 round-trip 导入）──
-    if format == "json":
-        # 如果需要数据点，批量查询
-        dp_map: dict[str, list] = {}
-        if include_data_points:
-            lit_ids = [lit.id for lit in items]
-            if lit_ids:
-                dp_result = await db.execute(
-                    select(DataPoint).where(DataPoint.literature_id.in_(lit_ids))
-                    .order_by(DataPoint.created_at)
-                )
-                for dp in dp_result.scalars().all():
-                    dp_map.setdefault(str(dp.literature_id), []).append({
-                        "disease": dp.disease,
-                        "region": dp.region,
-                        "province": dp.province,
-                        "city": dp.city,
-                        "latitude": float(dp.latitude) if dp.latitude else None,
-                        "longitude": float(dp.longitude) if dp.longitude else None,
-                        "age_group": dp.age_group,
-                        "age_min": dp.age_min,
-                        "age_max": dp.age_max,
-                        "sample_size": dp.sample_size,
-                        "data_type": dp.data_type,
-                        "value": float(dp.value) if dp.value is not None else None,
-                        "unit": dp.unit,
-                        "ci_lower": float(dp.ci_lower) if dp.ci_lower else None,
-                        "ci_upper": float(dp.ci_upper) if dp.ci_upper else None,
-                        "method": dp.method,
-                        "assay": dp.assay,
-                        "population": dp.population,
-                        "collection_year": dp.collection_year,
-                        "source_page": dp.source_page,
-                        "source_context": dp.source_context,
-                        "source_char_start": dp.source_char_start,
-                        "source_char_end": dp.source_char_end,
-                        "is_grounded": bool(dp.is_grounded) if dp.is_grounded else False,
-                        "estimate_type": dp.estimate_type or "primary",
-                        "confidence": dp.confidence or "medium",
-                        "review_status": dp.review_status or "pending",
-                    })
-
-        literatures_json = []
-        for lit in items:
-            entry = {
-                "title": lit.title,
-                "title_en": lit.title_en,
-                "authors": lit.authors,
-                "journal": lit.journal,
-                "pub_year": lit.pub_year,
-                "doi": lit.doi,
-                "pmid": lit.pmid,
-                "abstract": lit.abstract,
-                "keywords": lit.keywords if lit.keywords else [],
-                "region": lit.region,
-                "province": lit.province,
-                "publication_types": lit.publication_types if lit.publication_types else [],
-                "source_db": lit.source_db,
-                "extraction_status": lit.extraction_status or "pending",
-                "extracted_count": lit.extracted_count or 0,
-                "approved_count": lit.approved_count or 0,
-            }
-            if include_data_points:
-                entry["data_points"] = dp_map.get(str(lit.id), [])
-            literatures_json.append(entry)
-
-        export_data = {
-            "export_version": "1.0",
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "include_data_points": include_data_points,
-            "literature_count": len(literatures_json),
-            "data_point_count": sum(len(dps) for dps in dp_map.values()) if include_data_points else 0,
-            "literatures": literatures_json,
-        }
-
-        content = json.dumps(export_data, ensure_ascii=False, indent=2, default=str)
-        return Response(
-            content=content.encode("utf-8"),
-            media_type="application/json; charset=utf-8",
-            headers={"Content-Disposition": "attachment; filename*=UTF-8''literatures_export.json"},
-        )
-
-    # ── Excel 格式（两个 sheet：文献 + 数据点）──
-    if format == "xlsx":
-        from openpyxl import Workbook
-
-        wb = Workbook()
-
-        # Sheet 1: 文献列表
-        ws1 = wb.active
-        ws1.title = "文献列表"
-        ws1.append([
-            "标题", "英文标题", "作者", "期刊", "出版年份", "DOI", "PMID",
-            "省份", "提取状态", "审核通过数", "数据点总数", "创建时间",
-        ])
-        for lit in items:
-            ws1.append([
-                lit.title, lit.title_en, lit.authors, lit.journal, lit.pub_year,
-                lit.doi, lit.pmid, lit.province, lit.extraction_status,
-                lit.approved_count, lit.extracted_count,
-                lit.created_at.strftime("%Y-%m-%d %H:%M") if lit.created_at else "",
-            ])
-
-        # Sheet 2: 数据点（如果请求包含）
-        if include_data_points:
-            ws2 = wb.create_sheet("数据点")
-            ws2.append([
-                "文献标题", "疾病", "省份", "城市", "数据类型", "数值", "单位",
-                "CI下限", "CI上限", "样本量", "年龄下限", "年龄上限", "采集年份",
-                "人群", "检测方法", "assay", "置信度", "审核状态", "估计类型",
-            ])
-            lit_ids = [lit.id for lit in items]
-            if lit_ids:
-                dp_result = await db.execute(
-                    select(DataPoint).where(DataPoint.literature_id.in_(lit_ids))
-                    .order_by(DataPoint.created_at)
-                )
-                # 构建标题查找表
-                title_map = {str(lit.id): lit.title for lit in items}
-                for dp in dp_result.scalars().all():
-                    ws2.append([
-                        title_map.get(str(dp.literature_id), ""),
-                        dp.disease, dp.province, dp.city, dp.data_type,
-                        float(dp.value) if dp.value is not None else None,
-                        dp.unit,
-                        float(dp.ci_lower) if dp.ci_lower else None,
-                        float(dp.ci_upper) if dp.ci_upper else None,
-                        dp.sample_size, dp.age_min, dp.age_max,
-                        dp.collection_year, dp.population, dp.method, dp.assay,
-                        dp.confidence, dp.review_status, dp.estimate_type,
-                    ])
-
-        output = io.BytesIO()
-        wb.save(output)
-        return Response(
-            content=output.getvalue(),
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": "attachment; filename*=UTF-8''literatures_export.xlsx"},
-        )
-
-    raise HTTPException(status_code=400, detail=f"不支持的导出格式: {format}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return Response(
+        content=payload["content"],
+        media_type=payload["media_type"],
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{payload['filename']}"},
+    )
 
 
 @router.post("/literatures/import", response_model=ApiResponse, summary="导入文献数据", description="从JSON导出文件导入文献及数据点，自动检测重复文献，支持跳过重复或创建新记录，保留原有的审核状态")
@@ -499,152 +333,19 @@ async def import_literatures(
 
     try:
         content = await file.read()
-        data = json.loads(content.decode("utf-8"))
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"JSON 解析失败: {e}")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"文件读取失败: {e}")
-
-    literatures = data.get("literatures", [])
-    if not literatures:
-        raise HTTPException(status_code=400, detail="文件中未找到文献数据")
-
-    imported_count = 0
-    skipped_count = 0
-    dp_imported_count = 0
-    errors: list[dict] = []
-    imported_titles: list[str] = []
-
-    for idx, lit_data in enumerate(literatures):
-        try:
-            title = lit_data.get("title", "").strip()
-            if not title:
-                errors.append({"index": idx, "reason": "标题为空"})
-                continue
-
-            doi = lit_data.get("doi") or None
-            if doi:
-                doi = doi.strip() or None
-
-            # 重复检测
-            existing = None
-            if doi:
-                result = await db.execute(
-                    select(Literature).where(Literature.doi == doi)
-                )
-                existing = result.scalar_one_or_none()
-
-            if not existing:
-                result = await db.execute(
-                    select(Literature).where(Literature.title == title)
-                )
-                existing = result.scalar_one_or_none()
-
-            if existing:
-                if skip_duplicates:
-                    skipped_count += 1
-                    logger.info(f"[Import] 跳过重复文献: title={title}")
-                    continue
-                # 不跳过则更新已有记录的元数据
-                existing.pub_year = lit_data.get("pub_year") or existing.pub_year
-                existing.province = lit_data.get("province") or existing.province
-                existing.journal = lit_data.get("journal") or existing.journal
-                existing.authors = lit_data.get("authors") or existing.authors
-                existing.abstract = lit_data.get("abstract") or existing.abstract
-                existing.extraction_status = lit_data.get("extraction_status") or existing.extraction_status
-                existing.extracted_count = lit_data.get("extracted_count") or existing.extracted_count
-                existing.approved_count = lit_data.get("approved_count") or existing.approved_count
-                existing.updated_at = datetime.now(timezone.utc)
-                await db.flush()
-                lit_id = existing.id
-                imported_count += 1
-                imported_titles.append(title)
-            else:
-                # 创建新文献记录
-                literature = Literature(
-                    title=title,
-                    title_en=lit_data.get("title_en"),
-                    authors=lit_data.get("authors"),
-                    journal=lit_data.get("journal"),
-                    pub_year=lit_data.get("pub_year"),
-                    doi=doi,
-                    pmid=lit_data.get("pmid"),
-                    abstract=lit_data.get("abstract"),
-                    keywords=lit_data.get("keywords") if lit_data.get("keywords") else None,
-                    region=lit_data.get("region"),
-                    province=lit_data.get("province"),
-                    publication_types=lit_data.get("publication_types") if lit_data.get("publication_types") else None,
-                    source_db=lit_data.get("source_db") or "import",
-                    file_path=None,
-                    extraction_status=lit_data.get("extraction_status") or "done",
-                    extracted_count=lit_data.get("extracted_count") or 0,
-                    approved_count=lit_data.get("approved_count") or 0,
-                )
-                db.add(literature)
-                await db.flush()
-                lit_id = literature.id
-                imported_count += 1
-                imported_titles.append(title)
-
-            # 导入数据点
-            data_points = lit_data.get("data_points", [])
-            for dp_data in data_points:
-                dp = DataPoint(
-                    literature_id=lit_id,
-                    disease=dp_data.get("disease"),
-                    region=dp_data.get("region"),
-                    province=dp_data.get("province"),
-                    city=dp_data.get("city"),
-                    latitude=dp_data.get("latitude"),
-                    longitude=dp_data.get("longitude"),
-                    age_group=dp_data.get("age_group"),
-                    age_min=dp_data.get("age_min"),
-                    age_max=dp_data.get("age_max"),
-                    sample_size=dp_data.get("sample_size"),
-                    data_type=dp_data.get("data_type"),
-                    value=dp_data.get("value"),
-                    unit=dp_data.get("unit"),
-                    ci_lower=dp_data.get("ci_lower"),
-                    ci_upper=dp_data.get("ci_upper"),
-                    method=dp_data.get("method"),
-                    assay=dp_data.get("assay"),
-                    population=dp_data.get("population"),
-                    collection_year=dp_data.get("collection_year"),
-                    source_page=dp_data.get("source_page"),
-                    source_context=dp_data.get("source_context"),
-                    source_char_start=dp_data.get("source_char_start"),
-                    source_char_end=dp_data.get("source_char_end"),
-                    is_grounded=dp_data.get("is_grounded", False),
-                    estimate_type=dp_data.get("estimate_type") or "primary",
-                    confidence=dp_data.get("confidence") or "medium",
-                    review_status=dp_data.get("review_status") or "pending",
-                )
-                db.add(dp)
-                dp_imported_count += 1
-
-            await db.flush()
-
-        except Exception as e:
-            logger.error(f"[Import] 导入第 {idx} 条文献失败: {e}", exc_info=True)
-            errors.append({"index": idx, "title": lit_data.get("title", ""), "reason": str(e)[:200]})
-            await db.rollback()
-
-    await db.commit()
-
-    logger.info(
-        f"[Import] 导入完成: 文献 {imported_count} 篇, 跳过 {skipped_count} 篇, "
-        f"数据点 {dp_imported_count} 个, 失败 {len(errors)} 条"
-    )
+        result = await import_literatures_from_json(db, content, skip_duplicates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     return ApiResponse(
-        message=f"导入完成：成功 {imported_count} 篇文献，{dp_imported_count} 个数据点，跳过 {skipped_count} 篇重复",
+        message=f"导入完成：成功 {result['imported_count']} 篇文献，{result['data_point_count']} 个数据点，跳过 {result['skipped_count']} 篇重复",
         data={
-            "imported_count": imported_count,
-            "skipped_count": skipped_count,
-            "data_point_count": dp_imported_count,
-            "error_count": len(errors),
-            "errors": errors[:20],
-            "imported_titles": imported_titles[:20],
+            "imported_count": result["imported_count"],
+            "skipped_count": result["skipped_count"],
+            "data_point_count": result["data_point_count"],
+            "error_count": result["error_count"],
+            "errors": result["errors"],
+            "imported_titles": result["imported_titles"],
         },
     )
 
@@ -656,6 +357,22 @@ class ImportReferencesBody(BaseModel):
     fmt: str = "auto"  # 格式：auto / ris / enw / pubmed / wos / woscsv / duxiu，auto 时自动探测
 
 
+@router.post("/literatures/import-references/preview", response_model=ApiResponse, summary="预览题录导入", description="解析题录文本并统计总条数、重复条数、可导入条数，不写入数据库")
+async def import_references_preview(
+    body: ImportReferencesBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """预览题录导入：解析文本并统计，不写入数据库。"""
+    try:
+        result = await preview_import_references(db, body.ref_text, body.fmt)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ApiResponse(
+        message=f"解析完成：共 {result['total']} 条，重复/跳过 {result['skipped']} 条，可导入 {result['imported']} 条",
+        data=result,
+    )
+
+
 @router.post("/literatures/import-references", response_model=ApiResponse, summary="导入题录文件", description="解析 RIS / EndNote(.enw) / PubMed 文本 / WoS 纯文本 / WoS CSV / 读秀超星 题录并批量导入文献库，自动跳过标题为空与已存在的重复记录")
 async def import_references(
     body: ImportReferencesBody,
@@ -664,80 +381,21 @@ async def import_references(
     """解析题录文本并入库。
 
     - 格式自动探测（reference_parser.parse_references，支持 fmt 显式指定）
-    - 每条记录映射统一字段：title/authors/journal/year/doi/keywords 直接映射；
-      source_db 取 parsed["source"]（pubmed/cnki/wos/duxiu）；source_id 取 pmid（为空则用 doi）
-    - 跳过条件：标题为空；source_id（pmid，兜底 doi）已存在
-    - 复用 create_literature 入库
+    - source_db 取解析 source，source_id 取 pmid（为空则用 doi）
+    - 跳过条件：标题为空；source_id（pmid，兜底 doi）或归一化标题已存在
+    - 复用 service 层 create_literature 入库
     """
-    ref_text = (body.ref_text or "").strip()
-    if not ref_text:
-        raise HTTPException(status_code=400, detail="题录文本为空")
-
-    refs = parse_references(ref_text, body.fmt)
-    if not refs:
-        raise HTTPException(status_code=400, detail="未解析到有效题录（支持 RIS / EndNote / PubMed / WoS / 读秀超星 格式）")
-
-    imported = 0
-    skipped = 0
-    errors: list[dict] = []
-    for idx, ref in enumerate(refs):
-        title = (ref.get("title") or "").strip()
-        if not title:
-            skipped += 1
-            errors.append({"index": idx, "reason": "标题为空"})
-            continue
-        try:
-            # 来源标识：source_id = pmid（为空则用 doi），用于查重
-            pmid = (ref.get("pmid") or "").strip() or None
-            doi = (ref.get("doi") or "").strip() or None
-            source_id = pmid or doi
-            existing = None
-            if source_id:
-                if pmid:
-                    r = await db.execute(select(Literature).where(Literature.pmid == pmid))
-                    existing = r.scalar_one_or_none()
-                if not existing and doi:
-                    r = await db.execute(select(Literature).where(Literature.doi == doi))
-                    existing = r.scalar_one_or_none()
-            if not existing:
-                existing = await _find_existing_by_title(db, title)
-            if existing:
-                skipped += 1
-                logger.info(f"[ImportReferences] 跳过重复文献: title={title}, source_id={source_id}")
-                continue
-
-            year_str = (ref.get("year") or "").strip()
-            pub_year = int(year_str) if year_str.isdigit() else None
-            # 关键词：分号分隔的字符串 → 列表
-            kw_str = (ref.get("keywords") or "").strip()
-            keywords_list = [k.strip() for k in re.split(r"[;；]", kw_str) if k.strip()] if kw_str else None
-            await create_literature(
-                db,
-                LiteratureCreate(
-                    title=title,
-                    authors=(ref.get("authors") or "").strip() or None,
-                    journal=(ref.get("journal") or "").strip() or None,
-                    pub_year=pub_year,
-                    doi=doi,
-                    pmid=pmid,
-                    abstract=(ref.get("abstract") or "").strip() or None,
-                    keywords=keywords_list,
-                    source_db=(ref.get("source") or "cnki"),
-                ),
-            )
-            imported += 1
-        except Exception as e:
-            logger.error(f"[ImportReferences] 第 {idx} 条入库失败: {e}", exc_info=True)
-            errors.append({"index": idx, "title": title, "reason": str(e)[:200]})
-
-    logger.info(f"[ImportReferences] 导入完成: 解析 {len(refs)} 条, 导入 {imported} 条, 跳过 {skipped} 条, 失败 {len(errors)} 条")
+    try:
+        result = await import_references_from_text(db, body.ref_text, body.fmt)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return ApiResponse(
-        message=f"导入完成：成功 {imported} 篇，跳过 {skipped} 篇（重复或标题为空）",
+        message=f"导入完成：成功 {result['imported']} 篇，跳过 {result['skipped']} 篇（重复或标题为空）",
         data={
-            "imported": imported,
-            "skipped": skipped,
-            "total": len(refs),
-            "errors": errors[:20],
+            "imported": result["imported"],
+            "skipped": result["skipped"],
+            "total": result["total"],
+            "errors": result["errors"],
         },
     )
 
@@ -755,113 +413,27 @@ async def batch_import_from_folder(
     - 已存在且有文件的文献 → 跳过
     - 不存在的文献 → 新建记录 + 可选 AI 提取
     """
-    folder = Path(folder_path)
-    if not folder.exists() or not folder.is_dir():
-        raise HTTPException(status_code=400, detail=f"文件夹不存在: {folder_path}")
-
-    # 收集所有支持的文件
-    supported_exts = {".pdf", ".caj", ".doc", ".docx", ".txt", ".epub", ".pptx", ".xlsx", ".ps", ".wps", ".md"}
-    all_files = [f for f in sorted(folder.iterdir()) if f.is_file() and f.suffix.lower() in supported_exts]
-    if not all_files:
-        raise HTTPException(status_code=400, detail=f"文件夹中未找到支持的文件类型（{', '.join(sorted(supported_exts))}）")
-
-    logger.info(f"[batch-import] 开始批量导入: folder={folder_path}, total={len(all_files)} files")
-
-    matched = 0       # 匹配到已有文献且关联文件
-    imported = 0      # 新建文献记录
-    skipped = 0       # 已有文献且已有文件
-    failed = 0        # 导入失败
-    extraction_triggered = 0
-    details: list[dict] = []
-
-    for file_path in all_files:
-        filename = file_path.name
-        try:
-            file_bytes = file_path.read_bytes()
-        except Exception as e:
-            logger.error(f"[batch-import] 读取文件失败: {filename}, error={e}")
-            failed += 1
-            details.append({"filename": filename, "status": "read_error", "error": str(e)})
-            continue
-
-        # 判断是否已匹配——先查标题
-        clean_title = _clean_filename_title(filename)
-
-        # 查询已有文献（返回 tuple: (Literature, action)）
-        try:
-            lit, action = await upload_literature(db, file_bytes, filename)
-        except Exception as e:
-            logger.error(f"[batch-import] 导入出错: {filename}, error={e}", exc_info=True)
-            failed += 1
-            details.append({"filename": filename, "status": "import_error", "error": str(e)[:200]})
-            continue
-
-        if lit is None:
-            failed += 1
-            details.append({"filename": filename, "status": "import_failed", "reason": "upload_literature 返回 None"})
-            continue
-
-        # 根据 action 判断处理结果
-        if action == "new":
-            imported += 1
-            details.append({
-                "filename": filename, "status": "imported", "literature_id": str(lit.id),
-                "title": lit.title,
-            })
-            if trigger_extraction_after:
-                try:
-                    await trigger_extraction(db, lit.id)
-                    extraction_triggered += 1
-                except Exception as e:
-                    logger.warning(f"[batch-import] 触发提取失败: id={lit.id}, error={e}")
-        elif action == "matched":
-            matched += 1
-            details.append({
-                "filename": filename, "status": "matched", "literature_id": str(lit.id),
-                "title": lit.title,
-            })
-        elif action == "skipped":
-            skipped += 1
-            details.append({
-                "filename": filename, "status": "skipped_has_file", "literature_id": str(lit.id),
-                "title": lit.title,
-            })
-        else:
-            failed += 1
-            details.append({
-                "filename": filename, "status": "unknown", "literature_id": str(lit.id),
-                "error": f"未知 action: {action}",
-            })
-
-    await db.commit()
+    try:
+        result = await batch_import_files_from_folder(db, folder_path, trigger_extraction_after)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     parts = []
-    if matched:
-        parts.append(f"关联 {matched} 篇")
-    if imported:
-        parts.append(f"新建 {imported} 篇")
-    if skipped:
-        parts.append(f"跳过 {skipped} 篇（已有文件）")
-    if failed:
-        parts.append(f"失败 {failed} 个")
+    if result["matched"]:
+        parts.append(f"关联 {result['matched']} 篇")
+    if result["imported"]:
+        parts.append(f"新建 {result['imported']} 篇")
+    if result["skipped"]:
+        parts.append(f"跳过 {result['skipped']} 篇（已有文件）")
+    if result["failed"]:
+        parts.append(f"失败 {result['failed']} 个")
     message = "批量导入完成：" + "，".join(parts)
-    if extraction_triggered:
-        message += f"，已触发 {extraction_triggered} 篇 AI 提取"
+    if result["extraction_triggered"]:
+        message += f"，已触发 {result['extraction_triggered']} 篇 AI 提取"
 
-    logger.info(f"[batch-import] {message}")
-
-    return ApiResponse(
-        message=message,
-        data={
-            "matched": matched,
-            "imported": imported,
-            "skipped": skipped,
-            "failed": failed,
-            "extraction_triggered": extraction_triggered,
-            "total": len(all_files),
-            "details": details[:100],
-        },
-    )
+    return ApiResponse(message=message, data=result)
 
 
 @router.post("/literatures/batch-upload-files", response_model=ApiResponse, summary="批量上传文件", description="从浏览器上传多个文件批量导入，自动匹配已有文献或新建文献记录，与文件夹导入逻辑相同但文件从浏览器上传")
@@ -874,110 +446,25 @@ async def batch_upload_files(
 
     与 batch_import_from_folder 逻辑相同，但文件从浏览器上传而非服务器本地路径。
     """
-    all_files = [f for f in files if f.filename]
-    supported_exts = {".pdf", ".caj", ".doc", ".docx", ".txt", ".epub", ".pptx", ".xlsx", ".ps", ".wps", ".md"}
-    valid_files = [f for f in all_files if Path(f.filename or "").suffix.lower() in supported_exts]
-    if not valid_files:
-        raise HTTPException(status_code=400, detail="未找到支持的文件类型")
-
-    logger.info(f"[batch-upload-files] 开始批量上传: total_received={len(all_files)}, valid={len(valid_files)}")
-
-    matched = 0
-    imported = 0
-    skipped = 0
-    failed = 0
-    extraction_triggered = 0
-    details: list[dict] = []
-
-    for file in valid_files:
-        filename = file.filename or "unknown"
-        try:
-            file_bytes = await file.read()
-        except Exception as e:
-            logger.error(f"[batch-upload-files] 读取文件失败: {filename}, error={e}")
-            failed += 1
-            details.append({"filename": filename, "status": "read_error", "error": str(e)})
-            continue
-
-        if len(file_bytes) > settings.MAX_UPLOAD_SIZE:
-            logger.warning(f"[batch-upload-files] 文件超限: {filename}, size={len(file_bytes)}")
-            failed += 1
-            details.append({"filename": filename, "status": "file_too_large", "error": f"文件超过大小限制"})
-            continue
-
-        try:
-            lit, action = await upload_literature(db, file_bytes, filename)
-        except Exception as e:
-            logger.error(f"[batch-upload-files] 导入出错: {filename}, error={e}", exc_info=True)
-            failed += 1
-            details.append({"filename": filename, "status": "import_error", "error": str(e)[:200]})
-            continue
-
-        if lit is None:
-            failed += 1
-            details.append({"filename": filename, "status": "import_failed", "reason": "upload_literature 返回 None"})
-            continue
-
-        if action == "new":
-            imported += 1
-            details.append({
-                "filename": filename, "status": "imported", "literature_id": str(lit.id),
-                "title": lit.title,
-            })
-            if trigger_extraction_after:
-                try:
-                    await trigger_extraction(db, lit.id)
-                    extraction_triggered += 1
-                except Exception as e:
-                    logger.warning(f"[batch-upload-files] 触发提取失败: id={lit.id}, error={e}")
-        elif action == "matched":
-            matched += 1
-            details.append({
-                "filename": filename, "status": "matched", "literature_id": str(lit.id),
-                "title": lit.title,
-            })
-        elif action == "skipped":
-            skipped += 1
-            details.append({
-                "filename": filename, "status": "skipped_has_file", "literature_id": str(lit.id),
-                "title": lit.title,
-            })
-        else:
-            failed += 1
-            details.append({
-                "filename": filename, "status": "unknown", "literature_id": str(lit.id),
-                "error": f"未知 action: {action}",
-            })
-
-    await db.commit()
+    try:
+        result = await batch_import_uploaded_files(db, files, trigger_extraction_after)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     parts = []
-    if matched:
-        parts.append(f"关联 {matched} 篇")
-    if imported:
-        parts.append(f"新建 {imported} 篇")
-    if skipped:
-        parts.append(f"跳过 {skipped} 篇（已有文件）")
-    if failed:
-        parts.append(f"失败 {failed} 个")
+    if result["matched"]:
+        parts.append(f"关联 {result['matched']} 篇")
+    if result["imported"]:
+        parts.append(f"新建 {result['imported']} 篇")
+    if result["skipped"]:
+        parts.append(f"跳过 {result['skipped']} 篇（已有文件）")
+    if result["failed"]:
+        parts.append(f"失败 {result['failed']} 个")
     message = "批量导入完成：" + "，".join(parts)
-    if extraction_triggered:
-        message += f"，已触发 {extraction_triggered} 篇 AI 提取"
+    if result["extraction_triggered"]:
+        message += f"，已触发 {result['extraction_triggered']} 篇 AI 提取"
 
-    logger.info(f"[batch-upload-files] {message}")
-
-    return ApiResponse(
-        message=message,
-        data={
-            "matched": matched,
-            "imported": imported,
-            "skipped": skipped,
-            "failed": failed,
-            "extraction_triggered": extraction_triggered,
-            "total": len(valid_files),
-            "details": details[:100],
-        },
-    )
+    return ApiResponse(message=message, data=result)
 
 
 @router.get("/literatures/{literature_id}", response_model=ApiResponse, summary="获取文献详情", description="根据文献ID获取单篇文献的详细信息")
@@ -1063,14 +550,28 @@ async def batch_delete(
 ):
     if not req.literature_ids:
         raise HTTPException(status_code=400, detail="未提供要删除的文献ID")
-    deleted = 0
-    for lit_id in req.literature_ids:
-        try:
-            if await delete_literature(db, lit_id):
-                deleted += 1
-        except Exception as e:
-            logger.warning(f"[文献] 批量删除失败跳过: id={lit_id}, err={e}")
+    deleted = await batch_delete_literatures(db, req.literature_ids)
     return ApiResponse(message=f"成功删除 {deleted} 篇文献")
+
+
+@router.post("/literatures/cleanup-empty", response_model=ApiResponse, summary="清理无文档无摘要文献", description="删除既无文档文件又无摘要内容的文献记录，支持 dry_run 预览")
+async def cleanup_empty(
+    dry_run: bool = True,
+    db: AsyncSession = Depends(get_db),
+):
+    """清理既无文档又无摘要的文献记录。
+
+    - dry_run=true（默认）：只统计不删除
+    - dry_run=false：执行删除
+    """
+    result = await cleanup_empty_literatures(db, dry_run=dry_run)
+    if dry_run:
+        count = result["preview_count"]
+        if count == 0:
+            return ApiResponse(message="没有需要清理的文献（所有文献均有文档或摘要）", data=result)
+        return ApiResponse(message=f"发现 {count} 篇既无文档又无摘要的文献，可清理删除", data=result)
+    deleted = result["deleted_count"]
+    return ApiResponse(message=f"成功清理 {deleted} 篇既无文档又无摘要的文献", data=result)
 
 
 @router.get("/literatures/{literature_id}/file", summary="预览文献文件", description="返回文件流供前端预览（仅PDF支持浏览器内预览，其余格式前端会禁用预览按钮）")
@@ -1161,7 +662,7 @@ async def open_literature_folder(
         raise HTTPException(status_code=500, detail=f"文件路径解析失败: {e}")
 
     try:
-        _reveal_in_host_file_manager(resolved, folder)
+        reveal_in_host_file_manager(resolved, folder)
     except Exception as e:
         logger.error(f"[打开文件夹] 打开文件夹失败: id={literature_id}, path={resolved}, err={e}")
         raise HTTPException(status_code=500, detail=f"打开文件夹失败: {e}")
@@ -1172,198 +673,6 @@ async def open_literature_folder(
         "path": resolved,
         "folder": folder,
     })
-
-
-def _reveal_in_host_file_manager(resolved: str, folder: str) -> None:
-    """在宿主机上定位并选中文件（Windows 资源管理器 / macOS Finder / WSL 间调）。
-
-    关键点：
-    - Windows 资源管理器的 `/select,<路径>` 必须作为单个参数传入（中间不能有空格），
-      否则 explorer 无法正确识别并选中目标文件；此处分三段尝试，任一成功即返回。
-    - 后端可能运行在 WSL(Linux) 中：此时可通过 WSL 互操作将 Linux 路径转成 Windows
-      路径并调用 explorer.exe，从而在 Windows 宿主机上打开资源管理器并选中该文件。
-    - 若当前环境无法打开图形文件管理器（如无头服务器），不抛出未处理异常：
-      直接返回，由调用方给出文件路径提示。
-    """
-    if sys.platform == "win32":
-        # 原生 Windows：先 explorer /select 定位选中，失败则用关联程序打开所在目录
-        try:
-            subprocess.Popen(
-                ["explorer", f"/select,{resolved}"],
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            return
-        except Exception as e:  # pragma: no cover
-            logger.warning(f"[打开文件夹] explorer 选中失败({e})，回退为打开目录")
-        try:
-            os.startfile(folder)  # type: ignore[attr-defined]
-            return
-        except Exception as e:  # pragma: no cover
-            logger.warning(f"[打开文件夹] os.startfile 失败({e})，按环境处理")
-    elif sys.platform == "darwin":
-        # macOS：在 Finder 中显示
-        subprocess.Popen(["open", "-R", resolved])
-        return
-    else:
-        # 非 Windows / macOS：可能是 WSL(Linux) 或 Linux 桌面
-        win_path = _to_windows_path(resolved)
-        logger.info(f"[打开文件夹] WSL分支: sys.platform={sys.platform}, uid={os.getuid()}, resolved={resolved}, win_path={win_path}")
-        if win_path:
-            # WSL 环境下调用 explorer.exe 打开 Windows 资源管理器并选中文件
-            #
-            # 关键问题1：后端可能以 root 运行（sudo uvicorn），而 WSL interop 在 root 下
-            #   调用 Windows GUI 程序时无法在交互式桌面会话中显示窗口。
-            #   解决：若为 root，通过 runuser 切换到 WSL 默认非 root 用户再调用。
-            #
-            # 关键问题2：uvicorn 进程继承的 WSL_INTEROP socket 可能来自已失效的终端会话，
-            #   虽然 socket 文件仍在、explorer.exe 能启动，但窗口不会在当前桌面显示。
-            #   解决：优先使用 WSL 主会话的 interop socket（/run/WSL/1_interop 或 2_interop），
-            #   该 socket 始终关联当前的 Windows 交互式桌面会话。
-            interop_socket = _find_active_wsl_interop()
-            logger.info(f"[打开文件夹] interop_socket={interop_socket or '(继承当前)'}")
-
-            runuser = _get_wsl_runuser_prefix()
-            username = runuser[2] if runuser else None
-            if username:
-                cmd = ["runuser", "-u", username, "--", "explorer.exe", f"/select,{win_path}"]
-                logger.info(f"[打开文件夹] root用户，使用runuser({username})调用")
-            else:
-                cmd = ["explorer.exe", f"/select,{win_path}"]
-                logger.info(f"[打开文件夹] 非root用户，直接调用explorer.exe")
-            try:
-                env = os.environ.copy()
-                if interop_socket:
-                    env["WSL_INTEROP"] = interop_socket
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=env,
-                )
-                logger.info(f"[打开文件夹] explorer.exe 已启动: pid={proc.pid}")
-                return
-            except Exception as e:
-                logger.warning(f"[打开文件夹] explorer.exe 启动失败({e})")
-        try:
-            subprocess.Popen(["xdg-open", folder])
-            return
-        except Exception as e:  # pragma: no cover
-            logger.warning(f"[打开文件夹] xdg-open 失败({e})，当前环境无可用文件管理器")
-
-
-def _to_windows_path(path: str) -> str | None:
-    """将 Linux/WSL 路径转换为 Windows 盘符路径（如 /mnt/e/... -> E:\\...）。
-
-    仅在 WSL/Linux 且存在 wslpath 工具时返回 Windows 路径，否则返回 None。
-    """
-    try:
-        out = subprocess.run(
-            ["wslpath", "-w", path],
-            capture_output=True, text=True, timeout=10,
-        )
-        win = (out.stdout or "").strip()
-        return win if win else None
-    except Exception:  # pragma: no cover
-        return None
-
-
-def _get_wsl_runuser_prefix() -> list[str] | None:
-    """若当前进程以 root 运行且处于 WSL 环境，返回 runuser 命令前缀以切换到非 root 用户。
-
-    WSL interop 在 root 用户下调用 Windows GUI 程序（如 explorer.exe）时，
-    程序虽能启动但无法在交互式桌面会话中显示窗口。
-    通过 runuser 切换到 WSL 默认用户即可解决此问题。
-
-    返回示例: ["runuser", "-u", "liux", "--"]
-    非 root 或找不到合适用户时返回 None。
-    """
-    if os.getuid() != 0:
-        return None
-    # 查找 WSL 默认非 root 用户：优先从 who 命令获取当前登录用户
-    try:
-        out = subprocess.run(["who"], capture_output=True, text=True, timeout=5)
-        for line in (out.stdout or "").strip().splitlines():
-            username = line.split()[0] if line.split() else ""
-            if username and username != "root":
-                return ["runuser", "-u", username, "--"]
-    except Exception:  # pragma: no cover
-        pass
-    # 回退：从 /run/user 目录查找 uid>=1000 的用户
-    try:
-        import glob
-        for uid_dir in sorted(glob.glob("/run/user/*")):
-            uid_str = uid_dir.split("/")[-1]
-            if uid_str.isdigit() and int(uid_str) >= 1000:
-                import pwd
-                pw = pwd.getpwuid(int(uid_str))
-                if pw and pw.pw_name != "root":
-                    return ["runuser", "-u", pw.pw_name, "--"]
-    except Exception:  # pragma: no cover
-        pass
-    return None
-
-
-def _find_active_wsl_interop() -> str | None:
-    """查找当前 WSL 主会话的 interop socket 路径。
-
-    背景：每个 WSL 终端会话都会在 /run/WSL/ 下创建一个 <pid>_interop Unix socket，
-    用于 Linux <-> Windows 互操作（调用 explorer.exe 等）。uvicorn 进程继承的
-    WSL_INTEROP 可能来自一个已失效或非交互式的终端会话——socket 文件仍在、
-    explorer.exe 能启动，但窗口不会在当前 Windows 桌面显示。
-
-    WSL 主会话（PID 2 的 /init 进程）的 interop socket 始终关联当前的
-    Windows 交互式桌面会话，因此优先使用它。
-
-    查找顺序：
-      1. /run/WSL/1_interop（WSL 主会话的标准符号链接）
-      2. /run/WSL/2_interop（PID 2 的 /init 进程对应的 socket）
-      3. /run/WSL/ 下数字最小且对应 /init 进程仍存活的 socket
-      4. 返回 None（由调用方继承当前进程环境）
-    """
-    import glob as _glob
-
-    candidates: list[str] = []
-
-    # 优先1：标准符号链接 1_interop -> 2_interop
-    link = "/run/WSL/1_interop"
-    if os.path.islink(link):
-        target = os.path.realpath(link)
-        if os.path.exists(target):
-            candidates.append(target)
-
-    # 优先2：PID 2 的 /init 对应的 socket
-    candidates.append("/run/WSL/2_interop")
-
-    # 优先3：所有 <pid>_interop socket，按 pid 数字升序
-    try:
-        sockets = []
-        for path in _glob.glob("/run/WSL/*_interop"):
-            name = os.path.basename(path)
-            pid_str = name.replace("_interop", "")
-            if pid_str.isdigit():
-                sockets.append((int(pid_str), path))
-        sockets.sort(key=lambda x: x[0])
-        for _, path in sockets:
-            if path not in candidates:
-                candidates.append(path)
-    except Exception:  # pragma: no cover
-        pass
-
-    # 返回第一个存在且为 socket 的候选
-    for path in candidates:
-        try:
-            if stat_is_socket(path):
-                return path
-        except Exception:
-            continue
-    return None
-
-
-def stat_is_socket(path: str) -> bool:
-    """判断路径是否为一个有效的 Unix socket 文件。"""
-    import stat as _stat
-    st = os.stat(path)
-    return _stat.S_ISSOCK(st.st_mode)
 
 
 @router.get("/literatures/{literature_id}/source-text", response_model=ApiResponse, summary="获取文献溯源文本", description="返回文献的提取文本，支持按字符区间截取，供溯源查看高亮使用，可以获取全文或指定区间的片段")

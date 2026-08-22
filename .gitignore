@@ -17,6 +17,7 @@ backend/.pytest_cache/
 frontend/dist/
 frontend/npm-output.txt
 frontend/tsconfig.tsbuildinfo
+frontend/coverage/
 
 # 测试监控文件夹
 backend/data/test_monitor/
@@ -42,6 +43,15 @@ out.txt
 # 临时开发/测试脚本
 backend/check_*.py
 backend/test_*.py
+
+# 根目录下划线前缀临时脚本（浏览器自动化/调试/暂存）
+_*.py
+_*.json
+_*.sh
+_*.txt
+_*.ps1
+_browser_work/
+import_*.py
 
 # 临时脚本与调试文件（防止今后再混入版本控制）
 # 根目录/backend scripts 目录下的临时脚本

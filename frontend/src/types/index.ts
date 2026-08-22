@@ -85,6 +85,11 @@ export interface DataPoint {
   collection_year: number | null;
   confidence: string;
   review_status: string;
+  // 数据点审核：审核意见、审核人、审核时间
+  review_comment?: string | null;
+  reviewer_id?: string | null;
+  reviewer_name?: string | null;
+  reviewed_at?: string | null;
   // 质量分级（审核通过后异步打分写入；breakdown 为元数据级实时明细）
   quality_score?: number | null;
   quality_grade?: string | null;
@@ -240,6 +245,29 @@ export interface ReportRecord {
   personnel_count?: number;
   generated_at: string;
   content?: string;
+}
+
+// ===== 报告模板 =====
+
+export interface ReportSection {
+  title: string;
+  type: 'text' | 'chart' | 'table' | 'kpi';
+  content_template?: string;
+  order: number;
+  analysis?: 'trend' | 'region' | 'age_curve' | 'disease';
+  data?: 'province' | 'year' | 'age' | 'disease';
+  kpi?: string[];
+}
+
+export interface ReportTemplate {
+  id: string;
+  name: string;
+  report_type: 'antibody_analysis' | 'vaccination_strategy';
+  sections: ReportSection[];
+  is_default: boolean;
+  desc?: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 // ===== 远程模型配置 =====
@@ -993,6 +1021,31 @@ export interface CoverageReviewOverview {
 export interface CoverageReviewResult {
   overview: CoverageReviewOverview;
   diseases: CoverageReviewDisease[];
+}
+
+// ===== 审核统计（/analysis/review-stats）=====
+
+export interface ReviewStatsBucket {
+  reviewed: number;
+  approved: number;
+  rejected: number;
+  pass_rate: number; // 0-1
+  avg_review_minutes: number | null;
+}
+
+export interface ReviewStatsByDisease extends ReviewStatsBucket {
+  disease: string;
+}
+
+export interface ReviewStatsByReviewer extends ReviewStatsBucket {
+  reviewer_id: string;
+  reviewer_name: string;
+}
+
+export interface ReviewStatsResult {
+  grand_total: ReviewStatsBucket;
+  by_disease: ReviewStatsByDisease[];
+  by_reviewer: ReviewStatsByReviewer[];
 }
 
 // ===== 抗原图谱（滴度矩阵制图 /analysis/antigenic-map）=====

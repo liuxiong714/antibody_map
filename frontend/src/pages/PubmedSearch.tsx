@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Button, Card, Input, Select, Space, Table, Upload, message } from 'antd';
+import { Button, Card, Input, Modal, Select, Space, Table, Upload, message } from 'antd';
 import { DownloadOutlined, FileTextOutlined, ImportOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import api from '../services/api';
@@ -131,7 +131,7 @@ const PubmedSearchPage: React.FC = () => {
     }
   };
 
-  // 导入题录文件（RIS / EndNote / PubMed 文本 / WoS），读取文本后按所选来源上传
+  // 导入题录文件（RIS / EndNote / PubMed 文本 / WoS），先预览再确认
   const handleImportReferences = async (file: File) => {
     if (!file) return false;
     try {
@@ -141,12 +141,46 @@ const PubmedSearchPage: React.FC = () => {
         return false;
       }
       setImportingRef(true);
+      // 1. 预览：统计总条数、重复条数、可导入条数
+      const previewResp = await api.post('/literatures/import-references/preview', {
+        ref_text: refText,
+        fmt: REF_FMT_MAP[refFmt] || 'auto',
+      });
+      const previewData = previewResp.data as { total?: number; skipped?: number; imported?: number } || {};
+      const total = previewData.total ?? 0;
+      const skipped = previewData.skipped ?? 0;
+      const imported = previewData.imported ?? 0;
+
+      // 2. 显示确认对话框
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Modal.confirm({
+          title: '确认导入题录',
+          content: (
+            <div style={{ lineHeight: 2 }}>
+              <p>本次共解析 <strong>{total}</strong> 条题录记录</p>
+              <p>其中重复/无效 <strong>{skipped}</strong> 条（自动剔除）</p>
+              <p>实际将导入 <strong style={{ color: '#1890ff' }}>{imported}</strong> 条</p>
+            </div>
+          ),
+          okText: `确认导入 ${imported} 条`,
+          cancelText: '取消',
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false),
+        });
+      });
+
+      if (!confirmed) {
+        setImportingRef(false);
+        return false;
+      }
+
+      // 3. 执行实际导入
       const resp = await api.post('/literatures/import-references', {
         ref_text: refText,
         fmt: REF_FMT_MAP[refFmt] || 'auto',
       });
-      const data = resp.data as { imported?: number; skipped?: number; total?: number };
-      message.success(`成功导入 ${data.imported ?? 0} 篇，跳过 ${data.skipped ?? 0} 篇`);
+      const data = resp.data as { imported?: number; skipped?: number; total?: number } || {};
+      message.success(`成功导入 ${data.imported ?? 0} 篇，跳过 ${data.skipped ?? 0} 篇（共 ${data.total ?? 0} 条）`);
     } catch (err: any) {
       message.error(err?.response?.data?.detail || '导入题录失败，请检查文件格式');
     } finally {

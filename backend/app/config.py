@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     LLM_FEEDBACK_FEW_SHOT: bool = True
     LLM_FEEDBACK_FEW_SHOT_COUNT: int = 5
 
+    # ===== 提取结果缓存（降低 LLM API 成本）=====
+    # 是否启用 Redis 提取结果缓存（命中时跳过 LLM 调用直接重建数据点）
+    EXTRACTION_CACHE_ENABLED: bool = True
+    # 缓存有效期（小时），默认 7 天
+    EXTRACTION_CACHE_TTL_HOURS: int = 168
+
     # Database (默认值适用于 Docker Compose 本地开发环境)
     DATABASE_URL: str = "postgresql+asyncpg://antibody:antibody123@localhost:5432/antibody_map"
 
@@ -119,6 +125,8 @@ class Settings(BaseSettings):
     # Celery
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
+    # Prometheus 指标采集的 Celery 队列（逗号分隔，默认 celery），用于 queue_depth 指标
+    CELERY_QUEUES: str = "celery"
 
     # OCR
     BAIDU_OCR_API_KEY: str = ""
@@ -134,9 +142,16 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.13.1"
+    APP_VERSION: str = "1.15.0"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
+
+    # ===== Prometheus 指标 =====
+    # 是否启用 /metrics 端点与指标采集；关闭后 endpoint 不注册且访问返回 403
+    METRICS_ENABLED: bool = True
+    # 非开发环境下允许访问 /metrics 的客户端 IP（逗号分隔）。
+    # 留空表示仅开发环境(APP_ENV==development)可访问，生产环境默认拒绝
+    METRICS_ALLOW_IPS: str = ""
 
     @model_validator(mode="after")
     def _validate_constraints(self) -> "Settings":

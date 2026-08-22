@@ -335,7 +335,7 @@ def _parse_pubmed(text: str) -> list[dict]:
     - 摘要（可能跨行，遇到 Copyright / © / DOI: / PMID: / 利益冲突 结束）
     - DOI: / PMCID: / PMID: 等尾部字段
 
-    记录头识别：以 "^\d{1,2}\. " 开头的行，且序号须从 1 起连续递增，
+    记录头识别：以 "^\d{1,4}\. " 开头的行，且序号须从 1 起连续递增，
     避免摘要正文中形如 "26."（引用行续行）或 "2. In addition, ..."（摘要句子）
     被误判为记录头。
     """
@@ -344,7 +344,7 @@ def _parse_pubmed(text: str) -> list[dict]:
     if not text:
         return records
 
-    header_re = re.compile(r"(?m)^(\d{1,2}\.\s+)")
+    header_re = re.compile(r"(?m)^(\d{1,4}\.\s+)")
     starts = []      # 记录头起始位置
     expected = None  # 期望的下一条记录序号（从 1 起连续）
     for m in header_re.finditer(text):

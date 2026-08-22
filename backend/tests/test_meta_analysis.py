@@ -384,7 +384,7 @@ class TestRefactoredCells:
         ]
         db = FakeDB(rows)
         out = asyncio_run(get_region_compare(db=db, disease="measles"))
-        gd = next(r for r in out if r["province"] == "广东")
+        gd = next(r for r in out["regions"] if r["province"] == "广东")
         assert gd["avg_positivity"] is not None
         assert "rate_weighted_legacy" in gd
         assert gd["meta"]["k"] == 2
@@ -397,8 +397,9 @@ class TestRefactoredCells:
         ]
         db = FakeDB(rows)
         out = asyncio_run(get_age_stratify(db=db, disease="measles"))
-        assert len(out) == 1
-        row = out[0]
+        ag = out["age_groups"]
+        assert len(ag) == 1
+        row = ag[0]
         assert row["avg_positivity"] is not None
         assert "rate_weighted_legacy" in row
         assert row["meta"]["k"] == 2

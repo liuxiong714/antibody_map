@@ -11,7 +11,7 @@ class TestLLMExtractor:
         assert extractor.model == "deepseek-chat"
 
     @pytest.mark.asyncio
-    @patch("app.core.llm_extractor.AsyncOpenAI")
+    @patch("app.core.extraction.llm_client.AsyncOpenAI")
     async def test_extract_with_mock_response(self, mock_openai):
         mock_client = AsyncMock()
         mock_response = MagicMock()
@@ -42,7 +42,7 @@ class TestLLMExtractor:
         assert result[0]["positivity_rate"] == 87.3
 
     @pytest.mark.asyncio
-    @patch("app.core.llm_extractor.AsyncOpenAI")
+    @patch("app.core.extraction.llm_client.AsyncOpenAI")
     async def test_extract_with_invalid_json(self, mock_openai):
         mock_client = AsyncMock()
         mock_response = MagicMock()
@@ -60,7 +60,7 @@ class TestLLMExtractor:
         assert result == []
 
     @pytest.mark.asyncio
-    @patch("app.core.llm_extractor.AsyncOpenAI")
+    @patch("app.core.extraction.llm_client.AsyncOpenAI")
     async def test_extract_with_json_code_block(self, mock_openai):
         mock_client = AsyncMock()
         mock_response = MagicMock()
@@ -79,7 +79,7 @@ class TestLLMExtractor:
         assert result[0]["disease_name"] == "measles"
 
     @pytest.mark.asyncio
-    @patch("app.core.llm_extractor.AsyncOpenAI")
+    @patch("app.core.extraction.llm_client.AsyncOpenAI")
     async def test_extract_with_missing_key_fields(self, mock_openai):
         mock_client = AsyncMock()
         mock_response = MagicMock()

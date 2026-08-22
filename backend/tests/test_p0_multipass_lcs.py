@@ -98,9 +98,29 @@ def test_fuzzy_match_short_ctx():
 
 # ========== 3. ground_extraction 集成测试 ==========
 
-def test_ground_extraction_with_ocr_noise():
-    """ground_extraction 集成：OCR 噪声文本仍能 grounding 成功"""
+def test_ground_extraction_rejects_corrupted_number():
+    """OCR 把数值小数点识别成全角句号（87.3 → 87。3）时数值回验失败 → 拒绝 grounded
+
+    字符级上下文虽匹配上，但 validate_numeric_grounding 在原文中定位不到 87.3，
+    出于安全兜底将结果标记为未 grounded 并降级置信度。
+    """
     source_text = "本研究在广东省开展，共检测样本1234例，阳性者1082例，阳性率87。3%。"
+    extract_item = {
+        "positivity_rate": 87.3,
+        "province": "广东",
+        "sample_size": 1234,
+    }
+    source_context = "阳性率87。3%"
+    result = ground_extraction(source_text, source_context, extract_item)
+    # 数值回验拒绝：关键数值在原文中无法精确定位 → 不标记为 grounded
+    assert not result.is_grounded, "OCR 损坏数值应被数值回验拒绝"
+    assert extract_item["is_grounded"] is False
+    print(f"✓ test_ground_extraction_rejects_corrupted_number (method={result.method})")
+
+
+def test_ground_extraction_with_ocr_noise():
+    """ground_extraction 集成：上下文边缘含 OCR 噪声（插入字）但数值完整 → 仍可 grounding"""
+    source_text = "本研究在广东省开展，共检测样本1234例，阳性者1082例，检测出的阳性率为87.3%。"
     extract_item = {
         "positivity_rate": 87.3,
         "province": "广东",
@@ -108,7 +128,7 @@ def test_ground_extraction_with_ocr_noise():
     }
     source_context = "阳性率87.3%"
     result = ground_extraction(source_text, source_context, extract_item)
-    assert result.is_grounded, "OCR 噪声场景应能 grounding"
+    assert result.is_grounded, "数值完整的 OCR 噪声场景应能 grounding"
     assert result.source_char_start is not None
     assert result.source_char_end is not None
     print(f"✓ test_ground_extraction_with_ocr_noise (method={result.method})")

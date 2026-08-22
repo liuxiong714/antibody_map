@@ -1,7 +1,12 @@
 import React from 'react';
-import { Card, Row, Col, Button, Input, Select, Divider, InputNumber } from 'antd';
-import { FileTextOutlined } from '@ant-design/icons';
+import { Card, Row, Col, Button, Input, Select, Divider, InputNumber, Space } from 'antd';
+import { FileTextOutlined, ProfileOutlined } from '@ant-design/icons';
 import ProvinceSelector from './ProvinceSelector';
+
+interface TemplateOption {
+  value: string;
+  label: string;
+}
 
 interface Props {
   taskType: string;
@@ -13,6 +18,9 @@ interface Props {
   personnelVaccinationHistory: string;
   strategyTitle: string;
   loading: boolean;
+  templateId?: string;
+  templates?: TemplateOption[];
+  isAdmin?: boolean;
   onTaskTypeChange: (v: string) => void;
   onTaskTimeChange: (v: string) => void;
   onTaskLocationChange: (v: string) => void;
@@ -21,17 +29,19 @@ interface Props {
   onPersonnelAgeChange: (v: string) => void;
   onPersonnelVaccinationHistoryChange: (v: string) => void;
   onStrategyTitleChange: (v: string) => void;
+  onTemplateChange?: (v: string) => void;
+  onManageTemplates?: () => void;
   onGenerate: () => void;
 }
 
 const StrategyReportForm: React.FC<Props> = ({
   taskType, taskTime, taskLocation, personnelCount,
   personnelGender, personnelAge, personnelVaccinationHistory,
-  strategyTitle, loading,
+  strategyTitle, loading, templateId, templates = [], isAdmin = false,
   onTaskTypeChange, onTaskTimeChange, onTaskLocationChange,
   onPersonnelCountChange, onPersonnelGenderChange, onPersonnelAgeChange,
   onPersonnelVaccinationHistoryChange, onStrategyTitleChange,
-  onGenerate,
+  onTemplateChange, onManageTemplates, onGenerate,
 }) => (
   <Card title="任务信息配置" style={{ marginBottom: 16 }}>
     <Row gutter={[16, 12]}>
@@ -83,6 +93,25 @@ const StrategyReportForm: React.FC<Props> = ({
     <Row style={{ marginTop: 16 }}>
       <Col>
         <Button type="primary" icon={<FileTextOutlined />} onClick={onGenerate} loading={loading}>生成疫苗接种策略报告</Button>
+      </Col>
+    </Row>
+    <Divider style={{ margin: '12px 0' }} />
+    <Row>
+      <Col span={24}>
+        <Space wrap>
+          <Select
+            value={templateId || undefined}
+            onChange={onTemplateChange}
+            style={{ width: 300 }}
+            placeholder="选择报告模板（默认使用默认模板）"
+            prefix={<ProfileOutlined />}
+            allowClear
+            options={templates}
+          />
+          {isAdmin && (
+            <Button icon={<ProfileOutlined />} onClick={onManageTemplates}>管理模板</Button>
+          )}
+        </Space>
       </Col>
     </Row>
   </Card>

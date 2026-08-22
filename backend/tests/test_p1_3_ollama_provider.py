@@ -26,7 +26,11 @@ def test_ollama_config_exists():
     """OLLAMA_API_KEY / OLLAMA_BASE_URL 在 settings 中有默认值"""
     assert hasattr(settings, "OLLAMA_API_KEY")
     assert hasattr(settings, "OLLAMA_BASE_URL")
-    assert settings.OLLAMA_BASE_URL == "http://localhost:11434/v1"
+    # OLLAMA_BASE_URL 指向 Ollama OpenAI 兼容端点（主机随运行环境变化：
+    # 本地为 localhost，容器/WSL 内为网关 IP 如 172.27.96.1）
+    assert settings.OLLAMA_BASE_URL.startswith("http")
+    assert ":11434" in settings.OLLAMA_BASE_URL
+    assert settings.OLLAMA_BASE_URL.endswith("/v1")
     assert settings.OLLAMA_API_KEY == "ollama"
     print("✓ test_ollama_config_exists")
 
@@ -35,14 +39,14 @@ def test_ollama_config_exists():
 def test_ollama_model_prefix_resolution():
     """ollama/, llama, mistral, gemma, glm4, phi → OLLAMA 配置"""
     test_cases = [
-        ("ollama/llama3", "ollama", "http://localhost:11434/v1"),
-        ("llama3", "ollama", "http://localhost:11434/v1"),
-        ("llama3:8b", "ollama", "http://localhost:11434/v1"),
-        ("mistral", "ollama", "http://localhost:11434/v1"),
-        ("mistral:7b", "ollama", "http://localhost:11434/v1"),
-        ("gemma:2b", "ollama", "http://localhost:11434/v1"),
-        ("glm4", "ollama", "http://localhost:11434/v1"),
-        ("phi3", "ollama", "http://localhost:11434/v1"),
+        ("ollama/llama3", "ollama", settings.OLLAMA_BASE_URL),
+        ("llama3", "ollama", settings.OLLAMA_BASE_URL),
+        ("llama3:8b", "ollama", settings.OLLAMA_BASE_URL),
+        ("mistral", "ollama", settings.OLLAMA_BASE_URL),
+        ("mistral:7b", "ollama", settings.OLLAMA_BASE_URL),
+        ("gemma:2b", "ollama", settings.OLLAMA_BASE_URL),
+        ("glm4", "ollama", settings.OLLAMA_BASE_URL),
+        ("phi3", "ollama", settings.OLLAMA_BASE_URL),
     ]
     for model, expected_key, expected_url in test_cases:
         key, url = LLMExtractor._resolve_api_config(model)
@@ -76,7 +80,7 @@ def test_instance_resolved_attributes():
     """实例创建后 _resolved_key/_resolved_url 正确"""
     # Ollama 模型
     ext = LLMExtractor(model="llama3")
-    assert ext._resolved_url == "http://localhost:11434/v1"
+    assert ext._resolved_url == settings.OLLAMA_BASE_URL
     assert ext._resolved_key == "ollama"
     assert ext.model == "llama3"
 
@@ -165,7 +169,7 @@ def test_fallback_http_uses_resolved_url():
             captured_url["url"] = url
             return FakeResponse()
 
-    with patch("app.core.llm_extractor.httpx.AsyncClient", FakeClient):
+    with patch("app.core.extraction.llm_client.httpx.AsyncClient", FakeClient):
         result = asyncio.run(ext._fallback_http_call("test"))
 
     assert "my-ollama:11434" in captured_url["url"], \
@@ -202,7 +206,7 @@ def test_fallback_http_skips_response_format_for_ollama():
             captured_payload.update(json or {})
             return FakeResponse()
 
-    with patch("app.core.llm_extractor.httpx.AsyncClient", FakeClient):
+    with patch("app.core.extraction.llm_client.httpx.AsyncClient", FakeClient):
         asyncio.run(ext._fallback_http_call("test"))
 
     assert "response_format" not in captured_payload, \

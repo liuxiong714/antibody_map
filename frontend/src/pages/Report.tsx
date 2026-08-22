@@ -4,8 +4,9 @@ import { FileTextOutlined, EyeOutlined, DownloadOutlined, HistoryOutlined, Exper
 import AntibodyReportForm from '../components/AntibodyReportForm';
 import StrategyReportForm from '../components/StrategyReportForm';
 import ReportContentView from '../components/ReportContentView';
-import { generateReport, generateVaccinationStrategy, listReports, getDownloadUrl, updateReport, deleteReport, getReport } from '../services/map';
-import { ReportData, ReportRecord } from '../types';
+import TemplateManager from '../components/TemplateManager';
+import { generateReport, generateVaccinationStrategy, listReports, getDownloadUrl, updateReport, deleteReport, getReport, listTemplates } from '../services/map';
+import { ReportData, ReportRecord, ReportTemplate } from '../types';
 import dayjs from 'dayjs';
 
 const Report: React.FC = () => {
@@ -48,6 +49,43 @@ const Report: React.FC = () => {
   // Delete state
   const [deleting, setDeleting] = useState(false);
 
+  // ---- 模板相关 state ----
+  const [templates, setTemplates] = useState<ReportTemplate[]>([]);
+  const [templateId, setTemplateId] = useState<string | undefined>(undefined);
+  const [templateManagerVisible, setTemplateManagerVisible] = useState(false);
+  const [isAdminFlag, setIsAdminFlag] = useState(false);
+
+  useEffect(() => {
+    setIsAdminFlag(
+      localStorage.getItem('is_admin') === 'true' || sessionStorage.getItem('is_admin') === 'true'
+    );
+  }, []);
+
+  const fetchTemplates = useCallback(async (type: 'antibody_analysis' | 'vaccination_strategy') => {
+    try {
+      const data = await listTemplates(type);
+      setTemplates(data);
+      // 若当前已选模板不匹配当前类型，重置
+      if (templateId && !data.some((t) => t.id === templateId)) setTemplateId(undefined);
+    } catch (err) {
+      console.error('[Report] 加载模板失败:', err);
+    }
+  }, [templateId]);
+
+  useEffect(() => {
+    // 切换 Tab 时刷新对应类型模板
+    fetchTemplates(activeTab === 'strategy' ? 'vaccination_strategy' : 'antibody_analysis');
+  }, [activeTab, fetchTemplates]);
+
+  const templateOptions = templates.map((t) => ({
+    value: t.id,
+    label: (t.is_default ? '★ ' : '') + t.name,
+  }));
+
+  const handleFetchTemplates = () => {
+    fetchTemplates(activeTab === 'strategy' ? 'vaccination_strategy' : 'antibody_analysis');
+  };
+
   const fetchHistory = useCallback(async () => {
     setHistoryLoading(true);
     try {
@@ -69,6 +107,7 @@ const Report: React.FC = () => {
       if (province) params.province = province;
       if (title) params.title = title;
       if (model) params.model = model;
+      if (templateId) params.template_id = templateId;
       const resp = await generateReport(params);
       setReport(resp);
       message.success('报告生成成功');
@@ -99,6 +138,7 @@ const Report: React.FC = () => {
         personnel_vaccination_history: personnelVaccinationHistory,
       };
       if (strategyTitle) body.title = strategyTitle;
+      if (templateId) body.template_id = templateId;
       const resp = await generateVaccinationStrategy(body);
       setReport(resp);
       message.success('疫苗接种策略报告生成成功');
@@ -219,9 +259,12 @@ const Report: React.FC = () => {
               <AntibodyReportForm
                 disease={disease} dataType={dataType} province={province}
                 language={language} title={title} model={model} loading={loading}
+                templateId={templateId} templates={templateOptions} isAdmin={isAdminFlag}
                 onDiseaseChange={setDisease} onDataTypeChange={setDataType}
                 onProvinceChange={setProvince} onLanguageChange={setLanguage}
                 onTitleChange={setTitle} onModelChange={setModel}
+                onTemplateChange={(v) => setTemplateId(v || undefined)}
+                onManageTemplates={() => setTemplateManagerVisible(true)}
                 onGenerate={handleGenerateAntibody}
               />
             ),
@@ -235,11 +278,15 @@ const Report: React.FC = () => {
                 personnelCount={personnelCount} personnelGender={personnelGender}
                 personnelAge={personnelAge} personnelVaccinationHistory={personnelVaccinationHistory}
                 strategyTitle={strategyTitle} loading={strategyLoading}
+                templateId={templateId} templates={templateOptions} isAdmin={isAdminFlag}
                 onTaskTypeChange={setTaskType} onTaskTimeChange={setTaskTime}
                 onTaskLocationChange={setTaskLocation} onPersonnelCountChange={setPersonnelCount}
                 onPersonnelGenderChange={setPersonnelGender} onPersonnelAgeChange={setPersonnelAge}
                 onPersonnelVaccinationHistoryChange={setPersonnelVaccinationHistory}
-                onStrategyTitleChange={setStrategyTitle} onGenerate={handleGenerateStrategy}
+                onStrategyTitleChange={setStrategyTitle}
+                onTemplateChange={(v) => setTemplateId(v || undefined)}
+                onManageTemplates={() => setTemplateManagerVisible(true)}
+                onGenerate={handleGenerateStrategy}
               />
             ),
           },
@@ -344,6 +391,13 @@ const Report: React.FC = () => {
           }}
         />
       </Modal>
+
+      <TemplateManager
+        visible={templateManagerVisible}
+        reportType={activeTab === 'strategy' ? 'vaccination_strategy' : 'antibody_analysis'}
+        onClose={() => setTemplateManagerVisible(false)}
+        onSaved={handleFetchTemplates}
+      />
     </>
   );
 };

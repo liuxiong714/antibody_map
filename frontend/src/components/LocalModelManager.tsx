@@ -110,6 +110,7 @@ const LocalModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
       <Modal
         title={editing ? '编辑本地模型' : '添加本地模型'}
         open={formVisible}
+        forceRender
         onCancel={() => setFormVisible(false)}
         onOk={handleSave}
         confirmLoading={saving}

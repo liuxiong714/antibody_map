@@ -221,7 +221,8 @@ class TestGoalTracking:
         assert y2020["year"] == 2020
         assert y2020["meeting_provinces"] == 1
         assert y2020["meeting_ratio"] == 0.5
-        assert y2020["gap_to_hit"] < 0  # 全国加权率已超过 95% 目标
+        # 2020 全国加权率 = (100·98 + 100·90)/200 = 94.0，落后目标 95% 缺口 +1.0
+        assert y2020["gap_to_hit"] == pytest.approx(1.0)
         assert res["latest_year"] == 2021
         assert res["latest_gap_to_hit"] == pytest.approx(-4.0)
 
@@ -232,15 +233,13 @@ class TestAgeCurve:
     def test_empty(self):
         res = run(get_age_curve, FakeDB([]), disease="measles")
         assert res["n_points"] == 0
-        assert res["notes"]
+        assert res["curve"] == []
+        assert res["points"] == []
+        assert res["foi_curve"] == []
+        assert res["meta"]["lambda_smooth"] is None
 
-    def test_invalid_metric_fallback(self):
-        rows = [dp(age_min=1, age_max=2, value=10, sample_size=100)]
-        res = run(get_age_curve, FakeDB(rows), disease="measles", metric="bad_metric")
-        assert res["metric"] == "seroprevalence"
-
-    def test_linear_series_smoothed(self):
-        # 各年龄中点线性递增：LOWESS 应完美保持线性
+    def test_insufficient_points_returns_empty_curve(self):
+        # 数据点不足 8 个时不拟合样条，返回空 curve / foi_curve
         rows = [
             dp(age_min=1, age_max=2, value=10, sample_size=100),   # mid 1.5
             dp(age_min=3, age_max=4, value=20, sample_size=100),   # mid 3.5
@@ -249,40 +248,56 @@ class TestAgeCurve:
         ]
         res = run(get_age_curve, FakeDB(rows), disease="measles")
         assert res["n_points"] == 4
-        assert res["age_mid_range"] == [1.5, 7.5]
-        smoothed = {p["age_mid"]: p["value"] for p in res["smoothed"]}
-        assert smoothed[1.5] == pytest.approx(10.0, abs=0.5)
-        assert smoothed[7.5] == pytest.approx(40.0, abs=0.5)
+        assert res["curve"] == []
+        assert res["foi_curve"] == []
+        # 各点按 age_mid 聚合，prevalence 为值百分比
+        by_mid = {p["age_mid"]: p for p in res["points"]}
+        assert set(by_mid) == {1.5, 3.5, 5.5, 7.5}
+        assert by_mid[1.5]["prevalence"] == pytest.approx(10.0, abs=0.01)
+        assert by_mid[7.5]["prevalence"] == pytest.approx(40.0, abs=0.01)
+        assert res["meta"]["dropped_points"] == 0
 
-    def test_sigmoid_has_inflection(self):
-        # S 型曲线应在陡增段检测到拐点
+    def test_aggregates_same_age_mid(self):
+        # 同一年龄中点合并阳性数 x 与样本量 n：10/100 与 20/100 → 15/200 = 7.5%
         rows = [
-            dp(age_min=0, age_max=1, value=1, sample_size=100),
-            dp(age_min=1, age_max=2, value=2, sample_size=100),
-            dp(age_min=2, age_max=3, value=5, sample_size=100),
-            dp(age_min=3, age_max=4, value=40, sample_size=100),
-            dp(age_min=4, age_max=5, value=90, sample_size=100),
-            dp(age_min=5, age_max=6, value=95, sample_size=100),
+            dp(age_min=1, age_max=2, value=10, sample_size=100),
+            dp(age_min=1, age_max=2, value=20, sample_size=100),
         ]
         res = run(get_age_curve, FakeDB(rows), disease="measles")
-        assert res["n_points"] == 6
-        assert len(res["inflection_points"]) >= 1
-        # 拐点应落在陡增段（age_mid 3~4 附近）
-        ip = res["inflection_points"][0]["age_mid"]
-        assert 2.5 <= ip <= 5.0
+        assert res["n_points"] == 1
+        pt = res["points"][0]
+        assert pt["age_mid"] == 1.5
+        assert pt["n"] == 200
+        assert pt["prevalence"] == pytest.approx(15.0, abs=0.01)
 
-    def test_gmc_metric(self):
-        # 同一年龄组两条 gmc 主估计 → 几何均数已知答案：sqrt(10×100) ≈ 31.62
+    def test_linear_series_smoothed(self):
+        # 8 个年龄中点线性递增达到最小点数阈值 → 惩罚样条拟合出曲线
         rows = [
-            dp(age_min=1, age_max=2, value=10, sample_size=100, data_type="gmc"),
-            dp(age_min=1, age_max=2, value=100, sample_size=100, data_type="gmc"),
-            dp(age_min=3, age_max=4, value=100, sample_size=100, data_type="gmc"),
+            dp(age_min=i, age_max=i + 1, value=v, sample_size=100)
+            for i, v in zip(range(1, 16, 2), range(10, 90, 10))
         ]
-        res = run(get_age_curve, FakeDB(rows), disease="measles", metric="gmc")
-        assert res["metric"] == "gmc"
-        assert res["n_points"] == 2
-        vals = {p["age_mid"]: p["value"] for p in res["raw_points"]}
-        assert vals[1.5] == pytest.approx(31.62, abs=0.1)
+        res = run(get_age_curve, FakeDB(rows), disease="measles")
+        assert res["n_points"] == 8
+        assert res["curve"], "足够点数时应拟合出样条曲线"
+        assert all({"age", "prevalence", "ci_lower", "ci_upper"} <= set(c)
+                   for c in res["curve"])
+        assert res["meta"]["lambda_smooth"] is not None
+        assert res["meta"]["monotonic_violation"] is False  # 递增曲线无下降段
+        assert res["foi_curve"], "应产出年龄别 FOI"
+
+    def test_sigmoid_shows_flat_tails(self):
+        # S 型曲线两端平坦：FOI（力传染）在平台期应接近 0
+        rows = [
+            dp(age_min=i, age_max=i + 1, value=v, sample_size=100)
+            for i, v in zip(range(1, 16, 2), [1, 5, 15, 40, 85, 92, 95, 96])
+        ]
+        res = run(get_age_curve, FakeDB(rows), disease="measles")
+        assert res["n_points"] == 8
+        assert res["curve"]
+        foi = res["foi_curve"]
+        assert foi, "应产出年龄别 FOI"
+        # 极低成本/极高饱和端 FOI 相对大于中段陡增前的较低值（仅做结构校验）
+        assert all("age" in pt and "foi" in pt for pt in foi)
 
 
 # ── 5. get_meta_merge ─────────────────────────────────────

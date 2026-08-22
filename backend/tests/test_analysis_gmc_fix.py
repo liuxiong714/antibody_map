@@ -69,5 +69,5 @@ def test_summary_gmc_is_geometric():
 
 def test_age_stratify_gmc_is_geometric():
     res = run(get_age_stratify, FakeDB([_dp(100), _dp(2000), _dp(30000)]))
-    gmcs = [r["avg_gmc"] for r in res if r["avg_gmc"] is not None]
+    gmcs = [r["avg_gmc"] for r in res["age_groups"] if r["avg_gmc"] is not None]
     assert gmcs and gmcs[0] == pytest.approx(1817.12, rel=1e-2)
