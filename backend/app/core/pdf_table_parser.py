@@ -15,6 +15,9 @@ import logging
 import io
 from typing import Optional
 
+from app.config import settings
+from app.core.processors import anydoc_parser
+
 logger = logging.getLogger("uvicorn")
 
 try:
@@ -82,6 +85,19 @@ def extract_tables_markdown(file_bytes: bytes, max_pages: int = 50) -> str:
         Markdown 表格文本，无表格或失败时返回空串。
         每个表格前会有一个 "### 表格 N (页码 M)" 的小标题。
     """
+    # AnyDoc 增强路径：其 GFM Markdown 天然含高质量表格，直接作为 tables_md 注入。
+    # 成功则返回；失败/超时/不可用返回空串并回退 pdfplumber 提取。
+    if (
+        getattr(settings, "ENABLE_ANYDOC", False)
+        and anydoc_parser.is_available()
+        and anydoc_parser.supports(".pdf")
+    ):
+        md = anydoc_parser.to_markdown_bytes(file_bytes, ".pdf")
+        if md and anydoc_parser.contains_table(md):
+            logger.info(f"[表格提取] 解析路径=AnyDoc，Markdown 含表格: {len(md)} 字符")
+            return md
+        logger.info("[表格提取] 回退=pdfplumber（AnyDoc 无表格或失败）")
+
     if not HAS_PDFPLUMBER:
         logger.debug("[表格提取] pdfplumber 不可用，跳过")
         return ""

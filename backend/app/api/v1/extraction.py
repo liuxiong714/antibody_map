@@ -192,7 +192,7 @@ async def start_batch_extraction(
     for lit_id_str in req.literature_ids:
         try:
             lit_id = uuid.UUID(lit_id_str)
-            # 检查文献存在且状态非 processing
+            # 检查文献存在且状态非 processing 或 queued
             result = await db.execute(
                 select(Literature).where(Literature.id == lit_id)
             )
@@ -204,8 +204,8 @@ async def start_batch_extraction(
             if not literature.file_path and not literature.abstract:
                 skipped.append({"id": lit_id_str, "title": literature.title, "reason": "既无 PDF 也无摘要，无法提取"})
                 continue
-            if literature.extraction_status == "processing":
-                skipped.append({"id": lit_id_str, "title": literature.title, "reason": "正在提取中，跳过"})
+            if literature.extraction_status in ("processing", "queued"):
+                skipped.append({"id": lit_id_str, "title": literature.title, "reason": f"当前状态 {literature.extraction_status}，跳过"})
                 continue
 
             # 触发提取
@@ -944,14 +944,14 @@ async def get_history(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse, summary="批量重置卡住的提取", description="批量重置所有卡在processing状态的文献为failed，用于服务器重启后恢复状态")
+@router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse, summary="批量重置卡住的提取", description="批量重置所有卡在processing或queued状态的文献为failed，用于服务器重启后恢复状态")
 async def reset_stuck_extractions(db: AsyncSession = Depends(get_db)):
-    """批量重置所有卡在 'processing' 状态的文献为 'failed'。
+    """批量重置所有卡在 'processing' 或 'queued' 状态的文献为 'failed'。
 
     典型场景：服务器重启后，之前的异步提取任务已丢失但状态未更新。
     """
     result = await db.execute(
-        select(Literature).where(Literature.extraction_status == "processing")
+        select(Literature).where(Literature.extraction_status.in_(["processing", "queued"]))
     )
     stuck_list = result.scalars().all()
 
@@ -973,3 +973,54 @@ async def reset_stuck_extractions(db: AsyncSession = Depends(get_db)):
         message=f"已重置 {len(stuck_list)} 篇卡住的提取状态为失败",
         data={"reset_count": len(stuck_list), "literature_ids": reset_ids},
     )
+
+
+# ── 提取队列状态查询 ──────────────────────────────────
+
+@router.get("/extractions/queue-status", response_model=ApiResponse, summary="查询提取队列状态", description="查询当前AI提取队列状态：待处理数、排队中数、提取中数等，以及排队中的文献列表")
+async def get_extraction_queue_status(db: AsyncSession = Depends(get_db)):
+    """查询AI提取队列状态，用于前端展示当前工作负载"""
+    # 各状态计数
+    count_result = await db.execute(
+        select(Literature.extraction_status, func.count(Literature.id))
+        .where(Literature.deleted_at.is_(None))
+        .group_by(Literature.extraction_status)
+    )
+    counts = {row[0]: row[1] for row in count_result.fetchall()}
+
+    # 排队中的文献列表（queued）
+    queued_result = await db.execute(
+        select(Literature.id, Literature.title)
+        .where(Literature.extraction_status == "queued")
+        .where(Literature.deleted_at.is_(None))
+        .order_by(Literature.updated_at)
+        .limit(100)
+    )
+    queued_list = [
+        {"id": str(row[0]), "title": row[1] or ""}
+        for row in queued_result.fetchall()
+    ]
+
+    # 提取中的文献列表（processing）
+    processing_result = await db.execute(
+        select(Literature.id, Literature.title)
+        .where(Literature.extraction_status == "processing")
+        .where(Literature.deleted_at.is_(None))
+        .order_by(Literature.updated_at)
+        .limit(100)
+    )
+    processing_list = [
+        {"id": str(row[0]), "title": row[1] or ""}
+        for row in processing_result.fetchall()
+    ]
+
+    return ApiResponse(data={
+        "pending_count": counts.get("pending", 0),
+        "queued_count": counts.get("queued", 0),
+        "processing_count": counts.get("processing", 0),
+        "done_count": counts.get("done", 0) + counts.get("done_no_data", 0),
+        "failed_count": counts.get("failed", 0),
+        "total": sum(counts.values()),
+        "queued_literatures": queued_list,
+        "processing_literatures": processing_list,
+    })

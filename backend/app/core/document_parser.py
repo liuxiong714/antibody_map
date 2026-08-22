@@ -15,8 +15,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from app.config import settings
 from app.core.pdf_parser import extract_text as pdf_extract_text
 from app.core.processors import get_parser
+from app.core.processors import anydoc_parser
 
 logger = logging.getLogger("uvicorn")
 
@@ -64,6 +66,19 @@ def extract_text(file_bytes: bytes, file_ext: str = ".pdf") -> str:
     ext = normalize_ext(file_ext)
     byte_len = len(file_bytes)
     logger.info(f"[文档解析] 开始解析: 格式={ext}, 文件大小={byte_len} 字节")
+
+    # AnyDoc 增强路径（渐进式接入，默认关闭）：扩展名受支持且绑定可用时优先尝试。
+    # 成功则直接用 AnyDoc 的 Markdown；任何异常/超时/不可用返回空字符串，走原逻辑。
+    if (
+        getattr(settings, "ENABLE_ANYDOC", False)
+        and anydoc_parser.is_available()
+        and anydoc_parser.supports(ext)
+    ):
+        md = anydoc_parser.to_markdown_bytes(file_bytes, ext)
+        if md:
+            logger.info(f"[文档解析] 解析路径=AnyDoc, 格式={ext}, 输出={len(md)} 字符")
+            return md
+        logger.info(f"[文档解析] 回退=策略解析器, 格式={ext}（AnyDoc 无有效输出）")
 
     try:
         if ext == ".pdf":

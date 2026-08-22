@@ -51,11 +51,11 @@ async def trigger_extraction(
         raise ValueError("文献既无 PDF 文件也无摘要，无法提取")
 
     # == 竞态防护：检查当前状态，防止重复触发提取 ==
-    if literature.extraction_status == "processing":
-        raise ValueError(f"文献正在提取中（当前状态: processing），请等待完成后再试")
+    if literature.extraction_status in ("processing", "queued"):
+        raise ValueError(f"文献正在提取中（当前状态: {literature.extraction_status}），请等待完成后再试")
 
-    # 更新状态为 processing
-    literature.extraction_status = "processing"
+    # 更新状态为 queued（等待 Celery 工作线程处理）
+    literature.extraction_status = "queued"
     literature.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
@@ -72,7 +72,7 @@ async def trigger_extraction(
 
     return {
         "literature_id": lit_id_str,
-        "status": "processing",
+        "status": "queued",
     }
 
 

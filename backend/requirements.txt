@@ -56,3 +56,8 @@ libpysal>=4.10.0
 
 # 抗原制图（metric MDS：sklearn.manifold.MDS + scipy.spatial.procrustes）
 scikit-learn>=1.5.0
+
+# AnyDoc 文档转 Markdown（firecrawl/anydoc，Python 绑定）。
+# 提升表格 → GFM Markdown 质量，直接提升 LLM 数据提取准确率。
+# 可选依赖：未安装或不可用时代码自动降级到现有策略解析器（ENABLE_ANYDOC 默认关闭）。
+firecrawl-anydoc>=0.1.9

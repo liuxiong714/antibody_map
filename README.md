@@ -36,7 +36,7 @@
 
 ### 支持的文件格式
 
-PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文文献，解析采用**策略模式**：各格式独立解析器 + 统一注册表分发；PDF 可选 **MinerU 增强解析**，结构化输出保留表格/公式，超时自动回退 PyMuPDF）
+PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文文献，解析采用**策略模式**：各格式独立解析器 + 统一注册表分发；PDF 可选 **MinerU 增强解析**，结构化输出保留表格/公式，超时自动回退 PyMuPDF；可选 **AnyDoc 增强解析**（firecrawl/anydoc，Rust 实现），文本层 PDF 优先用 AnyDoc 毫秒级转 GFM Markdown，天然输出高质量表格，失败自动回退现有解析链）
 
 ### 智能特性
 
@@ -60,7 +60,7 @@ PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML（支持中文文献和外文
 | **数据库** | PostgreSQL 15 |
 | **存储** | MinIO 对象存储 / 本地文件系统双模式 |
 | **AI/LLM** | OpenAI SDK 兼容协议，支持 DeepSeek / OpenAI / 通义千问 (Qwen) / **本地 Ollama** 多厂商；JSON Schema 强约束 + 精确字符级溯源；**报告生成支持模型选择**（本地 + 远程 API，可配置 API Key/Base URL）；错误分类 + **URL 候选链自动切换** + 连接类错误短退避快速重试（防网关 IP 漂移导致提取失败） |
-| **文档解析** | 策略模式解析器注册表：PyMuPDF (fitz) + pdfplumber、python-docx、python-pptx、openpyxl、ebooklib、BeautifulSoup、caj2pdf；**MinerU 增强解析**（PDF→结构化 Markdown，仅 worker 容器安装，**子进程隔离执行** + 模型缓存本地化，不拖垮 worker 主进程） |
+| **文档解析** | 策略模式解析器注册表：PyMuPDF (fitz) + pdfplumber、python-docx、python-pptx、openpyxl、ebooklib、BeautifulSoup、caj2pdf；**MinerU 增强解析**（PDF→结构化 Markdown，仅 worker 容器安装，**子进程隔离执行** + 模型缓存本地化，不拖垮 worker 主进程）；**AnyDoc 增强解析**（firecrawl/anydoc，Rust 实现，docx/pptx/xlsx/epub/pdf/html/txt 毫秒级转 GFM Markdown，配置开关 `ENABLE_ANYDOC`，默认关闭，开启后自动回退现有解析链） |
 | **OCR** | Tesseract OCR (中文/英文，自动探测安装路径) + 百度 OCR 云端回退 |
 | **运维** | Docker Compose (PostgreSQL + Redis + MinIO), start.sh / start.ps1 一键启动 |
 
@@ -103,7 +103,7 @@ antibody_map01/
 │   │   │   ├── llm_extractor.py    # LLM 提取器 (多厂商 + 指数退避重试 + 长文档分块并行)
 │   │   │   ├── extraction_grounding.py # 精确字符级溯源 + 强 Schema 校验
 │   │   │   ├── document_parser.py  # 多格式文档解析分发 (策略模式注册表)
-│   │   │   ├── processors/         # 各格式解析器 (docx/pptx/xlsx/epub/html/txt + @register_parser)
+│   │   │   ├── processors/         # 各格式解析器 (docx/pptx/xlsx/epub/html/txt/anydoc + @register_parser)
 │   │   │   ├── pdf_parser.py       # PDF 文本解析 (PyMuPDF, 乱码/空文本自动走 OCR)
 │   │   │   ├── ocr_service.py      # OCR 服务 (Tesseract 本地 + 百度 OCR 云端回退)
 │   │   │   ├── url_fetcher.py      # URL/HTML 网页抓取与标题提取
@@ -795,6 +795,29 @@ MIT
 | `frontend/src/services/literature.ts` | 新增回收站 API：`listTrash` / `restoreLiterature` / `permanentlyDeleteLiterature` / `emptyTrash` |
 | `frontend/src/pages/Literature.tsx` | 新增回收站弹窗（列表/搜索/还原/永久删除/清空）、工具栏回收站按钮 |
 | `README.md` | 核心功能补充回收站/软删除；新增 v1.16.0 变更日志 |
+
+### v1.17.0 (2026-08-22)
+
+#### AnyDoc 文档解析增强（firecrawl/anydoc）
+
+- **AnyDoc 解析器**：新增 `anydoc_parser.py`，基于 firecrawl/anydoc（Rust 实现，Python 绑定），支持 docx/pptx/xlsx/epub/html/txt/pdf 等格式毫秒级转 GFM Markdown，天然输出高质量表格，直接提升 LLM 数据提取准确率。
+- **渐进式接入**：新增 `ENABLE_ANYDOC` 配置项（默认关闭），零回归保证；开启后文本层 PDF 优先用 AnyDoc 解析，失败/超时自动回退现有策略解析器（PyMuPDF/pdfplumber/OCR/MinerU），对扫描件无影响。
+- **表格提取增强**：pdf_table_parser 的 `extract_tables_markdown` 接入 AnyDoc 分支，AnyDoc 的 GFM 表格直接作为 tables_md 注入 LLM，成功结果写入现有 B6 哈希缓存，避免重复解析。
+- **降级链完整**：AnyDoc 失败/超时/不可用 → 依次回退：现有策略解析器 → PDF 的 OCR/MinerU；所有回退路径打印日志区分解析来源（`[解析路径=AnyDoc]` / `[回退=策略解析器]` / `[AnyDoc] 解析失败，回退现有解析链`）。
+- **下载固化**：Dockerfile 三处 pip 安装步骤改用 BuildKit 缓存挂载 `--mount=type=cache,target=/root/.cache/pip`，并去掉 `PIP_NO_CACHE_DIR=1`，首次全量下载后下次重建直接复用，避免反复下载。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/core/processors/anydoc_parser.py` | 新增 AnyDoc 解析器：惰性加载、`is_available` / `supports` / `to_markdown_bytes`（线程+超时降级） / `contains_table` |
+| `backend/app/core/document_parser.py` | `extract_text` 开头增加 AnyDoc 分支，成功打 `[解析路径=AnyDoc]`，失败打 `[回退=策略解析器]` |
+| `backend/app/core/pdf_table_parser.py` | `extract_tables_markdown` 接入 AnyDoc 分支，GFM 表格直供，成功写入 B6 缓存 |
+| `backend/app/config.py` | 新增 `ENABLE_ANYDOC` / `ANYDOC_TIMEOUT` 配置项；APP_VERSION 升级至 1.17.0 |
+| `backend/requirements.txt` | 新增 `firecrawl-anydoc>=0.1.9` |
+| `backend/Dockerfile` | pip 安装改用 BuildKit 缓存挂载，去除 `PIP_NO_CACHE_DIR=1`，固化下载 |
+| `backend/tests/test_anydoc_parser.py` | 新增 AnyDoc 离线单测（mock 绑定成功/失败/零回归/回退等 16 条） |
+| `README.md` | 核心功能补充 AnyDoc 增强解析；新增 v1.17.0 变更日志 |
 
 ### v1.14.0 (2026-08-21)
 

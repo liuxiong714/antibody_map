@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     # MinerU 解析超时（秒）。首次解析需下载模型，CPU/GPU 推理较慢，超时后回退 PyMuPDF
     MINERU_PARSE_TIMEOUT: int = 600
 
+    # AnyDoc 文档解析增强（firecrawl/anydoc：任意文档 → GFM Markdown，表格质量高）。
+    # 默认关闭，保证与现有解析行为完全一致（零回归）。开启后先试 AnyDoc，
+    # 失败/超时自动回退现有策略解析器（PDF 走 PyMuPDF/OCR/MinerU）。
+    ENABLE_ANYDOC: bool = False
+    # AnyDoc 解析超时（秒），超时后回退现有解析链
+    ANYDOC_TIMEOUT: int = 60
+
     # ===== 孤儿文件清理配置 =====
     # 是否启用后台定时清理（backend/data/pdfs 中已不在数据库的残留文件）
     ORPHAN_CLEANUP_ENABLED: bool = True
@@ -142,7 +149,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.16.0"
+    APP_VERSION: str = "1.17.0"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
 

@@ -794,6 +794,7 @@ async def generate_vaccination_strategy_report(
     personnel_vaccination_history: str = "",
     title: Optional[str] = None,
     template_id: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> dict:
     """生成疫苗接种策略研判报告。template_id 缺省时使用内置 Prompt；指定时按模板 sections 渲染。"""
     # 1. 查询任务地点的传染病流行数据
@@ -896,7 +897,7 @@ async def generate_vaccination_strategy_report(
             f"人员人数：{personnel_count}人；年龄范围：{personnel_age or '未提供'}；"
             f"疫苗接种史：{personnel_vaccination_history or '未提供'}"
         )
-        content = await _render_template_report(db, ctx, template, model=None, language="zh")
+        content = await _render_template_report(db, ctx, template, model=model, language="zh")
     else:
         prompt = VACCINATION_STRATEGY_PROMPT_ZH.format(
             task_type=task_type,
@@ -908,7 +909,10 @@ async def generate_vaccination_strategy_report(
             personnel_vaccination_history=personnel_vaccination_history or "未提供",
             epidemic_data=epidemic_data,
         )
-        content = await _call_llm(db, prompt)
+        content = await _call_llm(db, prompt, model=model)
+
+    # 解析模型显示名称
+    llm_model_name = await _resolve_model_name(db, model)
 
     # 5. Save to database
     try:
@@ -925,6 +929,7 @@ async def generate_vaccination_strategy_report(
             personnel_vaccination_history=personnel_vaccination_history or None,
             data_point_count=len(rows),
             literature_count=len(set(str(r.literature_id) for r in rows if r.literature_id)),
+            llm_model=llm_model_name,
         )
         db.add(report)
         await db.commit()
@@ -946,6 +951,7 @@ async def generate_vaccination_strategy_report(
         "personnel_vaccination_history": personnel_vaccination_history,
         "data_point_count": len(rows),
         "literature_count": len(set(str(r.literature_id) for r in rows if r.literature_id)),
+        "llm_model": llm_model_name,
         "language": "zh",
         "generated_at": report.generated_at.isoformat(),
     }

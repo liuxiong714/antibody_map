@@ -24,6 +24,7 @@ class VaccinationStrategyRequest(BaseModel):
     personnel_vaccination_history: str = ""
     title: Optional[str] = None
     template_id: Optional[str] = None
+    model: Optional[str] = Field(None, description="指定 LLM 模型（模型名或远程配置 UUID），不传则使用系统默认")
 
 
 class UpdateReportRequest(BaseModel):
@@ -97,6 +98,7 @@ async def generate_vaccination_strategy(
             personnel_vaccination_history=req.personnel_vaccination_history,
             title=req.title,
             template_id=req.template_id,
+            model=req.model,
         )
         return ApiResponse(message="疫苗接种策略报告生成成功", data=data)
     except ValueError as e:

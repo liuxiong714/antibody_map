@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Dropdown, Switch, DatePicker,
+  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Dropdown, Switch, DatePicker, Badge, Divider,
 } from 'antd';
 import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined, PaperClipOutlined, RestOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -12,7 +12,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult } from '../services/literature';
+import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, previewOrphanCleanup, executeOrphanCleanup, OrphanCleanupPreview, OrphanCleanupResult, getExtractionQueueStatus, ExtractionQueueStatus, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
@@ -99,6 +99,16 @@ function clearDefaultModel() {
 // 保存/恢复列表状态的 sessionStorage key
 const LIST_STATE_KEY = 'literature_list_back_state';
 
+const StatBox: React.FC<{ label: string; count: number; color: string }> = ({ label, count, color }) => (
+  <div style={{
+    flex: 1, minWidth: 100, textAlign: 'center',
+    padding: '12px 8px', borderRadius: 8, border: `1px solid ${color}`,
+  }}>
+    <div style={{ fontSize: 24, fontWeight: 600, color }}>{count}</div>
+    <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>{label}</div>
+  </div>
+);
+
 const LiteraturePage: React.FC = () => {
   // lazy initializer：从 sessionStorage 一次性读取并解析上次离开列表页时的状态
   const _cachedState = React.useMemo(() => {
@@ -152,6 +162,9 @@ const LiteraturePage: React.FC = () => {
 
   // === 回收站状态 ===
   const [trashOpen, setTrashOpen] = useState(false);
+  const [queueStatusOpen, setQueueStatusOpen] = useState(false);
+  const [queueStatus, setQueueStatus] = useState<ExtractionQueueStatus | null>(null);
+  const [queueStatusLoading, setQueueStatusLoading] = useState(false);
   const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
   const [trashTotal, setTrashTotal] = useState(0);
   const [trashPage, setTrashPage] = useState(1);
@@ -1458,9 +1471,7 @@ const LiteraturePage: React.FC = () => {
           <Button icon={<CopyOutlined />} onClick={() => setScanOpen(true)}>
             扫描重复
           </Button>
-          <Button
-            icon={<DeleteOutlined />}
-            onClick={() => {
+          <Button icon={<DeleteOutlined />} onClick={() => {
               // 先预览，确认后再执行
               cleanupEmpty(true).then((result) => {
                 if (result.preview_count === 0) {
@@ -1495,8 +1506,57 @@ const LiteraturePage: React.FC = () => {
           >
             清理无文件文献
           </Button>
+          <Button icon={<DeleteOutlined />} onClick={() => {
+              previewOrphanCleanup().then((result: OrphanCleanupPreview) => {
+                if (result.orphan_count === 0) {
+                  message.info('没有孤儿文件，pdfs 目录所有文件均有对应数据库记录');
+                  return;
+                }
+                Modal.confirm({
+                  title: '确认清理孤儿文件',
+                  content: (
+                    <div>
+                      <p>扫描 <strong>{result.scanned}</strong> 个文件，发现 <strong>{result.orphan_count}</strong> 个孤儿文件（已不在数据库但仍留在 pdfs 目录中）。</p>
+                      <p style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
+                        将移入回收目录（默认保留 30 天后自动删除），可手动还原。
+                      </p>
+                    </div>
+                  ),
+                  okText: '确认清理',
+                  cancelText: '取消',
+                  onOk: async () => {
+                    try {
+                      const cleanResult = await executeOrphanCleanup();
+                      message.success(`清理完成：移动 ${cleanResult.moved} 个文件到回收目录，${cleanResult.failed > 0 ? `失败 ${cleanResult.failed} 个，` : ''}清理过期回收 ${cleanResult.purged} 个`);
+                    } catch (err: any) {
+                      message.error(err?.response?.data?.detail || '清理失败');
+                    }
+                  },
+                });
+              }).catch((err: any) => {
+                message.error(err?.response?.data?.detail || '预览失败');
+              });
+            }}
+          >
+            清理孤儿文件
+          </Button>
           <Button icon={<RestOutlined />} onClick={() => setTrashOpen(true)}>
             回收站
+          </Button>
+          <Button icon={<RobotOutlined />} onClick={async () => {
+              setQueueStatusOpen(true);
+              setQueueStatusLoading(true);
+              try {
+                const status = await getExtractionQueueStatus();
+                setQueueStatus(status);
+              } catch (err: any) {
+                message.error('获取提取队列状态失败');
+              } finally {
+                setQueueStatusLoading(false);
+              }
+            }}
+          >
+            提取状态
           </Button>
           <Button
             icon={<ExperimentOutlined />}
@@ -2209,11 +2269,7 @@ const LiteraturePage: React.FC = () => {
       {/* 全库扫描面板 */}
       <DuplicateScanPanel
         open={scanOpen}
-        onClose={() => setScanOpen(false)}
-        onMerge={(sourceId, targetId, sourceTitle, targetTitle) => {
-          setScanOpen(false);
-          setMergeState({ open: true, sourceId, targetId, sourceTitle, targetTitle });
-        }}
+        onClose={() => { setScanOpen(false); fetchList(); }}
       />
 
       {/* 合并对话框 */}
@@ -2337,6 +2393,74 @@ const LiteraturePage: React.FC = () => {
             },
           ]}
         />
+      </Modal>
+
+      {/* 提取队列状态弹窗 */}
+      <Modal
+        title={<><RobotOutlined /> AI提取工作状态</>}
+        open={queueStatusOpen}
+        onCancel={() => setQueueStatusOpen(false)}
+        width={700}
+        footer={[
+          <Button key="refresh" icon={<ReloadOutlined />} loading={queueStatusLoading} onClick={async () => {
+            setQueueStatusLoading(true);
+            try {
+              const status = await getExtractionQueueStatus();
+              setQueueStatus(status);
+            } catch (err: any) {
+              message.error('获取状态失败');
+            } finally {
+              setQueueStatusLoading(false);
+            }
+          }}>刷新</Button>,
+          <Button key="close" onClick={() => setQueueStatusOpen(false)}>关闭</Button>,
+        ]}
+      >
+        {queueStatusLoading && !queueStatus ? (
+          <div style={{ textAlign: 'center', padding: 40 }}>加载中...</div>
+        ) : queueStatus ? (
+          <>
+            <div style={{ display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
+              <StatBox label="待处理" count={queueStatus.pending_count} color="#888" />
+              <StatBox label="排队中" count={queueStatus.queued_count} color="#1677ff" />
+              <StatBox label="提取中" count={queueStatus.processing_count} color="#faad14" />
+              <StatBox label="已完成" count={queueStatus.done_count} color="#52c41a" />
+              <StatBox label="失败" count={queueStatus.failed_count} color="#ff4d4f" />
+            </div>
+            <Divider style={{ margin: '12px 0' }} />
+            {queueStatus.queued_literatures.length > 0 && (
+              <>
+                <h4 style={{ marginBottom: 8 }}>排队中文献（{queueStatus.queued_count} 篇）</h4>
+                <div style={{ maxHeight: 200, overflow: 'auto' }}>
+                  {queueStatus.queued_literatures.map((lit: { id: string; title: string }) => (
+                    <div key={lit.id} style={{ padding: '4px 0', fontSize: 13, borderBottom: '1px solid #f0f0f0' }}>
+                      {lit.title || lit.id}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            {queueStatus.processing_literatures.length > 0 && (
+              <>
+                <h4 style={{ marginBottom: 8, marginTop: 16 }}>提取中文献（{queueStatus.processing_count} 篇）</h4>
+                <div style={{ maxHeight: 200, overflow: 'auto' }}>
+                  {queueStatus.processing_literatures.map((lit: { id: string; title: string }) => (
+                    <div key={lit.id} style={{ padding: '4px 0', fontSize: 13, borderBottom: '1px solid #f0f0f0' }}>
+                      <span><Badge status="processing" /></span> {lit.title || lit.id}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            {queueStatus.queued_literatures.length === 0 && queueStatus.processing_literatures.length === 0 && (
+              <div style={{ textAlign: 'center', padding: 20, color: '#888' }}>
+                当前没有进行中的提取任务
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{ textAlign: 'center', padding: 40, color: '#888' }}>暂无数据</div>
+        )}
       </Modal>
     </>
   );

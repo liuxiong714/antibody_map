@@ -56,6 +56,7 @@ export const ESTIMATE_GRADE_LABEL: Record<string, string> = {
 
 export const EXTRACTION_STATUS_META: Record<string, { color: string; label: string }> = {
   pending: { color: 'default', label: '待处理' },
+  queued: { color: 'blue', label: '排队中' },
   processing: { color: 'processing', label: '提取中' },
   done: { color: 'green', label: '已完成' },
   done_no_data: { color: 'orange', label: '完成（无数据）' },

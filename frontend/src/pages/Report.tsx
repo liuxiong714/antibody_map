@@ -28,6 +28,7 @@ const Report: React.FC = () => {
   const [personnelAge, setPersonnelAge] = useState('');
   const [personnelVaccinationHistory, setPersonnelVaccinationHistory] = useState('');
   const [strategyTitle, setStrategyTitle] = useState('');
+  const [strategyModel, setStrategyModel] = useState('');
   const [strategyLoading, setStrategyLoading] = useState(false);
 
   // ---- 通用 state ----
@@ -139,6 +140,7 @@ const Report: React.FC = () => {
       };
       if (strategyTitle) body.title = strategyTitle;
       if (templateId) body.template_id = templateId;
+      if (strategyModel) body.model = strategyModel;
       const resp = await generateVaccinationStrategy(body);
       setReport(resp);
       message.success('疫苗接种策略报告生成成功');
@@ -277,13 +279,14 @@ const Report: React.FC = () => {
                 taskType={taskType} taskTime={taskTime} taskLocation={taskLocation}
                 personnelCount={personnelCount} personnelGender={personnelGender}
                 personnelAge={personnelAge} personnelVaccinationHistory={personnelVaccinationHistory}
-                strategyTitle={strategyTitle} loading={strategyLoading}
+                strategyTitle={strategyTitle} model={strategyModel} loading={strategyLoading}
                 templateId={templateId} templates={templateOptions} isAdmin={isAdminFlag}
                 onTaskTypeChange={setTaskType} onTaskTimeChange={setTaskTime}
                 onTaskLocationChange={setTaskLocation} onPersonnelCountChange={setPersonnelCount}
                 onPersonnelGenderChange={setPersonnelGender} onPersonnelAgeChange={setPersonnelAge}
                 onPersonnelVaccinationHistoryChange={setPersonnelVaccinationHistory}
                 onStrategyTitleChange={setStrategyTitle}
+                onModelChange={setStrategyModel}
                 onTemplateChange={(v) => setTemplateId(v || undefined)}
                 onManageTemplates={() => setTemplateManagerVisible(true)}
                 onGenerate={handleGenerateStrategy}

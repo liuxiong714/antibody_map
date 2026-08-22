@@ -501,6 +501,49 @@ export async function cleanupEmpty(dryRun: boolean = true): Promise<CleanupEmpty
   return data;
 }
 
+// ===== 孤儿文件清理 =====
+
+export interface OrphanCleanupPreview {
+  scanned: number;
+  orphan_count: number;
+  orphan_files: string[];
+}
+
+export interface OrphanCleanupResult {
+  scanned: number;
+  orphan_count: number;
+  moved: number;
+  failed: number;
+  purged: number;
+  trash_dir: string;
+}
+
+export async function previewOrphanCleanup(): Promise<OrphanCleanupPreview> {
+  const { data } = await api.get<OrphanCleanupPreview>('/literatures/cleanup-orphan-files/preview');
+  return data;
+}
+
+export async function executeOrphanCleanup(): Promise<OrphanCleanupResult> {
+  const { data } = await api.post<OrphanCleanupResult>('/literatures/cleanup-orphan-files');
+  return data;
+}
+
+export interface ExtractionQueueStatus {
+  pending_count: number;
+  queued_count: number;
+  processing_count: number;
+  done_count: number;
+  failed_count: number;
+  total: number;
+  queued_literatures: { id: string; title: string }[];
+  processing_literatures: { id: string; title: string }[];
+}
+
+export async function getExtractionQueueStatus(): Promise<ExtractionQueueStatus> {
+  const { data } = await api.get<ExtractionQueueStatus>('/extractions/queue-status');
+  return data;
+}
+
 // ===== 回收站管理 =====
 
 export interface TrashItem {
