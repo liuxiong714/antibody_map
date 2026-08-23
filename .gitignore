@@ -43,6 +43,10 @@ out.txt
 # 临时开发/测试脚本
 backend/check_*.py
 backend/test_*.py
+backend/tmp_*.py
+
+# mkdocs 构建产物
+site/
 
 # 根目录下划线前缀临时脚本（浏览器自动化/调试/暂存）
 _*.py
