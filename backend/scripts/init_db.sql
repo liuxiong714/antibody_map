@@ -1,6 +1,20 @@
 -- 扩展
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- 用户表 user（Alembic 迁移引用"user"表，须在创建外键前存在）
+CREATE TABLE "user" (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    username VARCHAR(50) NOT NULL UNIQUE,
+    email VARCHAR(100),
+    hashed_password VARCHAR(500) NOT NULL,
+    display_name VARCHAR(50),
+    is_active BOOLEAN DEFAULT TRUE,
+    is_admin BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX ix_user_username ON "user"(username);
+
 -- 文献表 literature
 CREATE TABLE literature (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -19,13 +33,11 @@ CREATE TABLE literature (
     source_db VARCHAR(50),
     file_path VARCHAR(500),
     has_fulltext BOOLEAN DEFAULT FALSE,
-    extraction_status VARCHAR(20) DEFAULT 'pending' CHECK (extraction_status IN ('pending','processing','done','done_no_data','failed')),
+    extraction_status VARCHAR(20) DEFAULT 'pending' CONSTRAINT lit_extraction_status_check CHECK (extraction_status IN ('pending','processing','queued','done','done_no_data','failed')),
     extracted_count INTEGER DEFAULT 0,
     approved_count INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    deleted_at TIMESTAMP WITH TIME ZONE,
-    deleted_by UUID
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- 数据点表 data_point（核心数据表）
@@ -53,9 +65,6 @@ CREATE TABLE data_point (
     collection_year INTEGER,
     confidence VARCHAR(10) DEFAULT 'medium' CHECK (confidence IN ('high','medium','low')),
     review_status VARCHAR(20) DEFAULT 'pending' CHECK (review_status IN ('pending','approved','rejected')),
-    review_comment TEXT,
-    reviewer_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
-    reviewed_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -66,6 +75,29 @@ CREATE TABLE disease_dict (
     name_en VARCHAR(100),
     category VARCHAR(100),
     vaccine VARCHAR(200)
+);
+
+-- 报告表 report（Alembic init 迁移引用的表，须在迁移前存在）
+CREATE TABLE report (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title VARCHAR(500) NOT NULL,
+    content TEXT NOT NULL,
+    report_type VARCHAR(30) DEFAULT 'antibody_analysis',
+    disease VARCHAR(50),
+    province VARCHAR(100),
+    data_type VARCHAR(50),
+    language VARCHAR(10) DEFAULT 'zh',
+    literature_count INTEGER DEFAULT 0,
+    data_point_count INTEGER DEFAULT 0,
+    task_type VARCHAR(100),
+    task_time VARCHAR(200),
+    task_location VARCHAR(200),
+    personnel_count INTEGER,
+    personnel_gender VARCHAR(100),
+    personnel_age VARCHAR(100),
+    personnel_vaccination_history TEXT,
+    generated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT report_type_check CHECK (report_type IN ('antibody_analysis','vaccination_strategy'))
 );
 
 -- 插入 11 种疾病

@@ -38,8 +38,9 @@ api.interceptors.response.use(
         window.location.href = '/login';
       }
     }
-    const msg = error.response?.data?.detail || error.message || '请求失败';
-    console.error('[API Error]', msg);
+    const detail = error.response?.data?.detail;
+    const msg = typeof detail === 'string' ? detail : (error.message || '请求失败');
+    console.error('[API Error]', msg, error.response?.status, error.response?.data);
     return Promise.reject(error);
   }
 );

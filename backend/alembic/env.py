@@ -22,6 +22,7 @@ import app.models.api_model_config  # noqa: F401
 import app.models.user  # noqa: F401
 import app.models.audit_log  # noqa: F401
 import app.models.extraction_history  # noqa: F401
+import app.models.reference_import_log  # noqa: F401
 
 config = context.config
 

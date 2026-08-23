@@ -262,7 +262,7 @@ export interface ReportSection {
 export interface ReportTemplate {
   id: string;
   name: string;
-  report_type: 'antibody_analysis' | 'vaccination_strategy';
+  report_type: 'antibody_analysis' | 'vaccination_strategy' | 'immune_barrier_assessment';
   sections: ReportSection[];
   is_default: boolean;
   desc?: string | null;

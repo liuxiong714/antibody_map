@@ -1,5 +1,7 @@
 import logging
+import os
 import re
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -8,12 +10,12 @@ from urllib.parse import quote
 
 logger = logging.getLogger("uvicorn")
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, require_admin
+from app.api.deps import get_db, get_current_user, require_admin
 from app.config import settings
 from app.models.user import User
 from app.schemas.common import ApiResponse, PagedResponse
@@ -30,6 +32,9 @@ from app.services.literature_service import (
     delete_literature,
     upload_literature,
     upload_literature_file,
+    compute_pdf_hash,
+    get_file_history,
+    log_file_action,
     check_duplicates,
     scan_duplicates,
     preview_merge,
@@ -51,6 +56,8 @@ from app.services.literature_service import (
     permanently_delete_literature,
     empty_trash,
     permanently_delete_all_trash,
+    create_import_log,
+    list_import_logs,
 )
 from app.services.file_cleanup_service import cleanup_orphan_files, scan_orphan_files
 
@@ -62,16 +69,12 @@ def _resolve_literature_file(literature) -> Optional[Path]:
 
     数据库中存储的 file_path 可能是 Windows 绝对路径（E:\\...），
     当后端运行在 Docker 容器（Linux）中时无法直接访问该路径。
-    此处依次尝试：原始路径 → 与 backend/data/pdfs 目录相对的本地路径。
+    仅解析与 LOCAL_STORAGE_DIR 相对的路径，并校验路径不越界。
     """
     raw = (literature.file_path or "").strip()
     if not raw:
         return None
 
-    candidates: list[Path] = []
-    # 候选1：原始路径（Windows 主机运行时直接命中）
-    candidates.append(Path(raw))
-    # 候选2：与 LOCAL_STORAGE_DIR 相对的路径（容器/路径迁移时命中）
     # 去除可能的 Windows 盘符前缀与目录前缀，仅保留相对部分
     rel = raw.replace("\\", "/")
     rel = re.sub(r"^[A-Za-z]:", "", rel)
@@ -84,15 +87,15 @@ def _resolve_literature_file(literature) -> Optional[Path]:
         rel = rel.split("/app/backend/data/pdfs/", 1)[1]
     else:
         rel = rel.lstrip("/")
-    if rel:
-        candidates.append(LOCAL_STORAGE_DIR / rel)
+    if not rel:
+        return None
 
-    for p in candidates:
-        try:
-            if p.exists() and p.is_file():
-                return p
-        except OSError:
-            continue
+    target = (LOCAL_STORAGE_DIR / rel).resolve()
+    try:
+        if target.is_relative_to(LOCAL_STORAGE_DIR.resolve()) and target.exists() and target.is_file():
+            return target
+    except OSError:
+        pass
     return None
 
 
@@ -108,15 +111,52 @@ def _build_safe_filename(title: Optional[str], ext: str, literature_id: uuid.UUI
     return quote(f"{safe}{ext}")
 
 
-@router.post("/literatures/upload", response_model=ApiResponse, summary="上传文献文件", description="上传单个文献文件（PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML），并自动创建文献记录，支持指定标题、DOI和省份信息")
+# 简单魔数签名（文件头前 N 字节），无需 python-magic
+_MAGIC_SIGNATURES = {
+    ".pdf": (b"%PDF", 4),
+    ".caj": (b"Caj ", 4),
+    ".docx": (b"PK\x03\x04", 4),
+    ".pptx": (b"PK\x03\x04", 4),
+    ".xlsx": (b"PK\x03\x04", 4),
+    ".epub": (b"PK\x03\x04", 4),
+    # .txt 无固定魔数，跳过校验
+}
+
+
+def _validate_file_magic(ext: str, data: bytes) -> bool:
+    """校验文件头与扩展名是否一致。返回 True 表示合法，False 表示魔数不匹配。"""
+    sig = _MAGIC_SIGNATURES.get(ext)
+    if sig is None:
+        return True  # 无魔数定义（如 .txt），跳过
+    magic, length = sig
+    return len(data) >= length and data[:length] == magic
+
+
+def _format_file_history(history) -> list[dict]:
+    """把文件历史记录转成前端可读的 dict 列表（时间倒序）。"""
+    out = []
+    for h in history:
+        out.append({
+            "operation": "imported" if h.action == "imported" else "deleted",
+            "operated_at": h.operated_at.isoformat(),
+            "operator_name": h.operator_name or "未知",
+            "file_name": h.file_name,
+        })
+    return out
+
+
+@router.post("/literatures/upload", response_model=ApiResponse, summary="上传文献文件", description="上传单个文献文件（PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT），并自动创建文献记录，支持指定标题、DOI和省份信息")
 async def upload(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
     doi: Optional[str] = Form(None),
     province: Optional[str] = Form(None),
+    confirm: Optional[str] = Form(None, description="当检测到该文件曾被删除时，传 'true' 表示确认再次导入"),
+    request: Request = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    # 按扩展名白名单校验（支持 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML）
+    # 按扩展名白名单校验（支持 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT）
     ext = Path(file.filename or "").suffix.lower() if file.filename else ""
     logger.info(
         f"[上传] 收到文件: filename={file.filename}, ext={ext or '(未知)'}, "
@@ -126,31 +166,114 @@ async def upload(
         logger.warning(f"[上传] 格式被拒绝: filename={file.filename}, ext={ext}")
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的文件格式: {ext or '未知'}，支持 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML",
+            detail=f"不支持的文件格式: {ext or '未知'}，支持 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT",
         )
 
-    file_bytes = await file.read()
-    file_size = len(file_bytes)
-    logger.info(f"[上传] 读取完成: filename={file.filename}, size={file_size} bytes")
-    if len(file_bytes) > settings.MAX_UPLOAD_SIZE:
-        logger.warning(f"[上传] 文件超限: filename={file.filename}, size={file_size}, limit={settings.MAX_UPLOAD_SIZE}")
-        raise HTTPException(status_code=400, detail="文件大小超过限制")
+    # 在读文件之前检查 Content-Length / file.size，避免大文件进内存
+    content_length = request.headers.get("content-length") if request else None
+    if content_length:
+        try:
+            if int(content_length) > settings.MAX_UPLOAD_SIZE:
+                logger.warning(
+                    f"[上传] Content-Length 超限: filename={file.filename}, "
+                    f"content-length={content_length}, limit={settings.MAX_UPLOAD_SIZE}"
+                )
+                raise HTTPException(status_code=413, detail="文件大小超过限制")
+        except ValueError:
+            pass
+    if file.size is not None and file.size > settings.MAX_UPLOAD_SIZE:
+        logger.warning(
+            f"[上传] file.size 超限: filename={file.filename}, "
+            f"size={file.size}, limit={settings.MAX_UPLOAD_SIZE}"
+        )
+        raise HTTPException(status_code=413, detail="文件大小超过限制")
 
+    # 流式分块写出到临时文件，替代一次性 file.read()
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    tmp_path = tmp.name
+    first_chunk = None
+    _CHUNK_SIZE = 1024 * 1024  # 1MB
     try:
-        literature, _action = await upload_literature(db, file_bytes, file.filename, title, doi, province)
-    except Exception as e:
-        logger.error(f"[上传] upload_literature 抛出异常: filename={file.filename}, error={e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)[:200]}")
+        while True:
+            chunk = await file.read(_CHUNK_SIZE)
+            if not chunk:
+                break
+            if first_chunk is None:
+                first_chunk = chunk  # 保留首块供魔数校验
+            tmp.write(chunk)
+        tmp.close()
 
-    if literature is None:
-        logger.error(f"[上传] upload_literature 返回 None: filename={file.filename}")
-        raise HTTPException(status_code=500, detail="文件上传失败")
+        # 魔数校验：文件头与扩展名必须一致，防伪装扩展名绕过
+        if first_chunk is not None and not _validate_file_magic(ext, first_chunk):
+            logger.warning(
+                f"[上传] 魔数校验失败: filename={file.filename}, ext={ext}, "
+                f"first_bytes={first_chunk[:8].hex()}"
+            )
+            raise HTTPException(status_code=400, detail="文件内容与扩展名不匹配，请检查文件是否损坏")
 
-    logger.info(f"[上传] 成功: id={literature.id}, title={literature.title}, path={literature.file_path}")
-    return ApiResponse(
-        message="上传成功",
-        data=LiteratureResponse.model_validate(literature).model_dump(),
-    )
+        file_bytes = Path(tmp_path).read_bytes()
+        file_size = len(file_bytes)
+        logger.info(f"[上传] 读取完成: filename={file.filename}, size={file_size} bytes")
+        if file_size > settings.MAX_UPLOAD_SIZE:
+            logger.warning(
+                f"[上传] 文件超限: filename={file.filename}, size={file_size}, "
+                f"limit={settings.MAX_UPLOAD_SIZE}"
+            )
+            raise HTTPException(status_code=400, detail="文件大小超过限制")
+
+        # —— 导入历史检测：识别被删除后重复导入的同一文件 ——
+        pdf_hash = compute_pdf_hash(file_bytes)
+        history = await get_file_history(db, pdf_hash)
+        # 最近一次动作是"删除"，且用户尚未确认再次导入 → 返回确认提示，不执行导入
+        if history and history[0].action == "deleted" and confirm != "true":
+            hist_list = _format_file_history(history)
+            logger.info(
+                f"[上传] 检测到文件曾被删除后再次导入: filename={file.filename}, "
+                f"pdf_hash={pdf_hash[:12]}...，等待用户确认"
+            )
+            return ApiResponse(
+                message="该文献此前曾被删除，需确认后再次导入",
+                data={
+                    "need_confirm": True,
+                    "file_name": file.filename,
+                    "pdf_hash": pdf_hash,
+                    "history": hist_list,
+                },
+            )
+
+        try:
+            literature, _action = await upload_literature(db, file_bytes, file.filename, title, doi, province)
+        except Exception as e:
+            logger.error(f"[上传] upload_literature 抛出异常: filename={file.filename}, error={e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)[:200]}")
+
+        if literature is None:
+            logger.error(f"[上传] upload_literature 返回 None: filename={file.filename}")
+            raise HTTPException(status_code=500, detail="文件上传失败")
+
+        # 记录本次导入历史（有文件指纹时）
+        if literature.pdf_hash:
+            await log_file_action(
+                db,
+                pdf_hash=literature.pdf_hash,
+                file_name=file.filename,
+                action="imported",
+                operator_id=current_user.id,
+                operator_name=getattr(current_user, "display_name", None) or current_user.username,
+                literature_id=literature.id,
+            )
+
+        logger.info(f"[上传] 成功: id={literature.id}, title={literature.title}, path={literature.file_path}")
+        return ApiResponse(
+            message="上传成功",
+            data=LiteratureResponse.model_validate(literature).model_dump(),
+        )
+    finally:
+        # 确保临时文件被清理
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 @router.post("/literatures/from-url", response_model=ApiResponse, summary="从URL导入文献", description="从指定URL抓取HTML内容并创建文献记录，自动提取页面标题，保存为HTML文件，后续可通过AI提取功能从HTML文本中提取数据点")
@@ -362,6 +485,10 @@ class ImportReferencesBody(BaseModel):
 
     ref_text: str
     fmt: str = "auto"  # 格式：auto / ris / enw / pubmed / wos / woscsv / duxiu，auto 时自动探测
+    file_name: str = ""  # 导入的文件名，用于日志记录
+    start: int = 0  # 从解析结果的第几条开始处理（用于分批导入）
+    limit: int = 0  # 0=全部，>0 时只处理 limit 条（用于分批导入）
+    skip_log: bool = False  # True=跳过日志记录（分批子请求），False=正常记录
 
 
 @router.post("/literatures/import-references/preview", response_model=ApiResponse, summary="预览题录导入", description="解析题录文本并统计总条数、重复条数、可导入条数，不写入数据库")
@@ -384,6 +511,7 @@ async def import_references_preview(
 async def import_references(
     body: ImportReferencesBody,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
 ):
     """解析题录文本并入库。
 
@@ -393,9 +521,23 @@ async def import_references(
     - 复用 service 层 create_literature 入库
     """
     try:
-        result = await import_references_from_text(db, body.ref_text, body.fmt)
+        result = await import_references_from_text(db, body.ref_text, body.fmt, body.start, body.limit)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # 记录导入日志（分批子请求 skip_log=True 时跳过）
+    if current_user and not body.skip_log:
+        await create_import_log(
+            db,
+            file_name=body.file_name or "unknown",
+            total_count=result["total"],
+            skipped_count=result["skipped"],
+            imported_count=result["imported"],
+            operator_name=current_user.username,
+            operator_id=str(current_user.id) if current_user.id else None,
+            fmt=body.fmt,
+        )
+
     return ApiResponse(
         message=f"导入完成：成功 {result['imported']} 篇，跳过 {result['skipped']} 篇（重复或标题为空）",
         data={
@@ -405,6 +547,36 @@ async def import_references(
             "errors": result["errors"],
         },
     )
+
+
+class ImportReferencesLogBody(BaseModel):
+    """题录导入日志的请求体（前端分批导入完成后汇总调用）。"""
+
+    file_name: str = ""
+    total_count: int
+    skipped_count: int
+    imported_count: int
+    fmt: str = "auto"
+
+
+@router.post("/literatures/import-references/log", response_model=ApiResponse, summary="题录导入日志", description="前端分批导入完成后，汇总调用一次记录导入日志")
+async def import_references_log(
+    body: ImportReferencesLogBody,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """记录题录导入日志（轻量，不解析文本，不写入文献）。"""
+    await create_import_log(
+        db,
+        file_name=body.file_name or "unknown",
+        total_count=body.total_count,
+        skipped_count=body.skipped_count,
+        imported_count=body.imported_count,
+        operator_name=current_user.username,
+        operator_id=str(current_user.id) if current_user.id else None,
+        fmt=body.fmt,
+    )
+    return ApiResponse(message="导入日志已记录")
 
 
 @router.post("/literatures/batch-import-from-folder", response_model=ApiResponse, summary="从文件夹批量导入", description="从服务器本地文件夹批量导入文件，自动匹配已有文献或新建文献记录，支持导入后自动触发AI提取")
@@ -530,6 +702,24 @@ async def empty_trash_endpoint(
     )
 
 
+@router.get("/literatures/import-logs", response_model=PagedResponse, summary="查询题录导入日志", description="分页查询题录导入工作日志，按时间倒序")
+async def get_import_logs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """分页查询题录导入日志（按时间倒序）"""
+    result = await list_import_logs(db, page=page, page_size=page_size)
+    return PagedResponse(
+        items=result["items"],
+        total=result["total"],
+        page=result["page"],
+        page_size=result["page_size"],
+        message=f"共 {result['total']} 条导入日志",
+    )
+
+
 @router.get("/literatures/{literature_id}", response_model=ApiResponse, summary="获取文献详情", description="根据文献ID获取单篇文献的详细信息")
 async def get_one(
     literature_id: uuid.UUID,
@@ -596,6 +786,17 @@ async def delete(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
+    lit = await get_literature(db, literature_id)
+    if lit and lit.pdf_hash:
+        await log_file_action(
+            db,
+            pdf_hash=lit.pdf_hash,
+            file_name=lit.file_path,
+            action="deleted",
+            operator_id=current_user.id,
+            operator_name=getattr(current_user, "display_name", None) or current_user.username,
+            literature_id=lit.id,
+        )
     success = await delete_literature(db, literature_id, deleted_by=current_user.id)
     if not success:
         raise HTTPException(status_code=404, detail="文献不存在或已在回收站中")
@@ -615,6 +816,19 @@ async def batch_delete(
 ):
     if not req.literature_ids:
         raise HTTPException(status_code=400, detail="未提供要删除的文献ID")
+    # 记录每条文件的删除历史（用于后续重复导入提示）
+    for lid in req.literature_ids:
+        lit = await get_literature(db, lid)
+        if lit and lit.pdf_hash:
+            await log_file_action(
+                db,
+                pdf_hash=lit.pdf_hash,
+                file_name=lit.file_path,
+                action="deleted",
+                operator_id=current_user.id,
+                operator_name=getattr(current_user, "display_name", None) or current_user.username,
+                literature_id=lit.id,
+            )
     deleted = await batch_delete_literatures(db, req.literature_ids, deleted_by=current_user.id)
     return ApiResponse(message=f"成功将 {deleted} 篇文献移入回收站")
 
@@ -640,12 +854,30 @@ async def cleanup_empty(
     return ApiResponse(message=f"成功将 {deleted} 篇既无文档又无摘要的文献移入回收站", data=result)
 
 
-@router.post("/literatures/fix-titles", response_model=ApiResponse, summary="修正文件名来源的文献标题", description="扫描并修正文件名来源的文献标题（年份前缀、中文字符间下划线等），支持 dry_run 预览")
+class FixTitleItem(BaseModel):
+    """单条标题修正项"""
+    id: str
+    new_title: str
+
+
+class ApplyFixTitlesRequest(BaseModel):
+    """选择性应用标题修正的请求体"""
+    fixes: list[FixTitleItem]
+
+
+@router.post("/literatures/fix-titles", response_model=ApiResponse, summary="修正文件名来源的文献标题", description="扫描并修正文件名来源的文献标题（年份前缀、中文字符间下划线等），支持 dry_run 预览，或选择性提交修正项")
 async def fix_titles_endpoint(
+    body: Optional[ApplyFixTitlesRequest] = None,
     dry_run: bool = True,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
+    # 选择性提交修正项
+    if body and body.fixes:
+        fixed = await fix_titles(db, fixes=[(f.id, f.new_title) for f in body.fixes])
+        return ApiResponse(message=f"成功修正 {fixed} 条文献标题", data={"fixed_count": fixed})
+
+    # 旧逻辑：预览或全部应用
     result = await fix_titles(db, dry_run=dry_run)
     count = result["preview_count"]
     if dry_run:
@@ -691,12 +923,21 @@ async def get_pdf_file(
     ext = file_path.suffix.lower()
     safe_filename = _build_safe_filename(literature.title, ext, literature_id)
     mime_type = get_mime_type(ext)
-    logger.info(f"[预览] 返回文件流: id={literature_id}, ext={ext}, mime={mime_type}, size={file_path.stat().st_size} bytes")
+
+    # 对可执行/渲染型文件强制下载（XSS 防护），避免浏览器内联执行
+    unsafe_inline = ext in (".html", ".htm", ".svg")
+    disposition = "attachment" if unsafe_inline else "inline"
+
+    logger.info(
+        f"[预览] 返回文件流: id={literature_id}, ext={ext}, mime={mime_type}, "
+        f"disposition={disposition}, size={file_path.stat().st_size} bytes"
+    )
     return FileResponse(
         path=str(file_path),
         media_type=mime_type,
         filename=safe_filename,
-        content_disposition_type="inline",
+        content_disposition_type=disposition,
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 

@@ -42,7 +42,7 @@ class ReportTemplate(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "report_type IN ('antibody_analysis','vaccination_strategy')",
+            "report_type IN ('antibody_analysis','vaccination_strategy','immune_barrier_assessment')",
             name="report_template_type_check",
         ),
     )

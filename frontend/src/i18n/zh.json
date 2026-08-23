@@ -42,6 +42,12 @@
   "password.fail": "密码修改失败",
 
   "logout.success": "已退出登录",
+  "logout.backupTitle": "正在备份数据",
+  "logout.skipBackup": "跳过备份并退出",
+  "logout.backupRunning": "正在自动执行数据库备份，请稍候…",
+  "logout.backupSuccess": "数据备份完成",
+  "logout.backupFailed": "数据备份失败",
+  "logout.backupLoggingOut": "即将退出登录…",
 
   "language.zh": "中文",
   "language.en": "English",

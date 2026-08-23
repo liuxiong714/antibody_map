@@ -37,7 +37,6 @@ class LiteratureUpdate(BaseModel):
     province: Optional[str] = None
     publication_types: Optional[list[str]] = None
     source_db: Optional[str] = None
-    file_path: Optional[str] = None
     has_fulltext: Optional[bool] = None
     extraction_status: Optional[str] = None
     extracted_count: Optional[int] = None

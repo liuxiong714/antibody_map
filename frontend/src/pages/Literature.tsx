@@ -12,7 +12,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, previewOrphanCleanup, executeOrphanCleanup, OrphanCleanupPreview, OrphanCleanupResult, fixTitles, FixTitlesResult, aiVerifyTitles, AiVerifyTitlesResult, getExtractionQueueStatus, ExtractionQueueStatus, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult } from '../services/literature';
+import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, previewOrphanCleanup, executeOrphanCleanup, OrphanCleanupPreview, OrphanCleanupResult, fixTitles, FixTitlesResult, applyFixTitles, FixTitleApplyItem, aiVerifyTitles, AiVerifyTitlesResult, getExtractionQueueStatus, ExtractionQueueStatus, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
@@ -260,6 +260,11 @@ const LiteraturePage: React.FC = () => {
   const [replacing, setReplacing] = useState(false);
   const [folderImportTriggerExtraction, setFolderImportTriggerExtraction] = useState(true);
 
+  // 标题修正（可勾选、可编辑）
+  const [titleFixModalOpen, setTitleFixModalOpen] = useState(false);
+  const [titleFixChanges, setTitleFixChanges] = useState<FixTitlesResult['changes']>([]);
+  const [titleFixSelections, setTitleFixSelections] = useState<Record<string, string>>({});
+
   const handleFolderImport = async () => {
     if (folderFiles.length === 0) {
       message.warning('请先选择文件夹');
@@ -498,42 +503,102 @@ const LiteraturePage: React.FC = () => {
     }
     const autoExtract = values.autoExtract !== false; // 默认 true
     const dupResults: { litId: string; litTitle: string; duplicates: DuplicateMatchItem[] }[] = [];
+    // 收集「曾是导后删除、需再次确认」的文件
+    const confirmQueue: { file: File; history: any[] }[] = [];
+
+    // 上传成功后的统一处理：AI 提取 + 查重 + 成功计数
+    const handleUploadSuccess = async (resp: any, file: File) => {
+      if (resp?.id) {
+        if (autoExtract) {
+          if (model && model !== '') {
+            await triggerExtraction(resp.id, { model, apiKey, baseUrl });
+          } else {
+            await triggerExtraction(resp.id);
+          }
+        }
+        // 上传后查重
+        try {
+          const dup = await checkDuplicate({ literature_id: resp.id });
+          if (dup.total > 0) {
+            dupResults.push({ litId: resp.id, litTitle: resp.title || file.name, duplicates: dup.duplicates });
+          }
+        } catch (err) { console.error('[Literature] 查重失败:', err); /* 查重失败不阻塞 */ }
+      }
+      successCount++;
+    };
+
+    const buildFormData = (file: File, confirm?: boolean) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      if (confirm) fd.append('confirm', 'true');
+      // 单文件时使用用户自定义标题，批量时使用文件名
+      if (files.length === 1 && values.title) fd.append('title', values.title);
+      if (files.length === 1 && values.doi) fd.append('doi', values.doi);
+      if (files.length === 1 && values.province) fd.append('province', values.province);
+      return fd;
+    };
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       setBatchProgress({ current: i + 1, total: files.length, fileName: file.name });
 
       try {
-        const fd = new FormData();
-        fd.append('file', file);
-        // 单文件时使用用户自定义标题，批量时使用文件名
-        if (files.length === 1 && values.title) fd.append('title', values.title);
-        if (files.length === 1 && values.doi) fd.append('doi', values.doi);
-        if (files.length === 1 && values.province) fd.append('province', values.province);
+        const resp = await uploadLiterature(buildFormData(file));
 
-        const resp = await uploadLiterature(fd);
-
-        if (resp?.id) {
-          if (autoExtract) {
-            if (model && model !== '') {
-              await triggerExtraction(resp.id, { model, apiKey, baseUrl });
-            } else {
-              await triggerExtraction(resp.id);
-            }
-          }
-          // 上传后查重
-          try {
-            const dup = await checkDuplicate({ literature_id: resp.id });
-            if (dup.total > 0) {
-              dupResults.push({ litId: resp.id, litTitle: resp.title || file.name, duplicates: dup.duplicates });
-            }
-          } catch (err) { console.error('[Literature] 查重失败:', err); /* 查重失败不阻塞 */ }
+        // 后端检测到该文件曾被删除 → 收集待确认，不立即导入
+        if (resp?.need_confirm) {
+          confirmQueue.push({ file, history: resp.history || [] });
+          continue;
         }
-        successCount++;
+        await handleUploadSuccess(resp, file);
       } catch (err) {
         console.error('[Literature] 上传文件失败:', err);
         failCount++;
       }
+    }
+
+    // 存在需确认的重复文件 → 弹窗让用户决定是否再次导入
+    if (confirmQueue.length > 0) {
+      const renderHistory = () => {
+        const tags: { op: string; at: string; who: string }[] = [];
+        // history 为按时间倒序，翻转成时间正序展示
+        [...confirmQueue[0].history].reverse().forEach((h: any) => {
+          tags.push({ op: h.operation === 'deleted' ? '删除' : '导入', at: dayjs(h.operated_at).format('YYYY-MM-DD HH:mm'), who: h.operator_name || '未知' });
+        });
+        return (
+          <div>
+            <p style={{ marginBottom: 8 }}>
+              <FileTextOutlined /> <b>{confirmQueue[0].file.name}</b>（{confirmQueue.length > 1 ? `共 ${confirmQueue.length} 个文件` : '该文件'}）在此前曾被导入后删除：
+            </p>
+            <ul style={{ paddingLeft: 20, margin: 0 }}>
+              {tags.map((t, idx) => (
+                <li key={idx}>{t.op}：{t.at} by {t.who}</li>
+              ))}
+            </ul>
+            <p style={{ marginTop: 8, color: '#8c8c8c' }}>重新导入前请确认是否为同一文件记录，确认后将再次导入。</p>
+          </div>
+        );
+      };
+      Modal.confirm({
+        title: '检测到曾被删除的文献，是否确认再次导入？',
+        content: renderHistory(),
+        okText: '仍要导入',
+        cancelText: '取消',
+        onOk: async () => {
+          setUploading(true);
+          for (let i = 0; i < confirmQueue.length; i++) {
+            const item = confirmQueue[i];
+            try {
+              const resp = await uploadLiterature(buildFormData(item.file, true));
+              await handleUploadSuccess(resp, item.file);
+            } catch (err) {
+              console.error('[Literature] 重新导入失败:', err);
+              failCount++;
+            }
+          }
+          setUploading(false);
+        },
+      });
     }
 
     setUploading(false);
@@ -609,21 +674,25 @@ const LiteraturePage: React.FC = () => {
     }
   };
 
-  // 批量重置所有卡在 processing 状态的文献为 failed
+  // 强制终止所有提取任务 + 批量重置卡住的提取状态
   const [resettingStuck, setResettingStuck] = useState(false);
   const handleResetStuck = async () => {
     setResettingStuck(true);
     try {
       const result = await resetStuckExtractions();
-      if (result.reset_count > 0) {
-        message.success(`已重置 ${result.reset_count} 篇卡住的提取状态为失败`);
+      const parts: string[] = [];
+      if (result.revoked_count > 0) parts.push(`已终止 ${result.revoked_count} 个运行中任务`);
+      if (result.purged_count > 0) parts.push(`已清空 ${result.purged_count} 个排队任务`);
+      if (result.reset_count > 0) parts.push(`已重置 ${result.reset_count} 篇文献状态为失败`);
+      if (parts.length > 0) {
+        message.success(parts.join('，'));
       } else {
-        message.info('当前没有卡住的提取任务');
+        message.info('当前没有提取中的任务');
       }
       fetchList();
     } catch (err) {
-      console.error('[Literature] 重置卡住提取失败:', err);
-      message.error('重置卡住提取失败，请检查后端服务是否正常');
+      console.error('[Literature] 终止提取任务失败:', err);
+      message.error('终止提取任务失败，请检查后端服务是否正常');
     } finally {
       setResettingStuck(false);
     }
@@ -1547,33 +1616,11 @@ const LiteraturePage: React.FC = () => {
                   message.info('所有文献标题均无需修正');
                   return;
                 }
-                const changeList = result.changes.map((c, i) => (
-                  <div key={c.id} style={{ marginBottom: 8, padding: '4px 0', borderBottom: i < result.changes.length - 1 ? '1px solid #f0f0f0' : 'none' }}>
-                    <div style={{ color: '#999', fontSize: 12, marginBottom: 2 }}>{c.id}</div>
-                    <div style={{ color: '#f5222d', fontSize: 13 }}><del>{c.old_title}</del></div>
-                    <div style={{ color: '#52c41a', fontSize: 13 }}>{c.new_title}</div>
-                  </div>
-                ));
-                Modal.confirm({
-                  title: `确认修正 ${result.preview_count} 条文献标题？`,
-                  width: 600,
-                  content: (
-                    <div style={{ maxHeight: 400, overflow: 'auto' }}>
-                      {changeList}
-                    </div>
-                  ),
-                  okText: '确认修正',
-                  cancelText: '取消',
-                  onOk: async () => {
-                    try {
-                      const fixResult = await fixTitles(false);
-                      message.success(`成功修正 ${fixResult.fixed_count} 条文献标题`);
-                      fetchList();
-                    } catch (err: any) {
-                      message.error(err?.response?.data?.detail || '修正失败');
-                    }
-                  },
-                });
+                const selections: Record<string, string> = {};
+                result.changes.forEach(c => { selections[c.id] = c.new_title; });
+                setTitleFixChanges(result.changes);
+                setTitleFixSelections(selections);
+                setTitleFixModalOpen(true);
               }).catch((err: any) => {
                 message.error(err?.response?.data?.detail || '预览失败');
               });
@@ -1682,13 +1729,13 @@ const LiteraturePage: React.FC = () => {
             </Button>
           </Popconfirm>
           <Popconfirm
-            title="重置卡住的提取状态"
-            description="将所有状态为「提取中」的文献重置为「失败」（适用于服务器重启后状态卡住的情况）。确定继续？"
+            title="强制终止所有提取任务"
+            description="将强制终止运行中的 AI 提取、清空排队队列，并重置所有提取中文献的状态为失败。确定继续？"
             onConfirm={handleResetStuck}
             disabled={resettingStuck}
           >
             <Button icon={<StopOutlined />} loading={resettingStuck} danger>
-              重置卡住的提取
+              终止所有提取
             </Button>
           </Popconfirm>
           <Dropdown menu={{
@@ -2101,6 +2148,96 @@ const LiteraturePage: React.FC = () => {
           <Text style={{ fontSize: 13 }}>
             {importSkipDuplicates ? '跳过重复文献（按 DOI/标题匹配）' : '更新已有文献的数据'}
           </Text>
+        </div>
+      </Modal>
+
+      {/* 标题修正（可勾选、可编辑） */}
+      <Modal
+        title={`确认修正 ${titleFixChanges.length} 条文献标题`}
+        width={640}
+        open={titleFixModalOpen}
+        onCancel={() => setTitleFixModalOpen(false)}
+        okText="确认选中项"
+        okButtonProps={{ disabled: Object.keys(titleFixSelections).length === 0 }}
+        onOk={async () => {
+          const fixes: FixTitleApplyItem[] = Object.entries(titleFixSelections).map(([id, new_title]) => ({ id, new_title }));
+          if (fixes.length === 0) {
+            message.warning('请至少选择一项');
+            return;
+          }
+          try {
+            const result = await applyFixTitles(fixes);
+            message.success(`成功修正 ${result.fixed_count} 条文献标题`);
+            setTitleFixModalOpen(false);
+            fetchList();
+          } catch (err: any) {
+            message.error(err?.response?.data?.detail || '修正失败');
+          }
+        }}
+      >
+        <div style={{ maxHeight: 420, overflow: 'auto' }}>
+          <Checkbox
+            checked={Object.keys(titleFixSelections).length === titleFixChanges.length}
+            indeterminate={Object.keys(titleFixSelections).length > 0 && Object.keys(titleFixSelections).length < titleFixChanges.length}
+            onChange={(e) => {
+              if (e.target.checked) {
+                const all: Record<string, string> = {};
+                titleFixChanges.forEach(c => { all[c.id] = c.new_title; });
+                setTitleFixSelections(all);
+              } else {
+                setTitleFixSelections({});
+              }
+            }}
+            style={{ marginBottom: 8, fontWeight: 500 }}
+          >
+            全选 / 取消全选
+          </Checkbox>
+          {titleFixChanges.map((c, i) => {
+            const checked = c.id in titleFixSelections;
+            const editedTitle = titleFixSelections[c.id] ?? c.new_title;
+            return (
+              <div
+                key={c.id}
+                style={{
+                  marginBottom: 6,
+                  padding: '8px 10px',
+                  border: '1px solid #f0f0f0',
+                  borderRadius: 6,
+                  background: checked ? '#f6ffed' : '#fafafa',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <Checkbox
+                    checked={checked}
+                    onChange={(e) => {
+                      const next = { ...titleFixSelections };
+                      if (e.target.checked) {
+                        next[c.id] = editedTitle;
+                      } else {
+                        delete next[c.id];
+                      }
+                      setTitleFixSelections(next);
+                    }}
+                    style={{ marginTop: 2 }}
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ color: '#999', fontSize: 11, marginBottom: 2 }}>{c.id}</div>
+                    <div style={{ color: '#f5222d', fontSize: 12, marginBottom: 4 }}><del>{c.old_title}</del></div>
+                    <Input
+                      size="small"
+                      value={editedTitle}
+                      onChange={(e) => {
+                        const next = { ...titleFixSelections };
+                        next[c.id] = e.target.value;
+                        setTitleFixSelections(next);
+                      }}
+                      style={{ fontSize: 13 }}
+                    />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </Modal>
 

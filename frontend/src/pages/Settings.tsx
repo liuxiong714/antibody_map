@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Card, Tabs, Button, Space, Tag, Select, Input, Alert, Typography, Empty, Spin, Tooltip,
+  Table, Upload, Modal, message,
 } from 'antd';
 import {
   SettingOutlined, RobotOutlined, SafetyOutlined, FileTextOutlined, ReloadOutlined,
   SearchOutlined, DownOutlined, ClearOutlined, DesktopOutlined,
+  DatabaseOutlined, DownloadOutlined, RollbackOutlined,
 } from '@ant-design/icons';
 import ModelManager from '../components/ModelManager';
 import LocalModelManager from '../components/LocalModelManager';
-import { getSystemInfo, listLogFiles, getLogContent, SystemInfo, LogFile, LogEntry } from '../services/system';
+import { getSystemInfo, listLogFiles, getLogContent, SystemInfo, LogFile, LogEntry, listBackups, backupDatabase, buildDownloadBackupUrl, restoreBackup, BackupFile } from '../services/system';
 import './Settings.css';
 
 const { Text } = Typography;
@@ -48,6 +50,16 @@ const Settings: React.FC = () => {
   const [modelModalVisible, setModelModalVisible] = useState(false);
   const [localModelModalVisible, setLocalModelModalVisible] = useState(false);
   const [activeTab, setActiveTab] = useState('models');
+
+  // 是否管理员（还原操作仅管理员可用）
+  const isAdmin = localStorage.getItem('is_admin') === 'true' || sessionStorage.getItem('is_admin') === 'true';
+
+  // ── 数据备份/还原 ──
+  const [backupDir, setBackupDir] = useState('');
+  const [backups, setBackups] = useState<BackupFile[]>([]);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [backingUp, setBackingUp] = useState(false);
+  const [restoring, setRestoring] = useState(false);
 
   // ── 系统信息（动态）──
   const [sysInfo, setSysInfo] = useState<SystemInfo | null>(null);
@@ -160,6 +172,84 @@ const Settings: React.FC = () => {
 
   const handleModelSaved = () => {
     // 模型保存后不需要额外操作，表格已在内部刷新
+  };
+
+  const refreshBackups = useCallback(async () => {
+    setBackupLoading(true);
+    try {
+      const res = await listBackups();
+      setBackupDir(res.dir);
+      setBackups(res.files || []);
+    } catch (err) {
+      console.error('[Settings] 加载备份列表失败:', err);
+      message.error('加载备份列表失败');
+    } finally {
+      setBackupLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshBackups();
+  }, [refreshBackups]);
+
+  const handleBackupNow = async () => {
+    setBackingUp(true);
+    try {
+      const r = await backupDatabase();
+      message.success(`备份成功：${r.filename}`);
+      refreshBackups();
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || '备份失败');
+    } finally {
+      setBackingUp(false);
+    }
+  };
+
+  // 确认并执行还原（仅管理员）
+  const confirmRestore = async (file: File) => {
+    if (!isAdmin) return;
+    Modal.confirm({
+      title: '确认还原数据库？',
+      content: (
+        <div>
+          {restoring && <Spin size="small" style={{ marginRight: 8 }} />}
+          <span>还原将清空当前所有数据并用所选备份重建。操作前系统会自动备份当前库。</span>
+          <br />
+          <span style={{ color: '#ff4d4f' }}>此操作不可撤销，还原完成前请勿进行其他操作。</span>
+        </div>
+      ),
+      okText: '确认还原',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        setRestoring(true);
+        try {
+          const r = await restoreBackup(file);
+          message.success(`还原成功：${r.filename}`);
+          refreshBackups();
+        } catch (err: any) {
+          message.error(err?.response?.data?.detail || '还原失败');
+        } finally {
+          setRestoring(false);
+        }
+      },
+    });
+  };
+
+  // 从列表还原：先下载备份文件再上传还原
+  const handleRestoreFromList = async (rec: BackupFile) => {
+    try {
+      const token = localStorage.getItem('token') || sessionStorage.getItem('token') || '';
+      const resp = await fetch(buildDownloadBackupUrl(rec.filename), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!resp.ok) throw new Error('下载备份失败');
+      const blob = await resp.blob();
+      const file = new File([blob], rec.filename, { type: 'application/sql' });
+      confirmRestore(file);
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || '读取备份文件失败');
+    }
   };
 
   const handleScroll = () => {
@@ -355,6 +445,79 @@ const Settings: React.FC = () => {
                 </a>
               </span>
             </div>
+          </div>
+        </Card>
+      ),
+    },
+    {
+      key: 'backup',
+      label: (
+        <span>
+          <DatabaseOutlined /> 数据备份与还原
+        </span>
+      ),
+      children: (
+        <Card>
+          <div className="settings-section">
+            <p className="settings-desc">
+              对数据库执行 <Text code>pg_dump</Text> 逻辑备份，备份文件保存于 <Text code>{backupDir || 'backend/backups/'}</Text> 目录。
+              可将备份文件复制到新的客户端/电脑，登录后在系统设置中上传并还原，实现数据跨设备迁移。
+              <b> 还原为高危操作，仅管理员可用</b>；还原前系统会自动备份当前库，失败自动回滚。
+            </p>
+            <Space wrap>
+              <Button type="primary" icon={<DatabaseOutlined />} loading={backingUp} onClick={handleBackupNow}>
+                立即备份
+              </Button>
+              <Tooltip title={isAdmin ? '上传 .sql 备份文件并覆盖还原数据库' : '仅管理员可还原'}>
+                <Upload
+                  accept=".sql"
+                  showUploadList={false}
+                  disabled={!isAdmin || restoring}
+                  beforeUpload={(file) => { if (isAdmin) confirmRestore(file); return false; }}
+                >
+                  <Button danger icon={<RollbackOutlined />} loading={restoring} disabled={!isAdmin || restoring}>
+                    上传备份文件并还原
+                  </Button>
+                </Upload>
+              </Tooltip>
+              {!isAdmin && <Tag color="orange">还原操作仅管理员可用</Tag>}
+            </Space>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <Table<BackupFile>
+              rowKey="filename"
+              size="small"
+              loading={backupLoading}
+              dataSource={backups}
+              locale={{ emptyText: '暂无备份文件' }}
+              pagination={false}
+              columns={[
+                { title: '备份文件', dataIndex: 'filename', key: 'filename', ellipsis: true,
+                  render: (v: string) => <Text code>{v}</Text>,
+                },
+                { title: '大小', dataIndex: 'size_mb', key: 'size_mb', width: 90,
+                  render: (v: number) => `${v} MB`,
+                },
+                { title: '创建时间', dataIndex: 'mtime', key: 'mtime', width: 170,
+                  render: (v: number) => formatTime(v),
+                },
+                { title: '操作', key: 'action', width: 200,
+                  render: (_, rec) => (
+                    <Space>
+                      <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(buildDownloadBackupUrl(rec.filename), '_blank')}>
+                        下载
+                      </Button>
+                      {isAdmin && (
+                        <Button size="small" danger icon={<RollbackOutlined />} loading={restoring} onClick={() => handleRestoreFromList(rec)}>
+                          还原
+                        </Button>
+                      )}
+                    </Space>
+                  ),
+                },
+              ]}
+            />
           </div>
         </Card>
       ),

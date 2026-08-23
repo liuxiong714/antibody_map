@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, Dropdown, Modal, Input, Button, Space, message, type MenuProps } from 'antd';
+import { Layout, Menu, Dropdown, Modal, Input, Button, Space, message, Spin, type MenuProps } from 'antd';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -18,6 +18,8 @@ import {
   DownOutlined,
   LockOutlined,
   SettingOutlined,
+  CheckCircleOutlined,
+  ExclamationCircleOutlined,
 } from '@ant-design/icons';
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import api from '../services/api';
@@ -36,6 +38,10 @@ const MainLayout: React.FC = () => {
   const [oldPwd, setOldPwd] = useState('');
   const [newPwd, setNewPwd] = useState('');
   const [confirmPwd, setConfirmPwd] = useState('');
+  // 登出备份弹窗状态：idle=已触发待确认 / running=备份执行中 / success=备份完成 / error=备份失败
+  const [backupModalOpen, setBackupModalOpen] = useState(false);
+  const [backupState, setBackupState] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
+  const [backupInfo, setBackupInfo] = useState<any>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
@@ -62,23 +68,53 @@ const MainLayout: React.FC = () => {
     { key: '/report', icon: <FileTextOutlined />, label: t('nav.report') },
     { key: '/folders', icon: <FolderOpenOutlined />, label: t('nav.folders') },
     { key: '/pubmed', icon: <SearchOutlined />, label: t('nav.pubmed') },
+    { key: '/settings', icon: <SettingOutlined />, label: t('nav.settings') },
   ];
 
   const menuItems = isAdmin
     ? [
         ...baseMenuItems,
         { key: '/users', icon: <TeamOutlined />, label: t('nav.users') },
-        { key: '/settings', icon: <SettingOutlined />, label: t('nav.settings') },
       ]
     : baseMenuItems;
 
-  const handleLogout = () => {
+  // 真正的登出：清空本地凭据并跳转登录页
+  const performLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('username');
     sessionStorage.removeItem('token');
     sessionStorage.removeItem('username');
     message.success(t('logout.success'));
     navigate('/login');
+  };
+
+  // 关闭备份弹窗并登出（不执行备份）
+  const doLogoutSkippingBackup = () => {
+    setBackupModalOpen(false);
+    performLogout();
+  };
+
+  // 触发登出备份：自动开始执行，除非用户点击"跳过备份"
+  const handleLogout = () => {
+    setBackupModalOpen(true);
+    setBackupState('running');
+    setBackupInfo(null);
+    api
+      .post('/system/backup')
+      .then(res => {
+        const data = res.data?.data || res.data || {};
+        setBackupInfo(data);
+        setBackupState('success');
+        // 备份成功后短暂停留展示结果，再自动登出
+        setTimeout(performLogout, 1200);
+      })
+      .catch(err => {
+        setBackupState('error');
+        const detail = err?.response?.data?.detail || err?.message || '备份失败';
+        setBackupInfo({ detail });
+        // 备份失败不阻塞登出：短暂展示后仍自动退出
+        setTimeout(performLogout, 1500);
+      });
   };
 
   const handleChangePassword = async () => {
@@ -190,6 +226,76 @@ const MainLayout: React.FC = () => {
             onChange={e => setConfirmPwd(e.target.value)}
           />
         </div>
+      </Modal>
+
+      {/* 退出登录前自动备份弹窗 */}
+      <Modal
+        title={t('logout.backupTitle')}
+        open={backupModalOpen}
+        closable={false}
+        maskClosable={false}
+        keyboard={false}
+        footer={[
+          <Button
+            key="skip"
+            danger
+            onClick={doLogoutSkippingBackup}
+            disabled={backupState === 'success'}
+            loading={backupState === 'running'}
+          >
+            {t('logout.skipBackup')}
+          </Button>,
+        ]}
+      >
+        {backupState === 'running' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' }}>
+            <Spin />
+            <span>{t('logout.backupRunning')}</span>
+          </div>
+        )}
+
+        {backupState === 'success' && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 10,
+              padding: '8px 0',
+            }}
+          >
+            <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 18, marginTop: 2 }} />
+            <div>
+              <div>{t('logout.backupSuccess')}</div>
+              {backupInfo?.filename && (
+                <div style={{ marginTop: 6, color: 'rgba(0,0,0,0.65)' }}>
+                  {backupInfo.filename}（{(backupInfo.size / 1024 / 1024).toFixed(2)} MB）
+                </div>
+              )}
+              <div style={{ marginTop: 4, color: 'rgba(0,0,0,0.45)', fontSize: 12 }}>
+                {t('logout.backupLoggingOut')}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {backupState === 'error' && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 10,
+              padding: '8px 0',
+            }}
+          >
+            <ExclamationCircleOutlined style={{ color: '#ff4d4f', fontSize: 18, marginTop: 2 }} />
+            <div>
+              <div>{backupInfo?.detail ? `${t('logout.backupFailed')}：${backupInfo.detail}` : t('logout.backupFailed')}</div>
+              <div style={{ marginTop: 4, color: 'rgba(0,0,0,0.45)', fontSize: 12 }}>
+                {t('logout.backupLoggingOut')}
+              </div>
+            </div>
+          </div>
+        )}
       </Modal>
     </Layout>
   );

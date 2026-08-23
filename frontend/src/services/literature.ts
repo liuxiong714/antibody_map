@@ -98,8 +98,19 @@ export async function updateLiterature(id: string, updates: Record<string, unkno
   return data;
 }
 
+export interface UploadLiteratureResult {
+  id?: string;
+  title?: string;
+  // 上传成功后返回文献对象字段（from Literature）
+  // 当后端检测到该文件曾被删除时，返回以下确认信息
+  need_confirm?: boolean;
+  file_name?: string;
+  pdf_hash?: string;
+  history?: { operation: 'imported' | 'deleted'; operated_at: string; operator_name: string; file_name?: string | null }[];
+}
+
 export async function uploadLiterature(formData: FormData) {
-  const { data } = await api.post<Literature>('/literatures/upload', formData);
+  const { data } = await api.post<UploadLiteratureResult>('/literatures/upload', formData);
   return data;
 }
 
@@ -195,7 +206,12 @@ export async function stopExtraction(literatureId: string): Promise<{ literature
   return data;
 }
 
-export async function resetStuckExtractions(): Promise<{ reset_count: number; literature_ids?: string[] }> {
+export async function resetStuckExtractions(): Promise<{
+  reset_count: number;
+  literature_ids?: string[];
+  purged_count: number;
+  revoked_count: number;
+}> {
   const { data } = await api.post('/literatures/extraction/reset-stuck');
   return data;
 }
@@ -544,6 +560,39 @@ export interface FixTitlesResult {
 
 export async function fixTitles(dryRun: boolean = true): Promise<FixTitlesResult> {
   const { data } = await api.post<FixTitlesResult>(`/literatures/fix-titles?dry_run=${dryRun}`);
+  return data;
+}
+
+export interface FixTitleApplyItem {
+  id: string;
+  new_title: string;
+}
+
+export async function applyFixTitles(fixes: FixTitleApplyItem[]): Promise<{ fixed_count: number }> {
+  const { data } = await api.post<{ fixed_count: number }>('/literatures/fix-titles', { fixes });
+  return data;
+}
+
+export interface ImportLogItem {
+  id: string;
+  file_name: string;
+  imported_at: string;
+  total_count: number;
+  skipped_count: number;
+  imported_count: number;
+  operator_name: string;
+  fmt: string;
+}
+
+export interface ImportLogsResult {
+  items: ImportLogItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export async function listImportLogs(page: number = 1, pageSize: number = 20): Promise<ImportLogsResult> {
+  const { data } = await api.get<ImportLogsResult>('/literatures/import-logs', { params: { page, page_size: pageSize } });
   return data;
 }
 

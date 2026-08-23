@@ -18,6 +18,7 @@ from app.models.data_point import DataPoint
 from app.models.literature import Literature
 from app.models.extraction_history import ExtractionHistory
 from app.models.titer_table import TiterTable
+from app.models.api_model_config import ApiModelConfig
 from app.tasks.celery_app import celery_app
 from app.tasks.async_runner import run_async
 from app.core.minio_client import get_minio_client
@@ -183,7 +184,7 @@ async def _load_feedback_examples(db) -> list[str]:
 _LOCAL_STORAGE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "pdfs"
 
 
-def _download_pdf(object_name: str) -> Optional[bytes]:
+def _download_pdf(object_name: str, literature_id: Optional[str] = None) -> Optional[bytes]:
     """从本地文件系统或 MinIO 下载 PDF 文件（多重查找策略）"""
     # 策略1: 直接作为本地路径读取
     local_path = Path(object_name)
@@ -204,17 +205,35 @@ def _download_pdf(object_name: str) -> Optional[bytes]:
         except Exception as e:
             logger.error(f"本地存储读取失败: {e}")
 
-    # 策略3: 搜索本地存储目录中所有文件（兼容不同 UUID 重命名情况）
+    # 策略3: 搜索本地存储目录中所有同后缀文件（兼容不同 UUID 重命名情况）
+    # 安全约束：仅当目录中恰好存在 1 个候选，且其文件名包含目标文献 id 前缀时才返回，
+    # 否则记录 warning 并返回 None（交给策略4 MinIO 路径），避免拿错其它文献的文件。
     expected_suffix = Path(object_name).suffix.lower()
     if _LOCAL_STORAGE_DIR.exists():
-        for f in _LOCAL_STORAGE_DIR.iterdir():
-            if f.is_file() and (not expected_suffix or f.suffix.lower() == expected_suffix):
+        candidates = [
+            f
+            for f in _LOCAL_STORAGE_DIR.iterdir()
+            if f.is_file() and (not expected_suffix or f.suffix.lower() == expected_suffix)
+        ]
+        if len(candidates) == 1:
+            only = candidates[0]
+            if literature_id and only.name.startswith(str(literature_id)):
                 try:
-                    logger.info(f"从本地存储目录找到备选文件: {f}")
-                    return f.read_bytes()
+                    logger.info(f"从本地存储目录找到备选文件: {only}")
+                    return only.read_bytes()
                 except Exception as e:
                     logger.error(f"备选文件读取失败: {e}")
-                    continue
+            else:
+                logger.warning(
+                    f"本地目录存在 1 个候选文件，但文件名不含目标文献 id 前缀，"
+                    f"拒绝使用: file={only.name}, literature_id={literature_id}, object_name={object_name}"
+                )
+        else:
+            logger.warning(
+                f"本地目录同后缀候选文件数为 {len(candidates)}（预期恰好 1 个），"
+                f"无法安全确认为目标文献，改走 MinIO: "
+                f"object_name={object_name}, literature_id={literature_id}"
+            )
 
     # 策略4: 从 MinIO 下载
     client = get_minio_client()
@@ -432,8 +451,7 @@ async def _extract_result_to_datapoints(
 async def _process_literature_async(
     literature_id: str,
     model: Optional[str] = None,
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
+    model_config_id: Optional[str] = None,
     clear_existing_data: bool = True,
     use_cache: bool = True,
 ) -> dict:
@@ -461,7 +479,7 @@ async def _process_literature_async(
 
         # 2. 获取提取输入：有 PDF 下载全文，无 PDF 但有摘要则直接用摘要
         if literature.file_path:
-            file_bytes = _download_pdf(literature.file_path)
+            file_bytes = _download_pdf(literature.file_path, literature_id=str(literature_id))
             if not file_bytes:
                 raise RuntimeError(
                     f"文件下载失败: file_path={literature.file_path}, "
@@ -524,8 +542,27 @@ async def _process_literature_async(
         passes = getattr(settings, "LLM_EXTRACTION_PASSES", 2)
         cache_hit = False
         cache_key: Optional[str] = None
+        resolved_api_key: Optional[str] = None
+        resolved_base_url: Optional[str] = None
 
-        # 5a. 先查提取结果缓存；命中则跳过 LLM 调用，直接重建数据点
+        # 5a. 解析 API Key：优先从 model_config_id 读取（加密存储，需解密）
+        if model_config_id:
+            cfg_result = await db.execute(
+                select(ApiModelConfig).where(ApiModelConfig.id == model_config_id)
+            )
+            cfg = cfg_result.scalar_one_or_none()
+            if cfg:
+                resolved_api_key = cfg.api_key  # hybrid_property 自动解密
+                resolved_base_url = cfg.base_url or settings.LLM_BASE_URL
+                logger.info(f"从 ApiModelConfig(id={model_config_id}) 读取 API Key")
+            else:
+                logger.warning(f"ApiModelConfig(id={model_config_id}) 不存在，回退到系统配置")
+        # 未提供 model_config_id 时，使用系统配置
+        if not resolved_api_key:
+            resolved_api_key = settings.LLM_API_KEY or None
+            resolved_base_url = settings.LLM_BASE_URL or None
+
+        # 5b. 先查提取结果缓存；命中则跳过 LLM 调用，直接重建数据点
         if use_cache and getattr(settings, "EXTRACTION_CACHE_ENABLED", True):
             cache_key = _build_extraction_cache_key(
                 literature_id, effective_model, passes,
@@ -540,9 +577,9 @@ async def _process_literature_async(
                 usage_summary = cached.get("usage_summary") or {}
                 extractor = None
             else:
-                extractor = LLMExtractor(model=model, api_key=api_key, base_url=base_url)
+                extractor = LLMExtractor(model=model, api_key=resolved_api_key, base_url=resolved_base_url)
         else:
-            extractor = LLMExtractor(model=model, api_key=api_key, base_url=base_url)
+            extractor = LLMExtractor(model=model, api_key=resolved_api_key, base_url=resolved_base_url)
 
         if not cache_hit:
             # B9：加载审核反馈示例（rejected 数据点），注入 prompt 提升准确度
@@ -811,8 +848,7 @@ def process_literature(
     self,
     literature_id: str,
     model: Optional[str] = None,
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
+    model_config_id: Optional[str] = None,
     clear_existing_data: bool = True,
     use_cache: bool = True,
 ):
@@ -820,7 +856,7 @@ def process_literature(
     try:
         result = run_async(
             _process_literature_async(
-                literature_id, model, api_key, base_url, clear_existing_data, use_cache
+                literature_id, model, model_config_id, clear_existing_data, use_cache
             )
         )
         logger.info(f"文献 {literature_id} 提取完成，数据点: {result['extracted_count']}")

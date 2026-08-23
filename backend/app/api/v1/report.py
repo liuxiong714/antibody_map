@@ -107,6 +107,36 @@ async def generate_vaccination_strategy(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/reports/generate-immune-barrier", response_model=ApiResponse, summary="生成免疫屏障评估报告", description="生成人群免疫屏障评估报告，按疾病/省份/数据类型筛选，评估总体/地区/时间/年龄维度的免疫屏障水平与缺口")
+async def generate_immune_barrier(
+    disease: Optional[str] = Query(None, description="疾病 key"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    data_type: Optional[str] = Query(None, description="数据类型"),
+    language: str = Query("zh", description="报告语言：zh | en"),
+    title: Optional[str] = Query(None, description="自定义报告标题"),
+    model: Optional[str] = Query(None, description="LLM 模型名，默认使用 .env 配置"),
+    template_id: Optional[str] = Query(None, description="报告模板ID，缺省使用免疫屏障评估默认模板"),
+    db: AsyncSession = Depends(get_db),
+):
+    """生成免疫屏障评估报告"""
+    try:
+        data = await report_service.generate_immune_barrier_report(
+            db=db,
+            disease=disease,
+            province=province,
+            data_type=data_type,
+            language=language,
+            title=title,
+            model=model,
+            template_id=template_id,
+        )
+        return ApiResponse(message="免疫屏障评估报告生成成功", data=data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/reports", response_model=ApiResponse, summary="获取报告列表", description="分页获取所有已生成的报告列表")
 async def list_reports(
     page: int = Query(1, ge=1, description="页码"),

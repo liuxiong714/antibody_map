@@ -19,7 +19,7 @@ from app.config import settings
 logger = logging.getLogger("uvicorn")
 
 # SECRET_KEY 为空时的开发回退密钥（仅用于本地开发，生产环境必须配置 SECRET_KEY）
-_DEV_FALLBACK_SEED = "antibody-map-dev-fallback-please-set-SECRET_KEY"
+# 已移除 — 见 _derive_key 中的 RuntimeError 检查
 
 # Fernet 密文固定前缀（base64 编码后的版本字节），用于判断是否已加密
 _FERNET_TOKEN_PREFIX = "gAAAAA"
@@ -28,11 +28,10 @@ _FERNET_TOKEN_PREFIX = "gAAAAA"
 def _derive_key(secret: str) -> bytes:
     """从任意长度的 SECRET_KEY 派生 Fernet 兼容的 32 字节密钥"""
     if not secret:
-        logger.warning(
-            "SECRET_KEY 未配置，使用开发回退密钥加密 API Key。"
-            "生产环境必须在 .env 中设置 SECRET_KEY（任意长度随机字符串）！"
+        raise RuntimeError(
+            "SECRET_KEY 未配置，无法派生加密密钥。"
+            "请确保 .env 中 SECRET_KEY 已配置且长度 >= 32。"
         )
-        secret = _DEV_FALLBACK_SEED
     digest = hashlib.sha256(secret.encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest)
 

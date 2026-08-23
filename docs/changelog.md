@@ -1,6 +1,48 @@
 # 变更日志
 
-## v1.17.1 (2026-08-22)
+## v1.18.0 (2026-08-24)
+
+### 免疫屏障评估报告 + pdf-inspector PDF 解析 + 备份还原 + 导入历史与进度条
+
+- **免疫屏障评估报告**：新增第三种报告类型「免疫屏障评估报告」，支持免疫屏障覆盖率与保护率评估，与现有报告共享模型选择等设置。
+- **pdf-inspector PDF 解析增强**：集成 Rust 编写的 pdf-inspector 工具，自动修复损坏 PDF 尾部结构（PyMuPDF garbage=4）后提取，原生支持中文与表格，解析失败自动回退现有解析链。
+- **数据库备份与还原**：系统设置新增「数据备份与还原」标签页，支持 pg_dump 逻辑备份、备份文件列表浏览与下载、上传备份文件并还原（含前置自动备份保险与失败回滚），实现跨设备数据迁移。
+- **文献导入历史追踪**：基于 pdf_hash 文件指纹识别重复导入，记录首次导入、上次导入、剔除时间与操作人，重复导入时弹出确认对话框提示历史信息。
+- **PubMed 导入进度条**：分批导入 PubMed 检索结果（25 条/批），实时进度条从 0 到 100 逐步推进。
+- **题录导入进度条**：分批次（25 条/批）调用 `start`/`limit` 参数导入题录文件，进度条实时显示当前批次进度，汇总后写一条导入日志。
+- **导入日志增强**：全部重复/无效时仍记录导入日志（`imported=0`）；同一文件只汇总写一条日志，不再分割为多条。
+- **系统设置开放普通用户**：系统设置菜单对所有登录用户可见，仅数据还原、模型增删改等高危操作为管理员专属。
+- **Tesseract 中文语言包固化**：Dockerfile 固化安装 `tesseract-ocr-chi-sim` 中文语言包，重建镜像无需重复下载。
+- **AnyDoc 测试 PDF 生成**：生成符合 PDF/A 标准的测试文件，用于验证 AnyDoc 解析能力。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/core/processors/pdf_inspector_parser.py` | 新增 pdf-inspector 解析器：PyMuPDF 修复 + pdf-inspector 提取 |
+| `backend/app/core/document_parser.py` | 集成 pdf-inspector 到主解析链（修复 → 提取 → 回退） |
+| `backend/app/models/literature_file_history.py` | 新增文献导入历史模型 |
+| `backend/app/models/reference_import_log.py` | 新增题录导入日志模型 |
+| `backend/app/models/report.py` | 扩展报告类型枚举，增加 immune_barrier 类型 |
+| `backend/app/services/report_service.py` | 实现免疫屏障评估报告生成逻辑 |
+| `backend/app/services/literature_service.py` | 新增 `import_references_from_text` 支持 `start`/`limit` 分批参数 |
+| `backend/app/api/v1/report.py` | 新增免疫屏障评估报告生成端点 |
+| `backend/app/api/v1/literature.py` | 新增 `ImportReferencesBody` 的 `start`/`limit`/`skip_log` 参数；新增 `/import-references/log` 轻量日志端点 |
+| `backend/app/api/v1/system.py` | 新增备份列表、下载、还原接口 |
+| `backend/app/config.py` | APP_VERSION 升级至 1.18.0 |
+| `backend/alembic/versions/add_immune_barrier_report.py` | 数据库迁移：免疫屏障报告相关表结构 |
+| `backend/alembic/versions/add_reference_import_log.py` | 数据库迁移：题录导入日志表 |
+| `backend/alembic/versions/create_literature_file_history.py` | 数据库迁移：文献导入历史表 |
+| `backend/Dockerfile` | 固化安装 tesseract-ocr-chi-sim 中文包 |
+| `frontend/src/pages/Report.tsx` | 新增免疫屏障评估报告 Tab 及表单 |
+| `frontend/src/pages/PubmedSearch.tsx` | 新增导入进度条、题录分批导入、导入日志汇总 |
+| `frontend/src/pages/Settings.tsx` | 新增「数据备份与还原」标签页 |
+| `frontend/src/pages/Literature.tsx` | 新增文献导入历史提示对话框 |
+| `frontend/src/services/system.ts` | 新增备份相关 API 封装 |
+| `frontend/src/layouts/MainLayout.tsx` | 系统设置菜单对所有用户开放 |
+| `docs/guide/features.md` | 补充备份还原、导入历史、进度条等说明 |
+
+---
 
 ### 文档迁移 ReadTheDocs + 标题修正增强 + 回收站括号修复
 

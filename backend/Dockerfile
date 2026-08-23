@@ -25,6 +25,7 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' \
     libxml2-dev \
     libxslt1-dev \
     tesseract-ocr \
+    tesseract-ocr-chi-sim \
     mupdf-tools \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -39,19 +40,16 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # CAJ 转换工具（知网 .caj → PDF）：caj2pdf 不在 PyPI，从 GitHub 拉取源码与预编译共享库。
 # 依赖 mutool（mupdf-tools，已在上面安装）；共享库 libjbig*.so 通过相对路径 ./libjbig*.so 加载，
 # 因此运行时通过包装脚本 scripts/caj2pdf-wrapper 切换到 /opt/caj2pdf 再执行。
-ARG CAJ2PDF_COMMIT=6c4bc32b15ce748d211f45d536f5d5511ef9f368
+# 使用本地缓存目录（backend/caj2pdf_cache/）避免构建时 GitHub 下载不稳定。
+COPY backend/caj2pdf_cache/ /tmp/caj2pdf_cache/
 RUN --mount=type=cache,target=/root/.cache/pip \
     mkdir -p /opt/caj2pdf \
-    && curl -sL -o /tmp/caj2pdf.tar.gz \
-        "https://github.com/caj2pdf/caj2pdf/archive/${CAJ2PDF_COMMIT}.tar.gz" \
-    && tar -xzf /tmp/caj2pdf.tar.gz --strip-components=1 -C /opt/caj2pdf \
-    && curl -sL -o /opt/caj2pdf/libjbigdec.so \
-        "https://github.com/caj2pdf/caj2pdf-extra-libs/releases/download/BUILD-0.1/libjbigdec.so" \
-    && curl -sL -o /opt/caj2pdf/libjbig2codec.so \
-        "https://github.com/caj2pdf/caj2pdf-extra-libs/releases/download/BUILD-0.1/libjbig2codec.so" \
+    && tar -xzf /tmp/caj2pdf_cache/caj2pdf.tar.gz --strip-components=1 -C /opt/caj2pdf \
+    && cp /tmp/caj2pdf_cache/libjbigdec.so /opt/caj2pdf/libjbigdec.so \
+    && cp /tmp/caj2pdf_cache/libjbig2codec.so /opt/caj2pdf/libjbig2codec.so \
     && chmod +x /opt/caj2pdf/caj2pdf \
     && python -m pip install PyPDF2==2.2.0 imagesize==1.3.0 \
-    && rm -rf /tmp/caj2pdf.tar.gz
+    && rm -rf /tmp/caj2pdf_cache
 
 # MinerU 可选依赖（仅 INSTALL_MINERU=true 时安装）
 COPY backend/requirements-mineru.txt ./requirements-mineru.txt
@@ -63,9 +61,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # MinerU 运行时系统库（opencv-python 依赖，缺失会导致 libGL.so.1 找不到、
 # MinerU 导入失败）。放在依赖安装之后，避免 apt 层变更触发 torch 等重型层重建
 RUN if [ "$INSTALL_MINERU" = "true" ]; then \
-        sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
-            /etc/apt/sources.list \
-            /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
         apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
@@ -78,6 +73,11 @@ COPY backend/ ./backend/
 COPY backend/scripts/caj2pdf-wrapper /usr/local/bin/caj2pdf
 RUN chmod +x /usr/local/bin/caj2pdf
 WORKDIR /app/backend
+
+# 数据库备份客户端（pg_dump）：独立新增一层，避免触发 caj2pdf/pip 等重型层重建
+# apt 源已在前面层切换为阿里云镜像，此处直接 install 即可
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
 
 # 暴露端口
 EXPOSE 8000

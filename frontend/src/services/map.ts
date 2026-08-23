@@ -201,6 +201,11 @@ export async function generateVaccinationStrategy(body: Record<string, unknown>)
   return data;
 }
 
+export async function generateImmuneBarrier(params: Record<string, unknown>) {
+  const { data } = await api.post<ReportData>('/reports/generate-immune-barrier', null, { params, timeout: 600_000 });
+  return data;
+}
+
 export async function updateReport(id: string, body: { title?: string; content?: string }) {
   const { data } = await api.put<ReportRecord>(`/reports/${id}`, body);
   return data;

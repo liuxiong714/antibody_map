@@ -17,6 +17,7 @@ from typing import Optional
 
 from app.config import settings
 from app.core.processors import anydoc_parser
+from app.core.processors import pdf_inspector_parser
 
 logger = logging.getLogger("uvicorn")
 
@@ -97,6 +98,18 @@ def extract_tables_markdown(file_bytes: bytes, max_pages: int = 50) -> str:
             logger.info(f"[表格提取] 解析路径=AnyDoc，Markdown 含表格: {len(md)} 字符")
             return md
         logger.info("[表格提取] 回退=pdfplumber（AnyDoc 无表格或失败）")
+
+    # pdf-inspector 增强路径：仅对 PDF 格式，优先尝试 pdf-inspector。
+    # 由 pdf-inspector 提取 Markdown 后检测是否含 GFM 表格，有则直接返回。
+    if (
+        getattr(settings, "ENABLE_PDF_INSPECTOR", False)
+        and pdf_inspector_parser.is_available()
+    ):
+        md = pdf_inspector_parser.to_markdown_bytes(file_bytes)
+        if md and anydoc_parser.contains_table(md):
+            logger.info(f"[表格提取] 解析路径=pdf-inspector，Markdown 含表格: {len(md)} 字符")
+            return md
+        logger.info("[表格提取] 回退=pdfplumber（pdf-inspector 无表格或失败）")
 
     if not HAS_PDFPLUMBER:
         logger.debug("[表格提取] pdfplumber 不可用，跳过")

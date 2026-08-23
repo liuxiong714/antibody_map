@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.literature import Literature
 from app.models.data_point import DataPoint
 from app.models.extraction_history import ExtractionHistory
+from app.models.api_model_config import ApiModelConfig
 from app.tasks.extract_task import process_literature
 
 logger = logging.getLogger("uvicorn")
@@ -35,10 +36,15 @@ async def trigger_extraction(
     model: Optional[str] = None,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
+    model_config_id: Optional[str] = None,
     clear_existing_data: bool = True,
     use_cache: bool = True,
 ) -> dict:
-    """触发文献 AI 提取任务（通过 Celery 异步执行）"""
+    """触发文献 AI 提取任务（通过 Celery 异步执行）
+
+    安全说明：前端自定义的 api_key/base_url 会先加密存入 ApiModelConfig，
+    任务参数只传递 model_config_id，避免明文凭证出现在 Redis 队列中。
+    """
     # 检查文献存在
     result = await db.execute(
         select(Literature).where(Literature.id == literature_id)
@@ -59,13 +65,31 @@ async def trigger_extraction(
     literature.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
+    # == 安全处理：如果前端提供了自定义 api_key，先加密存入 ApiModelConfig ==
+    # 任务参数只传 model_config_id，不传明文 api_key/base_url
+    resolved_model_config_id = model_config_id
+    if api_key and not model_config_id:
+        # 创建临时 ApiModelConfig，加密存储 api_key
+        from app.core.crypto import encrypt
+        temp_config = ApiModelConfig(
+            name=f"临时提取配置-{model or 'default'}",
+            model_name=model or "",
+            base_url=base_url or "",
+            is_active=False,
+        )
+        # 通过 hybrid_property setter 自动加密
+        temp_config.api_key = api_key
+        db.add(temp_config)
+        await db.flush()
+        resolved_model_config_id = str(temp_config.id)
+        logger.info(f"前端自定义 API Key 已加密存入 ApiModelConfig(id={temp_config.id})")
+
     # 提交到 Celery 队列异步执行（失败标记与重试由任务自身处理）
     lit_id_str = str(literature_id)
     process_literature.delay(
         literature_id=lit_id_str,
         model=model,
-        api_key=api_key,
-        base_url=base_url,
+        model_config_id=resolved_model_config_id,
         clear_existing_data=clear_existing_data,
         use_cache=use_cache,
     )

@@ -92,6 +92,65 @@ Please structure the report in Markdown format:
 
 Base your analysis strictly on the provided data. Do not fabricate any data."""
 
+IMMUNE_BARRIER_PROMPT_ZH = """你是一位免疫学和流行病学专家。请根据以下审核通过的人群抗体水平数据，撰写一份{title}的免疫屏障评估报告。
+
+数据概况：
+- 数据来源：{literature_count} 篇文献
+- 数据点数：{point_count} 个
+- 覆盖省份：{province_count} 个
+- 总样本量：{total_samples} 人
+
+各省数据：
+{province_table}
+
+年份趋势：
+{year_trend}
+
+年龄分布：
+{age_distribution}
+
+请按以下结构输出报告（Markdown 格式）：
+## 1. 免疫屏障总体评估
+- 基于人群抗体阳性率与样本量综合判断整体免疫屏障水平
+## 2. 地区免疫屏障差异分析
+- 识别免疫屏障薄弱地区与高风险地区
+- 分析地区间抗体水平差异及其公共卫生意义
+## 3. 时间维度屏障变化趋势
+- 结合年份趋势判断免疫屏障的时间演变规律
+## 4. 年龄分段屏障特征
+- 分析不同年龄段的抗体水平与免疫缺口
+## 5. 免疫屏障缺口识别与干预建议
+- 综合评估人群免疫保护状况，指出薄弱环节与高风险人群
+- 给出加强免疫、监测与防控的具体建议
+
+请基于数据给出专业的免疫屏障评估，不要编造不存在的数据。"""
+
+IMMUNE_BARRIER_PROMPT_EN = """You are an expert in immunology and epidemiology. Based on the following reviewed population antibody titer data, write an {title_en} immune barrier assessment report.
+
+Data Overview:
+- Data Sources: {literature_count} papers
+- Data Points: {point_count}
+- Provinces Covered: {province_count}
+- Total Sample Size: {total_samples}
+
+Province Data:
+{province_table}
+
+Yearly Trend:
+{year_trend}
+
+Age Distribution:
+{age_distribution}
+
+Please structure the report in Markdown format:
+## 1. Overall Immune Barrier Assessment
+## 2. Regional Immune Barrier Differences
+## 3. Temporal Trends of Barrier Changes
+## 4. Age-stratified Barrier Characteristics
+## 5. Barrier Gaps and Intervention Recommendations
+
+Base your analysis strictly on the provided data. Do not fabricate any data."""
+
 VACCINATION_STRATEGY_PROMPT_ZH = """你是一位流行病学和疫苗学专家。请根据以下任务信息和任务地点传染病流行情况，综合研判并制定参加任务人员的疫苗接种策略。
 
 任务信息：
@@ -182,6 +241,20 @@ DEFAULT_TEMPLATES = [
             {"title": "推荐疫苗接种方案", "type": "text", "order": 4, "content_template": "请基于当地流行情况与人员特点，撰写《推荐疫苗接种方案》章节，按优先级给出可操作性建议。"},
         ],
     },
+    {
+        "name": "免疫屏障评估报告（默认）",
+        "report_type": "immune_barrier_assessment",
+        "is_default": True,
+        "desc": "含数据概览、免疫屏障总体/地区/时间/年龄评估与缺口干预建议的评估报告。",
+        "sections": [
+            {"title": "数据概览", "type": "kpi", "order": 0, "kpi": ["literature_count", "point_count", "province_count", "total_samples", "weighted_rate"]},
+            {"title": "免疫屏障总体评估", "type": "text", "order": 1, "content_template": "请基于数据概况与分省/分年/分年龄摘要，撰写《免疫屏障总体评估》章节，综合判断人群整体免疫屏障水平。"},
+            {"title": "地区免疫屏障差异分析", "type": "chart", "order": 2, "analysis": "region"},
+            {"title": "时间维度屏障变化趋势", "type": "chart", "order": 3, "analysis": "trend"},
+            {"title": "年龄分段屏障特征", "type": "chart", "order": 4, "analysis": "age_curve"},
+            {"title": "免疫屏障缺口与干预建议", "type": "text", "order": 5, "content_template": "请基于以上数据撰写《免疫屏障缺口与干预建议》章节，识别免疫薄弱环节与高风险人群，并给出加强免疫、监测与防控建议，不要编造不存在的数据。"},
+        ],
+    },
 ]
 
 
@@ -233,15 +306,18 @@ async def get_default_template(db: AsyncSession, report_type: str) -> Optional[R
 
 
 async def seed_default_templates(db: AsyncSession) -> int:
-    """若库中无任何模板，写入内置默认模板。返回写入数量。"""
-    existing = (await db.execute(select(ReportTemplate).limit(1))).scalar_one_or_none()
-    if existing:
-        return 0
+    """按 report_type 补齐缺失的默认模板：某类型无任何模板时才写入。
+    兼容已有库（仅新增类型会插入默认模板）。返回写入数量。"""
     count = 0
     for data in DEFAULT_TEMPLATES:
-        db.add(ReportTemplate(**data))
-        count += 1
-    await db.commit()
+        existing = (await db.execute(
+            select(ReportTemplate).where(ReportTemplate.report_type == data["report_type"]).limit(1)
+        )).scalar_one_or_none()
+        if not existing:
+            db.add(ReportTemplate(**data))
+            count += 1
+    if count:
+        await db.commit()
     return count
 
 
@@ -253,8 +329,8 @@ async def create_template(
     is_default: bool = False,
     desc: Optional[str] = None,
 ) -> dict:
-    if report_type not in ("antibody_analysis", "vaccination_strategy"):
-        raise ValueError("report_type 必须是 antibody_analysis 或 vaccination_strategy")
+    if report_type not in ("antibody_analysis", "vaccination_strategy", "immune_barrier_assessment"):
+        raise ValueError("report_type 必须是 antibody_analysis、vaccination_strategy 或 immune_barrier_assessment")
     # 确保 sections 有序且含必要字段
     for i, s in enumerate(sections):
         if "title" not in s or "type" not in s:
@@ -775,6 +851,150 @@ async def generate_report(
         "title": report_title,
         "content": content,
         "report_type": "antibody_analysis",
+        "literature_count": len(lit_ids),
+        "data_point_count": len(rows),
+        "language": language,
+        "llm_model": report.llm_model,
+        "generated_at": report.generated_at.isoformat(),
+    }
+
+
+async def generate_immune_barrier_report(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+    data_type: Optional[str] = None,
+    language: str = "zh",
+    title: Optional[str] = None,
+    model: Optional[str] = None,
+    template_id: Optional[str] = None,
+) -> dict:
+    """生成免疫屏障评估报告。
+
+    参数结构与抗体分析报告一致，复用同一批审核通过数据点，
+    但输出侧重人群免疫屏障总体/地区/时间/年龄维度评估与缺口干预建议。
+    """
+    # 0. 解析模板（缺省时使用免疫屏障评估默认模板）
+    template = None
+    if template_id:
+        template = await get_template_by_id(db, template_id)
+        if not template:
+            raise ValueError("指定的报告模板不存在")
+    else:
+        template = await get_default_template(db, "immune_barrier_assessment")
+
+    # 1. 查询审核通过的数据点
+    query = select(DataPoint).where(DataPoint.review_status == "approved")
+    if disease:
+        query = query.where(DataPoint.disease == disease)
+    if province:
+        query = query.where(DataPoint.province.ilike(f"%{province}%"))
+    if data_type:
+        query = query.where(DataPoint.data_type == data_type)
+
+    result = await db.execute(query)
+    rows = list(result.scalars().all())
+
+    if not rows:
+        raise ValueError("没有找到审核通过的数据，无法生成报告")
+
+    disease_name = DISEASE_NAMES.get(disease or "", disease or "未知疾病")
+
+    if title:
+        report_title = title
+        report_title_en = title
+    else:
+        report_title = f"{disease_name}免疫屏障评估报告"
+        report_title_en = f"{disease_name} Immune Barrier Assessment Report"
+
+    # 2. 模板渲染或内置 Prompt
+    if template:
+        ctx = _build_context(rows, disease=disease, language=language)
+        content = await _render_template_report(db, ctx, template, model=model, language=language)
+    else:
+        lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+        provinces_set = set()
+        for r in rows:
+            for p in (r.province or "").split(";"):
+                p = p.strip()
+                if p:
+                    provinces_set.add(p)
+        total_sample = sum(r.sample_size or 0 for r in rows)
+        province_table, year_trend, age_distribution = _build_legacy_inline_text(rows, language)
+        if language == "zh":
+            prompt = IMMUNE_BARRIER_PROMPT_ZH.format(
+                title=report_title,
+                literature_count=len(lit_ids),
+                point_count=len(rows),
+                province_count=len(provinces_set),
+                total_samples=total_sample,
+                province_table=province_table,
+                year_trend=year_trend,
+                age_distribution=age_distribution,
+            )
+        else:
+            prompt = IMMUNE_BARRIER_PROMPT_EN.format(
+                title_en=report_title_en,
+                literature_count=len(lit_ids),
+                point_count=len(rows),
+                province_count=len(provinces_set),
+                total_samples=total_sample,
+                province_table=province_table,
+                year_trend=year_trend,
+                age_distribution=age_distribution,
+            )
+        content = await _call_llm(db, prompt, model=model)
+
+    lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+    methodology_note = build_methodology_note(
+        "report",
+        {"disease": disease, "province": province, "data_type": data_type},
+        {"n_estimates": len(rows), "n_literatures": len(lit_ids), "quality_grades": True},
+    )
+    content = (content or "").rstrip()
+    if language == "zh":
+        content += f"\n\n## 方法学\n\n{methodology_note}"
+        content += (
+            f"\n\n## 引用\n\n"
+            f"抗体地图数据库分析报告[EB/OL]. 抗体地图数据库（版本 v1.0）. "
+            f"数据截至：{date.today().isoformat()}；[引用日期 {date.today().isoformat()}]. "
+            f"报告编号：{disease_name}_{province or '全国'}_{date.today().isoformat()}。"
+        )
+    else:
+        content += f"\n\n## Methodology\n\n{methodology_note}"
+        content += (
+            f"\n\n## Citation\n\n"
+            f"Antibody Map Database Analysis Report[EB/OL]. Antibody Map Database (Version v1.0). "
+            f"Data as of: {date.today().isoformat()}; [Accessed {date.today().isoformat()}]. "
+            f"Report ID: {disease_name}_{province or 'National'}_{date.today().isoformat()}."
+        )
+
+    llm_model_name = await _resolve_model_name(db, model)
+
+    try:
+        report = Report(
+            title=report_title,
+            content=content,
+            report_type="immune_barrier_assessment",
+            disease=disease,
+            province=province,
+            data_type=data_type,
+            language=language,
+            literature_count=len(lit_ids),
+            data_point_count=len(rows),
+            llm_model=llm_model_name,
+        )
+        db.add(report)
+        await db.commit()
+    except Exception as e:
+        logger.error(f"保存免疫屏障评估报告失败: {e}；内容摘要: {content[:300]}")
+        raise RuntimeError(f"报告生成成功但保存失败: {e}") from e
+
+    return {
+        "id": str(report.id),
+        "title": report_title,
+        "content": content,
+        "report_type": "immune_barrier_assessment",
         "literature_count": len(lit_ids),
         "data_point_count": len(rows),
         "language": language,

@@ -12,7 +12,7 @@ import { ReportTemplate, ReportSection } from '../types';
 
 interface Props {
   visible: boolean;
-  reportType: 'antibody_analysis' | 'vaccination_strategy';
+  reportType: 'antibody_analysis' | 'vaccination_strategy' | 'immune_barrier_assessment';
   onClose: () => void;
   onSaved: () => void;
 }
@@ -179,7 +179,7 @@ const TemplateManager: React.FC<Props> = ({ visible, reportType, onClose, onSave
     { title: '模板名称', dataIndex: 'name', key: 'name' },
     {
       title: '类型', dataIndex: 'report_type', key: 'rt', width: 120,
-      render: (v: string) => v === 'vaccination_strategy' ? <Tag color="green">接种策略</Tag> : <Tag color="blue">抗体分析</Tag>,
+      render: (v: string) => v === 'vaccination_strategy' ? <Tag color="green">接种策略</Tag> : v === 'immune_barrier_assessment' ? <Tag color="purple">免疫屏障</Tag> : <Tag color="blue">抗体分析</Tag>,
     },
     { title: '章节数', key: 'sec', width: 80, render: (_: unknown, r: ReportTemplate) => (r.sections || []).length },
     {
@@ -254,6 +254,7 @@ const TemplateManager: React.FC<Props> = ({ visible, reportType, onClose, onSave
                           options={[
                             { value: 'antibody_analysis', label: '抗体分析' },
                             { value: 'vaccination_strategy', label: '疫苗接种策略' },
+                            { value: 'immune_barrier_assessment', label: '免疫屏障评估' },
                           ]}
                         />
                       </Form.Item>

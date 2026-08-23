@@ -42,6 +42,12 @@
   "password.fail": "Failed to change password",
 
   "logout.success": "Logged out successfully",
+  "logout.backupTitle": "Backing Up Data",
+  "logout.skipBackup": "Skip Backup & Log Out",
+  "logout.backupRunning": "Automatically backing up the database, please wait…",
+  "logout.backupSuccess": "Backup completed",
+  "logout.backupFailed": "Backup failed",
+  "logout.backupLoggingOut": "Logging out…",
 
   "language.zh": "中文",
   "language.en": "English",

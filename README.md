@@ -10,14 +10,16 @@
 
 ## 核心功能
 
-- **文献管理** — 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献，URL 导入，题录批量导入（RIS/EndNote/PubMed/WoS/读秀超星），元数据管理，重复检测与合并，回收站软删除
+- **文献管理** — 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献，URL 导入，题录批量导入（RIS/EndNote/PubMed/WoS/读秀超星），元数据管理，重复检测与合并，回收站软删除，**导入历史追踪**（基于 pdf_hash 文件指纹识别重复导入）
 - **AI 数据提取** — LLM 自动提取血清阳性率/GMC 等数据点，支持 DeepSeek/OpenAI/Qwen/本地 Ollama，长文档分块并行提取，精确字符级溯源，强 Schema 校验
 - **数据审核** — 人工审核（通过/驳回），审核意见留痕，行内编辑，手动新增数据点
 - **地图可视化** — 全国/省级/市级交互式抗体热力地图，时间序列动画
 - **数据分析** — 逐年趋势、区域对比、年龄分层、FOI 感染力分析、VE 疫苗效果、Meta 分析（森林图/漏斗图）、空间热点/冷点（Moran's I + Getis-Ord Gi*）、免疫屏障模拟、出生队列分析、省间公平性
 - **抗原图谱** — HI/VNT/ELISA 滴度矩阵的 metric MDS 降维，2D 抗原图谱
-- **报告生成** — LLM 生成抗体分析报告和疫苗接种策略报告，支持在线编辑和下载
-- **AnyDoc 增强解析** — firecrawl/anydoc（Rust 实现），docx/pptx/xlsx/epub/pdf/html/txt 毫秒级转 GFM Markdown，表格质量提升 LLM 提取准确率，默认关闭，失败自动回退现有解析链
+- **报告生成** — LLM 生成**抗体分析报告**、**疫苗接种策略报告**、**免疫屏障评估报告**，支持在线编辑和下载
+- **PDF 解析增强** — **pdf-inspector**（Rust 实现，自动修复损坏 PDF 尾部结构后提取）+ **AnyDoc**（Rust 实现，毫秒级转 GFM Markdown），失败自动回退现有解析链
+- **数据库备份与还原** — 系统设置集成 pg_dump 逻辑备份，备份文件浏览下载，上传还原（含前置备份保险与失败自动回滚），支持跨设备数据迁移
+- **导入进度条** — PubMed 检索结果与题录文件分批导入，进度条从 0 到 100 逐步推进，汇总后写一条导入日志
 
 详情见 **[完整文档](https://antibody-map.readthedocs.io/)**。
 

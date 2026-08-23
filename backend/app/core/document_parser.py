@@ -19,10 +19,12 @@ from app.config import settings
 from app.core.pdf_parser import extract_text as pdf_extract_text
 from app.core.processors import get_parser
 from app.core.processors import anydoc_parser
+from app.core.processors import pdf_inspector_parser
 
 logger = logging.getLogger("uvicorn")
 
 # 扩展名 → MIME 映射（上传白名单即该表的 keys）
+# 注意：.html/.htm 已从白名单移除（XSS 防护），仅保留 MIME 映射供存量文件预览
 MIME_MAP = {
     ".pdf": "application/pdf",
     ".caj": "application/octet-stream",
@@ -31,8 +33,6 @@ MIME_MAP = {
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".txt": "text/plain",
-    ".html": "text/html",
-    ".htm": "text/html",
 }
 
 ALLOWED_EXTS = set(MIME_MAP.keys())
@@ -79,6 +79,20 @@ def extract_text(file_bytes: bytes, file_ext: str = ".pdf") -> str:
             logger.info(f"[文档解析] 解析路径=AnyDoc, 格式={ext}, 输出={len(md)} 字符")
             return md
         logger.info(f"[文档解析] 回退=策略解析器, 格式={ext}（AnyDoc 无有效输出）")
+
+    # pdf-inspector 增强路径：仅对 PDF 格式，优先尝试 pdf-inspector 提取。
+    # 若 pdf-inspector 可用且配置开启，尝试解析；失败时自动修复损坏 PDF 尾部结构
+    # 重试；任何失败/超时回退到现有解析链。
+    if (
+        ext == ".pdf"
+        and getattr(settings, "ENABLE_PDF_INSPECTOR", False)
+        and pdf_inspector_parser.is_available()
+    ):
+        md = pdf_inspector_parser.to_markdown_bytes(file_bytes)
+        if md:
+            logger.info(f"[文档解析] 解析路径=pdf-inspector, 格式={ext}, 输出={len(md)} 字符")
+            return md
+        logger.info(f"[文档解析] 回退=现有解析链, 格式={ext}（pdf-inspector 无有效输出）")
 
     try:
         if ext == ".pdf":

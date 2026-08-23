@@ -1,11 +1,11 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Card, Button, Input, Select, Spin, Empty, message, Tag, Divider, Table, Modal, Space, Tooltip, Tabs, Popconfirm } from 'antd';
-import { FileTextOutlined, EyeOutlined, DownloadOutlined, HistoryOutlined, ExperimentOutlined, EditOutlined, SaveOutlined, CloseOutlined, DeleteOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
+import { FileTextOutlined, EyeOutlined, DownloadOutlined, HistoryOutlined, ExperimentOutlined, EditOutlined, SaveOutlined, CloseOutlined, DeleteOutlined, ExclamationCircleOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import AntibodyReportForm from '../components/AntibodyReportForm';
 import StrategyReportForm from '../components/StrategyReportForm';
 import ReportContentView from '../components/ReportContentView';
 import TemplateManager from '../components/TemplateManager';
-import { generateReport, generateVaccinationStrategy, listReports, getDownloadUrl, updateReport, deleteReport, getReport, listTemplates } from '../services/map';
+import { generateReport, generateVaccinationStrategy, generateImmuneBarrier, listReports, getDownloadUrl, updateReport, deleteReport, getReport, listTemplates } from '../services/map';
 import { ReportData, ReportRecord, ReportTemplate } from '../types';
 import dayjs from 'dayjs';
 
@@ -30,6 +30,15 @@ const Report: React.FC = () => {
   const [strategyTitle, setStrategyTitle] = useState('');
   const [strategyModel, setStrategyModel] = useState('');
   const [strategyLoading, setStrategyLoading] = useState(false);
+
+  // ---- 免疫屏障评估报告 state（参数与抗体分析一致）----
+  const [barrierDisease, setBarrierDisease] = useState('');
+  const [barrierDataType, setBarrierDataType] = useState('');
+  const [barrierProvince, setBarrierProvince] = useState('');
+  const [barrierLanguage, setBarrierLanguage] = useState('zh');
+  const [barrierTitle, setBarrierTitle] = useState('');
+  const [barrierModel, setBarrierModel] = useState('');
+  const [barrierLoading, setBarrierLoading] = useState(false);
 
   // ---- 通用 state ----
   const [report, setReport] = useState<ReportData | null>(null);
@@ -62,7 +71,7 @@ const Report: React.FC = () => {
     );
   }, []);
 
-  const fetchTemplates = useCallback(async (type: 'antibody_analysis' | 'vaccination_strategy') => {
+  const fetchTemplates = useCallback(async (type: 'antibody_analysis' | 'vaccination_strategy' | 'immune_barrier_assessment') => {
     try {
       const data = await listTemplates(type);
       setTemplates(data);
@@ -75,7 +84,7 @@ const Report: React.FC = () => {
 
   useEffect(() => {
     // 切换 Tab 时刷新对应类型模板
-    fetchTemplates(activeTab === 'strategy' ? 'vaccination_strategy' : 'antibody_analysis');
+    fetchTemplates(getTabReportType(activeTab));
   }, [activeTab, fetchTemplates]);
 
   const templateOptions = templates.map((t) => ({
@@ -83,8 +92,14 @@ const Report: React.FC = () => {
     label: (t.is_default ? '★ ' : '') + t.name,
   }));
 
+  const getTabReportType = (tab: string): 'antibody_analysis' | 'vaccination_strategy' | 'immune_barrier_assessment' => {
+    if (tab === 'strategy') return 'vaccination_strategy';
+    if (tab === 'barrier') return 'immune_barrier_assessment';
+    return 'antibody_analysis';
+  };
+
   const handleFetchTemplates = () => {
-    fetchTemplates(activeTab === 'strategy' ? 'vaccination_strategy' : 'antibody_analysis');
+    fetchTemplates(getTabReportType(activeTab));
   };
 
   const fetchHistory = useCallback(async () => {
@@ -149,6 +164,29 @@ const Report: React.FC = () => {
     finally { setStrategyLoading(false); }
   };
 
+  const handleGenerateBarrier = async () => {
+    setBarrierLoading(true);
+    setReport(null);
+    try {
+      const params: Record<string, unknown> = { language: barrierLanguage };
+      if (barrierDisease) params.disease = barrierDisease;
+      if (barrierDataType) params.data_type = barrierDataType;
+      if (barrierProvince) params.province = barrierProvince;
+      if (barrierTitle) params.title = barrierTitle;
+      if (barrierModel) params.model = barrierModel;
+      if (templateId) params.template_id = templateId;
+      const resp = await generateImmuneBarrier(params);
+      setReport(resp);
+      message.success('免疫屏障评估报告生成成功');
+      fetchHistory();
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err?.message || '未知错误';
+      console.error('[Report] 免疫屏障评估报告生成失败:', err);
+      message.error(`报告生成失败: ${detail}`);
+    }
+    finally { setBarrierLoading(false); }
+  };
+
   const handlePreview = async (record: ReportRecord) => {
     if (record.content) {
       setPreviewReport(record);
@@ -207,7 +245,9 @@ const Report: React.FC = () => {
     { title: '类型', dataIndex: 'report_type', key: 'rt', width: 100,
       render: (v: string) => v === 'vaccination_strategy'
         ? <Tag color="green">接种策略</Tag>
-        : <Tag color="blue">抗体分析</Tag>,
+        : v === 'immune_barrier_assessment'
+          ? <Tag color="purple">免疫屏障</Tag>
+          : <Tag color="blue">抗体分析</Tag>,
     },
     { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true,
       render: (v: string, record: ReportRecord) => (
@@ -246,7 +286,7 @@ const Report: React.FC = () => {
     },
   ];
 
-  const isGenerating = loading || strategyLoading;
+  const isGenerating = loading || strategyLoading || barrierLoading;
 
   return (
     <>
@@ -290,6 +330,23 @@ const Report: React.FC = () => {
                 onTemplateChange={(v) => setTemplateId(v || undefined)}
                 onManageTemplates={() => setTemplateManagerVisible(true)}
                 onGenerate={handleGenerateStrategy}
+              />
+            ),
+          },
+          {
+            key: 'barrier',
+            label: <span><SafetyCertificateOutlined /> 免疫屏障评估报告</span>,
+            children: (
+              <AntibodyReportForm
+                disease={barrierDisease} dataType={barrierDataType} province={barrierProvince}
+                language={barrierLanguage} title={barrierTitle} model={barrierModel} loading={barrierLoading}
+                templateId={templateId} templates={templateOptions} isAdmin={isAdminFlag}
+                onDiseaseChange={setBarrierDisease} onDataTypeChange={setBarrierDataType}
+                onProvinceChange={setBarrierProvince} onLanguageChange={setBarrierLanguage}
+                onTitleChange={setBarrierTitle} onModelChange={setBarrierModel}
+                onTemplateChange={(v) => setTemplateId(v || undefined)}
+                onManageTemplates={() => setTemplateManagerVisible(true)}
+                onGenerate={handleGenerateBarrier}
               />
             ),
           },
@@ -340,8 +397,8 @@ const Report: React.FC = () => {
               </div>
             </div>
             <div style={{ marginBottom: 16, color: '#888' }}>
-              <Tag color={report.report_type === 'vaccination_strategy' ? 'green' : 'blue'}>
-                {report.report_type === 'vaccination_strategy' ? '疫苗接种策略' : '抗体分析'}
+              <Tag color={report.report_type === 'vaccination_strategy' ? 'green' : report.report_type === 'immune_barrier_assessment' ? 'purple' : 'blue'}>
+                {report.report_type === 'vaccination_strategy' ? '疫苗接种策略' : report.report_type === 'immune_barrier_assessment' ? '免疫屏障评估' : '抗体分析'}
               </Tag>
               {report.literature_count > 0 && <Tag>文献数: {report.literature_count}</Tag>}
               {report.data_point_count > 0 && <Tag>数据点数: {report.data_point_count}</Tag>}
@@ -397,7 +454,7 @@ const Report: React.FC = () => {
 
       <TemplateManager
         visible={templateManagerVisible}
-        reportType={activeTab === 'strategy' ? 'vaccination_strategy' : 'antibody_analysis'}
+        reportType={getTabReportType(activeTab)}
         onClose={() => setTemplateManagerVisible(false)}
         onSaved={handleFetchTemplates}
       />

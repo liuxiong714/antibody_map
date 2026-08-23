@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, get_current_user
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
+from app.models.api_model_config import ApiModelConfig
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.services.literature_service import LOCAL_STORAGE_DIR
@@ -41,6 +42,7 @@ from app.core.traceability_html import (
 
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES
 from app.tasks.quality_task import score_data_point_task
+from app.tasks.celery_app import celery_app
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn")
@@ -113,6 +115,7 @@ class BatchReviewRequest(BaseModel):
 
 class ExtractionRequest(BaseModel):
     model: Optional[str] = None
+    model_config_id: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     clear_existing_data: bool = True
@@ -124,6 +127,7 @@ class BatchExtractionRequest(BaseModel):
     """批量重新提取请求"""
     literature_ids: list[str]
     model: Optional[str] = None
+    model_config_id: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     clear_existing_data: bool = True
@@ -166,11 +170,12 @@ async def start_extraction(
     """触发文献 AI 数据提取任务"""
     try:
         model = req.model if req else None
+        model_config_id = req.model_config_id if req else None
         api_key = req.api_key if req else None
         base_url = req.base_url if req else None
         clear_existing = req.clear_existing_data if req else True
         use_cache = req.use_cache if req else True
-        result = await trigger_extraction(db, literature_id, model, api_key, base_url, clear_existing, use_cache)
+        result = await trigger_extraction(db, literature_id, model, api_key, base_url, model_config_id, clear_existing, use_cache)
         return ApiResponse(message="提取任务已提交", data=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -214,6 +219,7 @@ async def start_batch_extraction(
                 model=req.model,
                 api_key=req.api_key,
                 base_url=req.base_url,
+                model_config_id=req.model_config_id,
                 clear_existing_data=req.clear_existing_data,
                 use_cache=req.use_cache,
             )
@@ -944,19 +950,40 @@ async def get_history(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse, summary="批量重置卡住的提取", description="批量重置所有卡在processing或queued状态的文献为failed，用于服务器重启后恢复状态")
+@router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse, summary="批量重置卡住的提取", description="批量重置所有卡在processing或queued状态的文献为failed，并强制终止运行中的Celery提取任务，清空队列，用于服务器重启后恢复状态")
 async def reset_stuck_extractions(db: AsyncSession = Depends(get_db)):
-    """批量重置所有卡在 'processing' 或 'queued' 状态的文献为 'failed'。
+    """批量重置所有卡在 'processing' 或 'queued' 状态的文献为 'failed'，
+    同时强制终止运行中的 Celery 提取任务并清空队列。
 
     典型场景：服务器重启后，之前的异步提取任务已丢失但状态未更新。
     """
+    # 1. 强制终止所有运行中的 Celery 提取任务
+    purged_count = 0
+    revoked_count = 0
+    try:
+        # 查看当前活跃的任务（timeout=5 避免默认1秒超时导致查不到任务）
+        inspect = celery_app.control.inspect(timeout=5.0)
+        active_tasks = inspect.active() or {}
+        for worker, tasks in active_tasks.items():
+            for task in tasks:
+                task_id = task.get("id")
+                if task_id:
+                    celery_app.control.revoke(task_id, terminate=True)
+                    revoked_count += 1
+                    logger.warning(f"[ResetStuck] 强制终止运行中任务: {task_id} ({task.get('name', 'unknown')})")
+
+        # 清空队列中所有等待的任务
+        purged_count = celery_app.control.purge()
+        if purged_count > 0:
+            logger.warning(f"[ResetStuck] 清空队列 {purged_count} 个等待中的任务")
+    except Exception as e:
+        logger.warning(f"[ResetStuck] Celery 控制操作失败（不影响数据库重置）: {e}")
+
+    # 2. 重置数据库状态
     result = await db.execute(
         select(Literature).where(Literature.extraction_status.in_(["processing", "queued"]))
     )
     stuck_list = result.scalars().all()
-
-    if not stuck_list:
-        return ApiResponse(message="没有卡住的提取任务", data={"reset_count": 0})
 
     reset_ids = []
     for lit in stuck_list:
@@ -966,12 +993,31 @@ async def reset_stuck_extractions(db: AsyncSession = Depends(get_db)):
 
     await db.commit()
 
+    message_parts = []
+    if reset_ids:
+        message_parts.append(f"已重置 {len(reset_ids)} 篇文献状态为失败")
+    if purged_count > 0:
+        message_parts.append(f"已清空 {purged_count} 个排队任务")
+    if revoked_count > 0:
+        message_parts.append(f"已终止 {revoked_count} 个运行中任务")
+
+    if not message_parts:
+        message_parts.append("没有卡住的提取任务")
+
+    final_message = "，".join(message_parts)
+
     logger.warning(
-        f"[ResetStuck] 批量重置 {len(stuck_list)} 篇卡住的提取状态为 failed: {reset_ids}"
+        f"[ResetStuck] {final_message} | "
+        f"reset_ids={reset_ids}, purged={purged_count}, revoked={revoked_count}"
     )
     return ApiResponse(
-        message=f"已重置 {len(stuck_list)} 篇卡住的提取状态为失败",
-        data={"reset_count": len(stuck_list), "literature_ids": reset_ids},
+        message=final_message,
+        data={
+            "reset_count": len(reset_ids),
+            "literature_ids": reset_ids,
+            "purged_count": purged_count,
+            "revoked_count": revoked_count,
+        },
     )
 
 

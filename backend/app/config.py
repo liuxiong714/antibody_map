@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     ENABLE_ANYDOC: bool = False
     # AnyDoc 解析超时（秒），超时后回退现有解析链
     ANYDOC_TIMEOUT: int = 60
+    # pdf-inspector 增强 PDF 解析开关（默认开启）：PDF 优先用 pdf-inspector 提取，
+    # 遇到文件尾部损坏时自动用 PyMuPDF 修复后再提取，失败回退现有解析链
+    ENABLE_PDF_INSPECTOR: bool = True
 
     # ===== 孤儿文件清理配置 =====
     # 是否启用后台定时清理（backend/data/pdfs 中已不在数据库的残留文件）
@@ -146,12 +149,18 @@ class Settings(BaseSettings):
 
     # App
     SECRET_KEY: str = ""  # 必须通过环境变量或 .env 文件配置
-    APP_ENV: str = "development"
+    APP_ENV: str = "production"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.17.0"
+    APP_VERSION: str = "1.18.0"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
+
+    # ===== 数据库备份 =====
+    # pg_dump 导出文件存放目录（容器内路径，宿主机通过 docker-compose 卷映射到项目 backups/）
+    BACKUP_DIR: str = "/app/backend/backups"
+    # 单次备份超时（秒）
+    BACKUP_TIMEOUT: int = 300
 
     # ===== Prometheus 指标 =====
     # 是否启用 /metrics 端点与指标采集；关闭后 endpoint 不注册且访问返回 403
@@ -194,10 +203,11 @@ class Settings(BaseSettings):
                 f"LLM_FEEDBACK_FEW_SHOT_COUNT 必须 >= 1，当前 {self.LLM_FEEDBACK_FEW_SHOT_COUNT}"
             )
 
-        # 生产环境必须配置强密钥（>=32 字符）
-        if self.APP_ENV != "development" and len(self.SECRET_KEY) < 32:
+        # 所有环境都必须配置强密钥（>=32 字符）
+        if len(self.SECRET_KEY) < 32:
             raise ValueError(
-                f"生产环境 SECRET_KEY 必须 >= 32 字符，当前长度 {len(self.SECRET_KEY)}"
+                f"SECRET_KEY 必须 >= 32 字符，当前长度 {len(self.SECRET_KEY)}，"
+                "请使用 openssl rand -base64 32 生成密钥"
             )
 
         # 本地 Ollama 并发一致性：若设置了 OLLAMA_NUM_PARALLEL，应与 LLM_CONCURRENCY 对齐

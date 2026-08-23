@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.literature import Literature
 from app.models.data_point import DataPoint
+from app.models.literature_file_history import LiteratureFileHistory
 from app.schemas.literature import LiteratureCreate
 from app.config import settings
 from app.core.document_parser import get_mime_type
@@ -28,6 +29,17 @@ from app.services.reference_parser import parse_references
 logger = logging.getLogger("uvicorn")
 
 LOCAL_STORAGE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "pdfs"
+
+
+def _is_safe_local_path(file_path: str) -> Optional[Path]:
+    """校验文件路径是否在 LOCAL_STORAGE_DIR 范围内，越界返回 None。"""
+    try:
+        p = Path(file_path).resolve()
+        if p.is_relative_to(LOCAL_STORAGE_DIR.resolve()):
+            return p
+    except (ValueError, OSError):
+        pass
+    return None
 
 
 # ===== 查重辅助函数 =====
@@ -341,7 +353,7 @@ async def update_literature(
     updatable_fields = [
         "title", "title_en", "authors", "journal", "pub_year", "doi", "pmid",
         "abstract", "keywords", "region", "province", "publication_types",
-        "source_db", "file_path", "has_fulltext", "extraction_status",
+        "source_db", "has_fulltext", "extraction_status",
         "extracted_count", "approved_count",
     ]
     for field in updatable_fields:
@@ -352,6 +364,47 @@ async def update_literature(
     await db.commit()
     await db.refresh(literature)
     return literature
+
+
+async def get_file_history(
+    db: AsyncSession,
+    pdf_hash: str,
+) -> list[LiteratureFileHistory]:
+    """按文件指纹查询该文件的导入/删除历史，按时间倒序返回。"""
+    result = await db.execute(
+        select(LiteratureFileHistory)
+        .where(LiteratureFileHistory.pdf_hash == pdf_hash)
+        .order_by(LiteratureFileHistory.operated_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def log_file_action(
+    db: AsyncSession,
+    *,
+    pdf_hash: str,
+    file_name: Optional[str],
+    action: str,
+    operator_id: Optional[uuid.UUID] = None,
+    operator_name: Optional[str] = None,
+    literature_id: Optional[uuid.UUID] = None,
+) -> LiteratureFileHistory:
+    """记录一次文献文件动作（imported=导入 / deleted=软删除）。"""
+    record = LiteratureFileHistory(
+        pdf_hash=pdf_hash,
+        file_name=file_name,
+        literature_id=literature_id,
+        action=action,
+        operator_id=operator_id,
+        operator_name=operator_name,
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    logger.info(
+        f"[文件历史] 记录动作: action={action}, pdf_hash={pdf_hash[:12]}..., operator={operator_name or '未知'}"
+    )
+    return record
 
 
 async def delete_literature(
@@ -438,14 +491,15 @@ async def permanently_delete_literature(db: AsyncSession, literature_id: uuid.UU
 
     # 删除文件（MinIO 或本地）
     if literature.file_path:
-        local_path = Path(literature.file_path)
-        if local_path.exists():
+        local_path = _is_safe_local_path(literature.file_path)
+        if local_path and local_path.exists():
             try:
                 os.remove(local_path)
                 logger.info(f"Local file permanently deleted: {local_path}")
             except Exception as e:
                 logger.warning(f"Failed to delete local file: {e}")
-        else:
+        elif not local_path:
+            logger.error(f"[安全] 文件路径越界，跳过删除: {literature.file_path}")
             delete_file(literature.file_path)
 
     await db.delete(literature)
@@ -469,10 +523,12 @@ async def empty_trash(db: AsyncSession, older_than_days: int = TRASH_RETENTION_D
     for lit in items:
         try:
             if lit.file_path:
-                local_path = Path(lit.file_path)
-                if local_path.exists():
+                local_path = _is_safe_local_path(lit.file_path)
+                if local_path and local_path.exists():
                     os.remove(local_path)
                 else:
+                    if local_path is None:
+                        logger.error(f"[安全] 文件路径越界，跳过删除: id={lit.id}, path={lit.file_path}")
                     delete_file(lit.file_path)
             await db.delete(lit)
             count += 1
@@ -499,10 +555,12 @@ async def permanently_delete_all_trash(db: AsyncSession) -> dict:
     for lit in items:
         try:
             if lit.file_path:
-                local_path = Path(lit.file_path)
-                if local_path.exists():
+                local_path = _is_safe_local_path(lit.file_path)
+                if local_path and local_path.exists():
                     os.remove(local_path)
                 else:
+                    if local_path is None:
+                        logger.error(f"[安全] 文件路径越界，跳过删除: id={lit.id}, path={lit.file_path}")
                     delete_file(lit.file_path)
             await db.delete(lit)
             count += 1
@@ -1212,13 +1270,30 @@ def _propose_title_fix(raw: str) -> str:
 async def fix_titles(
     db: AsyncSession,
     dry_run: bool = True,
+    fixes: Optional[list[tuple[str, str]]] = None,
 ) -> dict:
     """扫描并修正文件名来源的文献标题（年份前缀、中文字符间 `_` 等）。
 
-    返回 {"preview_count": int, "fixed_count": int, "changes": list[dict]}。
+    当提供 `fixes` 时，仅应用指定的修正项（支持手动编辑的标题），
+    返回修正数量。
+    否则走原有 dry_run 逻辑，返回 {"preview_count": int, "fixed_count": int, "changes": list[dict]}。
     """
     from sqlalchemy import select, update
 
+    # 选择性提交模式
+    if fixes is not None:
+        fixed = 0
+        for lit_id, new_title in fixes:
+            await db.execute(
+                update(Literature)
+                .where(Literature.id == lit_id)
+                .values(title=new_title)
+            )
+            fixed += 1
+        await db.commit()
+        return fixed
+
+    # 原有预览/全部应用模式
     stmt = select(Literature).order_by(Literature.created_at)
     result = await db.execute(stmt)
     lits = result.scalars().all()
@@ -1441,6 +1516,8 @@ async def import_references_from_text(
     db: AsyncSession,
     ref_text: str,
     fmt: str = "auto",
+    start: int = 0,
+    limit: int = 0,
 ) -> dict:
     """解析题录文本并入库（RIS / EndNote(.enw) / PubMed / WoS / 读秀超星）。
 
@@ -1448,6 +1525,7 @@ async def import_references_from_text(
     - source_db 取解析 source，source_id 取 pmid（为空则用 doi）
     - 跳过条件：标题为空；source_id（pmid，兜底 doi）或归一化标题已存在
     - 复用 create_literature 入库
+    - start/limit：分批导入时指定从第几条开始处理、处理多少条（0=全部）
     返回 {"imported", "skipped", "total", "errors"}。
     """
     text = (ref_text or "").strip()
@@ -1457,6 +1535,13 @@ async def import_references_from_text(
     refs = parse_references(text, fmt)
     if not refs:
         raise ValueError("未解析到有效题录（支持 RIS / EndNote / PubMed / WoS / 读秀超星 格式）")
+
+    # 分批切片：start/limit 作用于解析后的记录列表
+    total = len(refs)
+    if limit > 0:
+        refs = refs[start:start + limit]
+    elif start > 0:
+        refs = refs[start:]
 
     imported = 0
     skipped = 0
@@ -1678,6 +1763,11 @@ async def batch_import_uploaded_files(
     entries: list[dict] = []
     for f in valid_files:
         filename = f.filename or "unknown"
+        # 读前检查 file.size 或 Content-Length，避免大文件进内存
+        if f.size is not None and f.size > settings.MAX_UPLOAD_SIZE:
+            logger.warning(f"[batch-upload-files] 文件超限（跳过）: {filename}, size={f.size}")
+            entries.append({"filename": filename, "bytes": None, "read_error": "文件超过大小限制"})
+            continue
         try:
             entries.append({"filename": filename, "bytes": await f.read()})
         except Exception as e:
@@ -2272,3 +2362,71 @@ async def _trash_cleanup_loop():
         except Exception as e:
             logger.warning("[回收站] 自动清理检查异常: %s", e)
         await asyncio.sleep(TRASH_CLEANUP_INTERVAL)
+
+
+# ===== 题录导入日志 =====
+
+async def create_import_log(
+    db: AsyncSession,
+    file_name: str,
+    total_count: int,
+    skipped_count: int,
+    imported_count: int,
+    operator_name: str,
+    operator_id: Optional[str] = None,
+    fmt: str = "auto",
+) -> None:
+    """记录题录导入日志"""
+    from app.models.reference_import_log import ReferenceImportLog
+
+    log = ReferenceImportLog(
+        file_name=file_name,
+        total_count=total_count,
+        skipped_count=skipped_count,
+        imported_count=imported_count,
+        operator_name=operator_name,
+        operator_id=operator_id,
+        fmt=fmt,
+    )
+    db.add(log)
+    await db.commit()
+
+
+async def list_import_logs(
+    db: AsyncSession,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """分页查询题录导入日志"""
+    from sqlalchemy import select, func
+    from app.models.reference_import_log import ReferenceImportLog
+
+    # 总条数
+    count_stmt = select(func.count(ReferenceImportLog.id))
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar() or 0
+
+    # 分页查询，按时间倒序
+    stmt = (
+        select(ReferenceImportLog)
+        .order_by(ReferenceImportLog.imported_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    result = await db.execute(stmt)
+    logs = result.scalars().all()
+
+    items = []
+    for log in logs:
+        items.append({
+            "id": str(log.id),
+            "file_name": log.file_name,
+            "imported_at": log.imported_at.isoformat() if log.imported_at else None,
+            "total_count": log.total_count,
+            "skipped_count": log.skipped_count,
+            "imported_count": log.imported_count,
+            "operator_name": log.operator_name,
+            "fmt": log.fmt,
+        })
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}

@@ -78,3 +78,9 @@ _tmp_*
 # 调试残留文件（分析用输入/输出）
 error.txt
 
+# 数据库备份文件
+backups/
+
+# Docker Compose 覆盖配置（含敏感凭据）
+docker-compose.override.yml
+
