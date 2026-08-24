@@ -49,6 +49,43 @@ class PostProcessorMixin:
     """后处理：字段别名归一化、数值解析、数据点标准化与滴度矩阵校验。"""
 
     @staticmethod
+    def _detect_truncation(val) -> Optional[str]:
+        """F19：检测截断标记（"<"=低于检出限 / ">"=高于检出限）。
+
+        截断值（如 >80、<10）表达的是区间而非精确值，直接入库会在统计中
+        被误当精确值。此方法返回 "<"/">"，None 表示非截断。
+        """
+        if val is None or isinstance(val, (int, float, bool)):
+            return None
+        s = str(val).strip()
+        if not s:
+            return None
+        if s.startswith(("<", "≤")):
+            return "<"
+        if s.startswith((">", "≥")):
+            return ">"
+        return None
+
+    # F19：GMC 单位统一换算表（换算系数 = 目标 IU/ml 倍数）。
+    # 1 IU = 1000 mIU，故 mIU/ml → IU/ml 需 ÷1000。
+    _GMC_UNIT_CONVERSION: dict[str, float] = {
+        "miu/ml": 1 / 1000.0,
+        "miu/l": 1 / 1000.0,
+        "miuperml": 1 / 1000.0,
+    }
+
+    @staticmethod
+    def _normalize_gmc_unit(unit: Optional[str]) -> Optional[str]:
+        """F19：GMC 单位统一换算，返回 (已换算值, 标准单位)。"""
+        if not unit:
+            return unit
+        key = re.sub(r"[^a-zA-Z0-9]", "", str(unit)).lower()
+        factor = PostProcessorMixin._GMC_UNIT_CONVERSION.get(key)
+        if factor is None:
+            return unit
+        return "IU/ml"
+
+    @staticmethod
     def _parse_float_field(val) -> Optional[float]:
         """兼容本地模型（如 qwen2.5:14b）输出的多种数值格式。
 
@@ -267,6 +304,26 @@ class PostProcessorMixin:
                 "gmc_value", "gmc_ci_lower", "gmc_ci_upper",
             ]:
                 dp[field] = self._parse_float_field(item.get(field))
+
+            # F19：截断值标记（"<"=低于检出限 / ">"=高于检出限）。
+            # ">80"/"<10" 表达区间而非精确值，入库仍保留数值（供审核参考），
+            # 但 truncation 标记使统计/合并层识别其为截断值，不当作精确值参与计算。
+            _trunc = None
+            for _tf in ("positivity_rate", "gmc_value"):
+                _tr = self._detect_truncation(item.get(_tf))
+                if _tr is not None:
+                    _trunc = _tr
+                    break
+            dp["truncation"] = _trunc
+
+            # F19：GMC 单位统一换算（mIU/ml → IU/ml，÷1000）。
+            # 换算后 gmc_unit 统一为 IU/ml，避免同文献/跨文献 mIU 与 IU 混用导致统计失真。
+            if dp.get("gmc_value") is not None and dp.get("gmc_unit"):
+                _key = re.sub(r"[^a-zA-Z0-9]", "", str(dp["gmc_unit"])).lower()
+                _factor = self._GMC_UNIT_CONVERSION.get(_key)
+                if _factor is not None:
+                    dp["gmc_value"] = round(dp["gmc_value"] * _factor, 4)
+                    dp["gmc_unit"] = "IU/ml"
 
             results.append(dp)
 

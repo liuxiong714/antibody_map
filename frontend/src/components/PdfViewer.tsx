@@ -6,11 +6,10 @@ import {
   ExpandOutlined,
   ColumnWidthOutlined,
 } from '@ant-design/icons';
-import * as pdfjsLib from 'pdfjs-dist/build/pdf';
+import * as pdfjsLib from 'pdfjs-dist';
 
-// 使用 CDN 加载 worker，本地 cmaps（CDN 缺少 GBK 等中文 cmap 文件）
-const PDFJS_VERSION = pdfjsLib.version;
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.worker.min.js`;
+// 使用本地打包的 worker（离线可用），本地 cmaps
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href;
 const CMAP_URL = '/cmaps/';
 
 interface PdfViewerProps {

@@ -10,6 +10,7 @@
   "nav.report": "报告生成",
   "nav.folders": "文件夹监控",
   "nav.pubmed": "PubMed 检索",
+  "nav.antigenicMap": "抗原图谱",
   "nav.users": "用户管理",
   "nav.settings": "系统设置",
 
@@ -55,6 +56,9 @@
   "loading": "加载中...",
   "noData": "暂无数据",
   "error.occurred": "操作失败",
+  "error.code.DATABASE_ERROR": "数据库操作失败，请稍后重试",
+  "error.code.VALIDATION_ERROR": "请求参数校验失败，请检查输入",
+  "error.code.METRICS_FORBIDDEN": "无权访问该资源",
   "success.operation": "操作成功",
 
   "error.title": "页面出现异常",

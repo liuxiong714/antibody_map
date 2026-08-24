@@ -2,7 +2,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import Boolean, Integer, String, Text, ARRAY, DateTime, CheckConstraint, Numeric
+from sqlalchemy import (
+    Boolean, Integer, String, Text, ARRAY, DateTime, CheckConstraint, Numeric,
+    Computed, Index,
+)
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -16,6 +19,16 @@ class Literature(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     title: Mapped[str] = mapped_column(String(500))
+    # 归一化标题生成列（与 _common.normalize_title 逐步骤对齐），查重精确匹配走索引
+    title_norm: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        Computed(
+            "regexp_replace(regexp_replace(regexp_replace(btrim(lower(title)), "
+            "'[-–—]', ' ', 'g'), '[^\\w\\s]', '', 'g'), '\\s+', ' ', 'g')",
+            persisted=True,
+        ),
+        nullable=True,
+    )
     title_en: Mapped[Optional[str]] = mapped_column(String(500))
     authors: Mapped[Optional[str]] = mapped_column(Text)
     journal: Mapped[Optional[str]] = mapped_column(String(300))
@@ -57,10 +70,39 @@ class Literature(Base):
         PGUUID,  # 仅记录删除者，不设外键约束
         nullable=True
     )
+    # 提取任务开始时间戳（用于检测卡死：processing 超过 30 分钟自动重置为 failed）
+    extraction_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    # F13：提取代数。每次触发提取 +1，任务写库时用 WHERE extraction_generation=本次值 做 CAS，
+    # 防止超时回收后重新触发的任务与仍在运行的旧任务互相覆盖写库。
+    extraction_generation: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    # F14：worker 心跳时间戳。提取进行中周期性刷新，超时回收据此区分"长任务"与"真卡死"
+    # （worker 崩溃后心跳停止，超过阈值即回收；正常长任务心跳持续刷新不被误判）。
+    worker_heartbeat: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None, index=True
+    )
 
     __table_args__ = (
         CheckConstraint(
             "extraction_status IN ('pending','queued','processing','done','done_no_data','failed')",
             name="lit_extraction_status_check",
+        ),
+        # F21：title_norm 精确匹配索引（查重走索引）
+        Index("idx_lit_title_norm", "title_norm"),
+        # F22：pg_trgm GIN 索引，支撑 ilike('%kw%') 子串检索
+        Index(
+            "idx_lit_title_trgm", "title",
+            postgresql_using="gin", postgresql_ops={"title": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_lit_authors_trgm", "authors",
+            postgresql_using="gin", postgresql_ops={"authors": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_lit_journal_trgm", "journal",
+            postgresql_using="gin", postgresql_ops={"journal": "gin_trgm_ops"},
         ),
     )

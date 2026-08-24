@@ -61,8 +61,8 @@ body {
 .markdown-preview blockquote {
   margin: 0.6em 0;
   padding: 0.5em 1em;
-  border-left: 4px solid #1890ff;
-  background: #f0f7ff;
+  border-left: 4px solid var(--ab-primary);
+  background: var(--ab-bg-hover);
   color: #555;
   border-radius: 0 4px 4px 0;
 }
@@ -101,7 +101,7 @@ body {
 }
 
 .markdown-preview th {
-  background: #f0f5ff;
+  background: var(--ab-bg-table-header);
   font-weight: 600;
   padding: 10px 14px;
   border: 1px solid #d0d7de;
@@ -118,7 +118,7 @@ body {
 }
 
 .markdown-preview tr:hover td {
-  background: #f0f7ff;
+  background: var(--ab-bg-hover);
 }
 
 .markdown-preview strong {
@@ -127,7 +127,7 @@ body {
 }
 
 .markdown-preview a {
-  color: #1890ff;
+  color: var(--ab-accent);
   text-decoration: none;
 }
 
@@ -199,7 +199,7 @@ body {
   border-right: 1px solid #d9d9d9;
 }
 .ant-table-thead th .react-resizable-handle:hover::after {
-  border-color: #1677ff;
+  border-color: var(--ab-primary);
 }
 
 /* ── 文献表格：列宽不足时内容自动换行 ── */

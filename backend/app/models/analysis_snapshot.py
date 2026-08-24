@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, Index, String
+from sqlalchemy import DateTime, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,4 +35,9 @@ class AnalysisSnapshot(Base):
     __table_args__ = (
         # 去重复用查询：同模块 + 同数据指纹
         Index("ix_snapshot_module_hash", "module", "data_hash"),
+        # 并发安全的按(模块+指纹+完整过滤参数)去重：保证同参数同结果只写入一条
+        UniqueConstraint(
+            "module", "data_hash", "params",
+            name="uq_snapshot_identity",
+        ),
     )

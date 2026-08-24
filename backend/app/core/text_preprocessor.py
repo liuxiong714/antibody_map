@@ -22,28 +22,16 @@ def clean_text(text: str) -> str:
 
 
 def focus_relevant_sections(text: str, lang: str = "zh") -> str:
-    """聚焦最相关段落：结果 > 方法 > 摘要 > 全文，减少LLM输入量"""
-    if len(text) <= 5000:
-        return text
-    keywords = {
-        "zh": ["结果", "阳性率", "抗体水平", "血清", "GMC", "方法", "研究对象", "材料与方法", "摘要"],
-        "en": ["results", "positivity", "antibody", "seroprevalence", "GMC", "methods", "materials", "abstract"],
-    }
-    kw = keywords.get(lang, keywords["en"])
-    lines = text.split("\n")
-    scored = []
-    for i, line in enumerate(lines):
-        score = sum(1 for k in kw if k.lower() in line.lower())
-        if i < 20:
-            score += 1
-        scored.append((score, i, line))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    keep_count = min(len(scored), max(80, len(scored) * 2 // 3))
-    # 按原始行号排序保留
-    kept = scored[:keep_count]
-    kept.sort(key=lambda x: x[1])
-    keep_lines = [line for _, _, line in kept]
-    return "\n".join(keep_lines)
+    """聚焦最相关段落：结果 > 方法 > 摘要 > 全文，减少 LLM 输入量。
+
+    原实现会对 >5000 字符文本按关键词逐行打分，并丢弃约 1/3 的低分行，导致
+    含真实数据但命中低频关键词的行被提前丢弃，系统性降低召回。
+
+    现长文档由 orchestrator 按 LLM_CHUNK_THRESHOLD/SIZE/OVERLAP 全量切块、
+    逐块交给 LLM（见 extraction/orchestrator.py），因此此处不再做关键词行级过滤，
+    直接返回全文，避免在进入 LLM 前丢失任何可能含有效数据的行。
+    """
+    return text
 
 
 
@@ -59,11 +47,11 @@ def detect_language(text: str) -> str:
 def truncate(text: str, max_chars: Optional[int] = None) -> str:
     """截断文本到指定字符数以内。
 
-    默认使用 settings.TEXT_PREPROCESS_MAX_CHARS（60000），须 > LLM_CHUNK_THRESHOLD(20000)，
-    否则 llm_extractor 的分块并发逻辑永不触发。
+    默认使用 settings.TEXT_PREPROCESS_MAX_CHARS（600000），仅作极长文本的安全兜底；
+    分块的主导参数是 LLM_CHUNK_THRESHOLD/SIZE/OVERLAP，长文本由 orchestrator 分块逐块交给 LLM。
     """
     if max_chars is None:
-        max_chars = getattr(settings, "TEXT_PREPROCESS_MAX_CHARS", 60000)
+        max_chars = getattr(settings, "TEXT_PREPROCESS_MAX_CHARS", 600000)
     if len(text) <= max_chars:
         return text
     # 尽量在段落边界截断

@@ -10,6 +10,7 @@
   "nav.report": "Report",
   "nav.folders": "Folder Monitor",
   "nav.pubmed": "PubMed",
+  "nav.antigenicMap": "Antigenic Map",
   "nav.users": "User Management",
   "nav.settings": "Settings",
 
@@ -55,6 +56,9 @@
   "loading": "Loading...",
   "noData": "No Data",
   "error.occurred": "Operation failed",
+  "error.code.DATABASE_ERROR": "Database operation failed, please try again later",
+  "error.code.VALIDATION_ERROR": "Request validation failed, please check your input",
+  "error.code.METRICS_FORBIDDEN": "Access to this resource is forbidden",
   "success.operation": "Operation successful",
 
   "error.title": "Something went wrong",

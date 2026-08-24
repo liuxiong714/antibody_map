@@ -8,11 +8,16 @@ from pydantic import BaseModel
 class ProvinceEquityRow(BaseModel):
     """单个省份的公平性指标（Top/Bottom 排名与全量排行共用）。"""
 
-    rank: Optional[int] = None  # 按加权阳性率降序排名；无有效数据时为 None
+    rank: Optional[int] = None  # 优先按年龄标化阳性率降序排名；无有效数据时为 None
     province: str = ""
     weighted_positivity: Optional[float] = None  # 加权阳性率（%，逆方差合并）
     ci_lower: Optional[float] = None
     ci_upper: Optional[float] = None
+    asr: Optional[float] = None  # 年龄标化阳性率（%，直接法，七普标准人口）；无有效分层时 None
+    asr_ci_lower: Optional[float] = None
+    asr_ci_upper: Optional[float] = None
+    is_age_standardized: bool = False  # 排名是否基于年龄标化率（True）或回落加权率（False）
+    n_strata: int = 0  # 参与标化的有效年龄分层数
     total_samples: int = 0
     n_studies: int = 0
     is_meeting_target: Optional[bool] = None  # 是否达到 WHO 免疫屏障阈值；无阈值时为 None

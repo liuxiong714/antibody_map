@@ -11,9 +11,9 @@ const DEFAULT_SETTINGS = {
   backend_url: 'http://localhost:8000',
   auto_extract: true,
   llm_model: '',
-  llm_api_key: '',
   llm_base_url: '',
   default_province: '',
+  api_token: '',
 };
 
 // ============ 初始化 ============
@@ -33,14 +33,49 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 
 // ============ 配置读取 ============
+// API Token 属于敏感凭据：存放在 chrome.storage.session（仅扩展可访问，浏览器重启/扩展卸载即清空），
+// 不写入 chrome.storage.local 明文留存。其余非敏感设置仍存 local。
+const SESSION_TOKEN_KEY = 'api_token';
+
 async function getSettings() {
   const { settings } = await chrome.storage.local.get('settings');
-  return { ...DEFAULT_SETTINGS, ...(settings || {}) };
+  const merged = { ...DEFAULT_SETTINGS, ...(settings || {}) };
+  let token = '';
+  try {
+    const s = await chrome.storage.session.get(SESSION_TOKEN_KEY);
+    token = s[SESSION_TOKEN_KEY] || '';
+    // 一次性迁移：老版本把 token 写进了 local.settings，首次读取时搬入 session 并清掉明文
+    if (!token && merged.api_token) {
+      await chrome.storage.session.set({ [SESSION_TOKEN_KEY]: merged.api_token });
+      const safe = { ...merged, api_token: '' };
+      await chrome.storage.local.set({ settings: safe });
+      token = merged.api_token;
+    }
+  } catch (e) {
+    // session 存储不可用时退化为读取 local 既有值（不写回）
+    console.warn('[AntibodyMap] 读取会话存储失败，回退 local:', e);
+    token = merged.api_token;
+  }
+  return { ...merged, api_token: token };
 }
 
 function apiUrl(path, settings) {
   const base = (settings.backend_url || '').replace(/\/+$/, '');
   return `${base}${path}`;
+}
+
+// 生成后端 API 认证头（JWT）。返回 null 表示未配置 token
+function authHeaders(settings) {
+  if (!settings.api_token) return null;
+  return { 'Authorization': `Bearer ${settings.api_token}` };
+}
+
+// 校验 token 是否已配置，未配置时返回统一错误
+function requireAuth(settings) {
+  if (!settings.api_token) {
+    return { success: false, error: '未配置 API Token，请在扩展设置页填写登录后获取的 JWT' };
+  }
+  return null;
 }
 
 // ============ 右键菜单 ============
@@ -131,6 +166,8 @@ async function handleSubmitPdfUrl(msg) {
 }
 
 async function fetchAndUploadPdf(pdfUrl, fields, settings) {
+  const noAuth = requireAuth(settings);
+  if (noAuth) return noAuth;
   // 1. 抓取 PDF 二进制（带 referer，规避部分站点防盗链）
   const referer = (() => { try { return new URL(pdfUrl).origin; } catch { return ''; } })();
   let fetchResp;
@@ -175,11 +212,13 @@ async function fetchAndUploadPdf(pdfUrl, fields, settings) {
   // 不要手动设置 Content-Type，让浏览器自动加 boundary
   const uploadResp = await fetch(apiUrl('/api/v1/literatures/upload', settings), {
     method: 'POST',
+    headers: authHeaders(settings),
     body: fd,
   });
   if (!uploadResp.ok) {
     const txt = await uploadResp.text().catch(() => '');
-    return { success: false, error: `上传失败：HTTP ${uploadResp.status} ${txt.slice(0, 200)}` };
+    const hint = uploadResp.status === 401 ? '（API Token 无效或已过期，请在设置页更新）' : '';
+    return { success: false, error: `上传失败：HTTP ${uploadResp.status}${hint} ${txt.slice(0, 200)}` };
   }
   const json = await uploadResp.json();
   if (!json || !json.success || !json.data) {
@@ -197,6 +236,8 @@ async function fetchAndUploadPdf(pdfUrl, fields, settings) {
 
 // ============ 4. URL 导入 ============
 async function importFromUrl(fields, settings) {
+  const noAuth = requireAuth(settings);
+  if (noAuth) return noAuth;
   const fd = new FormData();
   fd.append('url', fields.url);
   if (fields.title) fd.append('title', fields.title);
@@ -204,11 +245,13 @@ async function importFromUrl(fields, settings) {
 
   const resp = await fetch(apiUrl('/api/v1/literatures/from-url', settings), {
     method: 'POST',
+    headers: authHeaders(settings),
     body: fd,
   });
   if (!resp.ok) {
     const txt = await resp.text().catch(() => '');
-    return { success: false, error: `URL 导入失败：HTTP ${resp.status} ${txt.slice(0, 200)}` };
+    const hint = resp.status === 401 ? '（API Token 无效或已过期，请在设置页更新）' : '';
+    return { success: false, error: `URL 导入失败：HTTP ${resp.status}${hint} ${txt.slice(0, 200)}` };
   }
   const json = await resp.json();
   if (!json || !json.success || !json.data) {
@@ -225,21 +268,23 @@ async function importFromUrl(fields, settings) {
 
 // ============ 5. 触发 AI 提取 ============
 async function triggerExtraction(literatureId, settings) {
+  const noAuth = requireAuth(settings);
+  if (noAuth) return noAuth;
   const body = {};
   if (settings.llm_model) body.model = settings.llm_model;
-  if (settings.llm_api_key) body.api_key = settings.llm_api_key;
   if (settings.llm_base_url) body.base_url = settings.llm_base_url;
 
   try {
     const resp = await fetch(apiUrl(`/api/v1/literatures/${literatureId}/extraction`, settings), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders(settings) },
       body: JSON.stringify(body),
     });
     if (!resp.ok) {
       const txt = await resp.text().catch(() => '');
-      notify('提取任务提交失败', `HTTP ${resp.status} ${txt.slice(0, 120)}`);
-      return { success: false, error: `触发提取失败：HTTP ${resp.status}` };
+      const hint = resp.status === 401 ? '（API Token 无效或已过期，请在设置页更新）' : '';
+      notify('提取任务提交失败', `HTTP ${resp.status}${hint} ${txt.slice(0, 120)}`);
+      return { success: false, error: `触发提取失败：HTTP ${resp.status}${hint}` };
     }
     const json = await resp.json();
     notify('AI 提取已启动', `文献 ID: ${String(literatureId).slice(0, 8)}...`);
@@ -255,8 +300,10 @@ async function handlePollExtraction(msg) {
   const settings = await getSettings();
   const id = msg.literatureId;
   if (!id) return { success: false, error: '缺少 literatureId' };
+  const noAuth = requireAuth(settings);
+  if (noAuth) return noAuth;
   try {
-    const resp = await fetch(apiUrl(`/api/v1/literatures/${id}/extraction/status`, settings), { method: 'GET' });
+    const resp = await fetch(apiUrl(`/api/v1/literatures/${id}/extraction/status`, settings), { method: 'GET', headers: authHeaders(settings) });
     if (!resp.ok) return { success: false, error: `HTTP ${resp.status}` };
     const json = await resp.json();
     return { success: true, data: json.data };

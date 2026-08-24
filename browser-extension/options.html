@@ -15,6 +15,12 @@
   </div>
 
   <div class="form-group">
+    <label for="api_token">后端 API Token（JWT）</label>
+    <input type="password" id="api_token" placeholder="登录 Web 端后获取的 access token">
+    <div class="hint">用于后端 API 认证。在 Web 端登录后，打开开发者工具（F12）→ Application → Local Storage，复制 token 字段的值粘贴到这里。</div>
+  </div>
+
+  <div class="form-group">
     <label for="default_province">默认省份</label>
     <input type="text" id="default_province" placeholder="如：北京 / Shanghai（可留空）">
     <div class="hint">提交文献时自动填入的省份字段，可在弹窗中覆盖。</div>
@@ -38,12 +44,6 @@
   <div class="form-group">
     <label for="llm_model">模型名称</label>
     <input type="text" id="llm_model" placeholder="如：deepseek-chat / qwen-plus / gpt-4o-mini">
-  </div>
-
-  <div class="form-group">
-    <label for="llm_api_key">API Key（可选）</label>
-    <input type="text" id="llm_api_key" placeholder="覆盖后端默认 LLM API Key">
-    <div class="hint">仅在需要使用个人 API Key 计费时填写。明文存储于本地，请勿在公共电脑配置。</div>
   </div>
 
   <div class="form-group">

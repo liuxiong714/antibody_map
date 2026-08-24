@@ -26,6 +26,7 @@ import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmuni
 import { DISEASES, PROVINCE_GEOJSON_NAME } from '../utils/constants';
 import { lineWithBand, barWithError, funnelPlotOption, wilsonCi, ftTransform, birthCohortHeatmapOption, birthCohortLinesOption } from '../utils/chartBuilders';
 import ForestPlot from '../components/ForestPlot';
+import { useTheme, CANDIDATE_ACCENTS } from '../theme';
 
 type DataItem = Record<string, unknown>;
 
@@ -71,6 +72,7 @@ const tokenOf = (d: unknown): string | null =>
 
 const Analysis: React.FC = () => {
   const { disease: globalDisease, dataType: globalDataType, setDisease, setDataType } = useFilterStore();
+  const { theme } = useTheme();
 
   // 本地筛选状态
   const [localDisease, setLocalDisease] = useState(globalDisease);
@@ -2799,159 +2801,115 @@ const Analysis: React.FC = () => {
     </Spin>
   );
 
+  // ===================== 分析模块配置（Grid 卡片布局） =====================
+
+  const ANALYSIS_MODULES: Array<{ key: string; icon: React.ReactNode; label: string; desc: string }> = [
+    { key: 'summary', icon: <DashboardOutlined />, label: '汇总分析', desc: '趋势、区域对比、年龄分层' },
+    { key: 'datapoints', icon: <BarChartOutlined />, label: '数据点可视化', desc: '审核通过数据点分布' },
+    { key: 'coverage', icon: <EnvironmentOutlined />, label: '数据覆盖度', desc: '省份-年份覆盖率' },
+    { key: 'review', icon: <CheckCircleOutlined />, label: '审核统计', desc: '审核量、通过率、平均时间' },
+    { key: 'ageCurve', icon: <LineChartOutlined />, label: '年龄曲线', desc: '年龄-阳性率平滑曲线' },
+    { key: 'foi', icon: <ExperimentOutlined />, label: 'FOI感染力', desc: '感染力与群体免疫阈值' },
+    { key: 'vaccine', icon: <SafetyCertificateOutlined />, label: '疫苗效力', desc: 'VE与接种率双轨分析' },
+    { key: 'advanced', icon: <BarChartOutlined />, label: '高级图表', desc: '多维度组合图表' },
+    { key: 'equity', icon: <FundOutlined />, label: '公平性分析', desc: '省间公平性雷达评估' },
+    { key: 'quality', icon: <CheckCircleOutlined />, label: '数据质量', desc: '全库质量评分' },
+    { key: 'goal', icon: <AimOutlined />, label: '目标达成', desc: 'WHO2030目标追踪' },
+    { key: 'advancedAnalysis', icon: <ExperimentOutlined />, label: '高级分析', desc: 'Meta合并/模拟/异质性' },
+    { key: 'metaAnalysis', icon: <ExperimentOutlined />, label: '证据合成', desc: '森林图/漏斗图' },
+    { key: 'birthCohort', icon: <LineChartOutlined />, label: '出生队列', desc: '出生队列热力图' },
+  ];
+
   return (
     <>
       {filterPanel}
-      <Tabs
-        activeKey={activeTab}
-        onChange={setActiveTab}
-        items={[
-          {
-            key: 'summary',
-            label: '汇总分析',
-            children: (
-              <>
-                {summaryContent}
-                {mapDrillSection}
-              </>
-            ),
-          },
-          {
-            key: 'datapoints',
-            label: '数据点可视化',
-            children: datapointsContent,
-          },
-          {
-            key: 'coverage',
-            label: '数据覆盖度',
-            children: coverageContent,
-          },
-          {
-            key: 'review',
-            label: (
-              <span>
-                <CheckCircleOutlined />
-                审核统计
-              </span>
-            ),
-            children: reviewContent,
-          },
-          {
-            key: 'ageCurve',
-            label: (
-              <span>
-                <LineChartOutlined />
-                年龄曲线
-              </span>
-            ),
-            children: (
-              <Spin spinning={ageCurveLoading}>
-                {!appliedDisease ? (
-                  <Empty description="请先在上方筛选面板选择疾病后查看年龄曲线" style={{ padding: '40px 0' }} />
-                ) : (
-                  <AgeCurveChart data={ageCurveData} loading={ageCurveLoading} />
-                )}
-              </Spin>
-            ),
-          },
-          {
-            key: 'foi',
-            label: (
-              <span>
-                <ExperimentOutlined />
-                FOI感染力分析
-              </span>
-            ),
-            children: foiContent,
-          },
-          {
-            key: 'vaccine',
-            label: (
-              <span>
-                <SafetyCertificateOutlined />
-                疫苗效力与接种率
-              </span>
-            ),
-            children: vaccineContent,
-          },
-          {
-            key: 'advanced',
-            label: (
-              <span>
-                <BarChartOutlined />
-                高级图表
-              </span>
-            ),
-            children: (
-              <AdvancedCharts
-                appliedDisease={appliedDisease}
-                appliedDataType={appliedDataType}
-                appliedProvinces={appliedProvinces}
-              />
-            ),
-          },
-          {
-            key: 'equity',
-            label: (
-              <span>
-                <FundOutlined />
-                公平性分析
-              </span>
-            ),
-            children: equityContent,
-          },
-          {
-            key: 'quality',
-            label: (
-              <span>
-                <CheckCircleOutlined />
-                数据质量
-              </span>
-            ),
-            children: qualityContent,
-          },
-          {
-            key: 'goal',
-            label: (
-              <span>
-                <AimOutlined />
-                目标达成
-              </span>
-            ),
-            children: goalContent,
-          },
-          {
-            key: 'advancedAnalysis',
-            label: (
-              <span>
-                <ExperimentOutlined />
-                高级分析
-              </span>
-            ),
-            children: advancedContent,
-          },
-          {
-            key: 'metaAnalysis',
-            label: (
-              <span>
-                <ExperimentOutlined />
-                证据合成
-              </span>
-            ),
-            children: metaAnalysisContent,
-          },
-          {
-            key: 'birthCohort',
-            label: (
-              <span>
-                <LineChartOutlined />
-                出生队列
-              </span>
-            ),
-            children: birthCohortContent,
-          },
-        ]}
-      />
+
+      {/* 分析模块卡片网格 */}
+      <Card styles={{ body: { padding: 12 } }} style={{ marginBottom: 16 }}>
+        <Row gutter={[8, 8]}>
+          {ANALYSIS_MODULES.map((mod) => {
+            const isActive = activeTab === mod.key;
+            const candidate = theme === 'candidate';
+            // 候选主题下各模块使用登录页配色家族的专属强调色；默认主题保持现有 antd 蓝
+            const accent = CANDIDATE_ACCENTS[mod.key] ?? CANDIDATE_ACCENTS._default;
+            const activeColor = candidate && accent ? accent.color : '#1677ff';
+            const activeBg = candidate && accent ? accent.bg : '#e6f4ff';
+            return (
+              <Col key={mod.key} xs={12} sm={8} md={6} lg={4} xl={3} xxl={2}>
+                <Card
+                  hoverable
+                  size="small"
+                  onClick={() => setActiveTab(mod.key)}
+                  styles={{
+                    body: { padding: '10px 6px' },
+                  }}
+                  style={{
+                    textAlign: 'center',
+                    cursor: 'pointer',
+                    borderColor: isActive ? activeColor : undefined,
+                    backgroundColor: isActive ? activeBg : undefined,
+                    transition: 'all 0.2s',
+                    userSelect: 'none',
+                  }}
+                >
+                  <div style={{ fontSize: 20, color: isActive ? activeColor : (candidate ? '#8492a6' : '#8c8c8c'), lineHeight: 1.4 }}>
+                    {mod.icon}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      marginTop: 2,
+                      fontWeight: isActive ? 600 : 400,
+                      color: isActive ? activeColor : (candidate ? '#3b4a5c' : '#595959'),
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    {mod.label}
+                  </div>
+                  <div style={{ fontSize: 10, color: candidate ? '#9aa8bc' : '#bfbfbf', marginTop: 1, lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {mod.desc}
+                  </div>
+                </Card>
+              </Col>
+            );
+          })}
+        </Row>
+      </Card>
+
+      {/* 分析内容（根据 activeTab 条件渲染） */}
+      {activeTab === 'summary' && (
+        <>
+          {summaryContent}
+          {mapDrillSection}
+        </>
+      )}
+      {activeTab === 'datapoints' && datapointsContent}
+      {activeTab === 'coverage' && coverageContent}
+      {activeTab === 'review' && reviewContent}
+      {activeTab === 'ageCurve' && (
+        <Spin spinning={ageCurveLoading}>
+          {!appliedDisease ? (
+            <Empty description="请先在上方筛选面板选择疾病后查看年龄曲线" style={{ padding: '40px 0' }} />
+          ) : (
+            <AgeCurveChart data={ageCurveData} loading={ageCurveLoading} />
+          )}
+        </Spin>
+      )}
+      {activeTab === 'foi' && foiContent}
+      {activeTab === 'vaccine' && vaccineContent}
+      {activeTab === 'advanced' && (
+        <AdvancedCharts
+          appliedDisease={appliedDisease}
+          appliedDataType={appliedDataType}
+          appliedProvinces={appliedProvinces}
+        />
+      )}
+      {activeTab === 'equity' && equityContent}
+      {activeTab === 'quality' && qualityContent}
+      {activeTab === 'goal' && goalContent}
+      {activeTab === 'advancedAnalysis' && advancedContent}
+      {activeTab === 'metaAnalysis' && metaAnalysisContent}
+      {activeTab === 'birthCohort' && birthCohortContent}
     </>
   );
 };

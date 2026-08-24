@@ -28,7 +28,9 @@ def _ok(label: str, detail: str = ""):
 def _fail(label: str, detail: str = ""):
     global _failed
     _failed += 1
-    print(f"  ✗ {label}{(' — ' + detail) if detail else ''}")
+    msg = f"  ✗ {label}{(' — ' + detail) if detail else ''}"
+    print(msg)
+    raise AssertionError(msg)
 
 
 # ─────────────────────────────────────────────────────────
@@ -511,10 +513,10 @@ def test_upload_whitelist():
     else:
         _fail("上传错误消息未包含 PPTX/XLSX")
 
-    # 8e: 所有 9 种格式都在白名单
-    expected_exts = {".pdf", ".caj", ".epub", ".docx", ".pptx", ".xlsx", ".txt", ".html", ".htm"}
+    # 8e: 所有 7 种格式都在白名单
+    expected_exts = {".pdf", ".caj", ".epub", ".docx", ".pptx", ".xlsx", ".txt"}
     if expected_exts == ALLOWED_EXTS:
-        _ok("上传白名单完整（9 种格式）")
+        _ok("上传白名单完整（7 种格式）")
     else:
         _fail("上传白名单不完整", f"missing={expected_exts - ALLOWED_EXTS}, extra={ALLOWED_EXTS - expected_exts}")
 
@@ -576,6 +578,8 @@ if __name__ == "__main__":
     for test_fn in tests:
         try:
             test_fn()
+        except AssertionError:
+            pass  # _fail already handled printing and counting
         except Exception as e:
             _fail(f"{test_fn.__name__} 异常", str(e))
 

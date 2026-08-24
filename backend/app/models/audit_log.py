@@ -28,6 +28,15 @@ class AuditLog(Base):
     target: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     # 操作详情（JSON 字符串，记录关键参数）
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # 实体维度（4.2：数据点等业务对象的变更审计，便于按实体过滤 / 追溯 / 回滚）
+    # 实体类型，如 "data_point"
+    entity_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
+    # 实体 ID（如数据点 ID）
+    entity_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    # 变更前快照（JSON 字符串，仅记录发生变化的字段）
+    old_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # 变更后快照（JSON 字符串）
+    new_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # 客户端 IP 地址
     client_ip: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     # 操作时间

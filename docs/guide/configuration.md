@@ -6,7 +6,7 @@
 |------|------|--------|
 | `LLM_API_KEY` | 通用 LLM API 密钥 | - |
 | `LLM_BASE_URL` | 通用 LLM API 地址 | `https://api.deepseek.com` |
-| `LLM_MODEL` | 默认模型名称 | `deepseek-chat` |
+| `LLM_MODEL` | 默认模型名称 | `qwen3:32b` |
 | `DEEPSEEK_API_KEY` | DeepSeek 独立 API 密钥 | 回退到 `LLM_API_KEY` |
 | `OPENAI_API_KEY` | OpenAI 独立 API 密钥 | 回退到 `LLM_API_KEY` |
 | `QWEN_API_KEY` | 通义千问独立 API 密钥 | 回退到 `LLM_API_KEY` |
@@ -28,7 +28,7 @@
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `CORS_ORIGINS` | 跨域白名单 (逗号分隔) | `localhost:3000,localhost:5173` |
+| `CORS_ORIGINS` | 跨域白名单 (Python 列表语法，如 `["http://a.com","http://b.com"]`) | `["http://localhost:3000","http://localhost:5173"]` |
 | `TESSERACT_CMD` | Tesseract 可执行文件路径 | 自动探测 |
 | `TESSERACT_DATA_DIR` | Tesseract 语言包目录 | 自动探测 |
 | `PDF_STORAGE` | PDF 存储模式 | `local` (或 `minio`) |

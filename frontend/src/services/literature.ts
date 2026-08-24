@@ -18,8 +18,8 @@ export interface PaginatedResult<T> {
 
 // 拦截器已将 ApiResponse.data 提升到 resp.data，此处解包 AxiosResponse
 
-export async function listLiterature(params: Record<string, unknown>) {
-  const { data } = await api.get<PaginatedResult<Literature>>('/literatures', { params });
+export async function listLiterature(params: Record<string, unknown>, options?: { signal?: AbortSignal }) {
+  const { data } = await api.get<PaginatedResult<Literature>>('/literatures', { params, signal: options?.signal });
   return data;
 }
 
@@ -523,6 +523,10 @@ export interface OrphanCleanupPreview {
   scanned: number;
   orphan_count: number;
   orphan_files: string[];
+  cooldown_count?: number;
+  cooldown_files?: string[];
+  minio_protected_count?: number;
+  minio_protected_files?: string[];
 }
 
 export interface OrphanCleanupResult {
@@ -540,7 +544,8 @@ export async function previewOrphanCleanup(): Promise<OrphanCleanupPreview> {
 }
 
 export async function executeOrphanCleanup(): Promise<OrphanCleanupResult> {
-  const { data } = await api.post<OrphanCleanupResult>('/literatures/cleanup-orphan-files');
+  // 前端已在预览后经 Modal.confirm 二次确认，此处显式 dry_run=false 才执行真实移动
+  const { data } = await api.post<OrphanCleanupResult>('/literatures/cleanup-orphan-files?dry_run=false');
   return data;
 }
 
@@ -656,10 +661,10 @@ export interface EmptyTrashResult {
   remaining: number;
 }
 
-export async function listTrash(page: number = 1, pageSize: number = 20, keyword?: string): Promise<TrashListResult> {
+export async function listTrash(page: number = 1, pageSize: number = 20, keyword?: string, options?: { signal?: AbortSignal }): Promise<TrashListResult> {
   const params: any = { page, page_size: pageSize };
   if (keyword) params.keyword = keyword;
-  const { data } = await api.get<TrashListResult>('/literatures/trash', { params });
+  const { data } = await api.get<TrashListResult>('/literatures/trash', { params, signal: options?.signal });
   return data;
 }
 

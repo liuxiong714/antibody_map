@@ -18,12 +18,14 @@
 from __future__ import annotations
 
 import math
+import sys
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import scipy.stats as sps
 from scipy.interpolate import BSpline
 from scipy.optimize import brentq, minimize
+from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.proportion import proportion_confint
 
 __all__ = [
@@ -81,6 +83,7 @@ def binomial_ci(x: Any, n: Any, alpha: float = 0.05, method: str = "auto") -> Tu
     """单比例二项分布的 (1-alpha) 置信区间，返回 (ci_lower, ci_upper)（0-1 比例）。
 
     - x: 阳性数（整数）。调用方换算：x = round(seroprevalence/100 * sample_size)。
+      x 缺失（None）时无法计算 → 返回 (None, None)，不得按 0 处理（避免误导性 CI）。
     - n: 样本量。n 缺失或 n == 0 → 返回 (None, None)。
     - method: ``auto``（默认）按 n 分流——n >= 30 用 Wilson score，n < 30 用
       Clopper-Pearson 精确法（beta 分布）；也可显式指定 ``wilson`` 或 ``beta``。
@@ -95,7 +98,7 @@ def binomial_ci(x: Any, n: Any, alpha: float = 0.05, method: str = "auto") -> Tu
     if n <= 0:
         return (None, None)
     if x is None:
-        x = 0
+        return (None, None)
     x = min(max(int(x), 0), n)
 
     if method == "auto":
@@ -176,6 +179,21 @@ def weighted_rate_ci(rows: Sequence[Any], z: float = 1.96) -> dict:
 # 3. GMC 几何均数 + 对数域正态近似 95% CI
 # ============================================================
 
+def _safe_exp(x: float) -> Optional[float]:
+    """指数运算安全封装：参数过大/非有限时返回 None，避免溢出为 inf。
+
+    JSON 序列化不允许 inf/NaN；真实滴度不会逼近 e^709，但防御性兜底
+    保证极端输入不污染响应（gmc/CI 置 None 而非非法浮点）。
+    """
+    try:
+        if not math.isfinite(x) or x > math.log(sys.float_info.max):
+            return None
+        v = math.exp(x)
+        return v if math.isfinite(v) else None
+    except (OverflowError, ValueError):
+        return None
+
+
 def gmc_ci(titers: Sequence[Any], weights: Optional[Sequence[Any]] = None, z: float = 1.96) -> dict:
     """几何均数（GMC）及对数域正态近似 95% CI。
 
@@ -215,22 +233,23 @@ def gmc_ci(titers: Sequence[Any], weights: Optional[Sequence[Any]] = None, z: fl
 
     w_sum = sum(ws)
     mean_ln = sum(w * l for w, l in zip(ws, vals)) / w_sum
-    gmc = math.exp(mean_ln)
+    gmc = _safe_exp(mean_ln)
 
     if k < 2:
-        return {"gmc": round(gmc, 4), "ci_lower": None, "ci_upper": None,
+        return {"gmc": round(gmc, 4) if gmc is not None else None,
+                "ci_lower": None, "ci_upper": None,
                 "n": k, "n_total": int(round(w_sum)), "n_dropped": dropped, "method": "lognormal"}
 
     # 频率权重归一（均值权重 = 1），使 var_ln 与样本方差同量纲
     norm = k / w_sum
     var_ln = sum(norm * w * (l - mean_ln) ** 2 for w, l in zip(ws, vals)) / (k - 1)
     se = math.sqrt(var_ln / k)
-    lo = math.exp(mean_ln - z * se)
-    hi = math.exp(mean_ln + z * se)
+    lo = _safe_exp(mean_ln - z * se)
+    hi = _safe_exp(mean_ln + z * se)
     return {
-        "gmc": round(gmc, 4),
-        "ci_lower": round(lo, 4),
-        "ci_upper": round(hi, 4),
+        "gmc": round(gmc, 4) if gmc is not None else None,
+        "ci_lower": round(lo, 4) if lo is not None else None,
+        "ci_upper": round(hi, 4) if hi is not None else None,
         "n": k,
         "n_total": int(round(w_sum)),
         "n_dropped": dropped,
@@ -546,58 +565,58 @@ def _ft_inverse(t: float, n: float = 1e6) -> float:
 
 
 def _egger_test(studies: list) -> dict:
-    """简化版 Egger 检验：对 t 对 √n 的加权线性回归显著性。
-    
+    """标准 Egger 检验：标准化效应 t/se 对精度 1/se 的普通最小二乘回归。
+
     Reference: Egger et al. (1997) BMJ 315:629-634.
-    简化版：以 SE=√(1/n) 为精度权重，对 tᵢ 对 √nᵢ 做加权 OLS，
-    检验截距是否显著偏离 0（不对称指示）。
+    以每项研究的标准化效应 y=t/se（FT 变换 t 除以标准误）为因变量、
+    精度 x=1/se 为自变量做无权重 OLS，检验截距 a 是否显著偏离 0
+    （漏斗图不对称 → 发表偏倚指示）。k<10 不计算（幂不足）。
     """
     k = len(studies)
     if k < 10:
         return {"intercept": None, "p_value": None, "note": "k<10, 未计算 Egger 检验"}
-    
-    sqrt_n = np.array([s["sqrt_n"] for s in studies], dtype=float)
+
     t = np.array([s["t"] for s in studies], dtype=float)
     se = np.array([s["se"] for s in studies], dtype=float)
-    
-    # 精度权重 w = 1/se
-    w = 1.0 / np.maximum(se, 1e-12)
-    
-    # 加权回归：t = a + b * sqrt_n，权重 w
-    # 加权均值
-    w_sum = np.sum(w)
-    w_mean_t = np.sum(w * t) / w_sum
-    w_mean_sn = np.sum(w * sqrt_n) / w_sum
-    
-    # 加权协方差/方差
-    w_cov = np.sum(w * (t - w_mean_t) * (sqrt_n - w_mean_sn)) / w_sum
-    w_var_sn = np.sum(w * (sqrt_n - w_mean_sn) ** 2) / w_sum
-    
-    if w_var_sn < 1e-15:
-        return {"intercept": None, "p_value": None, "note": "方差过小，无法计算回归"}
-    
-    b = w_cov / w_var_sn  # 斜率
-    a = w_mean_t - b * w_mean_sn  # 截距
-    
-    # 残差标准误
-    residuals = t - (a + b * sqrt_n)
-    mse = np.sum(w * residuals ** 2) / (k - 2) if k > 2 else 0.0
-    if mse <= 0 or k <= 2:
+
+    # 剔除 se<=0 / 非有限值，避免除零污染回归
+    valid = np.isfinite(t) & (se > 0) & np.isfinite(se)
+    t, se = t[valid], se[valid]
+    k = len(t)
+    if k < 10:
+        return {"intercept": None, "p_value": None, "note": "有效研究不足 10 项，未计算 Egger 检验"}
+
+    y = t / se          # 标准化效应
+    x = 1.0 / se        # 精度
+
+    n = k
+    x_mean = float(np.mean(x))
+    y_mean = float(np.mean(y))
+    sxx = float(np.sum((x - x_mean) ** 2))
+    if sxx < 1e-15:
+        return {"intercept": None, "p_value": None, "note": "精度方差过小，无法计算回归"}
+
+    b = float(np.sum((x - x_mean) * (y - y_mean)) / sxx)  # 斜率
+    a = y_mean - b * x_mean                                # 截距（偏倚指示）
+
+    resid = y - (a + b * x)
+    mse = float(np.sum(resid ** 2) / (n - 2)) if n > 2 else 0.0
+    if mse <= 0 or n <= 2:
         return {"intercept": round(float(a), 4), "p_value": None, "note": "自由度不足，无法计算 p 值"}
-    
-    # 截距的标准误
-    se_a = math.sqrt(mse * (1.0 / w_sum + w_mean_sn ** 2 / (w_sum * w_var_sn)))
+
+    # 截距标准误：se_a = sqrt(MSE * (1/n + x̄²/Sxx))
+    se_a = math.sqrt(mse * (1.0 / n + x_mean ** 2 / sxx))
     if se_a < 1e-12:
         return {"intercept": round(float(a), 4), "p_value": None, "note": "截距 SE 过小"}
-    
+
     t_stat = a / se_a
-    df = k - 2
+    df = n - 2
     p_value = 2.0 * (1.0 - sps.t.cdf(abs(t_stat), df))
-    
+
     return {
         "intercept": round(float(a), 4),
         "p_value": round(float(p_value), 6),
-        "note": "Egger 简化版：加权回归截距检验",
+        "note": "Egger 检验：t/se ~ 1/se 截距检验",
     }
 
 
@@ -710,7 +729,7 @@ def meta_proportion(
                 "Q_p": None,
                 "I2": 0.0,
                 "k": 1,
-                "se": round(p * (1.0 - p) / n, 6) if n > 0 else None,
+                "se": round(math.sqrt(p * (1.0 - p) / n), 6) if n > 0 else None,
                 "z": z,
             },
             "funnel": None,
@@ -1685,8 +1704,8 @@ def direct_standardize(
     return {
         "crude": round(crude * 100, 4) if crude is not None else None,
         "asr": round(asr * 100, 4),
-        "asr_ci_lower": round((asr - z_crit * se) * 100, 4),
-        "asr_ci_upper": round((asr + z_crit * se) * 100, 4),
+        "asr_ci_lower": round(max(0.0, asr - z_crit * se) * 100, 4),
+        "asr_ci_upper": round(min(1.0, asr + z_crit * se) * 100, 4),
         "se": round(se * 100, 4),
         "n_strata": len(parsed),
         "used_groups": [p[0] for p in parsed],
@@ -1755,7 +1774,8 @@ def g_star(rates: Sequence[Any], w: Any, permutations: int = 999) -> Optional[li
     - ``w``：libpysal 权重对象（对称化 + 行标准化，与 morans_i 口径一致）。
     - 有效观测 < 8 或与 w 观测数不一致 → 返回 None。
 
-    返回与输入顺序一致的每省 ``{gi_z, p}``（Gi* z 得分与置换 p 值）。
+    返回与输入顺序一致的每省 ``{gi_z, p, p_fdr}``（Gi* z 得分、置换 p 值与
+    Benjamini-Hochberg FDR 校正后的 p_fdr；多省并行检验防假阳性累积）。
     """
     import esda
 
@@ -1772,9 +1792,12 @@ def g_star(rates: Sequence[Any], w: Any, permutations: int = 999) -> Optional[li
         return None
 
     g = esda.G_Local(vals, w, star=True, permutations=permutations)
+    pvals = np.asarray([float(p) for p in g.p_sim], dtype=float)
+    # 多检验校正（Benjamini-Hochberg FDR）：逐省 p 值不校正会系统性放大假阳性
+    _, p_fdr, _, _ = multipletests(pvals, alpha=0.05, method="fdr_bh")
     return [
-        {"gi_z": round(float(zz), 6), "p": round(float(pp), 6)}
-        for zz, pp in zip(g.Zs, g.p_sim)
+        {"gi_z": round(float(zz), 6), "p": round(float(pp), 6), "p_fdr": round(float(pf), 6)}
+        for zz, pp, pf in zip(g.Zs, g.p_sim, p_fdr)
     ]
 
 

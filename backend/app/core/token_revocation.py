@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import redis.asyncio as aioredis
+from redis.exceptions import RedisError
 
 from app.config import settings
 
@@ -45,14 +46,14 @@ async def revoke_token(jti: str, exp: Optional[int] = None) -> None:
     Args:
         jti: JWT 令牌的唯一 ID
         exp: 令牌的过期时间戳（Unix 时间），用于设置黑名单自动过期
+
+    fail-closed：Redis 连接异常时抛出 RedisError，调用方决定是否拒绝/降级，
+    绝不静默吞掉写失败（否则重放保护形同虚设）。
     """
-    try:
-        r = await _get_redis()
-        ttl = _get_ttl(exp)
-        key = f"token_revoked:{jti}"
-        await r.setex(key, ttl, "1")
-    except Exception as e:
-        logger.warning(f"Token 吊销写入 Redis 失败: {e}")
+    r = await _get_redis()
+    ttl = _get_ttl(exp)
+    key = f"token_revoked:{jti}"
+    await r.setex(key, ttl, "1")
 
 
 async def is_token_revoked(jti: str) -> bool:
@@ -63,12 +64,33 @@ async def is_token_revoked(jti: str) -> bool:
 
     Returns:
         True 表示已吊销
+
+    fail-closed：Redis 连接异常时抛出 RedisError，绝不 return False 放行，
+    保证吊销检查在缓存不可用时拒绝令牌而非静默通过。
     """
+    r = await _get_redis()
+    key = f"token_revoked:{jti}"
+    result = await r.get(key)
+    return result == "1"
+
+
+def token_issued_before_password_change(iat, password_changed_at) -> bool:
+    """F3：判断令牌是否签发于用户最近一次改密之前。
+
+    用于改密后吊销既有令牌：若令牌的签发时间(iat)早于密码变更时间，
+    则认为该令牌已失效，应拒绝使用（access 与 refresh 令牌均适用）。
+
+    Args:
+        iat: 令牌签发时间戳（JWT payload 中的 iat，Unix 秒）
+        password_changed_at: 用户最近一次改密时间（datetime，可空）
+
+    Returns:
+        True 表示令牌签发早于改密（应拒绝）；False / 无法判断返回 False。
+    """
+    if iat is None or password_changed_at is None:
+        return False
     try:
-        r = await _get_redis()
-        key = f"token_revoked:{jti}"
-        result = await r.get(key)
-        return result == "1"
-    except Exception as e:
-        logger.warning(f"Token 吊销检查 Redis 失败: {e}")
-        return False  # Redis 不可用时，放行（降级处理）
+        changed_ts = password_changed_at.timestamp()
+    except Exception:
+        return False
+    return changed_ts > int(iat)

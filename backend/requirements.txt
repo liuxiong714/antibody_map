@@ -1,68 +1,73 @@
-fastapi>=0.110.0,<1.0.0
-uvicorn[standard]>=0.29.0
-sqlalchemy[asyncio]>=2.0.30
-greenlet>=3.1.1
-asyncpg>=0.29.0
-pydantic>=2.0.0
-pydantic-settings>=2.2.0
-python-dotenv>=1.0.0
-python-multipart>=0.0.9
-redis>=5.0.0
-celery>=5.3.0
-minio>=7.2.0
-PyMuPDF>=1.24.0
-pdfplumber>=0.11.0
-python-docx>=1.1.0
-python-pptx>=0.6.21
-ebooklib>=0.18
-beautifulsoup4>=4.12.0
-lxml>=4.9.0
+# 主依赖（版本已在 antibody-backend 容器验证并固化到 backend/wheels/ 离线仓库，2026-08-24）
+# 精确固定版本：保证可复现构建 + 离线安装，避免上游新版本引入破坏性变更
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+sqlalchemy[asyncio]==2.0.52
+greenlet==3.5.5
+asyncpg==0.31.0
+pydantic==2.13.4
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+python-multipart==0.0.32
+redis==8.1.0
+celery==5.6.3
+minio==7.2.20
+PyMuPDF==1.28.2
+pdfplumber==0.11.10
+python-docx==1.2.0
+python-pptx==1.0.2
+EbookLib==0.20
+beautifulsoup4==4.15.0
+lxml==6.1.2
 # CAJ 转换：caj2pdf 不在 PyPI，且仓库无 setup.py 无法 pip 安装。
 # 已由 Dockerfile 自动处理：从 GitHub 拉取源码到 /opt/caj2pdf + 预编译共享库
 # (libjbig*.so, 见 caj2pdf-extra-libs 的 BUILD-0.1 release)，并 pip 安装其依赖
 # PyPDF2==2.2.0 与 imagesize==1.3.0（见 backend/scripts/caj2pdf-wrapper）。
 # 另需系统安装 mutool（mupdf-tools）；未安装时 CAJ 提取安全降级为 failed
-openai>=1.30.0
-httpx>=0.27.0
-jinja2>=3.1.0
-alembic>=1.14.0
+openai==3.3.1
+httpx==0.28.1
+jinja2==3.1.6
+alembic==1.19.1
 # API Key 加密存储（Fernet 对称加密）
-cryptography>=42.0.0
-openpyxl>=3.1.0
+cryptography==50.0.0
+openpyxl==3.1.5
 # OCR 依赖（Tesseract 本地 OCR + 百度云 OCR 兜底）
-pytesseract>=0.3.10
-Pillow>=10.0.0
-requests>=2.31.0
+pytesseract==0.3.13
+Pillow==12.3.0
+requests==2.34.2
 # JWT 令牌 + 密码哈希
-pyjwt>=2.8.0
-bcrypt>=4.0.0
+pyjwt==2.13.0
+bcrypt==5.0.0
 
 # 结构化日志
-loguru>=0.7.0
+loguru==0.7.3
 
 # Prometheus 指标采集（HTTP 指标自动收集 + /metrics 端点）
-prometheus-fastapi-instrumentator>=6.0.0
+prometheus-fastapi-instrumentator==8.1.0
 
 # 测试：接口鉴权矩阵测试离线运行依赖（内存 SQLite 异步驱动）
-aiosqlite>=0.19.0
+aiosqlite==0.22.1
 
 # 统计分析（95% CI 引擎：Wilson score / Clopper-Pearson 精确法）
-statsmodels>=0.14.1
-scipy>=1.13.0
+statsmodels==0.14.6
+scipy==1.17.1
 
 # 空间统计（Moran's I 全局自相关 + Getis-Ord Gi* 局部热点）
-esda>=2.5.1
-libpysal>=4.10.0
+esda==2.9.0
+libpysal==4.14.1
 
 # 抗原制图（metric MDS：sklearn.manifold.MDS + scipy.spatial.procrustes）
-scikit-learn>=1.5.0
+scikit-learn==1.9.0
+
+# 报告 PDF 导出（F40）：reportlab + 内建 CID 中文字体 STSong-Light，无需外部字体
+reportlab==4.2.5
 
 # AnyDoc 文档转 Markdown（firecrawl/anydoc，Python 绑定）。
 # 提升表格 → GFM Markdown 质量，直接提升 LLM 数据提取准确率。
 # 可选依赖：未安装或不可用时代码自动降级到现有策略解析器（ENABLE_ANYDOC 默认关闭）。
-firecrawl-anydoc>=0.1.9
+firecrawl-anydoc==0.2.3
 
 # pdf-inspector PDF 增强解析（firecrawl/pdf-inspector，Python 绑定）。
 # 智能分类 + 表格提取（TEDS 0.814）+ 损坏PDF自动修复，失败回退现有解析链。
 # 默认开启（ENABLE_PDF_INSPECTOR=true），由惰性加载确保缺失时正常降级。
-pdf-inspector>=1.14.0
+pdf-inspector==1.17.0

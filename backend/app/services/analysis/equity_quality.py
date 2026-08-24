@@ -39,7 +39,8 @@ from app.core.stats_engine import (
     classify_hotspot_cluster,
     birth_cohort_analysis,
 )
-from app.core.goal_thresholds import GOAL_THRESHOLDS
+from app.config import settings
+from app.services.goal_threshold_service import get_goal_threshold
 
 from app.services.analysis._common import (
     AGE_GROUPS,
@@ -143,25 +144,43 @@ async def get_equity_analysis(
     for prov, group_rows in province_map.items():
         wpr_info = _calc_weighted_positivity(group_rows)
         wpr = wpr_info["weighted_positivity"]
+        # 年龄标化阳性率（直接法，七普标准人口）；无有效分层时回退加权率排名
+        asr_info = _compute_province_asr(group_rows)
+        asr = asr_info.get("asr")
+        is_std = asr is not None
+        std_positivity = asr if is_std else wpr
         province_rows.append({
             "rank": None,
             "province": prov,
             "weighted_positivity": wpr,
             "ci_lower": wpr_info["ci_lower"],
             "ci_upper": wpr_info["ci_upper"],
+            "asr": asr,
+            "asr_ci_lower": asr_info.get("asr_ci_lower"),
+            "asr_ci_upper": asr_info.get("asr_ci_upper"),
+            "is_age_standardized": is_std,
+            "n_strata": asr_info.get("n_strata", 0),
+            "std_positivity": std_positivity,
             "total_samples": wpr_info["total_sample"],
             "n_studies": len(group_rows),
             "is_meeting_target": (wpr >= threshold) if (wpr is not None and threshold is not None) else None,
         })
 
-    # 仅用有加权阳性率的省计算离散度指标
-    valid = [r for r in province_rows if r["weighted_positivity"] is not None]
+    # 排名 & 离散度：排名键优先年龄标化率，仅纳入样本量达标的省
+    # （避免小样本省进入 Top/Bottom，证据不足）
+    min_samples = settings.MIN_SAMPLE_FOR_META
+    valid = [r for r in province_rows
+             if r["std_positivity"] is not None
+             and (r["total_samples"] or 0) >= min_samples]
+    insufficient = [r for r in province_rows
+                    if r["std_positivity"] is not None
+                    and (r["total_samples"] or 0) < min_samples]
     if valid:
-        valid.sort(key=lambda r: r["weighted_positivity"], reverse=True)
+        valid.sort(key=lambda r: r["std_positivity"], reverse=True)
         for i, r in enumerate(valid, 1):
             r["rank"] = i
 
-        pos_vals = [r["weighted_positivity"] for r in valid]
+        pos_vals = [r["std_positivity"] for r in valid]
         gini_val = gini(pos_vals)
         cv_val = coefficient_of_variation(pos_vals)
 
@@ -176,13 +195,19 @@ async def get_equity_analysis(
         n_meeting = 0
         n_total = 0
         meeting_ratio = None
-        best = {"province": None, "weighted_positivity": None}
-        worst = {"province": None, "weighted_positivity": None}
+        best = {"province": None, "weighted_positivity": None, "std_positivity": None}
+        worst = {"province": None, "weighted_positivity": None, "std_positivity": None}
 
-    # 全量排名（含无值省，排最后）
-    province_rows.sort(key=lambda r: (r["weighted_positivity"] is None, -(r["weighted_positivity"] or 0)))
-    for i, r in enumerate(province_rows, 1):
-        r["rank"] = i if r["weighted_positivity"] is not None else None
+    # 全量排名（有值但样本不足的省 rank 置 None；无值省排最后）
+    valid_keys = {id(r) for r in valid}
+    province_rows.sort(key=lambda r: (r["std_positivity"] is None, -(r["std_positivity"] or 0)))
+    rank_counter = 0
+    for r in province_rows:
+        if id(r) in valid_keys:
+            rank_counter += 1
+            r["rank"] = rank_counter
+        else:
+            r["rank"] = None
 
     top_provinces = valid[:5]
     bottom_provinces = valid[-5:][::-1]
@@ -192,8 +217,24 @@ async def get_equity_analysis(
         notes.append(f"达标阈值参照 WHO 免疫屏障标准：{threshold}%")
     else:
         notes.append("未在 WHO_THRESHOLDS 中找到该疾病阈值，达标比例不可用")
+    n_age_std = sum(1 for r in province_rows if r["is_age_standardized"])
+    if n_age_std:
+        notes.append(
+            f"省间排名基于年龄标化阳性率（直接法，七普标准人口）；"
+            f"{n_age_std}/{len(province_rows)} 省完成年龄标化，其余省份年龄分层不足回落加权率。"
+        )
+    else:
+        notes.append("无有效年龄分层数据，省间排名回落加权阳性率（未做年龄标化）。")
+    if insufficient:
+        names = "、".join(
+            r["province"] for r in sorted(insufficient, key=lambda r: -(r["total_samples"] or 0))
+        )
+        notes.append(
+            f"{len(insufficient)} 个省份累计样本量 < {min_samples}，证据不足，"
+            f"未纳入公平性排名与离散度指标：{names}"
+        )
     if not valid:
-        notes.append("无含样本量的血清阳性率数据，无法计算省间离散度指标")
+        notes.append("无样本量达标的血清阳性率数据，无法计算省间离散度指标")
 
     return {
         "disease": disease,
@@ -203,9 +244,9 @@ async def get_equity_analysis(
             "gini": gini_val,
             "coefficient_of_variation": cv_val,
             "best_province": best["province"],
-            "best_positivity": best["weighted_positivity"],
+            "best_positivity": best.get("std_positivity", best.get("weighted_positivity")),
             "worst_province": worst["province"],
-            "worst_positivity": worst["weighted_positivity"],
+            "worst_positivity": worst.get("std_positivity", worst.get("weighted_positivity")),
             "target_threshold_percent": threshold,
             "meeting_ratio": meeting_ratio,
             "meeting_provinces_count": n_meeting,
@@ -366,7 +407,7 @@ async def get_goal_tracking(
         empty["notes"] = ["请指定疾病（disease）以匹配 GOAL_THRESHOLDS 保护目标阈值"]
         return empty
 
-    threshold = GOAL_THRESHOLDS.get(normalize_disease(disease))
+    threshold = await get_goal_threshold(db, normalize_disease(disease))
     if threshold is None:
         empty["notes"] = [f"未在 GOAL_THRESHOLDS 中找到疾病「{disease}」的保护目标阈值，无法评估达标进度"]
         return empty

@@ -101,21 +101,31 @@ class TestPreprocessTiters:
         assert pre["distances"][1, 0] == pytest.approx(3.0)  # 6-3
         assert pre["distances"][1, 1] == pytest.approx(0.0)  # 6-6
 
-    def test_below_detection_limit_row_dropped(self):
-        # 含 <10（记 0）的行被剔除并记录 dropped
+    def test_below_detection_limit_row_kept_below_half(self):
+        # 零/缺失占比 ≤ 50% 的行保留，不再因单个检出限（0）被整行剔除
         pre = preprocess_titers([[640, 320], [0, 640], [80, 160]])
+        assert pre["dropped_rows"] == []
+        assert pre["kept_row_indices"] == [0, 1, 2]
+        assert pre["n_antigen"] == 3
+
+    def test_row_dropped_when_missing_above_half(self):
+        # 零/缺失占比 > 50% 的行才被剔除
+        pre = preprocess_titers([[640, 320, 80], [0, None, 640]])
         assert pre["dropped_rows"] == [1]
-        assert pre["n_antigen"] == 2
-        assert 1 not in pre["kept_row_indices"]
+        assert pre["kept_row_indices"] == [0]
+        assert pre["n_antigen"] == 1
 
     def test_all_rows_dropped_raises(self):
+        # 所有行零/缺失占比均 > 50% 时抛错
         with pytest.raises(ValueError):
-            preprocess_titers([[0, 0], [0, 640]])
+            preprocess_titers([[0, 0], [0, None]])
 
-    def test_nan_treated_as_dropped(self):
-        # None（NaN）也触发行剔除
-        pre = preprocess_titers([[640, None], [80, 320]])
-        assert 0 in pre["dropped_rows"]
+    def test_missing_filled_in_distances(self):
+        # 保留行内的缺失以检出限水平（log2=0，距离=列基准）填充，距离矩阵无 NaN
+        pre = preprocess_titers([[640, None, 80], [0, 640, 160]])
+        assert not np.isnan(pre["distances"]).any()
+        # 行1 缺失单元格距离 = 列基准 6 − 0 = 6
+        assert pre["distances"][1, 0] == pytest.approx(6.0)
 
     def test_grid_explanation(self):
         pre = preprocess_titers([[640, 320], [80, 640]])
@@ -173,16 +183,30 @@ class TestAntigenicMap:
         assert res["n_antigen"] == 8
         assert res["n_serum"] == 10
         assert res["dropped_rows"] == []
+        assert len(res["confidence_ellipses"]) == len(coords)
+        for e in res["confidence_ellipses"]:
+            assert set(e.keys()) == {"cx", "cy", "rx", "ry", "angle_deg", "n_boot"}
+            assert e["rx"] >= 0 and e["ry"] >= 0
+            assert e["n_boot"] > 0
 
     def test_names_after_dropped_row(self):
-        # 第 2 行含检出限(0) → 被剔除；坐标中抗原名仍与原始索引对齐
-        table = [[640, 1280, 40], [0, 320, 640], [160, 40, 1280]]
+        # 第 2 行零/缺失占比 > 50%（2/3）→ 被剔除；坐标中抗原名仍与原始索引对齐
+        table = [[640, 1280, 40], [0, 0, 640], [160, 40, 1280]]
         names = ["Ag0", "Ag1_drop", "Ag2"]
         res = antigenic_map(table, antigen_names=names, random_state=42)
         coord_names = [c["name"] for c in res["coordinates"] if c["type"] == "antigen"]
         assert coord_names == ["Ag0", "Ag2"]
         assert res["dropped_rows"] == [1]
         assert res["n_antigen"] == 2
+
+    def test_bootstrap_ellipse_reproducible(self):
+        # 相同种子 → bootstrap 椭圆完全可复现；半轴非负且有界
+        a = antigenic_map(RACMACS_STYLE_HI_TABLE, random_state=7, n_boot=40)
+        b = antigenic_map(RACMACS_STYLE_HI_TABLE, random_state=7, n_boot=40)
+        for ea, eb in zip(a["confidence_ellipses"], b["confidence_ellipses"]):
+            assert ea["rx"] == eb["rx"] and ea["ry"] == eb["ry"]
+            assert ea["angle_deg"] == eb["angle_deg"]
+        assert all(e["rx"] >= 0 and e["ry"] >= 0 for e in a["confidence_ellipses"])
 
 
 class TestProcrustesCompare:

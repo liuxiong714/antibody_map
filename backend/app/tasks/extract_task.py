@@ -3,10 +3,11 @@ import os
 import hashlib
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, update
 
 from app.config import settings
 from app.core.llm_extractor import LLMExtractor, _classify_llm_error
@@ -19,6 +20,7 @@ from app.models.literature import Literature
 from app.models.extraction_history import ExtractionHistory
 from app.models.titer_table import TiterTable
 from app.models.api_model_config import ApiModelConfig
+from app.services.quality_service import score_data_point as _score_data_point
 from app.tasks.celery_app import celery_app
 from app.tasks.async_runner import run_async
 from app.core.minio_client import get_minio_client
@@ -56,10 +58,26 @@ def _compute_age_group(age_min: Optional[int], age_max: Optional[int]) -> Option
 # B6：表格 Markdown 哈希缓存（进程级，避免同一文件重抽时重复提取）
 _table_hash_cache: dict[str, str] = {}
 
+# F14：心跳注册表 {literature_id(str): {"stop": Event, "task": Task}}
+# 供外层 Celery 任务在异常路径也能停止对应文献的心跳循环，避免僵尸空转。
+_heartbeat_registry: dict[str, dict] = {}
+
+
+def _stop_heartbeat_for(literature_id) -> None:
+    """停止指定文献的后台心跳循环（异常/失败路径调用）。"""
+    entry = _heartbeat_registry.pop(str(literature_id), None)
+    if not entry:
+        return
+    try:
+        entry["stop"].set()  # 循环在下一次 tick 检测到 Event 后自行退出
+    except Exception:
+        pass
+
 
 # ===== 提取结果缓存（降低 LLM API 成本，调度层实现，不侵入 LLMExtractor）=====
-# key = sha256(literature_id | model | passes | chunk_threshold | 文本前1000字符哈希)
-# 文本内容哈希保证文献内容更新后缓存自动失效。
+# key = sha256(literature_id | model | passes | chunk_threshold | 全文哈希)
+# 全文哈希保证任何文本内容（含尾部）变化后缓存自动失效；literature_id 已在 key 中，
+# 不同文献之间不会相互命中缓存。
 _CACHE_KEY_PREFIX = "extraction_cache:"
 _CACHE_TIMEOUT = 10.0
 
@@ -71,10 +89,12 @@ def _build_extraction_cache_key(
     chunk_threshold: int,
     clean_text: str,
 ) -> str:
-    """构建提取结果缓存 key."""
-    text_fingerprint = hashlib.sha256(
-        clean_text[:1000].encode("utf-8")
-    ).hexdigest()
+    """构建提取结果缓存 key。
+
+    采用全文 sha256 哈希作为文本指纹，避免仅取前 1000 字符导致尾部内容变化
+    （重抽/换引擎/修正后）缓存不失效、返回陈旧结果。
+    """
+    text_fingerprint = hashlib.sha256(clean_text.encode("utf-8")).hexdigest()
     raw = f"{literature_id}|{model}|{passes}|{chunk_threshold}|{text_fingerprint}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -199,11 +219,24 @@ def _download_pdf(object_name: str, literature_id: Optional[str] = None) -> Opti
     filename = str(object_name).replace("\\", "/").split("/")[-1]
     local_candidate = _LOCAL_STORAGE_DIR / filename
     if local_candidate.exists():
-        try:
-            logger.info(f"从本地存储目录找到文件: {local_candidate}")
-            return local_candidate.read_bytes()
-        except Exception as e:
-            logger.error(f"本地存储读取失败: {e}")
+        # 安全校验：仅当文件名包含目标文献 id 前缀时才返回，防止张冠李戴
+        if literature_id and local_candidate.name.startswith(str(literature_id)):
+            try:
+                logger.info(f"从本地存储目录找到文件: {local_candidate}")
+                return local_candidate.read_bytes()
+            except Exception as e:
+                logger.error(f"本地存储读取失败: {e}")
+        elif not literature_id:
+            # 无 literature_id 时无法校验，降级返回 None 走后续策略
+            logger.warning(
+                f"策略2跳过：未提供 literature_id，无法安全确认文件归属: "
+                f"filename={filename}, object_name={object_name}"
+            )
+        else:
+            logger.warning(
+                f"策略2跳过：文件名不含目标文献 id 前缀，拒绝使用: "
+                f"file={local_candidate.name}, literature_id={literature_id}, object_name={object_name}"
+            )
 
     # 策略3: 搜索本地存储目录中所有同后缀文件（兼容不同 UUID 重命名情况）
     # 安全约束：仅当目录中恰好存在 1 个候选，且其文件名包含目标文献 id 前缀时才返回，
@@ -409,6 +442,11 @@ async def _extract_result_to_datapoints(
         "is_grounded": bool(grounding.is_grounded),
         "review_status": "pending",
         "confidence": confidence,
+        # F19：截断标记（"<"=低于检出限 / ">"=高于检出限），随 cleaned 透传
+        "truncation": cleaned.get("truncation"),
+        # F17：LLM 原始输出快照（提取时点的原始字段），供 "LLM 原始 vs 人工修改" diff 展示。
+        # 存 extract_result（LLM 后处理输出）而非 cleaned（净化后），以保留被净化/被人工修改前的原始值。
+        "llm_raw_snapshot": extract_result,
         # P1-1：主估计/子估计层级
         "estimate_type": cleaned.get("estimate_type", "primary"),
     }
@@ -452,7 +490,7 @@ async def _process_literature_async(
     literature_id: str,
     model: Optional[str] = None,
     model_config_id: Optional[str] = None,
-    clear_existing_data: bool = True,
+    clear_existing_data: bool = False,
     use_cache: bool = True,
 ) -> dict:
     """异步文献处理：PDF 解析 → LLM 提取 → 保存数据点（含精确溯源和强 Schema）"""
@@ -468,9 +506,75 @@ async def _process_literature_async(
         if not literature.file_path and not literature.abstract:
             raise ValueError(f"文献 {literature_id} 既无关联文件也无摘要，无法提取")
 
-        # 设置为提取中状态，以便前端实时显示
-        literature.extraction_status = "processing"
+        # S9：原子抢占——仅当状态处于 pending/queued 时才置为 processing。
+        # 防止同一文献被并发触发的多个任务同时提取导致重复入库/覆盖（无返回行表示已被占用或已结束，跳过）。
+        # F13：抢占时提取代数 +1 并捕获新值；后续写库用 WHERE extraction_generation=本次值 做 CAS，
+        # 防止超时回收后重新触发的任务与仍在运行的旧任务互相覆盖写库。
+        # F14：抢占时同时写入 worker_heartbeat 心跳，供超时回收区分"长任务"与"真卡死"。
+        _now = datetime.now(timezone.utc)
+        claimed = await db.execute(
+            update(Literature)
+            .where(Literature.id == literature_id)
+            .where(Literature.extraction_status.in_(["pending", "queued"]))
+            .values(
+                extraction_status="processing",
+                extraction_started_at=_now,
+                extraction_generation=Literature.extraction_generation + 1,
+                worker_heartbeat=_now,
+                updated_at=_now,
+            )
+            .returning(Literature.extraction_generation)
+        )
         await db.commit()
+        claimed_row = claimed.first()
+        if claimed_row is None:
+            logger.info(
+                f"文献 {literature_id} 提取任务已被占用或状态非 pending/queued，跳过（竞态保护）"
+            )
+            return {"literature_id": str(literature_id), "status": "skipped_race", "data_point_count": 0}
+        my_generation = int(claimed_row[0])
+        logger.info(
+            f"文献 {literature_id} 已抢占提取任务（generation={my_generation}）"
+        )
+
+        # F14：后台心跳刷新循环。提取期间每 60s 刷新一次 worker_heartbeat（独立 session），
+        # 任务完成/失败/被接管后自动停止。心跳持续刷新说明任务仍活着，超时回收不误判。
+        import asyncio as _asyncio
+
+        _hb_stop = _asyncio.Event()
+        _hb_interval = max(30, int(getattr(settings, "EXTRACTION_HEARTBEAT_INTERVAL", 60) or 60))
+        # 兜底最大存活期限：正常路径会显式 stop；异常/被接管路径靠此上限自终止，
+        # 避免心跳循环在 worker 进程内无限空转（状态变更后 UPDATE 已是 no-op）。
+        _hb_deadline = time.monotonic() + 6 * 3600
+
+        async def _heartbeat_loop():
+            while not _hb_stop.is_set() and time.monotonic() < _hb_deadline:
+                await _asyncio.sleep(_hb_interval)
+                try:
+                    async with async_session() as hb_db:
+                        await hb_db.execute(
+                            update(Literature)
+                            .where(Literature.id == literature_id)
+                            .where(Literature.extraction_generation == my_generation)
+                            .where(Literature.extraction_status == "processing")
+                            .values(worker_heartbeat=datetime.now(timezone.utc))
+                        )
+                        await hb_db.commit()
+                except Exception as e:
+                    logger.warning(f"文献 {literature_id} 心跳刷新失败（不影响提取）: {e}")
+
+        _hb_task = _asyncio.create_task(_heartbeat_loop())
+        _heartbeat_registry[str(literature_id)] = {
+            "stop": _hb_stop, "task": _hb_task, "generation": my_generation,
+        }
+
+        async def _stop_heartbeat():
+            _heartbeat_registry.pop(str(literature_id), None)
+            _hb_stop.set()
+            try:
+                await _hb_task
+            except _asyncio.CancelledError:
+                pass
 
         logger.info(
             f"开始处理文献 {literature_id}: title={literature.title}, "
@@ -618,6 +722,23 @@ async def _process_literature_async(
             observe_extraction_duration(effective_model, _extract_seconds)
             record_llm_completion(effective_model, "success", usage_summary)
 
+        # F13：幂等写库 CAS 门。清旧点/写新点前核对提取代数与状态——
+        # 若提取期间被超时回收重置、或被更新任务重新触发（generation 变化），
+        # 本次写库会覆盖新任务的数据，直接放弃（返回 superseded，不标记 failed）。
+        _gate = await db.execute(
+            select(Literature.extraction_generation, Literature.extraction_status)
+            .where(Literature.id == literature_id)
+        )
+        _gate_row = _gate.first()
+        if _gate_row is None or int(_gate_row[0]) != my_generation or _gate_row[1] != "processing":
+            await _stop_heartbeat()
+            logger.warning(
+                f"文献 {literature_id} 提取代数已变化（期望 {my_generation}，实际 "
+                f"{_gate_row[0] if _gate_row else 'gone'}/{_gate_row[1] if _gate_row else 'gone'}），"
+                "已被新任务接管或回收，放弃本次写库"
+            )
+            return {"literature_id": str(literature_id), "status": "superseded", "data_point_count": 0}
+
         # 5b. 清除该文献下已有的旧数据点（防止重新提取时新旧叠加）
         # 使用 ORM delete 确保 cascade 正确处理
         # 当 clear_existing_data=False 时，保留已审核通过(approved)的数据点
@@ -695,6 +816,16 @@ async def _process_literature_async(
                     stats_grounded += 1
                 if dp.province in CHINA_PROVINCE_NAMES:
                     stats_province_ok += 1
+                # F15：提取期即时质量评分。用已解析全文判定抽样/人群等信号，
+                # 写 quality_score/quality_grade/estimate_grade，供审核队列按质量排序，
+                # 避免"quality_score 仅审核后写入"导致待审队列无排序依据。
+                try:
+                    _qs = _score_data_point(dp, literature_text=clean_text)
+                    dp.quality_score = _qs["quality_score"]
+                    dp.quality_grade = _qs["quality_grade"]
+                    dp.estimate_grade = _qs["estimate_grade"]
+                except Exception as _qs_e:
+                    logger.warning(f"数据点提取期质量打分失败（不影响提取）: {_qs_e}")
                 db.add(dp)
                 all_data_points.append(dp)
 
@@ -769,17 +900,13 @@ async def _process_literature_async(
         except Exception as e:
             logger.warning(f"记录 token 用量失败（不影响提取结果）: {e}")
 
-        # 8. 更新 literature 状态
+        # 8. 更新 literature 状态 —— 通过 generation CAS 的显式 UPDATE 完成，
+        # 不直接改 ORM 对象，避免 autoflush 以无保护的 WHERE id 覆盖被新任务接管的数据。
         usage_summary = usage_summary or {}
-        history_status = "success"
-        if len(all_data_points) > 0:
-            literature.extraction_status = "done"
-            literature.extracted_count = len(all_data_points)
-            history_status = "success"
-        else:
-            literature.extraction_status = "done_no_data"
-            literature.extracted_count = 0
-            history_status = "no_data"
+        final_status = "done" if len(all_data_points) > 0 else "done_no_data"
+        final_count = len(all_data_points)
+        history_status = "success" if final_status == "done" else "no_data"
+        if final_status == "done_no_data":
             logger.warning(f"文献 {literature_id} 提取结果为空，状态标记为 done_no_data")
 
         # 8b. 写入提取历史记录
@@ -792,7 +919,7 @@ async def _process_literature_async(
                 literature_id=literature_id,
                 model=history_model,
                 status=history_status,
-                data_point_count=len(all_data_points),
+                data_point_count=final_count,
                 prompt_tokens=usage_summary.get("total_prompt_tokens", 0),
                 completion_tokens=usage_summary.get("total_completion_tokens", 0),
                 total_tokens=usage_summary.get("total_tokens", 0),
@@ -803,6 +930,30 @@ async def _process_literature_async(
             db.add(history)
         except Exception as e:
             logger.warning(f"写入提取历史记录失败（不影响提取结果）: {e}")
+
+        # F13：最终写库 CAS。状态更新必须命中本次 generation 且仍为 processing，
+        # 否则说明提取期间已被超时回收或新任务接管，丢弃整个事务（已插入数据点一并回滚）。
+        _cas = await db.execute(
+            update(Literature)
+            .where(Literature.id == literature_id)
+            .where(Literature.extraction_generation == my_generation)
+            .where(Literature.extraction_status == "processing")
+            .values(
+                extraction_status=final_status,
+                extracted_count=final_count,
+                extraction_started_at=None,
+                worker_heartbeat=None,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        await _stop_heartbeat()
+        if _cas.rowcount == 0:
+            await db.rollback()
+            logger.warning(
+                f"文献 {literature_id} 最终写库 CAS 未命中（generation={my_generation}），"
+                "已被新任务接管，回滚本次写库"
+            )
+            return {"literature_id": str(literature_id), "status": "superseded", "data_point_count": 0}
 
         await db.commit()
 
@@ -849,7 +1000,7 @@ def process_literature(
     literature_id: str,
     model: Optional[str] = None,
     model_config_id: Optional[str] = None,
-    clear_existing_data: bool = True,
+    clear_existing_data: bool = False,
     use_cache: bool = True,
 ):
     """Celery 任务：文献处理（PDF 解析 + AI 提取）"""
@@ -867,6 +1018,13 @@ def process_literature(
         err_type = err["type"]
         logger.error(f"文献 {literature_id} 提取失败: [{err_type}] {err['message'][:500]}")
 
+        # F14：异常路径停止心跳循环，避免僵尸空转。
+        # F13：标记 failed 前捕获本次任务提取代数，仅当状态仍为 processing 且代数未变时
+        # 才标记 failed，防止已被超时回收/新任务接管的旧任务误判新任务为失败。
+        _hb_entry = _heartbeat_registry.get(str(literature_id), {})
+        _fail_generation = _hb_entry.get("generation")
+        _stop_heartbeat_for(literature_id)
+
         # 连接类错误：保持 processing 状态快速重试（15s/30s/45s），
         # 只有重试耗尽时才标记 failed，避免瞬时网络故障直接把文献判死。
         is_conn = err_type == "connection_error"
@@ -874,25 +1032,38 @@ def process_literature(
         # 更新状态为 failed（连接类错误在最后一次重试耗尽时才标记）
         async def _mark_failed():
             async with async_session() as db:
-                result = await db.execute(
-                    select(Literature).where(Literature.id == literature_id)
+                stmt = (
+                    update(Literature)
+                    .where(Literature.id == literature_id)
+                    .where(Literature.extraction_status == "processing")
                 )
-                lit = result.scalar_one_or_none()
-                if lit:
-                    lit.extraction_status = "failed"
-                    # 写入失败历史记录（错误信息带类型前缀，便于前端/日志诊断）
-                    try:
-                        history = ExtractionHistory(
-                            literature_id=lit.id,
-                            model=lit.llm_model_used,
-                            status="failed",
-                            data_point_count=0,
-                            error_message=f"[{err_type}] {err['message'][:2000]}",
-                        )
-                        db.add(history)
-                    except Exception as he:
-                        logger.warning(f"写入失败历史记录出错: {he}")
-                    await db.commit()
+                if _fail_generation is not None:
+                    stmt = stmt.where(Literature.extraction_generation == _fail_generation)
+                result = await stmt.values(
+                    extraction_status="failed",
+                    extraction_started_at=None,
+                    worker_heartbeat=None,
+                ).returning(Literature.id, Literature.llm_model_used)
+                row = result.first()
+                if row is None:
+                    logger.info(
+                        f"文献 {literature_id} 已非 processing 或已被新任务接管，跳过标记 failed"
+                    )
+                    return
+                lit_id, lit_model = row[0], row[1]
+                # 写入失败历史记录（错误信息带类型前缀，便于前端/日志诊断）
+                try:
+                    history = ExtractionHistory(
+                        literature_id=lit_id,
+                        model=lit_model,
+                        status="failed",
+                        data_point_count=0,
+                        error_message=f"[{err_type}] {err['message'][:2000]}",
+                    )
+                    db.add(history)
+                except Exception as he:
+                    logger.warning(f"写入失败历史记录出错: {he}")
+                await db.commit()
 
         if not is_conn or self.request.retries >= self.max_retries:
             try:

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import ForeignKey, Integer, String, Numeric, DateTime, CheckConstraint, Text, Boolean, Index
+from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -59,10 +60,14 @@ class DataPoint(Base):
     )
     # 审核时间（可空）
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
-    # 质量分级（0-100 分 + A/B/C 三级 + 调查级别），由审核通过后异步评分任务自动写入
+    # 质量分级（0-100 分 + A/B/C 三级 + 调查级别），由提取期即时写入、审核通过后异步重算
     quality_score: Mapped[Optional[int]] = mapped_column(Integer, index=True)
     quality_grade: Mapped[Optional[str]] = mapped_column(String(1), index=True)
     estimate_grade: Mapped[Optional[str]] = mapped_column(String(20))
+    # F17：LLM 原始输出快照（JSON），用于展示 "LLM 原始 vs 人工修改" 的 diff
+    llm_raw_snapshot: Mapped[Optional[dict]] = mapped_column(JSON)
+    # F19：截断标记（"<"=低于检出限 / ">"=高于检出限；无则 None），避免把截断值当精确值参与统计
+    truncation: Mapped[Optional[str]] = mapped_column(String(10))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

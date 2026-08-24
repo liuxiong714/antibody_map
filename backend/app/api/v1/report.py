@@ -160,19 +160,34 @@ async def get_report(
     return ApiResponse(message="操作成功", data=data)
 
 
-@router.get("/reports/{report_id}/download", summary="下载报告文件", description="将报告内容下载为Markdown文件，方便离线查看和分享")
+@router.get("/reports/{report_id}/download", summary="下载报告文件", description="将报告内容下载为 Markdown、Word（.docx）或 PDF 文件，方便离线查看和分享")
 async def download_report(
     report_id: str,
+    format: str = Query("md", description="导出格式：md（Markdown）| docx（Word）| pdf（PDF）"),
     db: AsyncSession = Depends(get_db),
 ):
-    """下载报告为 Markdown 文件"""
+    """下载报告为 Markdown、Word 或 PDF 文件"""
     data = await report_service.get_report_by_id(db=db, report_id=report_id)
     if not data:
         raise HTTPException(status_code=404, detail="报告不存在")
-    encoded_filename = quote(data["title"] + ".md")
+
+    if format == "pdf":
+        content = report_service.report_markdown_to_pdf(data["content"])
+        media_type = "application/pdf"
+        ext = "pdf"
+    elif format == "docx":
+        content = report_service.report_markdown_to_docx(data["content"])
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ext = "docx"
+    else:
+        content = data["content"].encode("utf-8")
+        media_type = "text/markdown; charset=utf-8"
+        ext = "md"
+
+    encoded_filename = quote(data["title"] + f".{ext}")
     return Response(
-        content=data["content"].encode("utf-8"),
-        media_type="text/markdown; charset=utf-8",
+        content=content,
+        media_type=media_type,
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
         },

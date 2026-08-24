@@ -7,20 +7,11 @@
 import logging
 from urllib.parse import quote
 
-import httpx
+from app.core.external_http import get_json
 
 logger = logging.getLogger("uvicorn")
 
 _OPENALEX_API = "https://api.openalex.org/works"
-_REQUEST_TIMEOUT = 60
-
-
-async def _http_get_json(url: str) -> dict:
-    """GET 请求并解析 JSON；失败抛异常。"""
-    async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return resp.json()
 
 
 def _parse_item(item: dict) -> dict:
@@ -79,7 +70,7 @@ async def search_openalex(query: str, page: int = 1, page_size: int = 20) -> dic
         f"&per-page={page_size}&page={page}"
     )
     try:
-        data = await _http_get_json(url)
+        data = await get_json(url)
     except Exception as e:
         logger.warning(f"[OpenAlex] 检索失败 q={query!r}: {e}")
         return {"items": [], "total": 0, "page": page, "page_size": page_size}

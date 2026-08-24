@@ -18,11 +18,12 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+import numpy as np
 import scipy.stats as sps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.core.stats_engine import meta_proportion
+from app.core.stats_engine import meta_proportion, _egger_test
 from app.services.analysis_service import (
     get_meta_analysis,
     get_trend,
@@ -228,6 +229,8 @@ class TestEdgeCases:
         # 30/100 的 95% Wilson CI ≈ [21.7, 39.9]
         assert 21.0 < pooled["ci_lower"] < 22.5
         assert 38.0 < pooled["ci_upper"] < 41.0
+        # F35：k==1 时 se 必须是标准误 sqrt(p(1-p)/n)，而非方差 p(1-p)/n
+        assert pooled["se"] == pytest.approx(math.sqrt(0.3 * 0.7 / 100), abs=1e-6)
         assert out["per_study"][0]["weight"] == 100.0
         assert "transformed" in out["per_study"][0]
 
@@ -259,6 +262,43 @@ class TestEdgeCases:
         out = meta_proportion(STUDIES_8)
         assert out["funnel"] is None
         assert out["egger"] is None
+
+    def test_egger_symmetric_data_no_bias(self):
+        # F34：标准 Egger 检验（y=t/se 对 x=1/se 的无权重 OLS）。
+        # 偏倚以截距≠0 指示：无偏数据 t≈常数 → y≈c·x 过原点（截距≈0）；
+        # 偏倚数据 y=0.4+1.2·x → 截距显著非 0。
+        # 用 scipy 独立实现（linregress 截距及其标准误 → t 检验）逐项核对。
+        se = np.array([0.05, 0.055, 0.06, 0.065, 0.07, 0.075, 0.08, 0.085, 0.09, 0.1, 0.11, 0.12])
+        i = np.arange(len(se))
+        n = len(se)
+
+        # 无偏数据：t 近似常数 → y = t/se ≈ 1/se（截距≈0）
+        t_nobias = 1.0 + 0.001 * np.sin(i)
+        # 偏倚数据（小研究效应）：y = 0.4 + 1.2·(1/se) → 截距显著非 0
+        t_bias = 1.2 + 0.4 * se + 0.002 * np.cos(i)
+
+        def _run(t):
+            studies = [{"t": float(ti), "se": float(si)} for ti, si in zip(t, se)]
+            return _egger_test(studies)
+
+        for t, expect_bias in ((t_nobias, False), (t_bias, True)):
+            res = _run(t)
+            assert res["intercept"] is not None and res["p_value"] is not None
+            x = 1.0 / se
+            y = t / se
+            lr = sps.linregress(x, y)  # 独立参考实现
+            # linregress.pvalue 是斜率检验；Egger 需截距检验 → 用 intercept_stderr 重算
+            p_int = 2.0 * (1.0 - sps.t.cdf(abs(lr.intercept / lr.intercept_stderr), n - 2))
+            # _egger_test 将 intercept 舍入至 4 位小数、p 至 6 位 → 容差需覆盖舍入误差
+            assert res["intercept"] == pytest.approx(lr.intercept, abs=5e-5)
+            assert res["p_value"] == pytest.approx(p_int, abs=1e-5)
+            if expect_bias:
+                assert res["intercept"] > 0.3   # 明确非零偏倚
+                assert res["p_value"] < 0.05     # 显著
+            else:
+                assert abs(res["intercept"]) < 0.05
+                assert res["p_value"] > 0.05
+            assert "t/se" in res["note"] and "1/se" in res["note"]
 
 
 # ════════════════════════════════════════════════════════════

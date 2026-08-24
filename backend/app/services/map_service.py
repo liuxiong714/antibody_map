@@ -1,9 +1,11 @@
+from functools import lru_cache
 from typing import Optional
 
-from sqlalchemy import select, func, distinct, or_
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.data_point import DataPoint
+from app.models.literature import Literature
 from app.core.term_normalizer import normalize_province, CHINA_PROVINCE_NAMES
 
 # ===== 人口分类标准化映射（合并同类别）=====
@@ -347,10 +349,12 @@ def _build_occupation_filter(occupation: Optional[str]):
     return or_(*(DataPoint.population.ilike(f"%{p}%") for p in parts))
 
 
+@lru_cache(maxsize=1024)
 def _get_city_coords(province: str, city: str) -> tuple[Optional[float], Optional[float]]:
     """根据省份和城市名获取经纬度坐标，返回 (latitude, longitude)。
 
     优先精确匹配 CITY_COORDS，其次模糊匹配，最后回退到省份中心坐标。
+    lru_cache 缓存解析结果：市县级点位聚合会高频调用，避免重复遍历静态表。
     """
     province_coords = CITY_COORDS.get(province, {})
     if not province_coords:
@@ -459,10 +463,16 @@ async def get_province_data(
     occupation: Optional[str] = None,
 ) -> list[dict]:
     """get province aggregated data (approved only, P1-1: primary estimates by default)"""
-    base = select(DataPoint).where(
+    # F23：只投影分组/聚合所需列，避免整表加载 source_context/llm_raw_snapshot 等大字段
+    base = select(
+        DataPoint.province, DataPoint.value, DataPoint.sample_size,
+        DataPoint.literature_id, DataPoint.data_type,
+    ).where(
         DataPoint.review_status == "approved",
         DataPoint.estimate_type == "primary",
     )
+    base = base.outerjoin(Literature, DataPoint.literature_id == Literature.id)
+    base = base.where(Literature.deleted_at.is_(None))
 
     if disease:
         base = base.where(DataPoint.disease == disease)
@@ -485,7 +495,7 @@ async def get_province_data(
         base = base.where(occ_filter)
 
     result = await db.execute(base)
-    rows = result.scalars().all()
+    rows = result.all()
 
     province_map: dict[str, dict] = {}
 
@@ -527,18 +537,24 @@ async def get_city_data(
 ) -> list[dict]:
     """get city-level aggregated data with coordinates (P1-1: primary estimates by default)"""
     base = (
-        select(DataPoint)
+        select(
+            DataPoint.province, DataPoint.city, DataPoint.disease,
+            DataPoint.value, DataPoint.sample_size, DataPoint.literature_id,
+            DataPoint.data_type,
+        )
         .where(DataPoint.review_status == "approved")
         .where(DataPoint.estimate_type == "primary")
         .where(DataPoint.province.ilike(f"%{province}%"))
     )
+    base = base.outerjoin(Literature, DataPoint.literature_id == Literature.id)
+    base = base.where(Literature.deleted_at.is_(None))
     if disease:
         base = base.where(DataPoint.disease == disease)
     if data_type:
         base = base.where(DataPoint.data_type == data_type)
 
     result = await db.execute(base)
-    rows = result.scalars().all()
+    rows = result.all()
 
     # 分组键：指定疾病时仅按城市分组，未指定时按城市+疾病分组
     city_map: dict[str, dict] = {}
@@ -593,12 +609,23 @@ async def get_summary(
     返回已审核 (approved + primary) 和未审核 (非 approved 或非 primary) 两组统计。
     """
     # ---- 已审核数据（approved + primary）----
-    base_approved = select(DataPoint).where(
+    base_approved = select(
+        DataPoint.id, DataPoint.province, DataPoint.value,
+        DataPoint.sample_size, DataPoint.literature_id, DataPoint.data_type,
+    ).where(
         DataPoint.review_status == "approved",
         DataPoint.estimate_type == "primary",
     )
+    base_approved = base_approved.outerjoin(
+        Literature, DataPoint.literature_id == Literature.id)
+    base_approved = base_approved.where(Literature.deleted_at.is_(None))
     # ---- 全部数据（含未审核）----
-    base_all = select(DataPoint)
+    base_all = select(
+        DataPoint.id, DataPoint.province, DataPoint.value,
+        DataPoint.sample_size, DataPoint.literature_id, DataPoint.data_type,
+    )
+    base_all = base_all.outerjoin(Literature, DataPoint.literature_id == Literature.id)
+    base_all = base_all.where(Literature.deleted_at.is_(None))
 
     if disease:
         base_approved = base_approved.where(DataPoint.disease == disease)
@@ -608,10 +635,10 @@ async def get_summary(
         base_all = base_all.where(DataPoint.data_type == data_type)
 
     result_approved = await db.execute(base_approved)
-    rows_approved = result_approved.scalars().all()
+    rows_approved = result_approved.all()
 
     result_all = await db.execute(base_all)
-    rows_all = result_all.scalars().all()
+    rows_all = result_all.all()
 
     # 未审核 = 全部 - 已审核
     approved_ids = {dp.id for dp in rows_approved}
@@ -669,10 +696,16 @@ async def get_province_yearly_data(
     occupation: Optional[str] = None,
 ) -> list[dict]:
     """按年份分组返回各省抗体水平数据，用于时间序列动态展示 (P1-1: primary estimates by default)"""
-    base = select(DataPoint).where(
+    base = select(
+        DataPoint.province, DataPoint.disease, DataPoint.collection_year,
+        DataPoint.value, DataPoint.sample_size, DataPoint.literature_id,
+        DataPoint.data_type,
+    ).where(
         DataPoint.review_status == "approved",
         DataPoint.estimate_type == "primary",
     )
+    base = base.outerjoin(Literature, DataPoint.literature_id == Literature.id)
+    base = base.where(Literature.deleted_at.is_(None))
 
     if disease:
         base = base.where(DataPoint.disease == disease)
@@ -695,7 +728,7 @@ async def get_province_yearly_data(
         base = base.where(occ_filter)
 
     result = await db.execute(base)
-    rows = result.scalars().all()
+    rows = result.all()
 
     # 按年份分组: year -> { (province||disease) -> aggregate }
     # 指定疾病时仅按省份分组，未指定时按省份+疾病分组
@@ -755,6 +788,8 @@ async def get_available_years(
         DataPoint.estimate_type == "primary",
         DataPoint.collection_year.isnot(None),
     )
+    query = query.outerjoin(Literature, DataPoint.literature_id == Literature.id)
+    query = query.where(Literature.deleted_at.is_(None))
     if disease:
         query = query.where(DataPoint.disease == disease)
     query = query.distinct().order_by(DataPoint.collection_year)
@@ -779,6 +814,8 @@ async def get_population_options(
         DataPoint.population.isnot(None),
         DataPoint.population != "",
     )
+    query = query.outerjoin(Literature, DataPoint.literature_id == Literature.id)
+    query = query.where(Literature.deleted_at.is_(None))
     if disease:
         query = query.where(DataPoint.disease == disease)
 

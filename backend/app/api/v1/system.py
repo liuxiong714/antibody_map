@@ -15,13 +15,16 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 from sqlalchemy.engine.url import make_url
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_admin
+from app.api.deps import get_current_user, get_db, require_admin
 from app.config import settings
 from app.core.logging_config import LOGS_DIR
 from app.schemas.common import ApiResponse
+from app.services import goal_threshold_service
 
 router = APIRouter(prefix="/system")
 
@@ -381,3 +384,51 @@ async def restore_database(
 
     logger.info(f"[还原] 成功: {filename} by user={_user.username}")
     return ApiResponse(message="数据库还原成功", data={"filename": filename, "size": len(dump_bytes)})
+
+
+# ===================== 每病保护目标阈值 =====================
+
+
+class GoalThresholdRequest(BaseModel):
+    threshold_percent: float = Field(..., ge=0, le=100, description="保护目标阈值（阳性率 %）")
+
+
+@router.get("/thresholds", response_model=ApiResponse, summary="每病保护目标阈值列表", description="列出全部疾病的有效保护目标阈值（配置表覆盖值 + 默认值）")
+async def list_goal_thresholds(
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(get_current_user),
+):
+    """列出全部疾病的保护目标阈值"""
+    items = await goal_threshold_service.list_goal_thresholds(db)
+    return ApiResponse(message="操作成功", data=items)
+
+
+@router.put("/thresholds/{disease}", response_model=ApiResponse, summary="设置保护目标阈值", description="新增或更新某疾病的保护目标阈值（管理员）")
+async def upsert_goal_threshold(
+    disease: str,
+    req: GoalThresholdRequest,
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_admin),
+):
+    """新增或更新某疾病的保护目标阈值"""
+    try:
+        data = await goal_threshold_service.upsert_goal_threshold(
+            db,
+            disease=disease,
+            threshold_percent=req.threshold_percent,
+            updated_by=str(getattr(_user, "id", "")),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ApiResponse(message="阈值已更新", data=data)
+
+
+@router.delete("/thresholds/{disease}", response_model=ApiResponse, summary="重置保护目标阈值", description="删除某疾病的阈值覆盖，恢复默认值（管理员）")
+async def delete_goal_threshold(
+    disease: str,
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_admin),
+):
+    """删除某疾病的阈值覆盖，恢复默认值"""
+    await goal_threshold_service.delete_goal_threshold(db, disease)
+    return ApiResponse(message="已恢复默认阈值", data={"disease": disease, "reset": True})

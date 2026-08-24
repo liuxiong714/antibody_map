@@ -23,7 +23,25 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "*://*.pubmed.gov/*",
+        "*://*.ncbi.nlm.nih.gov/*",
+        "*://*.nature.com/*",
+        "*://*.science.org/*",
+        "*://*.cell.com/*",
+        "*://*.springer.com/*",
+        "*://*.wiley.com/*",
+        "*://*.thelancet.com/*",
+        "*://*.bmj.com/*",
+        "*://*.medrxiv.org/*",
+        "*://*.biorxiv.org/*",
+        "*://*.arxiv.org/*",
+        "*://*.doi.org/*",
+        "*://*.cnki.net/*",
+        "*://*.cnki.com.cn/*",
+        "*://*.wanfangdata.com.cn/*",
+        "*://*.cqvip.com/*"
+      ],
       "js": ["content-script.js"],
       "run_at": "document_idle"
     }

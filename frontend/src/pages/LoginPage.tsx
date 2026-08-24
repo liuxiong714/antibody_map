@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { message } from "antd";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import api from "../services/api";
+import api, { setStoredTokens, clearAuthStorage } from "../services/api";
 import LanguageSwitcher from "../components/LanguageSwitcher";
 import "./LoginPage.css";
 
@@ -46,16 +46,18 @@ const LoginPage: React.FC = () => {
         username: form.username,
         password: form.password,
       });
-      const { token, username, display_name, is_admin } = res.data;
+      const { token, refresh_token, username, display_name, is_admin } = res.data;
+      // 切换账号/重新登录前，先清理上一会话残留的缓存数据
+      clearAuthStorage();
+      const displayName = display_name || username;
       if (form.remember) {
-        localStorage.setItem("token", token);
-        localStorage.setItem("username", display_name || username);
+        localStorage.setItem("username", displayName);
         localStorage.setItem("is_admin", String(is_admin));
       } else {
-        sessionStorage.setItem("token", token);
-        sessionStorage.setItem("username", display_name || username);
+        sessionStorage.setItem("username", displayName);
         sessionStorage.setItem("is_admin", String(is_admin));
       }
+      setStoredTokens(token, refresh_token, form.remember);
       message.success(t("login.success"));
       navigate("/");
     } catch (err: any) {

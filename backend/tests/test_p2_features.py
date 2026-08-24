@@ -30,7 +30,9 @@ def _ok(label: str, detail: str = ""):
 def _fail(label: str, detail: str = ""):
     global _failed
     _failed += 1
-    print(f"  ✗ {label}{(' — ' + detail) if detail else ''}")
+    msg = f"  ✗ {label}{(' — ' + detail) if detail else ''}"
+    print(msg)
+    raise AssertionError(msg)
 
 
 # ─────────────────────────────────────────────────────────
@@ -525,6 +527,8 @@ if __name__ == "__main__":
     for test_fn in tests:
         try:
             test_fn()
+        except AssertionError:
+            pass  # _fail already handled printing and counting
         except Exception as e:
             import traceback
             _fail(f"{test_fn.__name__} 异常", str(e))

@@ -43,11 +43,12 @@ def preprocess_titers(
         - log2_matrix : np.ndarray (n_antigen, n_serum)
             log₂(titer / log2_divisor)，缺失/0 处为 NaN。
         - distances : np.ndarray (n_antigen, n_serum)
-            表格距离矩阵 d_ij = cb_j − log2_ij，NaN 处仍为 NaN。
+            表格距离矩阵 d_ij = cb_j − log2_ij；缺失/检出限单元格以检出限水平
+            （log2 = 0，距离 = 列基准）填充，矩阵无 NaN。
         - column_baselines : np.ndarray (n_serum,)
-            列基准 cb_j = max_i log2_ij（忽略 NaN）。
+            列基准 cb_j = max_i log2_ij（忽略 NaN；全缺列回退 0）。
         - dropped_rows : list[int]
-            被剔除的行索引（v1 策略：含检出限值或缺失过多）。
+            被剔除的行索引（行内零/缺失占比 > 50% 时整行剔除）。
         - n_antigen : int
         - n_serum : int
         - grid_explanation : str
@@ -60,14 +61,16 @@ def preprocess_titers(
     valid = (arr > 0) & (~np.isnan(arr))
     log2_arr[valid] = np.log2(arr[valid] / log2_divisor)
 
-    # --- Step 1b: 剔除行（v1 简化）---
-    # 行中若有 0（检出限）或缺失 > 50%，整个剔除
+    # --- Step 1b: 剔除行（仅当零/缺失占比 > 50% 才整行剔除）---
+    # 与验收要求对齐：单个零（检出限）或零星缺失不再导致整行被丢弃，
+    # 只有行内零/缺失占比超过 50% 时该抗原行才被剔除。
+    missing_ratio_threshold = 0.5
     dropped_rows = []
     kept_rows = []
     for i in range(n_antigen):
-        row = log2_arr[i, :]
-        n_zero_or_nan = np.sum(np.isnan(row) | (arr[i, :] == 0))
-        if n_zero_or_nan > 0:  # 检出限或缺失归入 dropped
+        n_zero_or_nan = int(np.sum(np.isnan(log2_arr[i, :]) | (arr[i, :] == 0)))
+        ratio = n_zero_or_nan / n_serum if n_serum else 0.0
+        if ratio > missing_ratio_threshold:
             dropped_rows.append(i)
         else:
             kept_rows.append(i)
@@ -79,13 +82,17 @@ def preprocess_titers(
     kept_log2 = log2_arr[kept_rows, :]
     n_kept = len(kept_rows)
 
-    # --- Step 2: 列基准 cb_j = max_i log2_ij ---
+    # --- Step 2: 列基准 cb_j = max_i log2_ij（忽略 NaN；全缺列回退 0）---
     column_baselines = np.nanmax(kept_log2, axis=0)  # (n_serum,)
+    column_baselines = np.where(np.isnan(column_baselines), 0.0, column_baselines)
 
     # --- Step 3: 表格距离 d_ij = cb_j − log2_ij ---
+    # 保留行内的缺失/检出限值以"检出限水平（log2 = 0，距离 = 列基准）"填充，
+    # 保证距离矩阵完整，可顺利进入 MDS（sklearn 要求矩阵无 NaN）。
     distances = np.full_like(kept_log2, np.nan)
     for j in range(n_serum):
-        distances[:, j] = column_baselines[j] - kept_log2[:, j]
+        col_filled = np.where(np.isnan(kept_log2[:, j]), 0.0, kept_log2[:, j])
+        distances[:, j] = column_baselines[j] - col_filled
 
     if logger.isEnabledFor(logging.INFO):
         logger.info(
@@ -234,6 +241,105 @@ def _build_full_distance_matrix(
 
 
 # ---------------------------------------------------------------------------
+# Bootstrap 置信椭圆（验证坐标稳定性）
+# ---------------------------------------------------------------------------
+
+# 二维正态 95% 置信椭圆系数：sqrt(χ²₂, 0.95) = sqrt(5.991)
+_ELLIPSE_CHI2 = 5.991
+_ELLIPSE_MIN_BOOT = 30
+
+
+def _make_distances_from_log2(log2_mat: np.ndarray) -> np.ndarray:
+    """由 log₂ 矩阵重算表格距离（列基准 − log2），缺失/检位以 0 填充。
+
+    与 preprocess_titers 第 2/3 步的口径完全一致，用于 bootstrap 重采样感染矩阵。
+    """
+    col_base = np.nanmax(log2_mat, axis=0)
+    col_base = np.where(np.isnan(col_base), 0.0, col_base)
+    filled = np.where(np.isnan(log2_mat), 0.0, log2_mat)
+    return col_base[None, :] - filled
+
+
+def mds_bootstrap_ellipses(
+    kept_log2: np.ndarray,
+    n_antigen: int,
+    main_coords: np.ndarray,
+    n_boot: int = 100,
+    seed: Optional[int] = None,
+) -> Optional[list[dict]]:
+    """对 MDS 坐标做血清 bootstrap 并在每次重采样上用 Procrustes 对齐主解。
+
+    Parameters
+    ----------
+    kept_log2 : np.ndarray (n_antigen, n_serum)
+        剔除坏行后的 log₂ 变换矩阵（即 preprocess_titers 的 ``log2_matrix``）。
+    n_antigen : int
+        抗原数量（用于重排完全距离矩阵的维度划分）。
+    main_coords : np.ndarray (n_total, 2)
+        主 MDS 解坐标（作为 Procrustes 对齐基准）。
+    n_boot : int
+        重采样次数（默认 100）。
+    seed : int or None
+        随机种子，保证结果可复现。
+
+    Returns
+    -------
+    list[dict] or None
+        与 ``main_coords`` 逐点对应的椭圆参数 ``{cx, cy, rx, ry, angle_deg, n_boot}``；
+        ``rx/ry`` 为 95% 置信椭圆半轴长，``angle_deg`` 为主轴倾角。
+        有效重采样不足时返回 None（不输出误导性椭圆）。
+    """
+    n_serum = kept_log2.shape[1]
+    n_total = int(main_coords.shape[0])
+    rng = np.random.RandomState(seed)
+
+    boots = np.empty((n_boot, n_total, 2), dtype=float)
+    ok = 0
+    for _b in range(n_boot):
+        cols = rng.choice(n_serum, size=n_serum, replace=True)
+        sub = kept_log2[:, cols]
+        dist = _make_distances_from_log2(sub)
+        full = _build_full_distance_matrix(dist, n_antigen, n_serum)
+        try:
+            boot = compute_mds(
+                full, n_components=2, n_init=1, max_iter=1000,
+                random_state=int(rng.randint(0, 2 ** 31 - 1)),
+            )["coordinates"]
+            aligned, _, _ = procrustes(boot, main_coords)
+        except (ValueError, FloatingPointError):
+            continue
+        boots[ok] = aligned
+        ok += 1
+
+    if ok < _ELLIPSE_MIN_BOOT:
+        return None
+    boots = boots[:ok]
+
+    factor = float(np.sqrt(_ELLIPSE_CHI2))
+    ellipses = []
+    for i in range(n_total):
+        pts = boots[:, i, :]
+        d = pts - pts.mean(axis=0)
+        cov = (d.T @ d) / (ok - 1) if ok > 1 else np.zeros((2, 2))
+        # 协方差的特征分解（eigh 升序：λ0<=λ1）
+        lam, vec = np.linalg.eigh(cov)
+        lam = np.maximum(lam, 0.0)
+        rx = factor * float(np.sqrt(lam[1]))  # 主轴（最大方差方向）半长
+        ry = factor * float(np.sqrt(lam[0]))
+        # 主轴倾角：最大特征值对应特征向量的方向角
+        angle = float(np.degrees(np.arctan2(vec[1, 1], vec[0, 1])))
+        ellipses.append({
+            "cx": float(main_coords[i, 0]),
+            "cy": float(main_coords[i, 1]),
+            "rx": rx,
+            "ry": ry,
+            "angle_deg": round(angle, 2),
+            "n_boot": ok,
+        })
+    return ellipses
+
+
+# ---------------------------------------------------------------------------
 # 完整管线
 # ---------------------------------------------------------------------------
 
@@ -245,6 +351,8 @@ def antigenic_map(
     n_init: int = 20,
     max_iter: int = 1000,
     random_state: Optional[int] = None,
+    bootstrap: bool = True,
+    n_boot: int = 100,
     return_raw: bool = False,
 ) -> dict:
     """完整抗原制图管线：预处理 → metric MDS → 输出。
@@ -265,6 +373,10 @@ def antigenic_map(
         MDS 最大迭代次数。
     random_state : int or None
         随机种子。
+    bootstrap : bool
+        是否计算血清 bootstrap 置信椭圆（默认开启）。
+    n_boot : int
+        bootstrap 重采样次数。
     return_raw : bool
         如果为 True，返回包含预处理中间结果的完整字典。
 
@@ -282,6 +394,8 @@ def antigenic_map(
         - dropped_rows : list[int]
         - converged : bool
         - n_iter : int
+        - confidence_ellipses : list[dict] | None
+            与 coordinates 逐点对应的 95% bootstrap 置信椭圆（bootstrap=True 时计算）。
     """
     pre = preprocess_titers(titers_2d, log2_divisor=log2_divisor)
     dist = pre["distances"]
@@ -334,6 +448,19 @@ def antigenic_map(
         "converged": mds_result["converged"],
         "n_iter": mds_result["n_iter"],
     }
+
+    # Bootstrap 置信椭圆（血清重采样 + Procrustes 对齐主解）
+    if bootstrap:
+        try:
+            result["confidence_ellipses"] = mds_bootstrap_ellipses(
+                pre["log2_matrix"], n_antigen, coords,
+                n_boot=n_boot, seed=random_state,
+            )
+        except Exception as e:  # 兜底：bootstrap 失败不影响主制图结果
+            logger.warning("[抗原制图] bootstrap 置信椭圆计算失败: %s", e)
+            result["confidence_ellipses"] = None
+    else:
+        result["confidence_ellipses"] = None
 
     if return_raw:
         result["_preprocess"] = pre

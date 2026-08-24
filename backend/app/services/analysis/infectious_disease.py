@@ -39,7 +39,7 @@ from app.core.stats_engine import (
     classify_hotspot_cluster,
     birth_cohort_analysis,
 )
-from app.core.goal_thresholds import GOAL_THRESHOLDS
+from app.services.goal_threshold_service import get_goal_threshold
 
 from app.services.analysis._common import (
     AGE_GROUPS,
@@ -138,7 +138,7 @@ async def get_simulation(
     dis_key = normalize_disease(disease or "") or (disease or "")
     r0_ref = R0_REFERENCE.get(dis_key)
     reference_hit = _calc_hit_from_r0(r0_ref[0]) if r0_ref else None
-    goal_threshold = GOAL_THRESHOLDS.get(dis_key)
+    goal_threshold = await get_goal_threshold(db, dis_key)
     who_threshold = WHO_THRESHOLDS.get(dis_key)
 
     # 屏障目标：优先 FOI 估计，否则 GOAL/WHO 阈值，再退到文献 R0

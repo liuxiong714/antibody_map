@@ -104,10 +104,8 @@ async def get_approved_data_points(
     count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
 
-    # 获取分页数据，关联文献表获取标题
-    query = query.add_columns(Literature.title).outerjoin(
-        Literature, DataPoint.literature_id == Literature.id
-    )
+    # 获取分页数据，关联文献表获取标题（_build_base_query 已 join Literature 并过滤软删除）
+    query = query.add_columns(Literature.title)
 
     # 动态排序
     sort_column_map = {
@@ -195,9 +193,10 @@ async def get_approved_data_points_for_snapshot(
         disease, province, year_start, year_end, age_min, age_max, data_type,
         review_status="approved", include_subgroups=False,
     )
+    # 关联文献元数据（_build_base_query 已 join Literature 并过滤软删除）
     query = query.add_columns(
         Literature.title, Literature.pub_year, Literature.journal
-    ).outerjoin(Literature, DataPoint.literature_id == Literature.id)
+    )
     query = query.order_by(DataPoint.collection_year.desc().nullslast()).limit(limit)
 
     result = await db.execute(query)

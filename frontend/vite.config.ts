@@ -39,7 +39,7 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    include: ['pdfjs-dist/build/pdf'],
+    include: ['pdfjs-dist'],
   },
   build: {
     // 代码分割：将大体积第三方库拆分为独立 chunk，利用浏览器缓存

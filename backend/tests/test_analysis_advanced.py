@@ -41,6 +41,9 @@ class FakeResult:
     def all(self):
         return self._rows
 
+    def first(self):
+        return self._rows[0] if self._rows else None
+
 
 class FakeDB:
     """依次返回每个 execute 对应的结果批次（支持 meta 合并的二次查询）。"""
@@ -156,6 +159,52 @@ class TestEquityAnalysis:
         assert res["n_provinces"] == 2
         assert {r["province"] for r in res["province_rows"]} == {"北京", "天津"}
 
+    def test_small_sample_excluded_from_ranking(self):
+        # F32：累计样本量 < MIN_SAMPLE_FOR_META(30) 的省不进入 Top/Bottom 与离散度
+        db = FakeDB([
+            dp(province="北京", value=99, sample_size=10),   # 高阳性但样本仅 10
+            dp(province="广东", value=40, sample_size=100),
+            dp(province="四川", value=35, sample_size=100),
+            dp(province="河北", value=30, sample_size=100),
+        ])
+        res = run(get_equity_analysis, db)
+        top_names = {r["province"] for r in res["top_provinces"]}
+        assert "北京" not in top_names, "样本不足的省份不应进入 Top 排名"
+        assert "广东" in top_names
+        # 北京无 rank，且不参与基尼离散度
+        bj = next(r for r in res["province_rows"] if r["province"] == "北京")
+        assert bj["rank"] is None
+        assert any("样本量" in n for n in res["notes"])
+
+    def test_age_standardized_ranking(self):
+        # F32：具备年龄分层时排名基于年龄标化阳性率
+        # 北京全年龄段阳性率恒为 50% → 任意年龄标化后 ASR 必然仍为 50（均匀率的标化不变性）
+        # 广东各年龄段率不同 → 触发 direct_standardize，is_age_standardized 为 True
+        db = FakeDB([
+            dp(province="广东", age_min=0, age_max=0, value=80, sample_size=100),
+            dp(province="广东", age_min=1, age_max=4, value=70, sample_size=100),
+            dp(province="广东", age_min=5, age_max=14, value=60, sample_size=100),
+            dp(province="广东", age_min=15, age_max=59, value=50, sample_size=100),
+            dp(province="广东", age_min=60, age_max=200, value=40, sample_size=100),
+            dp(province="北京", age_min=0, age_max=0, value=50, sample_size=100),
+            dp(province="北京", age_min=1, age_max=4, value=50, sample_size=100),
+            dp(province="北京", age_min=5, age_max=14, value=50, sample_size=100),
+            dp(province="北京", age_min=15, age_max=59, value=50, sample_size=100),
+            dp(province="北京", age_min=60, age_max=200, value=50, sample_size=100),
+        ])
+        res = run(get_equity_analysis, db)
+        gd = next(r for r in res["province_rows"] if r["province"] == "广东")
+        bj = next(r for r in res["province_rows"] if r["province"] == "北京")
+        # 两省均完成年龄标化
+        assert gd["is_age_standardized"] is True and gd["asr"] is not None
+        assert gd["n_strata"] >= 3
+        assert bj["is_age_standardized"] is True
+        # 均匀率标化不变性：北京 ASR == 加权率 == 50
+        assert bj["asr"] == pytest.approx(50.0, abs=1e-6)
+        assert bj["asr"] == pytest.approx(bj["weighted_positivity"], abs=1e-6)
+        # 排名键使用标化率（std_positivity）：北京标化率确定，广东非均匀率标化参与排名
+        assert any("年龄标化" in n for n in res["notes"])
+
 
 # ── 2. get_quality_assessment ─────────────────────────────
 
@@ -213,7 +262,9 @@ class TestGoalTracking:
             dp(disease="measles", province="北京", value=99, sample_size=100, collection_year=2021),
             dp(disease="measles", province="河北", value=99, sample_size=100, collection_year=2021),
         ]
-        res = run(get_goal_tracking, FakeDB(rows), disease="measles")
+        # 第 1 个批次为空：get_goal_threshold 查阈值配置表（回退默认 95%）
+        # 第 2 个批次为数据行：基础查询
+        res = run(get_goal_tracking, FakeDB([], rows), disease="measles")
         assert res["goal_threshold_percent"] == 95
         assert res["n_provinces"] == 2
         assert len(res["years"]) == 2

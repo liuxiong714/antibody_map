@@ -14,6 +14,7 @@ from app.models.analysis_snapshot import AnalysisSnapshot
 from app.models.titer_table import TiterTable
 from app.models.report_template import ReportTemplate
 from app.models.reference_import_log import ReferenceImportLog
+from app.models.goal_threshold_config import GoalThresholdConfig
 
 __all__ = [
     "Base", "engine", "async_session", "get_async_session",
@@ -21,5 +22,5 @@ __all__ = [
     "MonitoredFolder", "MonitoredFile", "ApiModelConfig",
     "LocalModelConfig", "User", "AuditLog", "ExtractionHistory",
     "Tag", "literature_tag", "AnalysisSnapshot",
-    "TiterTable", "ReportTemplate",
+    "TiterTable", "ReportTemplate", "GoalThresholdConfig",
 ]

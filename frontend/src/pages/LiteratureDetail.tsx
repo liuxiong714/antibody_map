@@ -3,13 +3,13 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip, Switch, Typography, Alert,
 } from 'antd';
-import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined, DownloadOutlined, PlusOutlined, HistoryOutlined, ClockCircleOutlined, FileTextOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined, DownloadOutlined, PlusOutlined, HistoryOutlined, ClockCircleOutlined, FileTextOutlined, DeleteOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
 import QualityBadge from '../components/QualityBadge';
 import {
-  getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText, confirmDataPoints, disputeDataPoints,
+  getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText, confirmDataPoints, disputeDataPoints, deleteLiterature,
 } from '../services/literature';
 import PdfViewer from '../components/PdfViewer';
 import FilePreview from '../components/FilePreview';
@@ -34,7 +34,7 @@ const LiteratureDetail: React.FC = () => {
   const [reviewNote, setReviewNote] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [modalAction, setModalAction] = useState<'approved' | 'rejected'>('approved');
-  const [pollingInterval, setPollingInterval] = useState<number | null>(null);
+  const intervalRef = useRef<number | null>(null);
   const [extractModalOpen, setExtractModalOpen] = useState(false);
   const [extractModel, setExtractModel] = useState<string | undefined>(undefined);
   const [extractApiKey, setExtractApiKey] = useState('');
@@ -45,7 +45,7 @@ const LiteratureDetail: React.FC = () => {
     buildModelOptions().then(setModelOptions);
   }, []);
   // 提取时是否保留已审核数据
-  const [clearExistingData, setClearExistingData] = useState(true);
+  const [clearExistingData, setClearExistingData] = useState(false);
   // 是否在本次提取完成后显示 token/费用/模型信息
   const [showUsageOnComplete, setShowUsageOnComplete] = useState<boolean>(() => {
     try { return localStorage.getItem('lit_show_usage_on_complete') === '1'; } catch { return false; }
@@ -166,6 +166,33 @@ const LiteratureDetail: React.FC = () => {
   const handleCancelEdit = () => {
     setEditing(false);
     setEditForm({});
+  };
+
+  // 删除文献（软删除 → 回收站）
+  const handleDelete = () => {
+    if (!literature) return;
+    Modal.confirm({
+      title: '确认删除该文献？',
+      content: (
+        <div>
+          <p>删除后该文献将移入回收站，可在回收站中恢复。</p>
+          <p style={{ color: '#8c8c8c', marginBottom: 0 }}>《{literature.title || '未命名文献'}》</p>
+        </div>
+      ),
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await deleteLiterature(id!);
+          message.success('已删除到回收站');
+          navigate('/literature');
+        } catch (err) {
+          console.error('[LiteratureDetail] 删除文献失败:', err);
+          message.error('删除失败');
+        }
+      },
+    });
   };
 
   // 数据点行内编辑
@@ -376,7 +403,7 @@ const LiteratureDetail: React.FC = () => {
     setExtractModalOpen(true);
   };
 
-  const confirmExtract = async () => {
+  const doExtract = async () => {
     if (!id) return;
     setExtracting(true);
     setExtractModalOpen(false);
@@ -393,14 +420,20 @@ const LiteratureDetail: React.FC = () => {
         await triggerExtraction(id, { model: '', clearExistingData });
       }
       message.success('AI 提取任务已提交，正在轮询进度...');
-      const interval = window.setInterval(() => {
-        fetchData().then(async () => {
-          if (literature?.extraction_status !== 'processing') {
-            if (pollingInterval) {
-              clearInterval(pollingInterval);
-              setPollingInterval(null);
+      const poll = async () => {
+        try {
+          const fresh = await getLiterature(id);
+          if (fresh.extraction_status !== 'processing') {
+            if (intervalRef.current) {
+              clearInterval(intervalRef.current);
+              intervalRef.current = null;
             }
-            if (literature?.extraction_status === 'done') {
+            setLiterature(fresh);
+            if (fresh.extraction_status === 'done') {
+              // 重新拉取数据点
+              getExtractionResults(id).then((ext) => {
+                setDataPoints((ext as { data_points?: DataPoint[] })?.data_points || []);
+              }).catch(() => {});
               // 若启用了"显示提取消耗"，拉取 token 用量并展示
               let usageSuffix = '';
               if (showUsageOnComplete) {
@@ -414,7 +447,7 @@ const LiteratureDetail: React.FC = () => {
                   console.warn('[LiteratureDetail] 获取 token 用量失败:', e);
                 }
               }
-              message.success(`提取完成，共提取 ${literature.extracted_count} 个数据点${usageSuffix}`);
+              message.success(`提取完成，共提取 ${fresh.extracted_count} 个数据点${usageSuffix}`);
               // 提取完成后自动同步年份和省份
               setTimeout(() => {
                 syncMetadataFromDataPoints(false).then((updates) => {
@@ -428,18 +461,35 @@ const LiteratureDetail: React.FC = () => {
                   }
                 }).catch(() => {});
               }, 500);
-            } else if (literature?.extraction_status === 'failed') {
+            } else if (fresh.extraction_status === 'failed') {
               message.error('提取失败，请重试');
             }
           }
-        });
-      }, 3000);
-      setPollingInterval(interval);
+        } catch (e) {
+          console.error('[LiteratureDetail] 轮询提取状态失败:', e);
+        }
+      };
+      intervalRef.current = window.setInterval(poll, 3000);
     } catch (err) {
       console.error('[LiteratureDetail] 提取任务提交失败:', err);
       message.error('提取失败');
     } finally {
       setExtracting(false);
+    }
+  };
+
+  const confirmExtract = () => {
+    if (clearExistingData) {
+      Modal.confirm({
+        title: '确认全量重抽？',
+        content: '将清空该文献所有既有数据点（含已审核通过的数据、审核意见与质量分），并以待审核(pending)状态重新提取，不可恢复。',
+        okText: '确认全量重抽',
+        okType: 'danger',
+        cancelText: '取消',
+        onOk: doExtract,
+      });
+    } else {
+      doExtract();
     }
   };
 
@@ -475,11 +525,12 @@ const LiteratureDetail: React.FC = () => {
 
   useEffect(() => {
     return () => {
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
       }
     };
-  }, [pollingInterval]);
+  }, []);
 
   const handleSingleReview = async (dpId: string, status: 'approved' | 'rejected') => {
     if (!id) return;
@@ -905,7 +956,10 @@ const LiteratureDetail: React.FC = () => {
                       <Button size="small" type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSaveEdit}>保存</Button>
                     </Space>
                   ) : (
-                    <Button size="small" icon={<EditOutlined />} onClick={handleStartEdit}>编辑</Button>
+                    <Space>
+                      <Button size="small" icon={<EditOutlined />} onClick={handleStartEdit}>编辑</Button>
+                      <Button size="small" danger icon={<DeleteOutlined />} onClick={handleDelete}>删除</Button>
+                    </Space>
                   )
                 }
               >

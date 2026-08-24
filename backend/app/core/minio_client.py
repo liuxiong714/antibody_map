@@ -18,10 +18,16 @@ def get_minio_client() -> Optional[Minio]:
         return _minio_client
 
     try:
+        # 凭据优先从 MINIO_ROOT_PASSWORD 读取，MINIO_SECRET_KEY 为旧名回退
+        secret = settings.MINIO_ROOT_PASSWORD or settings.MINIO_SECRET_KEY
+        if not secret:
+            logger.warning("MinIO 未配置凭据（MINIO_ROOT_PASSWORD / MINIO_SECRET_KEY 均为空）")
+            _minio_client = None
+            return None
         _minio_client = Minio(
             endpoint=settings.MINIO_ENDPOINT,
             access_key=settings.MINIO_ACCESS_KEY,
-            secret_key=settings.MINIO_SECRET_KEY,
+            secret_key=secret,
             secure=False,
         )
         # 确保 bucket 存在

@@ -24,9 +24,12 @@ from app.services.snapshot_service import (
 )
 
 
-def point(dpid: str, review_status: str, value) -> SimpleNamespace:
-    """构造一个哈希取数行（模拟 SQLAlchemy Row：id / review_status / value）。"""
-    return SimpleNamespace(id=dpid, review_status=review_status, value=value)
+def point(dpid: str, review_status: str, value, **extra) -> SimpleNamespace:
+    """构造一个哈希取数行（模拟 SQLAlchemy Row：id / review_status / value + 附加字段）。"""
+    ns = SimpleNamespace(id=dpid, review_status=review_status, value=value)
+    for k, v in extra.items():
+        setattr(ns, k, v)
+    return ns
 
 
 class FakeResult:
@@ -121,6 +124,20 @@ def test_hash_changes_on_value_change():
 def test_hash_changes_on_review_status_change():
     before = calculate_data_hash([point("a", "approved", 25.0)])
     after = calculate_data_hash([point("a", "pending", 25.0)])
+    assert before != after
+
+
+def test_hash_changes_on_sample_size_change():
+    # F30：影响加权计算的字段（sample_size）变化也应触发新 hash
+    before = calculate_data_hash([point("a", "approved", 25.0, sample_size=100)])
+    after = calculate_data_hash([point("a", "approved", 25.0, sample_size=500)])
+    assert before != after
+
+
+def test_hash_changes_on_grouping_field_change():
+    # F30：分组字段（province）变化也应触发新 hash
+    before = calculate_data_hash([point("a", "approved", 25.0, province="北京")])
+    after = calculate_data_hash([point("a", "approved", 25.0, province="广东")])
     assert before != after
 
 

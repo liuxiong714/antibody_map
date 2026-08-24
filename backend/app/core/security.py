@@ -42,6 +42,7 @@ def create_access_token(user_id: str, username: str, is_admin: bool = False) -> 
         "username": username,
         "is_admin": is_admin,
         "exp": expire,
+        "iat": datetime.now(timezone.utc),   # F3：签发时间，用于改密后吊销旧令牌
         "jti": uuid.uuid4().hex,      # 唯一令牌 ID，用于后续吊销
         "type": "access",
     }
@@ -54,6 +55,7 @@ def create_refresh_token(user_id: str) -> str:
     payload = {
         "sub": user_id,
         "exp": expire,
+        "iat": datetime.now(timezone.utc),   # F3：签发时间，用于改密后吊销旧令牌
         "jti": uuid.uuid4().hex,
         "type": "refresh",
     }

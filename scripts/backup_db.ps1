@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # 数据库导出脚本 (Windows PowerShell)
 # 用法: .\scripts\backup_db.ps1
 # 作用: 将 PostgreSQL 中的数据导出为 SQL 文件，便于迁移到新电脑
@@ -18,6 +18,19 @@ $FullOutputDir = Join-Path $ProjectDir $OutputDir
 
 function Write-Color($text, $color = "White") {
     Write-Host $text -ForegroundColor $color
+}
+
+# 从 .env 读取数据库密码（禁止硬编码口令）
+$envFile = Join-Path $ProjectDir ".env"
+if (-not (Test-Path $envFile)) {
+    Write-Color "错误: 未找到 $envFile，请先在项目根目录配置 .env（POSTGRES_PASSWORD）" "Red"
+    exit 1
+}
+$DbPassword = (Get-Content $envFile | Where-Object { $_ -match '^\s*POSTGRES_PASSWORD=' } | Select-Object -First 1) -replace '^\s*POSTGRES_PASSWORD=', ''
+$DbPassword = $DbPassword.Trim('"', "'", ' ')
+if (-not $DbPassword) {
+    Write-Color "错误: .env 中未配置 POSTGRES_PASSWORD" "Red"
+    exit 1
 }
 
 Write-Color "============================================" "Cyan"
@@ -51,7 +64,7 @@ $dumpPath = Join-Path $FullOutputDir $dumpFile
 
 # 在容器内执行 pg_dump，输出到本地文件
 Write-Color "正在导出数据库，请稍候..." "Yellow"
-docker exec -e PGPASSWORD=antibody123 $ContainerName pg_dump -U $DbUser -d $DbName --no-owner --no-privileges > $dumpPath
+docker exec -e PGPASSWORD=$DbPassword $ContainerName pg_dump -U $DbUser -d $DbName --no-owner --no-privileges > $dumpPath
 
 # 检查结果
 if (Test-Path $dumpPath) {

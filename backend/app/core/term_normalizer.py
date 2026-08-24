@@ -330,24 +330,50 @@ CHINA_PROVINCE_NAMES = sorted(set(PROVINCE_MAP.values()))
 
 PROVINCE_NAMES_ZH = "、".join(CHINA_PROVINCE_NAMES)
 
+# 常见城市名排除集：命中此集合的输入不参与省份简称模糊匹配，避免"南京"含"京"误归北京等 bug
+_CITY_EXCLUSION = {
+    "南京", "上海", "广州", "深圳", "杭州", "郑州", "成都", "兰州", "贵阳",
+    "沈阳", "长春", "哈尔滨", "福州", "南昌", "长沙", "武汉", "西安",
+    "石家庄", "合肥", "太原", "呼和浩特", "南宁", "海口", "昆明", "拉萨",
+    "西宁", "银川", "乌鲁木齐", "济南", "青岛", "大连", "厦门", "宁波",
+    "苏州", "无锡", "佛山", "东莞", "温州", "常州", "徐州", "洛阳",
+    "邯郸", "保定", "大同", "包头", "珠海", "中山", "惠州", "嘉兴",
+    "绍兴", "南通", "扬州", "镇江", "台州", "金华", "宜昌", "襄阳",
+    "惠州", "柳州", "桂林", "遵义", "曲靖", "咸阳", "宝鸡", "绵阳",
+}
+
 
 def normalize_province(name: Optional[str]) -> Optional[str]:
     """标准化省份名称，将 LLM 提取的各种表述统一为省份名"""
     if not name:
         return None
     name = name.strip()
-    # 精确匹配
+
+    # 1. 精确匹配（含全名、简称、英文名）
     if name in PROVINCE_MAP:
         return PROVINCE_MAP[name]
-    # 模糊匹配：key 包含在 name 中
-    for key, value in PROVINCE_MAP.items():
-        if key in name or name in key:
-            return value
-    # 带"省"/"市"/"自治区"后缀的清理
-    name_clean = name.replace("省", "").replace("市", "").replace("自治区", "").replace("特别行政区", "").strip()
+
+    # 2. 带"省"/"自治区"/"特别行政区"后缀的精确匹配
+    name_clean = (
+        name.replace("省", "")
+        .replace("自治区", "")
+        .replace("特别行政区", "")
+        .strip()
+    )
     if name_clean in PROVINCE_MAP:
         return PROVINCE_MAP[name_clean]
+
+    # 3. 城市名排除：以"市"结尾或命中排除集的输入，仅尝试去掉"市"后精确匹配，不做简称模糊匹配
+    if name.endswith("市") or name in _CITY_EXCLUSION:
+        if name.endswith("市"):
+            city_clean = name[:-1].strip()
+            if city_clean in PROVINCE_MAP:
+                return PROVINCE_MAP[city_clean]
+        return name
+
+    # 4. 模糊匹配：仅使用长 key（>2字符），避免单字简称误伤城市名
     for key, value in PROVINCE_MAP.items():
-        if key in name_clean or name_clean in key:
+        if len(key) > 2 and (key in name or name in key):
             return value
+
     return name

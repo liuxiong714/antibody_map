@@ -9,18 +9,21 @@
 - ``build_citation`` 生成 GBT7714 / BibTeX 引用文本（含版本号与访问日期）。
 """
 
+import asyncio
 import functools
 import hashlib
 import json
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.analysis_snapshot import AnalysisSnapshot
 from app.models.data_point import DataPoint
+from app.models.literature import Literature
 from app.schemas.common import ApiResponse
 from app.services import analysis_service
 
@@ -31,6 +34,12 @@ DB_NAME = "抗体地图数据库"
 # 参与哈希取数的标准筛选参数（与 _build_base_query 对齐）
 _STD_FILTER_KEYS = ("disease", "province", "year_start", "year_end",
                     "age_min", "age_max", "data_type")
+
+# 哈希取数 SELECT 的额外统计/分组字段（任一变化都应使 data_hash 变化）
+_HASH_EXTRA_FIELDS = (
+    "sample_size", "ci_lower", "ci_upper", "disease", "province",
+    "collection_year", "data_type", "age_min", "age_max", "quality_grade",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -49,41 +58,55 @@ def _norm_value(v: Any) -> str:
 
 
 def calculate_data_hash(rows: Any) -> str:
-    """对过滤后 (id, review_status, value) 有序列表计算 sha256 前 16 位。
+    """对过滤后数据点行计算 sha256 前 16 位。
 
     ``rows`` 可为 SQLAlchemy 结果（DataPoint 或 with_only_columns 的 Row），
-    统一按 id 升序排列保证确定性。
+    统一按 id 升序排列保证确定性。参与哈希的字段覆盖 id / review_status /
+    value 及影响分析结果的统计与分组字段（见 _HASH_EXTRA_FIELDS），任一字段
+    变化都会使 hash 变化，保证与各分析模块的实际口径一致。
     """
-    triplets: list[tuple[str, str, str]] = []
+    triplets: list[list[str]] = []
     for r in rows:
         rid = r.id if hasattr(r, "id") else r[0]
-        rs = r.review_status if hasattr(r, "review_status") else r[1]
-        val = r.value if hasattr(r, "value") else r[2]
-        triplets.append((str(rid), str(rs or ""), _norm_value(val)))
+        rs = r.review_status if hasattr(r, "review_status") else (r[1] if len(r) > 1 else "")
+        val = r.value if hasattr(r, "value") else (r[2] if len(r) > 2 else None)
+        rec = [str(rid), str(rs or ""), _norm_value(val)]
+        # 关键统计/分组字段：缺失时按 None 归一，保证旧行（仅 3 列）兼容
+        for key in _HASH_EXTRA_FIELDS:
+            rec.append(_norm_value(getattr(r, key, None)))
+        triplets.append(rec)
     triplets.sort(key=lambda t: t[0])  # 按 id 有序
     payload = json.dumps(triplets, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
-# 哈希取数查询（镜像 _build_base_query 的过滤语义，但仅取 id/review_status/value）
+# 哈希取数查询（镜像 _build_base_query 的过滤语义）
 # ---------------------------------------------------------------------------
 def _build_hash_query(filter_keys: tuple[str, ...], params: dict,
                       data_type_override: Optional[str] = None,
                       review_status: Optional[str] = "approved",
-                      quality_filter_key: Optional[str] = None):
+                      quality_filter_key: Optional[str] = None,
+                      include_subgroups: Optional[bool] = None):
     """构造哈希取数查询：与 analysis_service._build_base_query 语义一致。
 
     - filter_keys: 参与过滤的 params 键名；
     - data_type_override: 强制 data_type（如 meta/equity 固定 seroprevalence）；
     - review_status: 审核状态过滤；None 表示不过滤（data_gaps/coverage_review 统计全状态）；
-    - quality_filter_key: 参数键名，False/缺省时仅取 A/B 级（meta 类证据门槛）。
+    - quality_filter_key: 参数键名，False/缺省时仅取 A/B 级（meta 类证据门槛）；
+    - include_subgroups: True 时不过滤 estimate_type（含子估计，与 vaccine 等模块一致）；
+      None/False 时默认仅主估计。
     """
     fk = {k: params.get(k) for k in filter_keys if k in params}
 
-    q = select(DataPoint.id, DataPoint.review_status, DataPoint.value)
-    # 与 _build_base_query 一致：默认仅主估计
-    q = q.where(DataPoint.estimate_type == "primary")
+    q = select(DataPoint.id, DataPoint.review_status, DataPoint.value,
+               *[getattr(DataPoint, f) for f in _HASH_EXTRA_FIELDS])
+    # 排除软删除文献的数据点，与 _build_base_query 口径一致
+    q = q.outerjoin(Literature, DataPoint.literature_id == Literature.id)
+    q = q.where(Literature.deleted_at.is_(None))
+    # 与 _build_base_query 一致：默认仅主估计（include_subgroups=True 时包含子估计）
+    if not include_subgroups:
+        q = q.where(DataPoint.estimate_type == "primary")
     if review_status is not None:
         q = q.where(DataPoint.review_status == review_status)
     if fk.get("disease"):
@@ -113,11 +136,12 @@ def _build_hash_query(filter_keys: tuple[str, ...], params: dict,
 async def _fetch_hash_rows(db: AsyncSession, filter_keys: tuple[str, ...], params: dict,
                            data_type_override: Optional[str] = None,
                            review_status: Optional[str] = "approved",
-                           quality_filter_key: Optional[str] = None):
+                           quality_filter_key: Optional[str] = None,
+                           include_subgroups: Optional[bool] = None):
     if not filter_keys:
         return []
     q = _build_hash_query(filter_keys, params, data_type_override, review_status,
-                          quality_filter_key)
+                          quality_filter_key, include_subgroups)
     result = await db.execute(q)
     return result.all()
 
@@ -136,22 +160,27 @@ async def attach_snapshot(db: AsyncSession, module: str, params: dict,
                           filter_keys: Optional[tuple[str, ...]] = None,
                           data_type_override: Optional[str] = None,
                           review_status: Optional[str] = "approved",
-                          quality_filter_key: Optional[str] = None) -> str:
+                          quality_filter_key: Optional[str] = None,
+                          include_subgroups: Optional[bool] = None) -> str:
     """计算数据指纹 → 去重写入/复用快照 → 返回 snapshot_token（uuid str）。
 
     旁路设计：快照写入失败不影响主流程（调用方捕获）。
     """
     filter_keys = filter_keys or _STD_FILTER_KEYS
     rows = await _fetch_hash_rows(db, filter_keys, params, data_type_override,
-                                  review_status, quality_filter_key)
+                                  review_status, quality_filter_key, include_subgroups)
     data_hash = calculate_data_hash(rows)
     return await _upsert_snapshot(db, module, params, data_hash, response_data)
 
 
 async def _upsert_snapshot(db: AsyncSession, module: str, params: dict,
                            data_hash: str, response_data: dict) -> str:
-    """同 (module, params, data_hash) 去重复用；否则新建并缓存响应 JSON。"""
-    existing = (await db.execute(
+    """同 (module, params, data_hash) 去重复用；否则新建并缓存响应 JSON。
+
+    并发安全：DB 层 uq_snapshot_identity 唯一约束兜底，INSERT 触发 IntegrityError
+    时回滚并读取既有快照返回同一 token，保证并发重复请求只写入一条。
+    """
+    _existing = (await db.execute(
         select(AnalysisSnapshot).where(
             AnalysisSnapshot.module == module,
             AnalysisSnapshot.data_hash == data_hash,
@@ -159,13 +188,27 @@ async def _upsert_snapshot(db: AsyncSession, module: str, params: dict,
         ).order_by(AnalysisSnapshot.created_at.desc()).limit(1)
     )).scalars().first()
 
-    if existing is not None:
-        return str(existing.id)
+    if _existing is not None:
+        return str(_existing.id)
 
     snap = AnalysisSnapshot(module=module, params=params, data_hash=data_hash,
                             response_json=response_data)
     db.add(snap)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # 并发另一事务已写入同一条：回滚并复用其 token
+        await db.rollback()
+        _existing = (await db.execute(
+            select(AnalysisSnapshot).where(
+                AnalysisSnapshot.module == module,
+                AnalysisSnapshot.data_hash == data_hash,
+                AnalysisSnapshot.params == params,
+            ).order_by(AnalysisSnapshot.created_at.desc()).limit(1)
+        )).scalars().first()
+        if _existing is not None:
+            return str(_existing.id)
+        raise
     return str(snap.id)
 
 
@@ -187,7 +230,8 @@ def with_snapshot(module: str,
                   filter_keys: Optional[tuple[str, ...]] = None,
                   data_type_override: Optional[str] = None,
                   review_status: Optional[str] = "approved",
-                  quality_filter_key: Optional[str] = None) -> Callable:
+                  quality_filter_key: Optional[str] = None,
+                  include_subgroups: Optional[bool] = None) -> Callable:
     """FastAPI 端点装饰器：计算 data_hash、去重写快照、注入 meta.snapshot_token。
 
     依赖注入的 ``db`` 以命名参数传入端点，装饰器从 kwargs 取出。
@@ -208,6 +252,7 @@ def with_snapshot(module: str,
                     db, module, _clean_params(kwargs), data,
                     filter_keys=filter_keys, data_type_override=data_type_override,
                     review_status=review_status, quality_filter_key=quality_filter_key,
+                    include_subgroups=include_subgroups,
                 )
                 meta = data.get("meta")
                 if not isinstance(meta, dict):
@@ -258,3 +303,35 @@ def build_citation(snapshot: AnalysisSnapshot, style: str = "gbt7714",
         f"数据截至：{created}；[引用日期 {accessed}]. "
         f"快照号：{token}；访问：{path}。"
     )
+
+
+# ---------------------------------------------------------------------------
+# 后台清理：回收超过 TTL 的旧快照（response_json 会占用存储）
+# ---------------------------------------------------------------------------
+async def _snapshot_cleanup_loop():
+    """后台循环：定期删除超过 SNAPSHOT_TTL_DAYS 天的快照，回收 response_json 存储。"""
+    from app.models.base import async_session
+    from app.config import settings as _settings
+
+    logger.info(
+        "[快照] 后台清理任务已启动，每 %d 秒检查一次，保留 %d 天",
+        _settings.SNAPSHOT_CLEANUP_INTERVAL, _settings.SNAPSHOT_TTL_DAYS,
+    )
+    while True:
+        try:
+            async with async_session() as db:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=_settings.SNAPSHOT_TTL_DAYS)
+                r = await db.execute(
+                    delete(AnalysisSnapshot).where(AnalysisSnapshot.created_at < cutoff)
+                )
+                await db.commit()
+                if r.rowcount and r.rowcount > 0:
+                    logger.info(
+                        "[快照] 自动清理: 删除 %d 条超过 %d 天的旧快照",
+                        r.rowcount, _settings.SNAPSHOT_TTL_DAYS,
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[快照] 自动清理检查异常: %s", e)
+        await asyncio.sleep(_settings.SNAPSHOT_CLEANUP_INTERVAL)

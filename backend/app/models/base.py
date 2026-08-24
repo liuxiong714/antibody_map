@@ -8,13 +8,15 @@ from app.config import settings
 # - max_overflow：池满后可临时额外创建的连接数（峰值弹性）
 # - pool_timeout：获取连接的等待超时（秒），避免高并发下无限等待
 # - pool_pre_ping：取连接前校验存活，避免使用失效连接
+# 注意：asyncpg 对池中已失效连接做 pre_ping 时可能抛 MissingGreenlet（SQLAlchemy
+# 已知问题）。SQLAlchemy 在使用到真正失效连接时会自动判定并断开重连，故不依赖 pre_ping。
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.APP_DEBUG,
     pool_size=20,
     max_overflow=10,
     pool_timeout=30,
-    pool_pre_ping=True,
+    pool_pre_ping=False,
     pool_recycle=1800,
 )
 

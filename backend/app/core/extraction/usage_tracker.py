@@ -6,6 +6,8 @@
 import logging
 from typing import Optional
 
+from app.config import settings
+
 logger = logging.getLogger("uvicorn")
 
 
@@ -28,6 +30,20 @@ class UsageTrackerMixin:
         entry["completion_tokens"] += int(usage.get("completion_tokens", 0) or 0)
         entry["total_tokens"] += int(usage.get("total_tokens", 0) or 0)
         entry["call_count"] += 1
+
+        # F11：单任务 token 预算（LLM_MAX_TOKENS_PER_TASK）。累计超过后抛 LLMBudgetExceeded，
+        # 防止异常长文档（多轮分块/骨架补全）失控消耗 token。属"任务失败"而非可重试错误。
+        budget = int(getattr(settings, "LLM_MAX_TOKENS_PER_TASK", 0) or 0)
+        if budget > 0 and entry["total_tokens"] > budget:
+            logger.warning(
+                f"[TokenUsage] 单任务 token 预算超限：本次任务累计 {entry['total_tokens']} > {budget}，中止提取"
+            )
+            from app.core.extraction.llm_client import LLMBudgetExceeded
+
+            raise LLMBudgetExceeded(
+                f"单篇文献提取 token 累计 {entry['total_tokens']} 超过预算 {budget}，"
+                "已中止（可调高 LLM_MAX_TOKENS_PER_TASK）"
+            )
         logger.info(
             f"[TokenUsage] 本次调用 model={model_key}, "
             f"prompt={usage.get('prompt_tokens', 0)}, "

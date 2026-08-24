@@ -7,6 +7,7 @@
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -18,13 +19,74 @@ from app.core.extraction.schema import EXTRACTION_JSON_SCHEMA
 logger = logging.getLogger("uvicorn")
 
 
+class LLMBudgetExceeded(Exception):
+    """F11：单任务 token 预算或日配额超限。
+
+    属于"任务失败"而非可重试错误（重试只会继续消耗 token），
+    由任务层标记 failed 并告警，不触发 URL 切换/重试。
+    """
+
+
+# F11：进程内所有提取任务共享的全局并发信号量（懒创建，绑定当前事件循环）
+_global_llm_sem: Optional[asyncio.Semaphore] = None
+
+
+def _get_global_sem() -> Optional[asyncio.Semaphore]:
+    """获取全局并发信号量；LLM_GLOBAL_CONCURRENCY<=0 时返回 None（不限流）。"""
+    global _global_llm_sem
+    cap = int(getattr(settings, "LLM_GLOBAL_CONCURRENCY", 0) or 0)
+    if cap <= 0:
+        return None
+    if _global_llm_sem is None:
+        _global_llm_sem = asyncio.Semaphore(cap)
+    return _global_llm_sem
+
+
+async def _consume_daily_quota(tokens: int) -> None:
+    """按自然日计数全平台 token 用量，超过 LLM_DAILY_QUOTA 时抛 LLMBudgetExceeded。
+
+    Redis 不可用时 fail-open（不阻断提取，仅记录日志）。
+    """
+    quota = int(getattr(settings, "LLM_DAILY_QUOTA", 0) or 0)
+    if quota <= 0 or tokens <= 0:
+        return
+    client = None
+    try:
+        from redis.asyncio import Redis
+
+        client = Redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+        )
+        key = "llm:daily_tokens:" + datetime.now(timezone.utc).strftime("%Y%m%d")
+        used = await client.incrby(key, tokens)
+        await client.expire(key, 172800)  # 48h 后自动过期（覆盖两个自然日）
+        if used > quota:
+            raise LLMBudgetExceeded(
+                f"今日 LLM token 配额已用尽（{used}/{quota}），"
+                "请明日再试或提高 LLM_DAILY_QUOTA 配置"
+            )
+    except LLMBudgetExceeded:
+        raise
+    except Exception as e:
+        logger.warning(f"日配额检查失败（fail-open，不阻断提取）: {e}")
+    finally:
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
+
 def _classify_llm_error(exc: Exception) -> dict:
     """对 LLM 调用异常分类，便于重试决策与日志诊断。
 
     返回: {"type": str, "message": str}
     type 取值:
       - connection_error: DNS 解析失败 / TCP 连接失败 / 连接超时 / "All connection attempts failed"
-      - read_timeout:     读响应超时（请求已发出，可能已消耗 token，谨慎重试）
+      - read_timeout:     读响应超时（请求已发出，可能已消耗 token，禁止重试/切换，避免双倍计费）
       - auth_error:       401 / API Key 无效（重试无意义）
       - rate_limit:       429 限流（退避重试）
       - http_4xx / http_5xx: 其他 HTTP 状态
@@ -60,6 +122,20 @@ def _classify_llm_error(exc: Exception) -> dict:
         return {"type": "auth_error", "message": full[:2000]}
     if "404" in full:
         return {"type": "http_4xx", "message": full[:2000]}
+    # F12：读响应超时单独归类。请求已发出、可能已消耗 token，若再切换 URL/重试
+    # 会导致同一请求双倍计费。本地 Ollama 推理慢，读超时多属正常慢而非故障，
+    # 直接透传为 read_timeout（交由上层决定是否重试），不触发 URL 切换。
+    if any(
+        k in lower_full
+        for k in (
+            "timed out",
+            "timedout",
+            "readtimeout",
+            "read timeout",
+            "read_error_code",
+        )
+    ):
+        return {"type": "read_timeout", "message": full[:2000]}
     if any(
         k in lower_full
         for k in (
@@ -77,14 +153,9 @@ def _classify_llm_error(exc: Exception) -> dict:
             "errno 111",
             "errno 101",
             "errno 110",
-            "timed out",
-            "timedout",
-            "readtimeout",
             "proxyerror",
         )
     ):
-        # 超时：请求可能已发出。Ollama 本地推理慢，超时多属正常慢而非故障，
-        # 统一归为 connection_error 以触发 URL 切换/短重试（不丢数据）。
         return {"type": "connection_error", "message": full[:2000]}
     if lower.startswith(("4", "5")) and len(lower) >= 3 and lower[1:3].isdigit():
         return {"type": "http_5xx" if lower.startswith("5") else "http_4xx", "message": full[:2000]}
@@ -305,6 +376,9 @@ class LLMClientMixin:
         # 优先用 response.model（实际使用的模型，可能与请求不同，如自动路由）
         actual_model = getattr(response, "model", None) or self.model
         self._accumulate_usage(actual_model, usage_dict)
+        # F11：日配额熔断。响应已返回（已实际消耗 token），按本次用量计数并检查日配额。
+        if usage_dict:
+            await _consume_daily_quota(usage_dict["total_tokens"])
         if content:
             logger.info(f"LLM 返回内容长度: {len(content)}")
         return content or ""
@@ -323,7 +397,27 @@ class LLMClientMixin:
         url_chain = self._url_chain or [self._resolved_url or settings.LLM_BASE_URL]
         last_conn_exc: Optional[Exception] = None
 
-        # 1) 连接类错误：跨候选 URL + 短退避快速重试
+        # F11：全局并发上限。跨所有提取任务共享信号量，超限时在此排队等待，
+        # 防止同一进程内大量并发任务同时打爆 LLM / 本地 Ollama。
+        sem = _get_global_sem()
+        if sem is not None:
+            await sem.acquire()
+        try:
+            return await self._call_llm_api_locked(
+                url_chain, prompt, system_prompt, last_conn_exc
+            )
+        finally:
+            if sem is not None:
+                sem.release()
+
+    async def _call_llm_api_locked(
+        self,
+        url_chain: list[str],
+        prompt: str,
+        system_prompt: str,
+        last_conn_exc: Optional[Exception],
+    ) -> str:
+        """持有全局并发信号量时执行实际的 LLM 调用（见 _call_llm_api）。"""
         for attempt in range(self._connect_retries + 1):
             for url in url_chain:
                 try:
@@ -337,7 +431,14 @@ class LLMClientMixin:
                             f"LLM 连接失败（url={url}, attempt={attempt + 1}）: {err['message'][:300]}"
                         )
                         continue  # 尝试下一个候选 URL
-                    # 非连接错误（认证/HTTP/JSON 等）：走 HTTP 兜底，与历史行为一致
+                    if err["type"] == "read_timeout":
+                        # F12：读响应超时——请求已发出、可能已消耗 token。不得切换 URL 或重试，
+                        # 直接透传，避免双倍计费。
+                        logger.warning(
+                            f"LLM 读响应超时（url={url}）: {err['message'][:300]}，不重试以避免双倍计费"
+                        )
+                        raise e
+                    # 非连接/超时错误（认证/HTTP/JSON 等）：走 HTTP 兜底，与历史行为一致
                     logger.warning(f"LLM API 调用失败（非连接错误）: {err['message'][:300]}，尝试 HTTP 兜底...")
                     return await self._fallback_http_call(prompt, system_prompt)
             # 本轮所有候选 URL 均连接失败：短退避后重试
@@ -410,9 +511,17 @@ class LLMClientMixin:
                                 "total_tokens": usage_raw.get("total_tokens", 0) or 0,
                             },
                         )
+                        # F11：日配额熔断（HTTP 兜底路径同样计数）
+                        await _consume_daily_quota(
+                            int(usage_raw.get("total_tokens", 0) or 0)
+                        )
                     return data["choices"][0]["message"]["content"]
             except Exception as e:
                 last_exc = e
+                if _classify_llm_error(e)["type"] == "read_timeout":
+                    # F12：读响应超时不切换地址，避免同一请求双倍计费
+                    logger.warning(f"HTTP 兜底调用读超时（url={url}），不再切换地址: {e}")
+                    break
                 logger.warning(f"HTTP 兜底调用失败（url={url}）: {_classify_llm_error(e)['message'][:300]}")
                 continue
 

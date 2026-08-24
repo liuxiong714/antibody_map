@@ -25,6 +25,11 @@ antibody_map/
 ├── docs/                           # 文档（ReadTheDocs）
 ├── browser-extension/              # Edge 浏览器插件
 ├── backend/
+│   ├── alembic/                     # 数据库迁移（Alembic）
+│   │   ├── versions/                # 迁移版本文件
+│   │   ├── env.py                   # 迁移环境配置
+│   │   └── script.py.mako           # 迁移模板
+│   ├── alembic.ini                  # Alembic 配置
 │   ├── app/
 │   │   ├── main.py                 # FastAPI 应用入口
 │   │   ├── config.py               # 全局配置 (pydantic-settings)
@@ -44,6 +49,7 @@ antibody_map/
 │   │   ├── models/                 # SQLAlchemy ORM 模型
 │   │   ├── services/               # 业务逻辑层
 │   │   │   ├── analysis/           # 分析服务模块包
+│   │   │   ├── literature/         # 文献服务模块包（导入导出/查重/清理/元数据）
 │   │   │   └── ...
 │   │   ├── schemas/                # Pydantic 数据模型
 │   │   └── tasks/                  # Celery 异步任务

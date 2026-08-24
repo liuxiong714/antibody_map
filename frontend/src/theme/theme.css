@@ -1,0 +1,329 @@
+﻿/* ============================================================
+   theme.css — 科研学术主题（Academic Blue）CSS 变量
+   与 theme.ts 中的 academicColors 保持同步（单一色值源）
+   ============================================================ */
+
+:root {
+  /* 品牌主色（深海军蓝） */
+  --ab-primary: #0a2e6c;
+  --ab-primary-light: #123a7a;
+  --ab-primary-deep: #071f4d;
+  --ab-primary-hover: #123a7a;
+  --ab-primary-active: #071f4d;
+
+  /* 辅助青色 */
+  --ab-accent: #0e7490;
+  --ab-accent-deep: #155e75;
+
+  /* 科技蓝 */
+  --ab-tech-blue: #66ccff;
+  --ab-tech-blue-soft: #8fd4ff;
+  --ab-info-blue: #2b7fd4;
+
+  /* 金色高亮 */
+  --ab-gold: #f59e0b;
+  --ab-gold-light: #fcd34d;
+  --ab-gold-deep: #d97706;
+
+  /* 语义色 */
+  --ab-success: #059669;
+  --ab-warning: #f59e0b;
+  --ab-error: #dc2626;
+  --ab-info: #2b7fd4;
+
+  /* 文字层级 */
+  --ab-text: #1f2937;
+  --ab-text-secondary: #4b5563;
+  --ab-text-tertiary: #8492a6;
+  --ab-text-placeholder: #9ca3af;
+
+  /* 背景 */
+  --ab-bg-layout: #f4f7fb;
+  --ab-bg-container: #ffffff;
+  --ab-bg-input: #f5f7fa;
+  --ab-bg-table-header: #f0f5ff;
+  --ab-bg-hover: #f0f7ff;
+
+  /* 边框 */
+  --ab-border: #d1d5db;
+  --ab-border-light: #e5e7eb;
+
+  /* 品牌渐变（登录按钮 / logo） */
+  --ab-gradient-brand: linear-gradient(135deg, #0a2e6c 0%, #0e7490 100%);
+
+  /* 主色阴影 */
+  --ab-shadow-primary: 0 4px 12px rgba(10, 46, 108, 0.3);
+  --ab-shadow-card: 0 2px 8px rgba(10, 46, 108, 0.06);
+}
+
+/* ============================================================
+   Enhanced 精致版主题 CSS 变量
+   当 data-theme="enhanced" 时，覆盖默认变量
+   ============================================================ */
+
+/* Enhanced 主题变量通过 data-app-theme 属性切换，由 ThemeProvider 注入到 html 上 */
+html[data-app-theme="enhanced"] {
+  /* 品牌主色 */
+  --ab-primary: #0a2e6c;
+  --ab-primary-light: #1a4a8f;
+  --ab-primary-deep: #071f4d;
+  --ab-primary-hover: #123a7a;
+  --ab-primary-active: #061a3d;
+
+  /* 辅助青色 */
+  --ab-accent: #0e7490;
+  --ab-accent-light: #16a3b8;
+  --ab-accent-deep: #155e75;
+
+  /* 科技蓝 */
+  --ab-tech-blue: #66ccff;
+  --ab-tech-blue-soft: #93d5ff;
+  --ab-info-blue: #3b82f6;
+
+  /* 金色高亮 */
+  --ab-gold: #f59e0b;
+  --ab-gold-light: #fcd34d;
+  --ab-gold-deep: #d97706;
+
+  /* 语义色（更饱和） */
+  --ab-success: #10b981;
+  --ab-warning: #f59e0b;
+  --ab-error: #ef4444;
+  --ab-info: #3b82f6;
+
+  /* 文字层级（优化对比度） */
+  --ab-text: #0f172a;
+  --ab-text-secondary: #475569;
+  --ab-text-tertiary: #94a3b8;
+  --ab-text-placeholder: #cbd5e1;
+
+  /* 背景（更干净的灰白） */
+  --ab-bg-layout: #f1f5f9;
+  --ab-bg-container: #ffffff;
+  --ab-bg-input: #f8fafc;
+  --ab-bg-table-header: #f0f7ff;
+  --ab-bg-hover: #f0f7ff;
+
+  /* 边框 */
+  --ab-border: #e2e8f0;
+  --ab-border-light: #f1f5f9;
+
+  /* 品牌渐变 */
+  --ab-gradient-brand: linear-gradient(135deg, #0a2e6c 0%, #0e7490 100%);
+  --ab-gradient-brand-hover: linear-gradient(135deg, #123a7a 0%, #16a3b8 100%);
+
+  /* 阴影层次（多层级） */
+  --ab-shadow-sm: 0 1px 2px rgba(10, 46, 108, 0.05);
+  --ab-shadow-card: 0 2px 10px rgba(10, 46, 108, 0.06);
+  --ab-shadow-md: 0 4px 16px rgba(10, 46, 108, 0.08);
+  --ab-shadow-lg: 0 8px 24px rgba(10, 46, 108, 0.1);
+  --ab-shadow-primary: 0 4px 16px rgba(10, 46, 108, 0.25);
+  --ab-shadow-glow: 0 0 20px rgba(102, 204, 255, 0.3);
+
+  /* 圆角 */
+  --ab-radius-sm: 8px;
+  --ab-radius: 10px;
+  --ab-radius-lg: 14px;
+  --ab-radius-xl: 18px;
+}
+
+/* ============================================================
+   Enhanced 精致版专属样式
+   只在 data-theme="enhanced" 下生效，不影响默认主题
+   ============================================================ */
+
+/* ── Enhanced 侧边栏渐变背景 ── */
+html[data-app-theme="enhanced"] .ant-layout-sider-dark {
+  background: linear-gradient(180deg, #071f4d 0%, #0a2e6c 100%) !important;
+}
+
+/* ── Enhanced 侧边栏 Logo 发光效果 ── */
+html[data-app-theme="enhanced"] .sider-logo {
+  text-shadow: 0 0 20px rgba(102, 204, 255, 0.5);
+}
+
+/* ── Enhanced 侧边栏选中项：左侧科技蓝色条 ── */
+html[data-app-theme="enhanced"] .ant-menu-dark .ant-menu-item-selected {
+  position: relative;
+}
+html[data-app-theme="enhanced"] .ant-menu-dark .ant-menu-item-selected::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 60%;
+  background: #66ccff;
+  border-radius: 0 4px 4px 0;
+  box-shadow: 0 0 10px rgba(102, 204, 255, 0.6);
+}
+
+/* ── Enhanced 主按钮：渐变 + 发光 + 悬停上浮 ── */
+html[data-app-theme="enhanced"] .ant-btn-primary:not(:disabled) {
+  background: linear-gradient(135deg, #0a2e6c 0%, #0e7490 100%) !important;
+  border: none !important;
+  box-shadow: 0 4px 16px rgba(10, 46, 108, 0.25) !important;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+html[data-app-theme="enhanced"] .ant-btn-primary:not(:disabled):hover {
+  background: linear-gradient(135deg, #123a7a 0%, #16a3b8 100%) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(10, 46, 108, 0.35) !important;
+}
+html[data-app-theme="enhanced"] .ant-btn-primary:not(:disabled):active {
+  transform: translateY(0);
+}
+
+/* ── Enhanced 默认按钮：悬停边框品牌色 ── */
+html[data-app-theme="enhanced"] .ant-btn-default:not(:disabled):hover {
+  border-color: #0e7490;
+  color: #0e7490;
+  box-shadow: 0 2px 8px rgba(14, 116, 144, 0.1);
+}
+
+/* ── Enhanced 危险按钮 ── */
+html[data-app-theme="enhanced"] .ant-btn-dangerous.ant-btn-primary:not(:disabled) {
+  background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%) !important;
+  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.25) !important;
+}
+html[data-app-theme="enhanced"] .ant-btn-dangerous.ant-btn-primary:not(:disabled):hover {
+  background: linear-gradient(135deg, #ef4444 0%, #f87171 100%) !important;
+  box-shadow: 0 6px 20px rgba(239, 68, 68, 0.35) !important;
+}
+
+/* ── Enhanced 卡片：悬停阴影加深 ── */
+html[data-app-theme="enhanced"] .ant-card-hoverable:hover {
+  box-shadow: 0 8px 24px rgba(10, 46, 108, 0.12) !important;
+  transform: translateY(-2px);
+}
+
+/* ── Enhanced 卡片标题装饰条 ── */
+html[data-app-theme="enhanced"] .ant-card-head {
+  position: relative;
+  padding-left: 16px;
+}
+html[data-app-theme="enhanced"] .ant-card-head::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 18px;
+  background: linear-gradient(180deg, #0a2e6c 0%, #0e7490 100%);
+  border-radius: 0 3px 3px 0;
+}
+
+/* ── Enhanced 表格表头：更精致 ── */
+html[data-app-theme="enhanced"] .ant-table-thead > tr > th {
+  font-weight: 600;
+  border-bottom: none;
+  background: #f0f7ff !important;
+  color: #0a2e6c;
+}
+
+/* ── Enhanced 表格斑马纹 ── */
+html[data-app-theme="enhanced"] .ant-table-tbody > tr:nth-child(even) > td {
+  background: #fafdff;
+}
+html[data-app-theme="enhanced"] .ant-table-tbody > tr:nth-child(even):hover > td {
+  background: #f0f7ff !important;
+}
+
+/* ── Enhanced Tag/徽章：胶囊造型 ── */
+html[data-app-theme="enhanced"] .ant-tag {
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 12px;
+  border: none;
+}
+html[data-app-theme="enhanced"] .ant-tag-green {
+  background: rgba(16, 185, 129, 0.1);
+  color: #059669;
+}
+html[data-app-theme="enhanced"] .ant-tag-red {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+html[data-app-theme="enhanced"] .ant-tag-gold,
+html[data-app-theme="enhanced"] .ant-tag-orange {
+  background: rgba(245, 158, 11, 0.1);
+  color: #d97706;
+}
+html[data-app-theme="enhanced"] .ant-tag-blue {
+  background: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+}
+html[data-app-theme="enhanced"] .ant-tag-purple {
+  background: rgba(139, 92, 246, 0.1);
+  color: #7c3aed;
+}
+html[data-app-theme="enhanced"] .ant-tag-cyan {
+  background: rgba(6, 182, 212, 0.1);
+  color: #0891b2;
+}
+html[data-app-theme="enhanced"] .ant-tag-default {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+/* ── Enhanced Badge 状态点 ── */
+html[data-app-theme="enhanced"] .ant-badge-status-dot {
+  width: 8px;
+  height: 8px;
+}
+
+/* ── Enhanced 输入框聚焦发光 ── */
+html[data-app-theme="enhanced"] .ant-input-affix-wrapper-focused,
+html[data-app-theme="enhanced"] .ant-input-focused,
+html[data-app-theme="enhanced"] .ant-input:focus {
+  box-shadow: 0 0 0 3px rgba(102, 204, 255, 0.15) !important;
+  border-color: #0e7490 !important;
+}
+
+/* ── Enhanced 进度条：微光扫描效果 ── */
+html[data-app-theme="enhanced"] .ant-progress-bg {
+  position: relative;
+  overflow: hidden;
+}
+html[data-app-theme="enhanced"] .ant-progress-bg::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.3) 50%,
+    transparent 100%
+  );
+  animation: shimmer 2.5s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% { left: -100%; }
+  100% { left: 200%; }
+}
+
+/* ── Enhanced 处理中徽章：呼吸动画 ── */
+html[data-app-theme="enhanced"] .ant-badge-status-processing .ant-badge-status-dot {
+  animation: pulse-badge 1.5s ease-in-out infinite;
+}
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(22, 119, 255, 0.4); }
+  50% { opacity: 0.7; box-shadow: 0 0 0 6px rgba(22, 119, 255, 0); }
+}
+
+/* ── Enhanced 悬停过渡统一 ── */
+html[data-app-theme="enhanced"] .ant-btn,
+html[data-app-theme="enhanced"] .ant-card,
+html[data-app-theme="enhanced"] .ant-tag,
+html[data-app-theme="enhanced"] .ant-menu-item,
+html[data-app-theme="enhanced"] .ant-table-row,
+html[data-app-theme="enhanced"] .ant-select-selector,
+html[data-app-theme="enhanced"] .ant-input,
+html[data-app-theme="enhanced"] .ant-tabs-tab {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}

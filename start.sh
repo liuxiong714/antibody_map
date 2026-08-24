@@ -97,28 +97,42 @@ echo -e "${YELLOW}[4/4] 等待服务就绪...${NC}"
 
 # 等待后端
 echo "  等待后端..."
+BACKEND_READY=0
 for i in $(seq 1 30); do
     if curl -s "http://localhost:${BACKEND_PORT}/docs" > /dev/null 2>&1; then
         echo -e "  ${GREEN}后端就绪${NC}"
+        BACKEND_READY=1
         break
     fi
     sleep 1
 done
+if [ "$BACKEND_READY" != "1" ]; then
+    echo -e "  ${RED}后端 ${BACKEND_PORT} 端口 30 秒内未就绪，请检查后端日志${NC}"
+fi
 
 # 等待前端
 echo "  等待前端..."
+FRONTEND_READY=0
 for i in $(seq 1 30); do
     if curl -s "http://localhost:${FRONTEND_PORT}" > /dev/null 2>&1; then
         echo -e "  ${GREEN}前端就绪${NC}"
+        FRONTEND_READY=1
         break
     fi
     sleep 1
 done
+if [ "$FRONTEND_READY" != "1" ]; then
+    echo -e "  ${RED}前端 ${FRONTEND_PORT} 端口 30 秒内未就绪，请检查前端日志${NC}"
+fi
 
 # 打开浏览器
 echo ""
 echo -e "${GREEN}============================================${NC}"
-echo -e "${GREEN}  服务启动完成！${NC}"
+if [ "$BACKEND_READY" = "1" ] && [ "$FRONTEND_READY" = "1" ]; then
+    echo -e "${GREEN}  服务启动完成！${NC}"
+else
+    echo -e "${YELLOW}  服务启动部分完成（后端就绪:$BACKEND_READY 前端就绪:$FRONTEND_READY），请检查上方警告${NC}"
+fi
 echo -e "${GREEN}  前端页面: ${FRONTEND_URL}${NC}"
 echo -e "${GREEN}  后端文档: http://localhost:${BACKEND_PORT}/docs${NC}"
 echo -e "${GREEN}============================================${NC}"
@@ -137,12 +151,24 @@ elif command -v open &>/dev/null; then
     open "${FRONTEND_URL}"
 fi
 
-# 清理：脚本退出时关闭服务
+# 清理：脚本退出时关闭服务（递归杀子进程，避免 --reload/vite 子进程残留）
+kill_tree() {
+    local pid=$1
+    [ -z "$pid" ] && return
+    # 先杀子进程（uvicorn --reload 的 reloader 子进程、npm 派生的 vite/node）
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 1
+    # 残留进程强杀
+    pkill -9 -P "$pid" 2>/dev/null || true
+    kill -9 "$pid" 2>/dev/null || true
+}
+
 cleanup() {
     echo ""
     echo "关闭服务..."
-    kill $BACKEND_PID 2>/dev/null || true
-    kill $FRONTEND_PID 2>/dev/null || true
+    kill_tree $BACKEND_PID
+    kill_tree $FRONTEND_PID
     echo "已关闭"
 }
 trap cleanup EXIT

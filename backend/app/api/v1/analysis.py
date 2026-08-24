@@ -625,31 +625,36 @@ async def export_analysis(
     age_min: Optional[int] = Query(None, description="最小年龄"),
     age_max: Optional[int] = Query(None, description="最大年龄"),
     data_type: Optional[str] = Query(None, description="数据类型"),
-    db: AsyncSession = Depends(get_db),
 ):
     """导出分析数据为 Excel 多 sheet"""
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
 
-    # 并行获取所有分析数据
+    # 并行获取所有分析数据（每个任务使用独立 AsyncSession，避免共享 session 并发不安全）
     import asyncio
+    from app.models.base import async_session
+
+    async def _run(fn, **kw):
+        async with async_session() as s:
+            return await fn(db=s, **kw)
+
     trend_data, region_data, age_data, summary_data, approved_result = await asyncio.gather(
-        analysis_service.get_trend(db=db, disease=disease, province=province,
-                                    year_start=year_start, year_end=year_end,
-                                    age_min=age_min, age_max=age_max, data_type=data_type),
-        analysis_service.get_region_compare(db=db, disease=disease, province=province,
-                                             year_start=year_start, year_end=year_end,
-                                             age_min=age_min, age_max=age_max, data_type=data_type),
-        analysis_service.get_age_stratify(db=db, disease=disease, province=province,
-                                           year_start=year_start, year_end=year_end,
-                                           age_min=age_min, age_max=age_max, data_type=data_type),
-        analysis_service.get_summary(db=db, disease=disease, province=province,
-                                      year_start=year_start, year_end=year_end,
-                                      age_min=age_min, age_max=age_max, data_type=data_type),
-        analysis_service.get_approved_data_points(db=db, disease=disease, province=province,
-                                                   year_start=year_start, year_end=year_end,
-                                                   age_min=age_min, age_max=age_max,
-                                                   data_type=data_type, offset=0, limit=10000),
+        _run(analysis_service.get_trend, disease=disease, province=province,
+             year_start=year_start, year_end=year_end,
+             age_min=age_min, age_max=age_max, data_type=data_type),
+        _run(analysis_service.get_region_compare, disease=disease, province=province,
+             year_start=year_start, year_end=year_end,
+             age_min=age_min, age_max=age_max, data_type=data_type),
+        _run(analysis_service.get_age_stratify, disease=disease, province=province,
+             year_start=year_start, year_end=year_end,
+             age_min=age_min, age_max=age_max, data_type=data_type),
+        _run(analysis_service.get_summary, disease=disease, province=province,
+             year_start=year_start, year_end=year_end,
+             age_min=age_min, age_max=age_max, data_type=data_type),
+        _run(analysis_service.get_approved_data_points, disease=disease, province=province,
+             year_start=year_start, year_end=year_end,
+             age_min=age_min, age_max=age_max, data_type=data_type,
+             offset=0, limit=10000),
     )
     approved_items, _ = approved_result
 
@@ -753,7 +758,8 @@ async def get_foi_herd_immunity(
 
 
 @router.get("/analysis/vaccine-effectiveness-coverage", response_model=ApiResponse, summary="疫苗效果和接种率分析", description="P1：分析疫苗效果（VE）和接种覆盖率，计算VE，返回省×疾病覆盖率矩阵，判断接种进度是否达标")
-@with_snapshot("vaccine", filter_keys=("disease", "province", "year_start", "year_end"))
+@with_snapshot("vaccine", filter_keys=("disease", "province", "year_start", "year_end"),
+               include_subgroups=True)
 async def get_vaccine_ve_coverage(
     disease: Optional[str] = Query(None, description="疾病筛选（不传则全库分析）"),
     province: Optional[str] = Query(None, description="省份筛选"),

@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_access_token
-from app.core.token_revocation import is_token_revoked
+from app.core.token_revocation import is_token_revoked, token_issued_before_password_change
 from app.models.base import async_session
 from app.models.user import User
 
@@ -42,6 +42,10 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
+
+    # F3：令牌签发时间早于用户最近一次改密 → 视为已吊销，强制重新登录
+    if token_issued_before_password_change(payload.get("iat"), user.password_changed_at):
+        raise HTTPException(status_code=401, detail="密码已变更，请重新登录")
 
     return user
 

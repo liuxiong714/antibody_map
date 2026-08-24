@@ -5,8 +5,9 @@ FROM node:20-alpine AS build
 WORKDIR /app
 
 # 先复制依赖清单，利用层缓存加速
+# 用 npm ci（而非 npm install）严格按 package-lock.json 安装，保证每次构建依赖可复现
 COPY frontend/package*.json ./
-RUN npm install
+RUN npm ci
 
 # 复制源码并构建
 COPY frontend/ ./

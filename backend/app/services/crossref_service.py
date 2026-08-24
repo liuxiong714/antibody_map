@@ -7,27 +7,17 @@
 import html
 import logging
 import re
-from typing import Optional
 from urllib.parse import quote
 
-import httpx
+from app.core.external_http import get_json
 
 logger = logging.getLogger("uvicorn")
 
 _CROSSREF_API = "https://api.crossref.org/works"
 _MAILTO = "research@example.com"
-_REQUEST_TIMEOUT = 60
 
 # 简单去 HTML 标签（Crossref 的 abstract 常含 <jats:p> 等标签）
 _TAG_RE = re.compile(r"<[^>]+>")
-
-
-async def _http_get_json(url: str) -> dict:
-    """GET 请求并解析 JSON；失败抛异常。"""
-    async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return resp.json()
 
 
 def _clean_abstract(raw: str) -> str:
@@ -100,7 +90,7 @@ async def search_crossref(query: str, page: int = 1, page_size: int = 20) -> dic
         f"&rows={rows}&offset={offset}&mailto={_MAILTO}"
     )
     try:
-        data = await _http_get_json(url)
+        data = await get_json(url)
     except Exception as e:
         logger.warning(f"[Crossref] 检索失败 q={query!r}: {e}")
         return {"items": [], "total": 0, "page": page, "page_size": page_size}

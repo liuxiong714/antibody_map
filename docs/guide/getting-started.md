@@ -69,7 +69,7 @@ bash start.sh
 # 1. 启动基础设施
 docker compose up -d
 
-# 2. 后端 (端口 8080)
+# 2. 后端 (手动部署端口 8080；Docker Compose 部署端口 8000)
 cd backend
 pip install -r requirements.txt
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8080 --reload

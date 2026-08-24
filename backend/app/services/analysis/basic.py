@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
+from app.config import settings
 from app.core.term_normalizer import normalize_disease, normalize_province
 from app.core.methodology import build_methodology_note
 from app.core.stats import (
@@ -208,6 +209,19 @@ async def get_region_compare(
             "gmc_ci_upper": gmc_res["ci_upper"],
             "point_count": len(group_rows),
             "total_samples": meta_info["total_sample"],
+            # 4.5：最小样本护栏——研究数/样本量不足时标记证据不足，避免误导
+            "evidence_insufficient": (
+                len(group_rows) < settings.MIN_STUDIES_FOR_META
+                or (meta_info["total_sample"] or 0) < settings.MIN_SAMPLE_FOR_META
+            ),
+            "evidence_note": (
+                "研究数不足或累计样本量过小，合并值仅供参考"
+                if (
+                    len(group_rows) < settings.MIN_STUDIES_FOR_META
+                    or (meta_info["total_sample"] or 0) < settings.MIN_SAMPLE_FOR_META
+                )
+                else None
+            ),
             "asr": asr_res["asr"],
             "asr_ci_lower": asr_res["asr_ci_lower"],
             "asr_ci_upper": asr_res["asr_ci_upper"],

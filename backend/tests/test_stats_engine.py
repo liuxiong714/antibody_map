@@ -79,6 +79,12 @@ class TestBinomialCI:
         assert lo is not None and hi is not None
         assert hi <= 1.0
 
+    def test_x_none_returns_none(self):
+        # F29：阳性数缺失（None）时不得按 0 处理，应返回 (None, None)
+        assert binomial_ci(x=None, n=100) == (None, None)
+        assert binomial_ci(x=None, n=10) == (None, None)
+        assert binomial_ci(x=None, n=None) == (None, None)
+
     def test_auto_splits_by_sample_size_fixed_seed(self):
         # 固定随机种子：auto 与显式方法分流一致
         rng = random.Random(20260816)
@@ -185,6 +191,21 @@ class TestGMCCI:
         res = gmc_ci([10, 100, 1000], weights=[100, None, 100])
         assert res["n"] == 2
         assert res["n_dropped"] == 1
+
+    def test_extreme_input_overflow_returns_none_not_inf(self):
+        # F37：极端输入（值达 inf）→ 返回 None 而非 inf，避免 JSON 序列化非法
+        res = gmc_ci([1e309, 1e309, 1e309])   # float 字面量 → inf
+        assert res["gmc"] is None
+        assert res["ci_lower"] is None
+        assert res["ci_upper"] is None
+
+    def test_ci_upper_overflow_returns_none(self):
+        # F37：均值可算但 CI 上界溢出 → 上界置 None，点估计保留
+        res = gmc_ci([1e-300, 1e300])
+        assert res["gmc"] is not None
+        assert res["gmc"] == pytest.approx(1.0, abs=1e-3)
+        assert res["ci_upper"] is None
+        assert res["ci_lower"] is not None
 
 
 class TestProportionTestCI:
@@ -578,6 +599,18 @@ class TestDirectStandardize:
         # crude = 样本量加权 = 0.5
         assert res["crude"] == pytest.approx(50.0, abs=1e-4)
 
+    def test_asr_ci_clamped_to_0_100(self):
+        # F36：ASR 置信区间必须钳制在 [0, 100]，极端率下也不可越界
+        strata = [("5-14", 0.01, 1000), ("25-34", 0.02, 2000), ("55-64", 0.03, 1500)]
+        res = direct_standardize(strata, alpha=0.05)
+        assert res["asr_ci_lower"] >= 0.0
+        assert res["asr_ci_upper"] <= 100.0
+        assert res["asr_ci_lower"] <= res["asr_ci_upper"]
+        # 极端边缘层（率 0 或 1）也不越界
+        edge = direct_standardize([("5-14", 0.0, 100), ("25-34", 1.0, 100), ("55-64", 0.5, 100)])
+        assert edge["asr_ci_lower"] >= 0.0
+        assert edge["asr_ci_upper"] <= 100.0
+
 
 class TestSpatialHotspots:
     """空间统计：Moran's I 全局自相关 + Getis-Ord Gi* 局部热点。
@@ -640,6 +673,20 @@ class TestSpatialHotspots:
         west_z = gi[0]["gi_z"]  # 第一行第一列（西侧低值）
         assert east_z > west_z
         assert all({"gi_z", "p"} <= set(item) for item in gi)
+
+    def test_g_star_returns_p_fdr(self):
+        # F33：多检验 Benjamini-Hochberg FDR 校正 → 每省返回 p_fdr，且校正后值不降低原 p
+        import numpy as np
+        np.random.seed(7)
+        w = self._grid_w()
+        gi = g_star(self._east_high_west_low(), w)
+        assert gi is not None
+        assert len(gi) == 16
+        for item in gi:
+            assert "p_fdr" in item
+            assert 0.0 <= item["p_fdr"] <= 1.0
+            # BH 校正只会放大（不降）p 值：p_fdr = min(1, p * m / rank) >= p
+            assert item["p_fdr"] >= item["p"] - 1e-9
 
     def test_less_than_8_valid_returns_none(self):
         import numpy as np

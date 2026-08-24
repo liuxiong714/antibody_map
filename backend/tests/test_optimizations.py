@@ -29,7 +29,11 @@ from app.core.extraction_grounding import (
     _fuzzy_match,
     GroundingResult,
 )
-from app.tasks.extract_task import _compute_age_group, _table_hash_cache
+from app.tasks.extract_task import (
+    _build_extraction_cache_key,
+    _compute_age_group,
+    _table_hash_cache,
+)
 
 
 # ── A4：age_group 自动填充 ──────────────────────────
@@ -236,6 +240,38 @@ def test_config_has_optimization_settings():
     assert hasattr(settings, "LLM_ADAPTIVE_PASSES")
     assert hasattr(settings, "LLM_FEEDBACK_FEW_SHOT")
     assert hasattr(settings, "LLM_FEEDBACK_FEW_SHOT_COUNT")
+
+
+# ── 提取结果缓存 key（全文哈希指纹）────────────────
+def _l1000_same_tail_diff():
+    """前 1000 字符完全相同、尾部不同的两段文本。"""
+    head = "A" * 1000
+    return head + ("<DATA1> 唯一尾部内容一，GMC 阳性率 50%"), head + ("<DATA2> 唯一尾部内容二，GMC 阳性率 80%")
+
+
+def test_cache_key_differs_on_tail_change_same_lit():
+    """同文献同参数：仅尾部内容变化应生成不同 key（关键 bug 修复）。"""
+    t1, t2 = _l1000_same_tail_diff()
+    k1 = _build_extraction_cache_key("lit-1", "qwen", 1, 20000, t1)
+    k2 = _build_extraction_cache_key("lit-1", "qwen", 1, 20000, t2)
+    assert k1 != k2
+
+
+def test_cache_key_differs_between_literatures_same_head():
+    """不同文献：即使前 1000 字符完全相同也不应相互命中（回归保护）。"""
+    t1, t2 = _l1000_same_tail_diff()
+    k1 = _build_extraction_cache_key("lit-1", "qwen", 1, 20000, t1)
+    k2 = _build_extraction_cache_key("lit-2", "qwen", 1, 20000, t1)
+    assert k1 != k2
+
+
+def test_cache_key_differs_on_params():
+    """参数变化应使 key 变化。"""
+    _, text = _l1000_same_tail_diff()
+    assert _build_extraction_cache_key("lit-1", "qwen", 1, 20000, text) != \
+        _build_extraction_cache_key("lit-1", "qwen", 2, 20000, text)
+    assert _build_extraction_cache_key("lit-1", "qwen", 1, 20000, text) != \
+        _build_extraction_cache_key("lit-1", "deepseek", 1, 20000, text)
 
 
 # ── 运行所有测试 ─────────────────────────────────────

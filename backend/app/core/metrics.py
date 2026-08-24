@@ -80,6 +80,11 @@ def _init_metrics() -> dict:
             "Number of data points by review status and disease.",
             ["review_status", "disease"],
         ),
+        "orphan_cleanup_orphan_total": Gauge(
+            "orphan_cleanup_orphan_total",
+            "Number of orphan files/objects detected by cleanup scan, by storage.",
+            ["storage"],
+        ),
     }
     _METRICS.update(metrics)
     return _METRICS
@@ -171,6 +176,16 @@ def observe_extraction_duration(model: str, seconds: float) -> None:
     if m is not None:
         try:
             m.labels(model=model).observe(seconds)
+        except Exception:
+            pass
+
+
+def record_orphan_scan(storage: str, count: int) -> None:
+    """记录一次孤儿扫描结果（storage ∈ local / minio），用于 /metrics 观测。"""
+    m = _metric("orphan_cleanup_orphan_total")
+    if m is not None:
+        try:
+            m.labels(storage=storage).set(count)
         except Exception:
             pass
 

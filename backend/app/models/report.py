@@ -31,6 +31,9 @@ class Report(Base):
     personnel_vaccination_history: Mapped[Optional[str]] = mapped_column(Text)
     # 生成报告使用的 LLM 模型
     llm_model: Mapped[Optional[str]] = mapped_column(String(100))
+    # 生成报告所依据的数据快照指纹：对底层审核通过数据点做稳定 hash，
+    # 用于校验历史报告的可复现性（底层数据变更后同一报告内容不再被误判为一致）
+    data_snapshot_hash: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

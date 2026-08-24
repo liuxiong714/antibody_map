@@ -14,18 +14,19 @@ from docx.shared import Inches, Pt, Cm, RGBColor
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, get_current_user
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
+from app.models.titer_table import TiterTable
 from app.models.api_model_config import ApiModelConfig
 from app.models.user import User
-from app.schemas.common import ApiResponse
+from app.schemas.common import ApiResponse, PagedResponse
 from app.services.literature_service import LOCAL_STORAGE_DIR
 from app.services.extraction_service import (
     trigger_extraction,
@@ -39,6 +40,7 @@ from app.core.traceability_html import (
     generate_traceability_html,
     datapoint_dict_to_trace,
 )
+from app.core.audit import log_audit
 
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES
 from app.tasks.quality_task import score_data_point_task
@@ -118,7 +120,7 @@ class ExtractionRequest(BaseModel):
     model_config_id: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
-    clear_existing_data: bool = True
+    clear_existing_data: bool = False
     # 是否使用 Redis 提取结果缓存；False 时强制重新提取（跳过 LLM 缓存）
     use_cache: bool = True
 
@@ -130,7 +132,7 @@ class BatchExtractionRequest(BaseModel):
     model_config_id: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
-    clear_existing_data: bool = True
+    clear_existing_data: bool = False
     # 是否使用 Redis 提取结果缓存；False 时强制重新提取
     use_cache: bool = True
 
@@ -173,7 +175,7 @@ async def start_extraction(
         model_config_id = req.model_config_id if req else None
         api_key = req.api_key if req else None
         base_url = req.base_url if req else None
-        clear_existing = req.clear_existing_data if req else True
+        clear_existing = req.clear_existing_data if req else False
         use_cache = req.use_cache if req else True
         result = await trigger_extraction(db, literature_id, model, api_key, base_url, model_config_id, clear_existing, use_cache)
         return ApiResponse(message="提取任务已提交", data=result)
@@ -524,6 +526,7 @@ async def create_data_point(
     literature_id: uuid.UUID,
     req: CreateDataPointRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """手动新增数据点"""
     # 验证文献存在
@@ -570,6 +573,32 @@ async def create_data_point(
 
     await db.commit()
 
+    # 4.2：记录数据点新增审计（独立会话自行提交，失败不影响主流程）
+    await log_audit(
+        db,
+        "data_point_create",
+        user_id=str(current_user.id),
+        username=current_user.username,
+        target=f"literature/{literature_id}",
+        detail={"literature_id": str(literature_id), "disease": req.disease, "value": req.value},
+        entity_type="data_point",
+        entity_id=str(dp.id),
+        new_value={
+            "disease": dp.disease,
+            "province": dp.province,
+            "city": dp.city,
+            "data_type": dp.data_type,
+            "value": dp.value,
+            "unit": dp.unit,
+            "sample_size": dp.sample_size,
+            "population": dp.population,
+            "confidence": dp.confidence,
+            "method": dp.method,
+            "assay": dp.assay,
+            "collection_year": dp.collection_year,
+        },
+    )
+
     return ApiResponse(
         message="数据点已添加",
         data={"id": str(dp.id)},
@@ -594,12 +623,31 @@ async def update_data_points(
         # P0 新增：精确字符级溯源
         "source_char_start", "source_char_end", "is_grounded",
     ]
+    # 4.2：可审计字段（可编辑字段 + 审核状态 + 审核意见）
+    audit_fields = editable_fields + ["review_status", "review_comment"]
+
+    # 4.2：预取将被更新的数据点旧值，用于生成变更 diff（审计）
+    ids_to_update = [uuid.UUID(item.id) for item in req.data_points]
+    old_rows = []
+    if ids_to_update:
+        old_result = await db.execute(
+            select(DataPoint).where(
+                DataPoint.id.in_(ids_to_update),
+                DataPoint.literature_id == literature_id,
+            )
+        )
+        old_rows = old_result.scalars().all()
+    old_by_id = {str(d.id): d for d in old_rows}
 
     now = datetime.now(timezone.utc)
+    # 4.2：待写审计条目（提交后再落库，独立会话）
+    audit_entries: list[dict[str, Any]] = []
 
     for item in req.data_points:
         # 构建要更新的字段
         values: dict[str, Any] = {}
+        dp_id = uuid.UUID(item.id)
+        old = old_by_id.get(str(item.id))
 
         # 审核状态（写入审核人/审核时间）
         if item.review_status:
@@ -624,12 +672,37 @@ async def update_data_points(
 
         stmt = (
             update(DataPoint)
-            .where(DataPoint.id == uuid.UUID(item.id))
+            .where(DataPoint.id == dp_id)
             .where(DataPoint.literature_id == literature_id)
             .values(**values)
         )
         await db.execute(stmt)
         updated.append(item.id)
+
+        # 4.2：生成本次变更 diff（仅记录实际变化的字段）
+        if old is not None:
+            old_diff: dict[str, Any] = {}
+            new_diff: dict[str, Any] = {}
+            for field in audit_fields:
+                if field in values:
+                    ov = getattr(old, field, None)
+                    nv = values[field]
+                    # 兼容 UUID（reviewer_id 等）
+                    if isinstance(ov, uuid.UUID):
+                        ov = str(ov)
+                    if isinstance(nv, uuid.UUID):
+                        nv = str(nv)
+                    if ov != nv:
+                        old_diff[field] = ov
+                        new_diff[field] = nv
+            audit_entries.append(
+                {
+                    "action": "data_point_review" if item.review_status else "data_point_update",
+                    "entity_id": str(dp_id),
+                    "old_diff": old_diff,
+                    "new_diff": new_diff,
+                }
+            )
 
     # 如果有审核状态变更，同步 literature.approved_count（修复审核状态显示不正确的问题）
     has_review_change = any(item.review_status for item in req.data_points)
@@ -637,6 +710,20 @@ async def update_data_points(
         await _sync_approved_count(db, literature_id)
 
     await db.commit()
+
+    # 4.2：数据点变更审计（独立会话，失败降级不影响主流程）
+    for entry in audit_entries:
+        await log_audit(
+            db,
+            entry["action"],
+            user_id=str(current_user.id),
+            username=current_user.username,
+            target=f"literature/{literature_id}",
+            entity_type="data_point",
+            entity_id=entry["entity_id"],
+            old_value=entry["old_diff"],
+            new_value=entry["new_diff"],
+        )
 
     # 审核通过后异步质量打分（幂等，全文可用后精打覆盖）
     approved_ids = [
@@ -664,6 +751,20 @@ async def batch_confirm(
     await _sync_approved_count(db, literature_id)
     await db.commit()
 
+    # 4.2：批量审核通过审计
+    for dp_id in req.ids:
+        await log_audit(
+            db,
+            "data_point_review",
+            user_id=str(current_user.id),
+            username=current_user.username,
+            target=f"literature/{literature_id}",
+            detail={"review_status": "approved", "review_comment": comment},
+            entity_type="data_point",
+            entity_id=str(dp_id),
+            new_value={"review_status": "approved", "review_comment": comment},
+        )
+
     # 审核通过后异步质量打分（幂等，全文可用后精打覆盖）
     for dp_id in req.ids:
         score_data_point_task.delay(dp_id)
@@ -689,6 +790,20 @@ async def batch_dispute(
 
     await _sync_approved_count(db, literature_id)
     await db.commit()
+
+    # 4.2：批量驳回审计
+    for dp_id in req.ids:
+        await log_audit(
+            db,
+            "data_point_review",
+            user_id=str(current_user.id),
+            username=current_user.username,
+            target=f"literature/{literature_id}",
+            detail={"review_status": "rejected", "review_comment": comment},
+            entity_type="data_point",
+            entity_id=str(dp_id),
+            new_value={"review_status": "rejected", "review_comment": comment},
+        )
 
     return ApiResponse(message=f"已批量驳回 {result} 个数据点", data={"note": comment})
 
@@ -1070,3 +1185,224 @@ async def get_extraction_queue_status(db: AsyncSession = Depends(get_db)):
         "queued_literatures": queued_list,
         "processing_literatures": processing_list,
     })
+
+
+# ---------------------------------------------------------------------------
+# F15：审核队列（跨文献待审/已驳回数据点，按置信度与质量分排序，低置信优先）
+# ---------------------------------------------------------------------------
+_CONFIDENCE_RANK = case(
+    (DataPoint.confidence == "high", 3),
+    (DataPoint.confidence == "medium", 2),
+    (DataPoint.confidence == "low", 1),
+    else_=2,
+)
+
+
+def _serialize_review_dp(dp: DataPoint, literature_title: Optional[str]) -> dict:
+    """审核队列数据点序列化（与 get_extraction_results 字段对齐，附加文献标题）。"""
+    return {
+        "id": str(dp.id),
+        "literature_id": str(dp.literature_id),
+        "literature_title": literature_title or "",
+        "disease": dp.disease,
+        "region": dp.region,
+        "province": dp.province,
+        "city": dp.city,
+        "data_type": dp.data_type,
+        "value": float(dp.value) if dp.value else None,
+        "unit": dp.unit,
+        "ci_lower": float(dp.ci_lower) if dp.ci_lower else None,
+        "ci_upper": float(dp.ci_upper) if dp.ci_upper else None,
+        "sample_size": dp.sample_size,
+        "method": dp.method,
+        "assay": dp.assay,
+        "population": dp.population,
+        "age_min": dp.age_min,
+        "age_max": dp.age_max,
+        "collection_year": dp.collection_year,
+        "source_page": dp.source_page,
+        "source_context": dp.source_context,
+        "is_grounded": bool(dp.is_grounded),
+        "confidence": dp.confidence,
+        "review_status": dp.review_status,
+        "review_comment": dp.review_comment,
+        "quality_score": dp.quality_score,
+        "quality_grade": dp.quality_grade,
+        "estimate_grade": dp.estimate_grade,
+        "created_at": dp.created_at.isoformat() if dp.created_at else None,
+    }
+
+
+@router.get("/extractions/review-queue", response_model=PagedResponse, summary="审核队列",
+            description="跨文献列出待审核(pending)/已驳回(rejected)的数据点，按置信度（低→高）与质量分（低→高）排序，低置信低质量优先审核")
+async def get_review_queue(
+    review_status: Optional[str] = Query(None, description="pending/rejected/all；默认 pending"),
+    data_type: Optional[str] = Query(None, description="seroprevalence/gmc"),
+    disease: Optional[str] = Query(None, description="疾病关键词模糊匹配"),
+    literature_id: Optional[uuid.UUID] = Query(None, description="限定文献"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    status = (review_status or "pending").strip().lower()
+    if status not in ("pending", "rejected", "all"):
+        raise HTTPException(status_code=400, detail="无效的审核状态（pending/rejected/all）")
+
+    base = (
+        select(DataPoint, Literature.title)
+        .join(Literature, DataPoint.literature_id == Literature.id)
+        .where(Literature.deleted_at.is_(None))
+    )
+    if status == "all":
+        base = base.where(DataPoint.review_status.in_(["pending", "rejected"]))
+    else:
+        base = base.where(DataPoint.review_status == status)
+    if data_type:
+        base = base.where(DataPoint.data_type == data_type)
+    if disease:
+        base = base.where(DataPoint.disease.ilike(f"%{disease}%"))
+    if literature_id:
+        base = base.where(DataPoint.literature_id == literature_id)
+
+    total = (
+        await db.execute(
+            select(func.count())
+            .select_from(base.subquery())
+        )
+    ).scalar_one()
+
+    rows = (
+        await db.execute(
+            base.order_by(
+                _CONFIDENCE_RANK.asc(),
+                DataPoint.quality_score.asc().nulls_last(),
+                DataPoint.created_at.asc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+
+    items = [_serialize_review_dp(dp, title) for dp, title in rows]
+    return PagedResponse(
+        items=items, total=total, page=page, page_size=page_size,
+        message=f"审核队列：{total} 条",
+    )
+
+
+# ---------------------------------------------------------------------------
+# F16：滴度矩阵审核（titer_table 落库后的人工审核衔接）
+# ---------------------------------------------------------------------------
+@router.get("/titer-tables/review-queue", response_model=PagedResponse, summary="滴度矩阵审核队列",
+            description="跨文献列出待审核/已驳回的滴度矩阵，按置信度（低→高）排序，供人工审核")
+async def get_titer_review_queue(
+    review_status: Optional[str] = Query(None, description="pending/rejected/all；默认 pending"),
+    assay_type: Optional[str] = Query(None, description="hi/vnt/elisa"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    status = (review_status or "pending").strip().lower()
+    if status not in ("pending", "rejected", "all"):
+        raise HTTPException(status_code=400, detail="无效的审核状态（pending/rejected/all）")
+
+    base = (
+        select(TiterTable, Literature.title)
+        .join(Literature, TiterTable.literature_id == Literature.id)
+        .where(Literature.deleted_at.is_(None))
+    )
+    if status == "all":
+        base = base.where(TiterTable.review_status.in_(["pending", "rejected"]))
+    else:
+        base = base.where(TiterTable.review_status == status)
+    if assay_type:
+        base = base.where(TiterTable.assay_type == assay_type)
+
+    total = (
+        await db.execute(select(func.count()).select_from(base.subquery()))
+    ).scalar_one()
+
+    titer_rank = case(
+        (TiterTable.confidence == "high", 3),
+        (TiterTable.confidence == "medium", 2),
+        (TiterTable.confidence == "low", 1),
+        else_=2,
+    )
+    rows = (
+        await db.execute(
+            base.order_by(titer_rank.asc(), TiterTable.created_at.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+
+    items = [
+        {
+            "id": str(tt.id),
+            "literature_id": str(tt.literature_id),
+            "literature_title": title or "",
+            "assay_type": tt.assay_type,
+            "ref_antisera": tt.ref_antisera,
+            "antigens": tt.antigens,
+            "titers": tt.titers,
+            "unit": tt.unit,
+            "quality_score": tt.quality_score,
+            "source_page": tt.source_page,
+            "source_context": tt.source_context,
+            "confidence": tt.confidence,
+            "review_status": tt.review_status,
+            "review_comment": tt.review_comment,
+            "created_at": tt.created_at.isoformat() if tt.created_at else None,
+        }
+        for tt, title in rows
+    ]
+    return PagedResponse(
+        items=items, total=total, page=page, page_size=page_size,
+        message=f"滴度矩阵审核队列：{total} 条",
+    )
+
+
+class TiterReviewRequest(BaseModel):
+    review_status: str  # approved / rejected
+    review_comment: Optional[str] = None
+
+
+@router.put("/titer-tables/{titer_table_id}/review", response_model=ApiResponse, summary="审核滴度矩阵",
+            description="审核通过/驳回指定滴度矩阵，写入审核状态与审核意见")
+async def review_titer_table(
+    titer_table_id: uuid.UUID,
+    req: TiterReviewRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if req.review_status not in ("approved", "rejected"):
+        raise HTTPException(status_code=400, detail="无效的审核状态（approved/rejected）")
+    if req.review_status == "rejected" and not (req.review_comment or "").strip():
+        raise HTTPException(status_code=400, detail="驳回必须填写审核意见")
+
+    tt = await db.get(TiterTable, titer_table_id)
+    if tt is None:
+        raise HTTPException(status_code=404, detail="滴度矩阵不存在")
+
+    old_status = tt.review_status
+    tt.review_status = req.review_status
+    tt.review_comment = req.review_comment
+    await db.commit()
+
+    try:
+        await log_audit(
+            db, "titer_table_review",
+            user_id=str(current_user.id),
+            entity_type="titer_table", entity_id=str(tt.id),
+            old_value={"review_status": old_status},
+            new_value={"review_status": req.review_status, "review_comment": req.review_comment},
+        )
+    except Exception as e:
+        logger.warning(f"滴度矩阵审核审计日志写入失败: {e}")
+
+    return ApiResponse(
+        message="审核通过" if req.review_status == "approved" else "已驳回",
+        data={"id": str(tt.id), "review_status": tt.review_status},
+    )

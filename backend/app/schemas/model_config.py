@@ -11,6 +11,7 @@ class ApiModelConfigCreate(BaseModel):
     api_key: str
     base_url: str
     description: Optional[str] = None
+    expires_at: Optional[datetime] = None
 
 
 class ApiModelConfigUpdate(BaseModel):
@@ -20,6 +21,7 @@ class ApiModelConfigUpdate(BaseModel):
     base_url: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
+    expires_at: Optional[datetime] = None
 
 
 class ApiModelConfigResponse(BaseModel):
@@ -30,6 +32,7 @@ class ApiModelConfigResponse(BaseModel):
     base_url: str
     description: Optional[str] = None
     is_active: bool
+    expires_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

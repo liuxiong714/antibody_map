@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import json
 import logging
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -15,6 +18,28 @@ from app.models.report import Report
 from app.models.report_template import ReportTemplate
 
 logger = logging.getLogger("uvicorn")
+
+
+def _data_snapshot_hash(rows) -> Optional[str]:
+    """对报告所依据的审核通过数据点生成稳定指纹。
+
+    取每条记录的关键字段（id/literature_id/省份/疾病/年龄段/样本量/阳性值/数据类型/审核状态），
+    排序后序列化为 JSON 再 SHA-256，得到对底层数据集敏感的固定 hash，用于可复现性校验。
+    """
+    if not rows:
+        return None
+    canonical = sorted(
+        (
+            str(getattr(r, "id", "")), str(getattr(r, "literature_id", "")),
+            str(getattr(r, "province", "") or ""), str(getattr(r, "disease", "") or ""),
+            getattr(r, "age_min", None), getattr(r, "age_max", None),
+            getattr(r, "sample_size", None), getattr(r, "value", None),
+            str(getattr(r, "data_type", "") or ""), str(getattr(r, "review_status", "") or ""),
+        )
+        for r in rows
+    )
+    payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 DISEASE_NAMES = {
     "measles": "麻疹", "mumps": "腮腺炎", "rubella": "风疹",
@@ -556,48 +581,156 @@ def _render_table(section: dict, ctx: dict) -> str:
 
 
 def _render_chart(section: dict, ctx: dict) -> str:
+    """将 chart 章节渲染为「真实图表（内联 SVG）+ 摘要注记 + 明细表」。
+
+    图表以 data URI 形式内联进 Markdown，无需外部图片资源、可随报告内容存库，
+    在支持 Markdown 图片的前端（react-markdown）中直接渲染。
+    """
     analysis = section.get("analysis", "trend")
+    lang = str(ctx.get("language", "zh"))
+    no_data = "暂无该维度数据。" if lang.startswith("zh") else "No data available for this dimension."
+
     if analysis == "region":
-        rows = ctx["province_rows"]
-        title = "地区分布"
-        if not rows:
-            return "暂无地区分布数据。"
-        rates = [r[1] for r in rows if r[1] is not None]
-        note = f"共覆盖 {len(rows)} 个省份/地区"
-        if rates:
-            note += f"，加权阳性率区间 {min(rates)}% ~ {max(rates)}%"
-        note += "。"
-        return f"根据地区分布数据：{note}\n\n" + _render_table({**section, "data": "province"}, ctx)
-    if analysis == "age_curve":
-        rows = ctx["age_rows"]
-        if not rows:
-            return "暂无年龄分布数据。"
-        rates = [r[1] for r in rows if r[1] is not None]
-        note = f"共 {len(rows)} 个年龄段"
-        if rates:
-            note += f"，加权阳性率区间 {min(rates)}% ~ {max(rates)}%"
-        note += "。"
-        return f"根据年龄分布数据：{note}\n\n" + _render_table({**section, "data": "age"}, ctx)
-    if analysis == "disease":
-        rows = ctx["disease_rows"]
-        if not rows:
-            return "暂无疾病流行数据。"
-        rates = [r[1] for r in rows if r[1] is not None]
-        note = f"共 {len(rows)} 类疾病"
-        if rates:
-            note += f"，加权阳性率区间 {min(rates)}% ~ {max(rates)}%"
-        note += "。"
-        return f"根据疾病流行数据：{note}\n\n" + _render_table({**section, "data": "disease"}, ctx)
-    # 默认 trend
-    rows = ctx["year_rows"]
-    if not rows:
-        return "暂无年份趋势数据。"
-    rates = [r[1] for r in rows if r[1] is not None]
-    note = f"共 {len(rows)} 个年份"
-    if rates:
-        note += f"，加权阳性率区间 {min(rates)}% ~ {max(rates)}%"
-    note += "。"
-    return f"根据年份趋势数据：{note}\n\n" + _render_table({**section, "data": "year"}, ctx)
+        items = [(r[0], r[1]) for r in ctx["province_rows"]]
+        title = "地区分布（加权阳性率）" if lang.startswith("zh") else "Provincial distribution (weighted positivity)"
+        table = _render_table({**section, "data": "province"}, ctx)
+    elif analysis == "age_curve":
+        items = [(r[0], r[1]) for r in ctx["age_rows"]]
+        title = "年龄分布（加权阳性率）" if lang.startswith("zh") else "Age-stratified weighted positivity"
+        table = _render_table({**section, "data": "age"}, ctx)
+    elif analysis == "disease":
+        items = [(r[0], r[1]) for r in ctx["disease_rows"]]
+        title = "疾病流行（加权阳性率）" if lang.startswith("zh") else "Disease-wise weighted positivity"
+        table = _render_table({**section, "data": "disease"}, ctx)
+    else:  # trend
+        items = [(r[0], r[1]) for r in ctx["year_rows"]]
+        title = "时间趋势（加权阳性率）" if lang.startswith("zh") else "Time trend (weighted positivity)"
+        table = _render_table({**section, "data": "year"}, ctx)
+
+    if not items:
+        return no_data
+
+    # 图片仅展示 Top k（防止地区/疾病过多导致 X 轴拥挤），明细表仍保留全部
+    top_items = _chart_top_items(items, 16)
+    note = _chart_summary_note(top_items, analysis, lang)
+    img_md = _chart_data_uri("bar" if analysis != "trend" else "line",
+                             title, top_items, lang)
+    return f"{img_md}\n\n{note}\n\n{table}"
+
+
+# ---------------------------------------------------------------------------
+# 报告内联图表（依赖无关的纯 SVG 生成，避免容器内缺少中文字库导致栅格化乱码）
+# ---------------------------------------------------------------------------
+
+def _xml_escape(s) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _chart_top_items(items, k: int):
+    clean = [it for it in items if it[1] is not None]
+    clean.sort(key=lambda it: it[1], reverse=True)
+    return clean[:k]
+
+
+def _chart_summary_note(items, analysis: str, lang: str) -> str:
+    values = [v for _, v in items if v is not None]
+    if lang.startswith("zh"):
+        if analysis == "trend":
+            head = f"共 {len(values)} 个年份"
+        elif analysis == "age_curve":
+            head = f"共 {len(values)} 个年龄段"
+        elif analysis == "region":
+            head = f"共覆盖 {len(values)} 个省份/地区"
+        else:
+            head = f"共 {len(values)} 类疾病"
+        note = head + (f"，加权阳性率区间 {min(values):g}% ~ {max(values):g}%" if values else "")
+        if len(values) < len(items):
+            note += f"（前 {len(values)} 名）"
+        return f"根据图表数据：{note}。"
+    tail = f"，区间 {min(values):g}% ~ {max(values):g}%" if values else ""
+    return f"Relevant data: {len(values)} categories{tail}."
+
+
+def _chart_sort_key(label) -> str:
+    """时间趋势按数值年份排序（兼容 '2020' 与 2020 两种形式）。"""
+    try:
+        return f"{int(label):08d}"
+    except (TypeError, ValueError):
+        return str(label)
+
+
+def _chart_svg(kind: str, title: str, items, lang: str = "zh") -> str:
+    """生成纯 SVG 图表（bar/line），坐标标签已做 XML 转义。
+
+    items: list[(label, value)]；value 为百分数（0-100），None 已在上游剔除。
+    """
+    data = [(_xml_escape(str(l)), float(v)) for l, v in items if v is not None]
+    W, H = 720, 380
+    ml, mr, mt, mb = 78, 26, 52, 78
+    pw, ph = W - ml - mr, H - mt - mb
+    empty_txt = "无数据" if lang.startswith("zh") else "No data"
+
+    if not data:
+        return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
+                f'viewBox="0 0 {W} {H}"><text x="{W / 2}" y="{H / 2}" text-anchor="middle" '
+                f'font-size="16" fill="#9aa5b1">{empty_txt}</text></svg>')
+
+    if kind == "line":
+        data.sort(key=lambda t: _chart_sort_key(t[0]))
+    labels = [d[0] for d in data]
+    vals = [d[1] for d in data]
+    n = len(data)
+
+    ymax = max(0.0, max(vals))
+    ytop = (ymax * 1.15) if ymax > 0 else 1.0
+
+    def sx(i):
+        if n == 1:
+            return ml + pw / 2
+        return ml + pw * i / (n - 1)
+
+    def sy(v):
+        return mt + ph * (1 - v / ytop)
+
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">']
+    parts.append(f'<text x="{ml}" y="{mt - 20}" font-size="16" font-weight="bold" fill="#333333">{_xml_escape(title)}</text>')
+
+    for k in range(5):
+        vv = ytop * k / 4
+        yy = sy(vv)
+        parts.append(f'<line x1="{ml}" y1="{yy:.1f}" x2="{W - mr}" y2="{yy:.1f}" stroke="#eaeef2" stroke-width="1"/>')
+        parts.append(f'<text x="{ml - 8}" y="{yy + 4:.1f}" text-anchor="end" font-size="11" fill="#6b7280">{vv:g}</text>')
+    parts.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt + ph}" stroke="#94a3b8" stroke-width="1.5"/>')
+    parts.append(f'<line x1="{ml}" y1="{mt + ph}" x2="{W - mr}" y2="{mt + ph}" stroke="#94a3b8" stroke-width="1.5"/>')
+
+    if kind == "line":
+        pts = " ".join(f"{sx(i):.1f},{sy(v):.1f}" for i, v in enumerate(vals))
+        area = f"{sx(0):.1f},{mt + ph:.1f} {pts} {sx(n - 1):.1f},{mt + ph:.1f}"
+        parts.append(f'<polygon points="{area}" fill="#4e79a7" fill-opacity="0.10"/>')
+        parts.append(f'<polyline points="{pts}" fill="none" stroke="#4e79a7" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>')
+        for i, v in enumerate(vals):
+            parts.append(f'<circle cx="{sx(i):.1f}" cy="{sy(v):.1f}" r="3.5" fill="#4e79a7"/>')
+        for i, lab in enumerate(labels):
+            parts.append(f'<text x="{sx(i):.1f}" y="{mt + ph + 18}" text-anchor="middle" font-size="12" fill="#374151">{lab}</text>')
+    else:
+        bar_w = min(46.0, pw / max(n, 1) * 0.62)
+        for i, v in enumerate(vals):
+            x0 = sx(i) - bar_w / 2
+            y0 = sy(v)
+            parts.append(f'<rect x="{x0:.1f}" y="{y0:.1f}" width="{bar_w:.1f}" height="{max(mt + ph - y0, 0):.1f}" rx="2" fill="#4e79a7"/>')
+            parts.append(f'<text x="{sx(i):.1f}" y="{y0 - 6:.1f}" text-anchor="middle" font-size="11" fill="#374151">{v:g}%</text>')
+        for i, lab in enumerate(labels):
+            parts.append(f'<text x="{sx(i):.1f}" y="{mt + ph + 34}" text-anchor="end" '
+                         f'transform="rotate(-45 {sx(i):.1f} {mt + ph + 34})" font-size="11" fill="#374151">{lab}</text>')
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def _chart_data_uri(kind: str, title: str, items, lang: str = "zh") -> str:
+    """生成可直接内联进 Markdown 的图表图片行：![…](data:image/svg+xml;base64,…)。"""
+    svg = _chart_svg(kind, title, items, lang).encode("utf-8")
+    return f"![{_xml_escape(title)}](data:image/svg+xml;base64,{base64.b64encode(svg).decode('ascii')})"
 
 
 def _context_text(ctx: dict) -> str:
@@ -749,6 +882,9 @@ async def generate_report(
     # 2. 生成疾病名称与报告标题
     disease_name = DISEASE_NAMES.get(disease or "", disease or "未知疾病")
 
+    # 引用/编号统一固定为生成当日时间（一次性计算），避免多处 date.today() 不一致
+    gen_date = datetime.now(timezone.utc)
+
     if title:
         report_title = title
         report_title_en = title
@@ -811,16 +947,16 @@ async def generate_report(
         content += (
             f"\n\n## 引用\n\n"
             f"抗体地图数据库分析报告[EB/OL]. 抗体地图数据库（版本 v1.0）. "
-            f"数据截至：{date.today().isoformat()}；[引用日期 {date.today().isoformat()}]. "
-            f"报告编号：{disease_name}_{province or '全国'}_{date.today().isoformat()}。"
+            f"数据截至：{gen_date.date().isoformat()}；[引用日期 {gen_date.date().isoformat()}]. "
+            f"报告编号：{disease_name}_{province or '全国'}_{gen_date.date().isoformat()}。"
         )
     else:
         content += f"\n\n## Methodology\n\n{methodology_note}"
         content += (
             f"\n\n## Citation\n\n"
             f"Antibody Map Database Analysis Report[EB/OL]. Antibody Map Database (Version v1.0). "
-            f"Data as of: {date.today().isoformat()}; [Accessed {date.today().isoformat()}]. "
-            f"Report ID: {disease_name}_{province or 'National'}_{date.today().isoformat()}."
+            f"Data as of: {gen_date.date().isoformat()}; [Accessed {gen_date.date().isoformat()}]. "
+            f"Report ID: {disease_name}_{province or 'National'}_{gen_date.date().isoformat()}."
         )
 
     # 解析模型显示名称
@@ -839,6 +975,8 @@ async def generate_report(
             literature_count=len(lit_ids),
             data_point_count=len(rows),
             llm_model=llm_model_name,
+            data_snapshot_hash=_data_snapshot_hash(rows),
+            generated_at=gen_date,
         )
         db.add(report)
         await db.commit()
@@ -900,6 +1038,9 @@ async def generate_immune_barrier_report(
 
     disease_name = DISEASE_NAMES.get(disease or "", disease or "未知疾病")
 
+    # 引用/编号统一固定为生成当日时间（一次性计算），避免多处 date.today() 不一致
+    gen_date = datetime.now(timezone.utc)
+
     if title:
         report_title = title
         report_title_en = title
@@ -957,16 +1098,16 @@ async def generate_immune_barrier_report(
         content += (
             f"\n\n## 引用\n\n"
             f"抗体地图数据库分析报告[EB/OL]. 抗体地图数据库（版本 v1.0）. "
-            f"数据截至：{date.today().isoformat()}；[引用日期 {date.today().isoformat()}]. "
-            f"报告编号：{disease_name}_{province or '全国'}_{date.today().isoformat()}。"
+            f"数据截至：{gen_date.date().isoformat()}；[引用日期 {gen_date.date().isoformat()}]. "
+            f"报告编号：{disease_name}_{province or '全国'}_{gen_date.date().isoformat()}。"
         )
     else:
         content += f"\n\n## Methodology\n\n{methodology_note}"
         content += (
             f"\n\n## Citation\n\n"
             f"Antibody Map Database Analysis Report[EB/OL]. Antibody Map Database (Version v1.0). "
-            f"Data as of: {date.today().isoformat()}; [Accessed {date.today().isoformat()}]. "
-            f"Report ID: {disease_name}_{province or 'National'}_{date.today().isoformat()}."
+            f"Data as of: {gen_date.date().isoformat()}; [Accessed {gen_date.date().isoformat()}]. "
+            f"Report ID: {disease_name}_{province or 'National'}_{gen_date.date().isoformat()}."
         )
 
     llm_model_name = await _resolve_model_name(db, model)
@@ -983,6 +1124,8 @@ async def generate_immune_barrier_report(
             literature_count=len(lit_ids),
             data_point_count=len(rows),
             llm_model=llm_model_name,
+            data_snapshot_hash=_data_snapshot_hash(rows),
+            generated_at=gen_date,
         )
         db.add(report)
         await db.commit()
@@ -1275,6 +1418,7 @@ async def get_report_by_id(db: AsyncSession, report_id):
         "personnel_gender": r.personnel_gender,
         "personnel_age": r.personnel_age,
         "personnel_vaccination_history": r.personnel_vaccination_history,
+        "data_snapshot_hash": r.data_snapshot_hash,
         "generated_at": r.generated_at.isoformat(),
     }
 
@@ -1316,4 +1460,257 @@ async def delete_report(db: AsyncSession, report_id: str) -> bool:
     result = await db.execute(delete(Report).where(Report.id == uid))
     await db.commit()
     return result.rowcount > 0
+
+
+def report_markdown_to_docx(markdown: str) -> bytes:
+    """将 Markdown 报告内容转换为 Word（.docx）二进制。
+
+    支持：#/##/### 标题、普通段落、-/* 无序列表、1. 有序列表、
+    | 表格、**加粗**、行内代码、``` 代码块、--- 分隔线。
+    """
+    import re
+    from io import BytesIO
+
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH  # noqa: F401（保留对齐 API 语义）
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    doc = Document()
+    normal = doc.styles["Normal"]
+    normal.font.name = "Calibri"
+    normal.font.size = Pt(11)
+
+    def _add_runs(par, text: str) -> None:
+        """解析 **加粗** 与 `行内代码`，逐段添加 run。"""
+        for tok in re.split(r"(\*\*.+?\*\*|`[^`]+`)", text):
+            if not tok:
+                continue
+            if tok.startswith("**") and tok.endswith("**") and len(tok) > 4:
+                run = par.add_run(tok[2:-2])
+                run.bold = True
+            elif tok.startswith("`") and tok.endswith("`") and len(tok) > 2:
+                run = par.add_run(tok[1:-1])
+                run.font.name = "Consolas"
+            else:
+                par.add_run(tok)
+
+    def _add_hr(par) -> None:
+        """在段落下方添加一条水平线（代替 Markdown 分隔线）。"""
+        p_pr = par._p.get_or_add_pPr()
+        p_bdr = OxmlElement("w:pBdr")
+        bottom = OxmlElement("w:bottom")
+        bottom.set(qn("w:val"), "single")
+        bottom.set(qn("w:sz"), "6")
+        bottom.set(qn("w:space"), "1")
+        bottom.set(qn("w:color"), "999999")
+        p_bdr.append(bottom)
+        p_pr.append(p_bdr)
+
+    in_code_block = False
+    active_table = None
+    for raw_line in markdown.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        # 跳过内联图表（SVG data URI）：python-docx 无法嵌入 SVG，明细表已在正文保留
+        if re.match(r"^!\[.*?\]\(data:image/svg\+xml;base64,", stripped):
+            active_table = None
+            continue
+
+        # 代码块
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            active_table = None
+            continue
+        if in_code_block:
+            par = doc.add_paragraph()
+            run = par.add_run(line)
+            run.font.name = "Consolas"
+            par.paragraph_format.left_indent = Pt(24)
+            continue
+
+        if not stripped:
+            active_table = None
+            continue
+
+        # 表格
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if all(re.fullmatch(r":?-{2,}:?", c) for c in cells):
+                continue  # 表头分隔行
+            if active_table is None:
+                active_table = doc.add_table(rows=0, cols=len(cells))
+            row = active_table.add_row()
+            for i, c in enumerate(cells):
+                if i >= len(row.cells):
+                    break
+                cell = row.cells[i]
+                cell.text = ""
+                _add_runs(cell.paragraphs[0], c)
+            continue
+        active_table = None
+
+        # 标题
+        m = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+        if m:
+            par = doc.add_heading(level=min(len(m.group(1)), 4))
+            _add_runs(par, m.group(2))
+            continue
+
+        # 分隔线
+        if re.fullmatch(r"-{3,}|\*{3,}|_{3,}", stripped):
+            par = doc.add_paragraph()
+            _add_hr(par)
+            continue
+
+        # 有序列表
+        m = re.match(r"^\d+[.)]\s+(.*)$", stripped)
+        if m:
+            par = doc.add_paragraph(style="List Number")
+            _add_runs(par, m.group(1))
+            continue
+
+        # 无序列表
+        m = re.match(r"^[-*+]\s+(.*)$", stripped)
+        if m:
+            par = doc.add_paragraph(style="List Bullet")
+            _add_runs(par, m.group(1))
+            continue
+
+        # 普通段落
+        par = doc.add_paragraph()
+        _add_runs(par, stripped)
+
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def report_markdown_to_pdf(markdown: str) -> bytes:
+    """将 Markdown 报告内容转换为 PDF 二进制。
+
+    使用 reportlab 渲染中文（内建 STSong-Light CID 字体，无需外部字体文件，
+    离线安全）。支持标题、段落、无序/有序列表、| 表格、分隔线；
+    内联 SVG 图表（data URI）无法嵌入 PDF，故按行跳过（明细表已保留在正文）。
+    """
+    import re
+    from io import BytesIO
+    from xml.sax.saxutils import escape as _xml_escape_pdf
+
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.platypus import (HRFlowable, Paragraph, SimpleDocTemplate,
+                                    Spacer, Table, TableStyle)
+
+    _FONT = "STSong-Light"
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont(_FONT))
+    except Exception:  # 字体已注册或字体表异常时不影响流程
+        pass
+
+    _base = getSampleStyleSheet()
+    styles = {}
+    for name in ("Title", "Heading1", "Heading2", "Heading3", "Heading4", "Normal"):
+        st = _base[name].clone(name=name)
+        st.fontName = _FONT
+        st.fontSize = 15 if name == "Title" else (13 if name == "Heading1" else 11)
+        st.leading = st.fontSize * 1.5
+        st.spaceAfter = 6
+        if name == "Title":
+            st.alignment = TA_CENTER
+        styles[name] = st
+    styles["Bullet"] = _base["Normal"].clone(name="Bullet")
+    styles["Bullet"].fontName = _FONT
+    styles["Bullet"].fontSize = 10.5
+    styles["Bullet"].leading = 15
+    styles["Bullet"].leftIndent = 12
+    styles["Bullet"].bulletIndent = 0
+
+    def _para(text, style, as_table_cell=False):
+        # 转义 XML，再还原 Markdown 加粗/行内代码为 reportlab 标签
+        safe = _xml_escape_pdf(text)
+        safe = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", safe)
+        safe = re.sub(r"`([^`]+)`", r"\1", safe)
+        return Paragraph(safe, style)
+
+    story = []
+    in_code = False
+    for raw_line in markdown.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        # 内联图表（data URI）行跳过；代码块行不逐段渲染
+        if in_code:
+            if stripped.startswith("```"):
+                in_code = False
+            continue
+        if stripped.startswith("```"):
+            in_code = True
+            continue
+        if re.match(r"^!\[.*?\]\(data:image/svg\+xml;base64,", stripped):
+            continue
+        if not stripped:
+            story.append(Spacer(1, 4))
+            continue
+
+        # 标题
+        m = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+        if m:
+            level = min(len(m.group(1)), 4)
+            story.append(Paragraph(_xml_escape_pdf(m.group(2)), styles[f"Heading{level}"]))
+            continue
+
+        # 表格
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if all(re.fullmatch(r":?-{2,}:?", c) for c in cells):
+                continue  # 分隔行
+            table = Table([[Paragraph(c, styles["Normal"]) for c in cells]], hAlign="LEFT")
+            table.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), _FONT),
+                ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f2f4f7")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#c8cdd4")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            story.append(table)
+            story.append(Spacer(1, 4))
+            continue
+
+        # 分隔线
+        if re.fullmatch(r"-{3,}|\*{3,}|_{3,}", stripped):
+            story.append(HRFlowable(width="100%", thickness=0.7, color=colors.HexColor("#999999")))
+            continue
+
+        # 有序 / 无序列表
+        m = re.match(r"^(\d+)[.)]\s+(.*)$", stripped)
+        if m:
+            story.append(Paragraph(f"{m.group(1)}.&nbsp;{_xml_escape_pdf(m.group(2))}", styles["Normal"]))
+            continue
+        m = re.match(r"^[-*+]\s+(.*)$", stripped)
+        if m:
+            story.append(Paragraph(_xml_escape_pdf(m.group(1)), styles["Bullet"], bulletText="•"))
+            continue
+
+        # 普通段落
+        story.append(_para(stripped, styles["Normal"]))
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=18 * mm, rightMargin=18 * mm,
+                            topMargin=18 * mm, bottomMargin=18 * mm,
+                            title="报告")
+    doc.build(story)
+    return buf.getvalue()
 

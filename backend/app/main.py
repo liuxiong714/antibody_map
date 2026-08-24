@@ -90,6 +90,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"启动回收站清理任务失败: {e}")
 
+    # 启动分析快照清理后台任务（每天一次，回收超过 SNAPSHOT_TTL_DAYS 天的旧快照）
+    snapshot_cleanup_task: Optional[asyncio.Task] = None
+    try:
+        from app.services.snapshot_service import _snapshot_cleanup_loop
+        snapshot_cleanup_task = asyncio.create_task(_snapshot_cleanup_loop())
+    except Exception as e:
+        logger.error(f"启动快照清理任务失败: {e}")
+
+    # 启动过期临时模型配置清理后台任务（每小时一次，回收单次提取注入的临时凭证）
+    model_config_cleanup_task: Optional[asyncio.Task] = None
+    try:
+        from app.services.extraction_service import _expired_model_config_cleanup_loop
+        model_config_cleanup_task = asyncio.create_task(_expired_model_config_cleanup_loop())
+    except Exception as e:
+        logger.error(f"启动过期模型配置清理任务失败: {e}")
+
     # 启动 Prometheus 指标后台采集任务（每 60 秒刷新 data_point_count / celery 队列深度）
     metrics_tasks: list = []
     if settings.METRICS_ENABLED:
@@ -122,12 +138,35 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+    # 停止分析快照清理后台任务
+    if snapshot_cleanup_task:
+        snapshot_cleanup_task.cancel()
+        try:
+            await snapshot_cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+    # 停止过期临时模型配置清理后台任务
+    if model_config_cleanup_task:
+        model_config_cleanup_task.cancel()
+        try:
+            await model_config_cleanup_task
+        except asyncio.CancelledError:
+            pass
+
     # 停止文件夹监控后台任务
     monitor_task.cancel()
     try:
         await monitor_task
     except asyncio.CancelledError:
         pass
+
+    # 释放外部 HTTP 共享连接池（Crossref/OpenAlex/EuropePMC 统一连接）
+    try:
+        from app.core.external_http import close_client
+        await close_client()
+    except Exception as e:
+        logger.error(f"关闭外部 HTTP 连接池失败: {e}")
 
     await engine.dispose()
 

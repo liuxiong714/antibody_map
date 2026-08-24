@@ -102,6 +102,7 @@ async def create_remote_model(
         api_key=req.api_key,
         base_url=req.base_url,
         description=req.description,
+        expires_at=req.expires_at,
     )
     db.add(config)
     await db.commit()
@@ -136,6 +137,8 @@ async def update_remote_model(
         config.description = req.description
     if req.is_active is not None:
         config.is_active = req.is_active
+    if req.expires_at is not None:
+        config.expires_at = req.expires_at
 
     await db.commit()
     await db.refresh(config)
@@ -171,6 +174,7 @@ def _config_to_dict(c: ApiModelConfig) -> dict:
         "base_url": c.base_url,
         "description": c.description,
         "is_active": c.is_active,
+        "expires_at": c.expires_at.isoformat() if c.expires_at else None,
         "created_at": c.created_at.isoformat(),
         "updated_at": c.updated_at.isoformat(),
     }

@@ -215,12 +215,16 @@ def extract_text(file_bytes: bytes) -> str:
     PAGE_TEXT_MIN = 100
     # 文本中数字字符少于该值 → 疑似字体编码损坏的乱码文本，也交给 OCR
     PAGE_DIGIT_MIN = 3
+    # 扫描页渲染内存护栏：扫描页图片(OCR dpi=200 + 视觉 dpi=150)在内存中累计字节上限，
+    # 超过则停止为后续扫描页渲染，避免超长扫描件一次性把整份图片灌进内存
+    SCAN_RENDER_BYTES_LIMIT = 96 * 1024 * 1024  # 96MB
 
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         full_text_parts = []
         page_images_for_ocr = []
         page_images_for_vision = []
+        scan_render_bytes = 0
 
         for page_num in range(len(doc)):
             page = doc[page_num]
@@ -234,11 +238,21 @@ def extract_text(file_bytes: bytes) -> str:
                 # 同时保留少量文本作为 OCR 失败时的兜底
                 if page_text:
                     full_text_parts.append(page_text)
+                # 内存护栏：已渲染字节超限则跳过后续扫描页的图片渲染（不再放大内存）
+                if scan_render_bytes >= SCAN_RENDER_BYTES_LIMIT:
+                    logger.warning(
+                        f"[PyMuPDF] 扫描页渲染字节已达上限，停止渲染第 {page_num} 页之后的扫描页"
+                    )
+                    continue
                 pix = page.get_pixmap(dpi=200)
-                page_images_for_ocr.append(pix.tobytes("png"))
+                png = pix.tobytes("png")
+                page_images_for_ocr.append(png)
+                scan_render_bytes += len(png)
                 # 扫描页额外渲染成图片（dpi=150），供视觉提取器使用（OCR 之外的增强）
                 pix_vision = page.get_pixmap(dpi=150)
-                page_images_for_vision.append(pix_vision.tobytes("png"))
+                png_vision = pix_vision.tobytes("png")
+                page_images_for_vision.append(png_vision)
+                scan_render_bytes += len(png_vision)
 
         doc.close()
 

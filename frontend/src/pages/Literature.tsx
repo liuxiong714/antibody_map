@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Dropdown, Switch, DatePicker, Badge, Divider,
 } from 'antd';
@@ -131,6 +131,14 @@ const LiteraturePage: React.FC = () => {
   const [page, setPage] = useState(() => (_cachedState?.page as number) || 1);
   const [pageSize, setPageSize] = useState(() => (_cachedState?.pageSize as number) || 20);
 
+  // F46：可取消请求的 AbortController，切页/改筛选/卸载时中止旧请求
+  const abortListRef = useRef<AbortController | null>(null);
+  const abortTrashRef = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    abortListRef.current?.abort();
+    abortTrashRef.current?.abort();
+  }, []);
+
   // 列宽状态（可拖拽调整）
   const [colWidths, setColWidths] = useState<Record<string, number>>(DEFAULT_COL_WIDTHS);
   const handleColumnResize = (key: string) => (
@@ -212,7 +220,7 @@ const LiteraturePage: React.FC = () => {
   // 批量提取模式
   const [batchExtractMode, setBatchExtractMode] = useState(false);
   // 提取时是否保留已审核数据
-  const [clearExistingData, setClearExistingData] = useState(true);
+  const [clearExistingData, setClearExistingData] = useState(false);
   // 表格多选
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [selectedRows, setSelectedRows] = useState<Literature[]>([]);
@@ -292,6 +300,10 @@ const LiteraturePage: React.FC = () => {
   };
 
   const fetchList = useCallback(async () => {
+    // 取消上一个尚未完成的同源列表请求，避免切页/改筛选后旧响应 setState（F46）
+    abortListRef.current?.abort();
+    const controller = new AbortController();
+    abortListRef.current = controller;
     setLoading(true);
     try {
       const params: Record<string, unknown> = { page, page_size: pageSize };
@@ -312,10 +324,11 @@ const LiteraturePage: React.FC = () => {
       if (createdEnd) params.created_end = createdEnd;
       if (hasAbstract === 'has') params.has_abstract = true;
       if (hasAbstract === 'none') params.has_abstract = false;
-      const resp = await listLiterature(params);
+      const resp = await listLiterature(params, { signal: controller.signal });
       setItems(resp.items);
       setTotal(resp.total);
     } catch (err) {
+      if ((err as { code?: string })?.code === 'ERR_CANCELED') return; // 主动取消，忽略
       console.error('[Literature] 加载文献列表失败:', err);
       message.error('加载文献列表失败');
     } finally {
@@ -327,12 +340,16 @@ const LiteraturePage: React.FC = () => {
 
   // === 回收站列表 ===
   const fetchTrashList = useCallback(async () => {
+    abortTrashRef.current?.abort();
+    const controller = new AbortController();
+    abortTrashRef.current = controller;
     setTrashLoading(true);
     try {
-      const result = await listTrash(trashPage, trashPageSize, trashKeyword || undefined);
+      const result = await listTrash(trashPage, trashPageSize, trashKeyword || undefined, { signal: controller.signal });
       setTrashItems(result.items);
       setTrashTotal(result.total);
     } catch (err) {
+      if ((err as { code?: string })?.code === 'ERR_CANCELED') return; // 主动取消，忽略
       console.error('[Literature] 加载回收站列表失败:', err);
       message.error('加载回收站列表失败');
     } finally {
@@ -742,7 +759,7 @@ const LiteraturePage: React.FC = () => {
     setExtractModalOpen(true);
   };
 
-  const confirmExtract = async () => {
+  const doExtract = async () => {
     setExtracting(true);
     try {
       let model = extractModel;
@@ -815,6 +832,22 @@ const LiteraturePage: React.FC = () => {
       message.error(batchExtractMode ? '批量提取失败，请检查后端服务是否正常' : '提取失败，请检查后端服务是否正常');
     } finally {
       setExtracting(false);
+    }
+  };
+
+  const confirmExtract = () => {
+    if (clearExistingData) {
+      const scope = batchExtractMode ? `所选 ${selectedRowKeys.length} 篇文献` : '该文献';
+      Modal.confirm({
+        title: '确认全量重抽？',
+        content: `将清空${scope}的所有既有数据点（含已审核通过的数据、审核意见与质量分），并以待审核(pending)状态重新提取，不可恢复。`,
+        okText: '确认全量重抽',
+        okType: 'danger',
+        cancelText: '取消',
+        onOk: doExtract,
+      });
+    } else {
+      doExtract();
     }
   };
 
@@ -1586,6 +1619,16 @@ const LiteraturePage: React.FC = () => {
                   content: (
                     <div>
                       <p>扫描 <strong>{result.scanned}</strong> 个文件，发现 <strong>{result.orphan_count}</strong> 个孤儿文件（已不在数据库但仍留在 pdfs 目录中）。</p>
+                      {result.cooldown_count ? (
+                        <p style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
+                          另有 <strong>{result.cooldown_count}</strong> 个近期变更文件处于冷静期（7 天内），自动跳过、不会移动。
+                        </p>
+                      ) : null}
+                      {result.minio_protected_count ? (
+                        <p style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
+                          另有 <strong>{result.minio_protected_count}</strong> 个文件因 MinIO/文献引用仍在使用被保护，不会移动。
+                        </p>
+                      ) : null}
                       <p style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
                         将移入回收目录（默认保留 30 天后自动删除），可手动还原。
                       </p>
@@ -1813,6 +1856,7 @@ const LiteraturePage: React.FC = () => {
             showTotal: (t) => `共 ${t} 条${selectedRowKeys.length > 0 ? `，已选 ${selectedRowKeys.length} 条` : ''}`,
           }}
           scroll={{ x: 1045, y: 560 }}
+          virtual={items.length >= 50}
           size="middle"
         />
       </Card>

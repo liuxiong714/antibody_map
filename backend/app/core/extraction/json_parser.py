@@ -10,6 +10,14 @@ import re
 logger = logging.getLogger("uvicorn")
 
 
+class LLMJSONParseError(Exception):
+    """F18：LLM 响应彻底无法解析为有效 JSON。
+
+    解析失败属于"任务失败"而非"无数据可提取"，应抛此异常由任务层标记 failed
+    并告警，避免静默返回空 dict 造成误判（如将异常标记为 done_no_data）。
+    """
+
+
 class JSONParserMixin:
     """JSON 解析：兼容 LLM 输出的多种畸形/半截 JSON。"""
 
@@ -213,4 +221,8 @@ class JSONParserMixin:
 
         logger.error(f"无法解析 LLM 响应为 JSON: {content[:500]}")
         logger.error(f"响应长度: {len(content)}")
-        return {}
+        # F18：不再静默返回 {}，改为抛异常，交由任务层标记 failed 并告警
+        # （避免将异常误判为 done_no_data / 无数据）。
+        raise LLMJSONParseError(
+            f"LLM 响应无法解析为有效 JSON（长度 {len(content)}）"
+        ) from None

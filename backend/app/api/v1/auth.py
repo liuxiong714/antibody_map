@@ -1,10 +1,13 @@
 """认证 API：登录、用户管理、修改密码"""
+import logging
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,11 +22,13 @@ from app.core.security import (
     decode_access_token,
     decode_refresh_token,
 )
-from app.core.token_revocation import revoke_token
+from app.core.token_revocation import is_token_revoked, revoke_token, token_issued_before_password_change
 from app.models.user import User
 from app.schemas.common import ApiResponse
 
 router = APIRouter()
+
+logger = logging.getLogger("uvicorn")
 
 # 新用户默认密码（从环境变量读取，未配置时使用硬编码默认值）
 DEFAULT_PASSWORD = "myk123456"
@@ -105,17 +110,27 @@ async def login(
         select(User).where(User.username == req.username)
     )
     user = result.scalar_one_or_none()
+    client_ip = request.client.host if request.client else None
 
+    # F5：统一判定，避免向攻击者泄露"用户名是否存在"
     if not user or not verify_password(req.password, user.hashed_password):
+        failed_username = req.username
+        await log_audit(
+            db, "login_failed", username=failed_username,
+            client_ip=client_ip, detail={"reason": "invalid_credentials"},
+        )
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
     if not user.is_active:
+        await log_audit(
+            db, "login_failed", user_id=str(user.id), username=req.username,
+            client_ip=client_ip, detail={"reason": "inactive"},
+        )
         raise HTTPException(status_code=403, detail="账号已被禁用")
 
     token = create_access_token(str(user.id), user.username, user.is_admin)
     refresh_token = create_refresh_token(str(user.id))
 
-    client_ip = request.client.host if request.client else None
     await log_audit(
         db, "login", user_id=str(user.id), username=user.username,
         client_ip=client_ip,
@@ -140,16 +155,35 @@ async def refresh_token(
     req: RefreshTokenRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """用刷新令牌换取新的访问令牌"""
+    """用刷新令牌换取新的访问令牌（轮换 + 重放拒绝，fail-closed）"""
     payload = decode_refresh_token(req.refresh_token)
     if not payload:
         raise HTTPException(status_code=401, detail="刷新令牌无效或已过期")
+
+    jti = payload.get("jti")
+    # fail-closed：吊销的检查与"标记已用"写操作任一因 Redis 故障失败，
+    # 一律拒绝刷新（503），绝不静默放行，保证重放保护不被绕过。
+    try:
+        if jti and await is_token_revoked(jti):
+            raise HTTPException(status_code=401, detail="刷新令牌已被使用，请重新登录")
+        # 轮换：将当前 refresh token 标记为已使用（含剩余的撤回保护期）
+        if jti:
+            await revoke_token(jti, payload.get("exp"))
+    except HTTPException:
+        raise
+    except RedisError as e:
+        logger.warning(f"刷新令牌吊销校验失败，拒绝刷新（fail-closed）: {e}")
+        raise HTTPException(status_code=503, detail="令牌验证服务暂不可用，请稍后重试")
 
     user_id = payload.get("sub")
     result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
+
+    # F3：改密后旧 refresh token 一并失效（签发早于改密的令牌拒绝续期）
+    if token_issued_before_password_change(payload.get("iat"), user.password_changed_at):
+        raise HTTPException(status_code=401, detail="密码已变更，请重新登录")
 
     new_token = create_access_token(str(user.id), user.username, user.is_admin)
     new_refresh_token = create_refresh_token(str(user.id))
@@ -178,7 +212,12 @@ async def logout(
         token = authorization.split(" ", 1)[1]
         payload = decode_access_token(token)
         if payload and payload.get("jti"):
-            await revoke_token(payload["jti"], payload.get("exp"))
+            try:
+                await revoke_token(payload["jti"], payload.get("exp"))
+            except RedisError as e:
+                # 登出吊销为尽力而为：Redis 不可用时记录并继续，不让登出硬失败。
+                # （验证路径已 fail-closed，登出本身不构成安全放行窗口。）
+                logger.warning(f"登出吊销访问令牌失败: {e}")
     await log_audit(db, "logout", user_id=str(user.id), username=user.username)
     return ApiResponse(message="退出登录成功")
 
@@ -215,6 +254,7 @@ async def change_password(
         raise HTTPException(status_code=400, detail=err)
 
     user.hashed_password = hash_password(req.new_password)
+    user.password_changed_at = datetime.now(timezone.utc)  # F3：改密后吊销所有旧令牌
     await db.commit()
     await log_audit(db, "change_password", user_id=str(user.id), username=user.username)
     return ApiResponse(message="密码修改成功")
@@ -306,6 +346,7 @@ async def update_user(
         if err:
             raise HTTPException(status_code=400, detail=err)
         user.hashed_password = hash_password(req.password)
+        user.password_changed_at = datetime.now(timezone.utc)  # F3：重置密码后吊销该用户所有旧令牌
 
     await db.commit()
     await log_audit(

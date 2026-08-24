@@ -1,8 +1,9 @@
 import React, { Suspense, useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { ConfigProvider, Spin } from 'antd';
+import { ConfigProvider, Spin, Result, Button } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
+import { ThemeProvider } from './theme';
 import MainLayout from './layouts/MainLayout';
 import ErrorBoundary from './components/ErrorBoundary';
 import RequireAuth from './components/RequireAuth';
@@ -36,6 +37,20 @@ const PageBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   </ErrorBoundary>
 );
 
+/** 404 兜底页 */
+const NotFound: React.FC = () => (
+  <Result
+    status="404"
+    title="404"
+    subTitle="您访问的页面不存在"
+    extra={
+      <Button type="primary" onClick={() => (window.location.href = '/')}>
+        返回首页
+      </Button>
+    }
+  />
+);
+
 const antdLocales: Record<string, typeof zhCN> = { zh: zhCN, en: enUS };
 
 const App: React.FC = () => {
@@ -52,8 +67,9 @@ const App: React.FC = () => {
 
   return (
     <ConfigProvider locale={antdLocale}>
-      <BrowserRouter>
-        <Routes>
+      <ThemeProvider>
+        <BrowserRouter>
+          <Routes>
           <Route path="/login" element={<PageBoundary><LoginPage /></PageBoundary>} />
           <Route element={<RequireAuth />}>
             <Route element={<MainLayout />}>
@@ -68,10 +84,12 @@ const App: React.FC = () => {
               <Route path="/pubmed" element={<PageBoundary><PubmedSearch /></PageBoundary>} />
               <Route path="/users" element={<PageBoundary><UserManagement /></PageBoundary>} />
               <Route path="/settings" element={<PageBoundary><Settings /></PageBoundary>} />
+              <Route path="*" element={<PageBoundary><NotFound /></PageBoundary>} />
             </Route>
           </Route>
         </Routes>
-      </BrowserRouter>
+        </BrowserRouter>
+      </ThemeProvider>
     </ConfigProvider>
   );
 };

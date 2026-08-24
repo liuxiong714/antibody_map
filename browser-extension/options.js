@@ -6,20 +6,37 @@ document.addEventListener('DOMContentLoaded', async () => {
     backend_url: 'http://localhost:8000',
     auto_extract: true,
     llm_model: '',
-    llm_api_key: '',
     llm_base_url: '',
     default_province: '',
+    api_token: '',
   };
 
-  // 加载已存配置
+  // 加载已存配置（非敏感设置存 local，token 存 session，避免明文落盘）
+  const SESSION_TOKEN_KEY = 'api_token';
   const { settings } = await chrome.storage.local.get('settings');
   const s = { ...DEFAULT_SETTINGS, ...(settings || {}) };
+  let apiToken = '';
+  try {
+    const sess = await chrome.storage.session.get(SESSION_TOKEN_KEY);
+    apiToken = sess[SESSION_TOKEN_KEY] || s.api_token || '';
+  } catch { apiToken = s.api_token || ''; }
   $('backend_url').value = s.backend_url;
+  $('api_token').value = apiToken;
   $('default_province').value = s.default_province;
   $('auto_extract').checked = !!s.auto_extract;
   $('llm_model').value = s.llm_model;
-  $('llm_api_key').value = s.llm_api_key;
   $('llm_base_url').value = s.llm_base_url;
+
+  // 保存设置：token 写入 session，其余写入 local（且 local 不存 token 明文）
+  async function saveSettings(newSettings) {
+    const { api_token: token, ...localSettings } = newSettings;
+    await chrome.storage.local.set({ settings: localSettings });
+    if (token) {
+      await chrome.storage.session.set({ [SESSION_TOKEN_KEY]: token });
+    } else {
+      await chrome.storage.session.remove(SESSION_TOKEN_KEY);
+    }
+  }
 
   function showStatus(type, msg) {
     const el = $('statusMsg');
@@ -33,17 +50,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('saveBtn').addEventListener('click', async () => {
     const newSettings = {
       backend_url: $('backend_url').value.trim() || DEFAULT_SETTINGS.backend_url,
+      api_token: $('api_token').value.trim(),
       default_province: $('default_province').value.trim(),
       auto_extract: $('auto_extract').checked,
       llm_model: $('llm_model').value.trim(),
-      llm_api_key: $('llm_api_key').value.trim(),
       llm_base_url: $('llm_base_url').value.trim(),
     };
     if (!/^https?:\/\/.+/.test(newSettings.backend_url)) {
       showStatus('err', '后端地址格式错误，需以 http:// 或 https:// 开头');
       return;
     }
-    await chrome.storage.local.set({ settings: newSettings });
+    await saveSettings(newSettings);
     showStatus('ok', '设置已保存');
   });
 
@@ -53,15 +70,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!url) { showStatus('err', '请填写后端地址'); return; }
     if (!/^https?:\/\/.+/.test(url)) { showStatus('err', '后端地址格式错误'); return; }
     // 先保存
-    await chrome.storage.local.set({
-      settings: {
-        backend_url: url,
-        default_province: $('default_province').value.trim(),
-        auto_extract: $('auto_extract').checked,
-        llm_model: $('llm_model').value.trim(),
-        llm_api_key: $('llm_api_key').value.trim(),
-        llm_base_url: $('llm_base_url').value.trim(),
-      },
+    await saveSettings({
+      backend_url: url,
+      api_token: $('api_token').value.trim(),
+      default_province: $('default_province').value.trim(),
+      auto_extract: $('auto_extract').checked,
+      llm_model: $('llm_model').value.trim(),
+      llm_base_url: $('llm_base_url').value.trim(),
     });
     $('testBtn').disabled = true;
     $('testBtn').textContent = '测试中...';

@@ -33,9 +33,18 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' \
 # 安装 Python 依赖
 # PyPI 默认源国内访问慢，统一切到阿里云镜像（TUNA 偶发不通，改用阿里源）
 RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple
+# 本地 wheel 仓库（离线安装用，由 scripts/download_wheels.ps1 生成）
+# 有 .whl 文件时优先离线安装，否则回退到 PyPI 在线下载
+COPY backend/wheels/ /wheels/
 COPY backend/requirements.txt ./requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install -r requirements.txt
+    if [ -n "$(find /wheels -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null)" ]; then \
+        echo ">>> 使用本地 wheel 仓库离线安装"; \
+        python -m pip install --no-index --find-links=/wheels -r requirements.txt; \
+    else \
+        echo ">>> 本地 wheel 仓库为空，在线下载安装"; \
+        python -m pip install -r requirements.txt; \
+    fi
 
 # CAJ 转换工具（知网 .caj → PDF）：caj2pdf 不在 PyPI，从 GitHub 拉取源码与预编译共享库。
 # 依赖 mutool（mupdf-tools，已在上面安装）；共享库 libjbig*.so 通过相对路径 ./libjbig*.so 加载，
@@ -48,14 +57,20 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && cp /tmp/caj2pdf_cache/libjbigdec.so /opt/caj2pdf/libjbigdec.so \
     && cp /tmp/caj2pdf_cache/libjbig2codec.so /opt/caj2pdf/libjbig2codec.so \
     && chmod +x /opt/caj2pdf/caj2pdf \
-    && python -m pip install PyPDF2==2.2.0 imagesize==1.3.0 \
+    && python -m pip install --no-index --find-links=/wheels PyPDF2==2.2.0 imagesize==1.3.0 \
     && rm -rf /tmp/caj2pdf_cache
 
 # MinerU 可选依赖（仅 INSTALL_MINERU=true 时安装）
 COPY backend/requirements-mineru.txt ./requirements-mineru.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     if [ "$INSTALL_MINERU" = "true" ]; then \
-        python -m pip install -r requirements-mineru.txt; \
+        if [ -n "$(find /wheels -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null)" ]; then \
+            echo ">>> [MinerU] 使用本地 wheel 仓库离线安装"; \
+            python -m pip install --no-index --find-links=/wheels -r requirements-mineru.txt; \
+        else \
+            echo ">>> [MinerU] 本地 wheel 仓库为空，在线下载安装"; \
+            python -m pip install -r requirements-mineru.txt; \
+        fi; \
     fi
 
 # MinerU 运行时系统库（opencv-python 依赖，缺失会导致 libGL.so.1 找不到、

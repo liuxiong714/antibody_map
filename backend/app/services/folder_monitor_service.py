@@ -13,8 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.monitored_folder import MonitoredFolder, MonitoredFile
 from app.models.literature import Literature
 from app.models.base import async_session
+from app.config import settings
 from app.services.literature_service import upload_literature, compute_pdf_hash
 from app.services.extraction_service import trigger_extraction
+from app.core.crypto import encrypt, decrypt, is_encrypted
 from app.core.document_parser import ALLOWED_EXTS
 
 logger = logging.getLogger("uvicorn")
@@ -43,6 +45,11 @@ async def create_monitored_folder(db: AsyncSession, data: dict) -> MonitoredFold
     if not p.is_dir():
         raise ValueError(f"路径不是文件夹: {folder_path}")
 
+    # S4：API Key 加密后入库，禁止明文落盘
+    data = dict(data)
+    if data.get("extraction_api_key"):
+        data["extraction_api_key"] = encrypt(data["extraction_api_key"])
+
     folder = MonitoredFolder(**data)
     db.add(folder)
     await db.commit()
@@ -67,6 +74,9 @@ async def update_monitored_folder(db: AsyncSession, folder_id: uuid.UUID, data: 
     ]
     for field in updatable:
         if field in data and data[field] is not None:
+            # S4：仅更新 API Key 时做幂等加密（已是密文则不再重复加密；空串表示清除）
+            if field == "extraction_api_key" and data[field]:
+                data[field] = data[field] if is_encrypted(data[field]) else encrypt(data[field])
             setattr(folder, field, data[field])
 
     folder.updated_at = datetime.now(timezone.utc)
@@ -122,9 +132,22 @@ async def scan_folder(db: AsyncSession, folder: MonitoredFolder) -> dict:
         await db.commit()
         return {"scanned": 0, "imported": 0, "skipped": 0, "failed": 0}
 
-    folder.status = "scanning"
-    folder.error_message = None
+    # 原子抢占扫描锁：仅当 DB 中该文件夹当前非 scanning 时才置为 scanning，
+    # 若已被其他实例/手动触发占用（rowcount==0）则直接返回，避免并发重复扫描。
+    claimed = await db.execute(
+        update(MonitoredFolder)
+        .where(
+            MonitoredFolder.id == folder.id,
+            MonitoredFolder.status != "scanning",
+        )
+        .values(status="scanning", error_message=None)
+    )
     await db.commit()
+    if claimed.rowcount == 0:
+        logger.info(f"文件夹监控: '{folder.name}' 正在进行扫描，跳过本次")
+        return {"scanned": 0, "imported": 0, "skipped": 0, "failed": 0}
+
+    folder.status = "scanning"
 
     extensions = _parse_extensions(folder.file_extensions)
 
@@ -148,9 +171,31 @@ async def scan_folder(db: AsyncSession, folder: MonitoredFolder) -> dict:
 
     for file_path in new_files:
         try:
+            file_stat = file_path.stat()
+
+            # 单文件大小上限检查：超过上限跳过并记录，避免大文件整读造成内存压力
+            if file_stat.st_size > settings.MAX_UPLOAD_SIZE:
+                logger.warning(
+                    f"文件夹监控: 跳过超限文件 '{file_path}' 大小 {file_stat.st_size}B "
+                    f"> 上限 {settings.MAX_UPLOAD_SIZE}B"
+                )
+                db.add(MonitoredFile(
+                    folder_id=folder.id,
+                    file_path=str(file_path),
+                    file_name=file_path.name,
+                    file_size=file_stat.st_size,
+                    file_mtime=datetime.fromtimestamp(file_stat.st_mtime, tz=timezone.utc),
+                    status="failed",
+                    error_message=f"文件大小超过上限 {settings.MAX_UPLOAD_SIZE} 字节，已跳过",
+                    imported_at=datetime.now(timezone.utc),
+                ))
+                failed += 1
+                continue
+
+            # 内存护栏：上方已按 st_size > MAX_UPLOAD_SIZE(50MB) 跳过超限文件，
+            # 因此此处整读字节数被严格限制在 50MB 内，不会因大文件一次性占爆内存
             file_bytes = file_path.read_bytes()
             file_hash = compute_pdf_hash(file_bytes)
-            file_stat = file_path.stat()
 
             # 查重：检查是否已有相同 pdf_hash 的文献
             dup_r = await db.execute(
@@ -186,7 +231,7 @@ async def scan_folder(db: AsyncSession, folder: MonitoredFolder) -> dict:
                         await trigger_extraction(
                             db, literature.id,
                             model=folder.extraction_model or None,
-                            api_key=folder.extraction_api_key or None,
+                            api_key=decrypt(folder.extraction_api_key) or None,
                             base_url=folder.extraction_base_url or None,
                         )
                     except Exception as ext_err:
@@ -253,6 +298,9 @@ async def _folder_monitor_loop():
 
                 now = datetime.now(timezone.utc)
                 for folder in folders:
+                    # 并发互斥：正在扫描的文件夹跳过，等待下一轮
+                    if folder.status == "scanning":
+                        continue
                     # 判断是否到扫描时间
                     if folder.last_scan_at:
                         elapsed = (now - folder.last_scan_at).total_seconds()

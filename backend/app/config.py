@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     # RTX 4090/5090 实测 4 并发为吞吐与延迟最优拐点（参考 2026 基准测试）
     LLM_CONCURRENCY: int = 4
 
+    # F11：单任务 token 预算 / 日配额熔断 / 全局并发上限（0 = 关闭对应限制）
+    # - LLM_MAX_TOKENS_PER_TASK: 单篇文献提取累计 token 超过后中止（防异常长文档失控计费）
+    # - LLM_DAILY_QUOTA: 全平台单日累计 token 上限（按自然日、基于 Redis 计数，超出熔断）
+    # - LLM_GLOBAL_CONCURRENCY: 进程内所有提取任务共享的全局并发上限（跨任务限流）
+    LLM_MAX_TOKENS_PER_TASK: int = 0
+    LLM_DAILY_QUOTA: int = 0
+    LLM_GLOBAL_CONCURRENCY: int = 0
+
     # 连接容错：主 base_url 连接失败时的备用地址（逗号分隔，可选）。
     # 场景：WSL 重启导致 Ollama 网关 IP 漂移 / 远程 API 短暂不可达时自动切换。
     LLM_FALLBACK_BASE_URLS: str = ""
@@ -60,8 +68,10 @@ class Settings(BaseSettings):
     # P2：分块重叠字符数（保持上下文连贯）
     LLM_CHUNK_OVERLAP: int = 500
 
-    # 文本预处理最大保留字符数（须 > LLM_CHUNK_THRESHOLD，否则分块逻辑永不触发）
-    TEXT_PREPROCESS_MAX_CHARS: int = 60000
+    # 文本预处理最大保留字符数（仅作极长文本的安全兜底，须 > LLM_CHUNK_THRESHOLD，否则分块逻辑永不触发）。
+    # 分块的主导参数是 LLM_CHUNK_THRESHOLD/SIZE/OVERLAP：长文本先按块逐块交给 LLM，
+    # 默认 600000 可覆盖绝大多数综述/长文，避免超 6 万字符时尾部数据在进入 LLM 前被丢弃。
+    TEXT_PREPROCESS_MAX_CHARS: int = 600000
 
     # MinerU 增强 PDF 解析（需安装 PyTorch + mineru 包，首次使用会自动下载模型约 2-3GB）
     ENABLE_MINERU_PDF_PARSER: bool = False
@@ -87,6 +97,10 @@ class Settings(BaseSettings):
     ORPHAN_TRASH_DIR: str = ""
     # 回收目录保留天数，超过后自动物理删除，默认 30 天
     ORPHAN_TRASH_RETENTION_DAYS: int = 30
+    # 是否真实移动孤儿文件（默认 False=仅 dry-run 报告；显式开启后后台循环才会真正移入回收）
+    ORPHAN_AUTO_MOVE: bool = False
+    # 冷静期（天）：文件 mtime 距今小于该天数则跳过，避免误判监控/上传/提取中的文件
+    ORPHAN_COOLING_DAYS: int = 7
 
     # PubMed 开放获取 PDF 下载目录；为空时回退到 LOCAL_STORAGE_DIR
     PDF_DOWNLOAD_DIR: str = ""
@@ -120,6 +134,12 @@ class Settings(BaseSettings):
     # 缓存有效期（小时），默认 7 天
     EXTRACTION_CACHE_TTL_HOURS: int = 168
 
+    # ===== 4.5：统计最小样本护栏 =====
+    # 省份/年度做 Meta 合并时，研究数少于该值则标记"证据不足"，避免产出易误导的合并值
+    MIN_STUDIES_FOR_META: int = 2
+    # 累计样本量少于该值同样标记"证据不足"
+    MIN_SAMPLE_FOR_META: int = 30
+
     # Database (默认值适用于 Docker Compose 本地开发环境)
     DATABASE_URL: str = "postgresql+asyncpg://antibody:antibody123@localhost:5432/antibody_map"
 
@@ -129,7 +149,9 @@ class Settings(BaseSettings):
     # MinIO (默认值适用于 Docker Compose 本地开发环境)
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "antibody"
-    MINIO_SECRET_KEY: str = "antibody123"
+    # 凭据统一从 MINIO_ROOT_PASSWORD 读取（.env 中配置）；MINIO_SECRET_KEY 为旧名回退
+    MINIO_ROOT_PASSWORD: str = ""
+    MINIO_SECRET_KEY: str = ""
     MINIO_BUCKET_LITERATURE: str = "antibody-literature"
 
     # Celery
@@ -152,9 +174,20 @@ class Settings(BaseSettings):
     APP_ENV: str = "production"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.18.0"
+    APP_VERSION: str = "1.19.0"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
+    # 提取状态卡死阈值（分钟）：processing/queued 超过此时间未变，列表查询时自动重置为 failed
+    EXTRACTION_STALE_MINUTES: int = 30
+    # F14：worker 心跳刷新间隔（秒）。提取进行中每间隔刷新一次 worker_heartbeat，
+    # 超时回收据此区分"长任务"（心跳新鲜）与"真卡死"（心跳停止）。须远小于 EXTRACTION_STALE_MINUTES。
+    EXTRACTION_HEARTBEAT_INTERVAL: int = 60
+
+    # ===== 分析快照 =====
+    # 快照行保留天数，超过后由后台循环清理（回收 response_json 占用的存储）
+    SNAPSHOT_TTL_DAYS: int = 30
+    # 快照清理后台循环间隔（秒），默认每天一次
+    SNAPSHOT_CLEANUP_INTERVAL: int = 86400
 
     # ===== 数据库备份 =====
     # pg_dump 导出文件存放目录（容器内路径，宿主机通过 docker-compose 卷映射到项目 backups/）
@@ -208,6 +241,20 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"SECRET_KEY 必须 >= 32 字符，当前长度 {len(self.SECRET_KEY)}，"
                 "请使用 openssl rand -base64 32 生成密钥"
+            )
+
+        # 非开发环境禁止使用默认数据库口令（config.py 默认 DATABASE_URL 含弱口令 antibody123）。
+        # 防呆：若 .env 漏配 DATABASE_URL，生产会静默连上默认弱口令库。
+        if self.APP_ENV != "development" and "antibody123@localhost" in self.DATABASE_URL:
+            raise ValueError(
+                "非开发环境禁止使用默认数据库口令 antibody123，"
+                "请在 .env 中配置 DATABASE_URL，并使用强口令（openssl rand -base64 24 生成）"
+            )
+
+        # 非开发环境禁止使用空 MinIO 主密码（默认 MINIO_ROOT_PASSWORD 为空字符串）
+        if self.APP_ENV != "development" and not self.MINIO_ROOT_PASSWORD:
+            raise ValueError(
+                "非开发环境必须配置 MINIO_ROOT_PASSWORD（openssl rand -base64 24 生成）"
             )
 
         # 本地 Ollama 并发一致性：若设置了 OLLAMA_NUM_PARALLEL，应与 LLM_CONCURRENCY 对齐

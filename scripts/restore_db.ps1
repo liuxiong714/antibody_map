@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # 数据库恢复导入脚本 (Windows PowerShell)
 # 用法: .\scripts\restore_db.ps1 -BackupFile backups\latest_backup.sql
 # 作用: 将备份的 SQL 文件导入到新的 PostgreSQL 数据库中
@@ -19,6 +19,19 @@ $BackupPath = Resolve-Path $BackupFile
 
 function Write-Color($text, $color = "White") {
     Write-Host $text -ForegroundColor $color
+}
+
+# 从 .env 读取数据库密码（禁止硬编码口令）
+$envFile = Join-Path $ProjectDir ".env"
+if (-not (Test-Path $envFile)) {
+    Write-Color "错误: 未找到 $envFile，请先在项目根目录配置 .env（POSTGRES_PASSWORD）" "Red"
+    exit 1
+}
+$DbPassword = (Get-Content $envFile | Where-Object { $_ -match '^\s*POSTGRES_PASSWORD=' } | Select-Object -First 1) -replace '^\s*POSTGRES_PASSWORD=', ''
+$DbPassword = $DbPassword.Trim('"', "'", ' ')
+if (-not $DbPassword) {
+    Write-Color "错误: .env 中未配置 POSTGRES_PASSWORD" "Red"
+    exit 1
 }
 
 Write-Color "============================================" "Cyan"
@@ -63,13 +76,13 @@ if ($confirm -ne "YES") {
 # 先断开所有连接并重建数据库
 Write-Color "" "Yellow"
 Write-Color "正在清理并重建数据库..." "Yellow"
-docker exec -e PGPASSWORD=antibody123 $ContainerName psql -U $DbUser -d postgres -c "DROP DATABASE IF EXISTS $DbName;" 2>&1 | Out-Null
-docker exec -e PGPASSWORD=antibody123 $ContainerName psql -U $DbUser -d postgres -c "CREATE DATABASE $DbName OWNER $DbUser;" 2>&1 | Out-Null
+docker exec -e PGPASSWORD=$DbPassword $ContainerName psql -U $DbUser -d postgres -c "DROP DATABASE IF EXISTS $DbName;" 2>&1 | Out-Null
+docker exec -e PGPASSWORD=$DbPassword $ContainerName psql -U $DbUser -d postgres -c "CREATE DATABASE $DbName OWNER $DbUser;" 2>&1 | Out-Null
 Write-Color "数据库已重建" "Green"
 
 # 导入备份
 Write-Color "正在导入备份，请稍候..." "Yellow"
-Get-Content $BackupPath | docker exec -i -e PGPASSWORD=antibody123 $ContainerName psql -U $DbUser -d $DbName
+Get-Content $BackupPath | docker exec -i -e PGPASSWORD=$DbPassword $ContainerName psql -U $DbUser -d $DbName
 
 if ($LASTEXITCODE -eq 0) {
     Write-Color "" "Green"

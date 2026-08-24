@@ -7,6 +7,8 @@
 **/*.pyc
 **/.pytest_cache
 **/.mypy_cache
+# TypeScript 增量编译缓存：本机产物，带入镜像会污染镜像内 tsc -b 导致报不存在错误的类型错误
+**/*.tsbuildinfo
 backend/data
 backend/*.db
 *.log

@@ -25,41 +25,56 @@ from app.schemas.literature import (
 )
 from app.core.document_parser import ALLOWED_EXTS, get_mime_type
 from app.core.url_fetcher import fetch_url, guess_title_from_html
-from app.services.literature_service import (
+from app.services.literature._common import (
+    LOCAL_STORAGE_DIR,
+    compute_pdf_hash,
+    create_import_log,
+    list_import_logs,
+)
+from app.services.literature.crud import (
     list_literature,
     get_literature,
     update_literature,
     delete_literature,
-    upload_literature,
-    upload_literature_file,
-    compute_pdf_hash,
     get_file_history,
     log_file_action,
-    check_duplicates,
-    scan_duplicates,
-    preview_merge,
-    merge_literatures,
-    batch_delete_literatures,
-    import_references_from_text,
-    preview_import_references,
-    cleanup_empty_literatures,
-    fix_titles,
-    ai_verify_titles,
-    batch_import_files_from_folder,
-    batch_import_uploaded_files,
-    import_literatures_from_json,
-    build_literatures_export,
-    reveal_in_host_file_manager,
-    LOCAL_STORAGE_DIR,
     list_trash_literatures,
     restore_literature,
     permanently_delete_literature,
     empty_trash,
     permanently_delete_all_trash,
-    create_import_log,
-    list_import_logs,
 )
-from app.services.file_cleanup_service import cleanup_orphan_files, scan_orphan_files
+from app.services.literature.import_export import (
+    upload_literature,
+    upload_literature_file,
+    import_references_from_text,
+    preview_import_references,
+    batch_import_files_from_folder,
+    batch_import_uploaded_files,
+    import_literatures_from_json,
+    build_literatures_export,
+    reveal_in_host_file_manager,
+)
+from app.services.literature.cleanup import (
+    batch_delete_literatures,
+    cleanup_empty_literatures,
+)
+from app.services.literature.duplicates import (
+    check_duplicates,
+    scan_duplicates,
+    preview_merge,
+    merge_literatures,
+)
+from app.services.literature.metadata import (
+    fix_titles,
+    ai_verify_titles,
+)
+from app.services.file_cleanup_service import (
+    cleanup_orphan_files,
+    delete_minio_orphan_objects,
+    scan_minio_orphans,
+    scan_orphan_files,
+)
 
 router = APIRouter()
 
@@ -747,6 +762,7 @@ async def update(
 async def upload_file(
     literature_id: uuid.UUID,
     file: UploadFile = File(...),
+    request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
     """为已有文献关联上传文件（替换原有文件）。"""
@@ -758,6 +774,19 @@ async def upload_file(
             status_code=400,
             detail=f"不支持的文件格式: {ext or '未知'}，支持 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML",
         )
+
+    # 在读文件之前检查大小，避免大文件进内存
+    content_length = request.headers.get("content-length") if request else None
+    if content_length:
+        try:
+            if int(content_length) > settings.MAX_UPLOAD_SIZE:
+                logger.warning(f"[关联文件] Content-Length 超限: filename={file.filename}, content-length={content_length}")
+                raise HTTPException(status_code=413, detail="文件大小超过限制")
+        except ValueError:
+            pass
+    if file.size is not None and file.size > settings.MAX_UPLOAD_SIZE:
+        logger.warning(f"[关联文件] file.size 超限: filename={file.filename}, size={file.size}")
+        raise HTTPException(status_code=413, detail="文件大小超过限制")
 
     file_bytes = await file.read()
     if len(file_bytes) > settings.MAX_UPLOAD_SIZE:
@@ -1169,28 +1198,95 @@ async def preview_orphan_files_cleanup(
     """管理员：预览孤儿文件（dry-run），列出待清理文件而不移动。"""
     scan = await scan_orphan_files(db)
     return ApiResponse(
-        message=f"扫描完成：共 {scan['total']} 个文件，其中孤儿文件 {len(scan['orphan'])} 个",
+        message=(
+            f"扫描完成：共 {scan['total']} 个文件，其中孤儿文件 {len(scan['orphan'])} 个，"
+            f"冷静期跳过 {len(scan['cooldown'])} 个，MinIO 引用保护 {len(scan['minio_protected'])} 个"
+        ),
         data={
             "scanned": scan["total"],
             "orphan_count": len(scan["orphan"]),
             "orphan_files": scan["orphan"],
+            "cooldown_count": len(scan["cooldown"]),
+            "cooldown_files": scan["cooldown"],
+            "minio_protected_count": len(scan["minio_protected"]),
+            "minio_protected_files": scan["minio_protected"],
         },
     )
 
 
-@router.post("/literatures/cleanup-orphan-files", response_model=ApiResponse, summary="清理孤儿文件", description="（管理员）将 backend/data/pdfs 中已不在数据库的孤儿文件移入回收目录（默认保留 30 天后自动删除），可配合 preview 接口先预览")
+@router.post("/literatures/cleanup-orphan-files", response_model=ApiResponse, summary="清理孤儿文件", description="（管理员）清理 backend/data/pdfs 中已不在数据库的孤儿文件。默认 dry_run=true 仅预览不移动；显式传 dry_run=false 才将孤儿文件移入回收目录（默认保留 30 天后自动删除）。")
 async def cleanup_orphan_files_endpoint(
+    dry_run: bool = Query(True, description="为 true 时仅预览（默认，不移动）；为 false 时执行真实移动+清理过期回收"),
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """管理员：执行孤儿文件清理（移入回收目录 + 清理过期回收）。"""
+    """管理员：孤儿文件清理。默认 dry_run 仅报告；显式 dry_run=false 才执行真移动。"""
     try:
-        result = await cleanup_orphan_files(db, dry_run=False)
+        result = await cleanup_orphan_files(db, dry_run=dry_run, operator=user.username)
     except Exception as e:
         logger.error(f"[清理孤儿文件] 执行失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"清理失败: {e}")
+    if dry_run:
+        message = (
+            f"预览完成（未移动）：共 {result['scanned']} 个文件，"
+            f"孤儿 {result['orphan_count']} 个，冷静期跳过 {len(result.get('cooldown_files', []))} 个，"
+            f"MinIO 引用保护 {len(result.get('minio_protected_files', []))} 个"
+        )
+    else:
+        message = (
+            f"清理完成：扫描 {result['scanned']} 个文件，孤儿 {result['orphan_count']} 个，"
+            f"移入回收 {result['moved']} 个，失败 {result['failed']} 个"
+        )
+    return ApiResponse(message=message, data=result)
+
+
+@router.get("/literatures/cleanup-minio-orphan-files/preview", response_model=ApiResponse, summary="预览 MinIO 孤儿对象清理", description="（管理员）扫描 MINIO_BUCKET_LITERATURE，列出已不在数据库中的孤儿对象，不执行任何删除")
+async def preview_minio_orphan_cleanup(
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理员：预览 MinIO 孤儿对象（dry-run），列出待清理对象而不删除。"""
+    scan = await scan_minio_orphans(db)
     return ApiResponse(
-        message=f"清理完成：扫描 {result['scanned']} 个文件，孤儿 {result['orphan_count']} 个，"
-                f"移入回收 {result['moved']} 个，失败 {result['failed']} 个",
-        data=result,
+        message=(
+            f"扫描完成：共 {scan['total']} 个对象，其中孤儿对象 {len(scan['orphan'])} 个，"
+            f"冷静期跳过 {len(scan['cooldown'])} 个，引用保护 {len(scan['protected'])} 个"
+            + ("" if scan.get("available", True) else "（MinIO 不可用，本次仅为降级结果）")
+        ),
+        data={
+            "scanned": scan["total"],
+            "orphan_count": len(scan["orphan"]),
+            "orphan_files": scan["orphan"],
+            "cooldown_count": len(scan["cooldown"]),
+            "cooldown_files": scan["cooldown"],
+            "protected_count": len(scan["protected"]),
+            "protected_files": scan["protected"],
+            "available": scan.get("available", True),
+        },
     )
+
+
+@router.post("/literatures/cleanup-minio-orphan-files", response_model=ApiResponse, summary="清理 MinIO 孤儿对象", description="（管理员）清理 MINIO_BUCKET_LITERATURE 中已不在数据库的孤儿对象。默认 dry_run=true 仅预览不删除；显式传 dry_run=false 才物理删除（无回收站，删除不可恢复）。")
+async def cleanup_minio_orphan_objects_endpoint(
+    dry_run: bool = Query(True, description="为 true 时仅预览（默认，不删除）；为 false 时执行物理删除"),
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理员：MinIO 孤儿对象清理。默认 dry_run 仅报告；显式 dry_run=false 才执行真删除。"""
+    try:
+        result = await delete_minio_orphan_objects(db, dry_run=dry_run, operator=user.username)
+    except Exception as e:
+        logger.error(f"[清理 MinIO 孤儿对象] 执行失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"清理失败: {e}")
+    if dry_run:
+        message = (
+            f"预览完成（未删除）：共 {result['scanned']} 个对象，"
+            f"孤儿 {result['orphan_count']} 个，冷静期跳过 {len(result.get('cooldown_files', []))} 个，"
+            f"引用保护 {len(result.get('protected_files', []))} 个"
+        )
+    else:
+        message = (
+            f"清理完成：扫描 {result['scanned']} 个对象，孤儿 {result['orphan_count']} 个，"
+            f"物理删除 {result['deleted']} 个，失败 {result['failed']} 个"
+        )
+    return ApiResponse(message=message, data=result)

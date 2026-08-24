@@ -1,15 +1,17 @@
+import asyncio
 import logging
 import uuid
 from typing import Optional
 from datetime import datetime, timezone
 
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.literature import Literature
 from app.models.data_point import DataPoint
 from app.models.extraction_history import ExtractionHistory
 from app.models.api_model_config import ApiModelConfig
+from app.models.base import async_session
 from app.tasks.extract_task import process_literature
 
 logger = logging.getLogger("uvicorn")
@@ -37,7 +39,7 @@ async def trigger_extraction(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     model_config_id: Optional[str] = None,
-    clear_existing_data: bool = True,
+    clear_existing_data: bool = False,
     use_cache: bool = True,
 ) -> dict:
     """触发文献 AI 提取任务（通过 Celery 异步执行）
@@ -56,26 +58,43 @@ async def trigger_extraction(
     if not literature.file_path and not literature.abstract:
         raise ValueError("文献既无 PDF 文件也无摘要，无法提取")
 
-    # == 竞态防护：检查当前状态，防止重复触发提取 ==
-    if literature.extraction_status in ("processing", "queued"):
-        raise ValueError(f"文献正在提取中（当前状态: {literature.extraction_status}），请等待完成后再试")
-
-    # 更新状态为 queued（等待 Celery 工作线程处理）
-    literature.extraction_status = "queued"
-    literature.updated_at = datetime.now(timezone.utc)
+    # == 竞态防护：原子抢占，防止并发对同一文献重复触发提取 ==
+    # 仅当状态非 processing/queued 时才允许置为 queued；rowcount=0 表示已被其他请求占用
+    claimed = await db.execute(
+        update(Literature)
+        .where(Literature.id == literature_id)
+        .where(Literature.extraction_status.notin_(["processing", "queued"]))
+        .values(
+            extraction_status="queued",
+            extraction_started_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
     await db.commit()
+    if claimed.rowcount == 0:
+        # 重新读取当前状态以给出准确提示（尽力而为）
+        cur = (
+            await db.execute(
+                select(Literature.extraction_status).where(Literature.id == literature_id)
+            )
+        ).scalar_one_or_none()
+        raise ValueError(
+            f"文献正在提取中（当前状态: {cur or 'unknown'}），请等待完成后再试"
+        )
 
     # == 安全处理：如果前端提供了自定义 api_key，先加密存入 ApiModelConfig ==
     # 任务参数只传 model_config_id，不传明文 api_key/base_url
     resolved_model_config_id = model_config_id
     if api_key and not model_config_id:
-        # 创建临时 ApiModelConfig，加密存储 api_key
-        from app.core.crypto import encrypt
+        # 创建临时 ApiModelConfig，加密存储 api_key/base_url，并设置 24h 过期 TTL
+        # （过期后由后台清理任务自动删除，避免明文凭证长期滞留数据库）
+        from datetime import timedelta
         temp_config = ApiModelConfig(
             name=f"临时提取配置-{model or 'default'}",
             model_name=model or "",
             base_url=base_url or "",
             is_active=False,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
         )
         # 通过 hybrid_property setter 自动加密
         temp_config.api_key = api_key
@@ -343,3 +362,32 @@ async def get_review_stats(db: AsyncSession) -> dict:
         "by_disease": total_by_disease,
         "by_reviewer": total_by_reviewer,
     }
+
+
+async def cleanup_expired_model_configs() -> int:
+    """删除所有已过期的临时 ApiModelConfig（TTL 自动回收）。
+
+    返回删除条数。防止单次提取注入的自定义凭证（api_key/base_url）长期滞留数据库。
+    """
+    now = datetime.now(timezone.utc)
+    async with async_session() as db:
+        stmt = sa_delete(ApiModelConfig).where(
+            ApiModelConfig.expires_at.isnot(None),
+            ApiModelConfig.expires_at < now,
+        )
+        result = await db.execute(stmt)
+        await db.commit()
+        deleted = result.rowcount or 0
+        if deleted:
+            logger.info(f"已清理 {deleted} 条过期的临时模型配置")
+        return deleted
+
+
+async def _expired_model_config_cleanup_loop(interval: int = 3600) -> None:
+    """后台循环：定期清理过期的临时 ApiModelConfig（默认每小时一次）。"""
+    while True:
+        try:
+            await cleanup_expired_model_configs()
+        except Exception as e:
+            logger.warning(f"清理过期模型配置失败: {e}")
+        await asyncio.sleep(interval)

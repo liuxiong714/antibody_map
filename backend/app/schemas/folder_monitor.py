@@ -3,7 +3,9 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.core.crypto import mask
 
 
 class MonitoredFolderBase(BaseModel):
@@ -45,6 +47,12 @@ class MonitoredFolderResponse(MonitoredFolderBase):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    # S4：响应不回传明文 API Key，仅返回掩码（避免任意登录用户窃取他人密钥）
+    @field_validator("extraction_api_key")
+    @classmethod
+    def _mask_api_key(cls, v: Optional[str]) -> Optional[str]:
+        return mask(v) if v else v
 
 
 class MonitoredFileResponse(BaseModel):

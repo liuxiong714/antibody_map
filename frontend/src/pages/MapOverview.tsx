@@ -390,7 +390,6 @@ const MapOverview: React.FC = () => {
       const name: string = params.name;
       const seriesType: string = params.seriesType;
       const data: { disease?: string } | undefined = params.data;
-      console.log('[MapClick] params:', { name, componentType: params.componentType, seriesType });
       // 散点图点击：城市详情
       if (seriesType === 'scatter') {
         const clickedDisease = data?.disease || '';
@@ -403,7 +402,6 @@ const MapOverview: React.FC = () => {
       // 地图点击：省份详情
       const entry = Object.entries(PROVINCE_GEOJSON_NAME).find(([, geoName]) => geoName === name);
       const shortName = entry ? entry[0] : name;
-      console.log('[MapClick] shortName:', shortName);
       if (shortName) {
         handleProvinceClickRef.current(shortName);
       } else if (drillProvinceRef.current) {
@@ -412,8 +410,6 @@ const MapOverview: React.FC = () => {
       }
     };
     instance.on('click', clickHandler);
-    // 临时暴露到 window 用于自动化测试（调试用，可删除）
-    (window as any).__mapClickHandler = clickHandler;
 
     // 窗口大小变化时自适应
     const handleResize = () => instance.resize();
