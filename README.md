@@ -38,20 +38,40 @@
 
 ## 快速开始
 
-```powershell
-# Windows
-git clone https://github.com/liuxiong714/antibody_map.git
-cd antibody_map
-copy .env.example .env
-.\start.ps1
-```
+### 前置条件
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/)（WSL2 模式，Windows）或 Docker Compose（Linux/macOS）
+- NVIDIA GPU（可选，用于 MinerU 文档解析加速；无 GPU 自动退回 CPU 模式）
+
+### 启动
 
 ```bash
-# macOS / Linux
 git clone https://github.com/liuxiong714/antibody_map.git
 cd antibody_map
-cp .env.example .env
-bash start.sh
+cp .env.example .env       # Windows: copy .env.example .env
+```
+
+编辑 `.env` 文件，填入必要的配置项（`LLM_API_KEY`、`POSTGRES_PASSWORD`、`SECRET_KEY` 等）。
+
+```bash
+# 一键启动（自动探测 GPU，有 GPU 则加速，无 GPU 则 CPU）
+bash docker-start.sh
+
+# 或手动启动
+# 有 GPU 时（默认）：
+docker compose up -d
+# 无 GPU 时：
+docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+```
+
+启动后访问 `http://localhost:8080` 即可进入登录页面。
+
+### 停止
+
+```bash
+bash docker-start.sh down
+# 或
+docker compose down
 ```
 
 ## 文档

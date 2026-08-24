@@ -61,7 +61,8 @@
 
 - **CI 流水线**：前端 build 前执行 `vitest run` 单测；后端 ruff（`E/F/I/UP`）检查 + pytest 覆盖率统计（`--cov=app`）。
 - **离线构建**：pip 依赖经本地 wheel 仓库离线固化（`download_wheels.ps1`，含 MinerU/torch 可选全量）；apt 源切阿里云；tesseract 中文包、caj2pdf 及共享库固化进镜像；backend/worker 可完全离线重建。
-- **部署安全**：docker-compose 中 postgres/Redis/MinIO 端口绑定 `127.0.0.1` 禁止公网暴露；数据库/MinIO 密码强制 `${VAR:?}` 环境变量引用，禁止硬编码字面量；backend/worker 设置 `TZ=Asia/Shanghai`；内存上限（backend 4g / worker 8g）；worker GPU 透传。
+- **部署安全**：docker-compose 中 postgres/Redis/MinIO 端口绑定 `127.0.0.1` 禁止公网暴露；数据库/MinIO 密码强制 `${VAR:?}` 环境变量引用，禁止硬编码字面量；backend/worker 设置 `TZ=Asia/Shanghai`；内存上限（backend 4g / worker 8g）。
+- **GPU 默认启用**：worker 默认请求 GPU 透传（MinerU 文档解析加速），无需额外 `-f` 参数；无 GPU 宿主机使用 `docker-compose.cpu.yml` 覆盖或 `docker-start.sh` 自动探测回退 CPU；原 `docker-compose.gpu.yml` 已移除。
 - **脚本**：`backup_db.ps1`/`restore_db.ps1` 从 `.env` 读取密码，不再硬编码；新增 `stop.sh` 一键停止。
 
 #### 修改文件
@@ -109,7 +110,8 @@
 | `frontend/nginx.conf` | `client_max_body_size 60m` |
 | `.github/workflows/ci.yml` | 前端 vitest、后端 ruff + 覆盖率 |
 | `backend/scripts/download_wheels.ps1` / `download_apt.ps1` | 离线 wheel/apt 固化 |
-| `docker-compose.yml` / `docker-compose.gpu.yml` | 端口绑定 127.0.0.1、密码强制、TZ、内存上限、GPU 透传 |
+| `docker-compose.yml` | 端口绑定 127.0.0.1、密码强制、TZ、内存上限、GPU 默认启用 |
+| `docker-compose.cpu.yml` / `docker-start.sh` | 新增 CPU 回退覆盖文件与自动探测 GPU 启动脚本，替代 `docker-compose.gpu.yml` |
 | `scripts/backup_db.ps1` / `restore_db.ps1` | 从 `.env` 读取密码 |
 | `start.sh` / `stop.sh` | 启动脚本更新、新增一键停止 |
 

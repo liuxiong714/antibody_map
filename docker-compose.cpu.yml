@@ -1,0 +1,10 @@
+# CPU 回退覆盖文件：将 worker 的 GPU 设备请求覆盖为空，使无 NVIDIA toolkit 的宿主机也能启动。
+# 用法（手动）：
+#   docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+# 或直接使用 docker-start.sh 自动探测。
+services:
+  worker:
+    deploy:
+      resources:
+        reservations:
+          devices: []

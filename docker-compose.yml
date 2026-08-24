@@ -176,9 +176,14 @@ services:
       resources:
         limits:
           memory: 8g
-    # GPU 透传默认关闭：无 NVIDIA Container Toolkit 的宿主机也能正常启动。
-    # 有 GPU 的宿主机请追加 docker-compose.gpu.yml：
-    #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+        # 默认启用 GPU 透传（MinerU 文档解析 / torch 推理使用 GPU 加速）。
+        # 无 NVIDIA Container Toolkit 的宿主机请使用 docker-start.sh 自动退回 CPU，
+        # 或手动追加 -f docker-compose.cpu.yml 覆盖。
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     # worker 健康检查：pid 1 是 celery 常驻进程，检查 broker(redis) 连通性即可确认存活
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import os,redis; redis.Redis.from_url(os.environ['CELERY_BROKER_URL']).ping()\" || exit 1"]
