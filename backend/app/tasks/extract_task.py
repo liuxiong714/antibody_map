@@ -695,6 +695,11 @@ async def _process_literature_async(
                 except Exception as e:
                     logger.warning(f"B9 加载审核反馈示例失败（不影响提取）: {e}")
 
+            # 方案A：进入 LLM 长时间推理前，先提交/结束前面读取 API Key、反馈示例等只读事务，
+            # 归还数据库连接，避免 LLM 阻塞期间连接空转触发 idle_in_transaction_session_timeout
+            # 而连接被强制断开，导致"写库时 connection is closed"的提取失败。
+            await db.commit()
+
             logger.info(f"开始 LLM 提取: model={effective_model}, extraction_passes={passes}")
             from app.core.metrics import record_llm_completion, observe_extraction_duration
 
@@ -721,6 +726,45 @@ async def _process_literature_async(
             # 记录 Prometheus 指标：提取耗时 + LLM token/费用/结局
             observe_extraction_duration(effective_model, _extract_seconds)
             record_llm_completion(effective_model, "success", usage_summary)
+
+        # F13：写库事务边界重构（方案A）——将数据点转换阶段（含可能触发的 A3 LLM 重抽）
+        # 与写库事务严格分离，确保 LLM 长阻塞期间**不持有任何数据库连接**。
+        # 背景：LLM 提取/重抽是秒~分钟级推理，若在此期间连接上存在未提交事务，
+        # 数据库的 idle_in_transaction_session_timeout(120s) 保险会强制断开连接，
+        # 导致"LLM 已成功识别数据、但写库 commit 时连接已closed"的提取失败。
+        # 本节 commit 结束抢占据/读配置等只读事务并归还连接，后续转换+写库在干净连接上进行。
+        await db.commit()
+
+        # 6. 为每个提取数据点创建 DataPoint 记录（含 grounding + schema 校验）。
+        #    纯内存计算，不访问数据库；若触发 A3 的 LLM 重抽，也不占用任何数据库连接。
+        all_data_points = []
+        stats_grounded = 0
+        stats_province_ok = 0
+        for extract_result in extract_results:
+            dp_list = await _extract_result_to_datapoints(
+                literature_id,
+                extract_result,
+                clean_text=clean_text,
+                extractor=extractor,
+            )
+            for dp in dp_list:
+                if dp.is_grounded:
+                    stats_grounded += 1
+                if dp.province in CHINA_PROVINCE_NAMES:
+                    stats_province_ok += 1
+                # F15：提取期即时质量评分。用已解析全文判定抽样/人群等信号，
+                # 写 quality_score/quality_grade/estimate_grade，供审核队列按质量排序，
+                # 避免"quality_score 仅审核后写入"导致待审队列无排序依据。
+                try:
+                    _qs = _score_data_point(dp, literature_text=clean_text)
+                    dp.quality_score = _qs["quality_score"]
+                    dp.quality_grade = _qs["quality_grade"]
+                    dp.estimate_grade = _qs["estimate_grade"]
+                except Exception as _qs_e:
+                    logger.warning(f"数据点提取期质量打分失败（不影响提取）: {_qs_e}")
+                all_data_points.append(dp)
+
+        # ---- 以下为写库事务（短窗口，纯 DB 操作，事务很快结束）----
 
         # F13：幂等写库 CAS 门。清旧点/写新点前核对提取代数与状态——
         # 若提取期间被超时回收重置、或被更新任务重新触发（generation 变化），
@@ -781,6 +825,10 @@ async def _process_literature_async(
                 )
             )
 
+        # 6. 写库：持久化本批次数据点
+        for dp in all_data_points:
+            db.add(dp)
+
         # 5c. P2-tt 试点：持久化 LLM 提取到的滴度矩阵（TiterTable）
         # 缓存命中时 titer_tables 直接取自缓存，无需再读 extractor
         for tt in titer_tables:
@@ -799,35 +847,6 @@ async def _process_literature_async(
             ))
         if titer_tables:
             logger.info(f"P2-tt 试点: 已持久化 {len(titer_tables)} 张滴度矩阵表（文献 {literature_id}）")
-
-        # 6. 为每个提取数据点创建 DataPoint 记录（含 grounding + schema 校验）
-        all_data_points = []
-        stats_grounded = 0
-        stats_province_ok = 0
-        for extract_result in extract_results:
-            dp_list = await _extract_result_to_datapoints(
-                literature_id,
-                extract_result,
-                clean_text=clean_text,
-                extractor=extractor,
-            )
-            for dp in dp_list:
-                if dp.is_grounded:
-                    stats_grounded += 1
-                if dp.province in CHINA_PROVINCE_NAMES:
-                    stats_province_ok += 1
-                # F15：提取期即时质量评分。用已解析全文判定抽样/人群等信号，
-                # 写 quality_score/quality_grade/estimate_grade，供审核队列按质量排序，
-                # 避免"quality_score 仅审核后写入"导致待审队列无排序依据。
-                try:
-                    _qs = _score_data_point(dp, literature_text=clean_text)
-                    dp.quality_score = _qs["quality_score"]
-                    dp.quality_grade = _qs["quality_grade"]
-                    dp.estimate_grade = _qs["estimate_grade"]
-                except Exception as _qs_e:
-                    logger.warning(f"数据点提取期质量打分失败（不影响提取）: {_qs_e}")
-                db.add(dp)
-                all_data_points.append(dp)
 
         # 6b. P1-1：归并子估计的 parent_id 到对应主估计
         # 逻辑：子估计的 _parent_group 标识匹配主估计的 (province+disease+data_type) 组合
