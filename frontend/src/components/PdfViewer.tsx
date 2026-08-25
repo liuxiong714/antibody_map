@@ -7,9 +7,11 @@ import {
   ColumnWidthOutlined,
 } from '@ant-design/icons';
 import * as pdfjsLib from 'pdfjs-dist';
+import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline';
 
-// 使用本地打包的 worker（离线可用），本地 cmaps
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href;
+// 使用内联 worker（离线可用、不依赖运行时 module fetch，规避 nginx MIME/浏览器缓存/CSP 导致的
+// "Failed to fetch dynamically imported module" 加载失败），本地 cmaps
+pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker();
 const CMAP_URL = '/cmaps/';
 
 interface PdfViewerProps {
@@ -43,7 +45,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const renderTasksRef = useRef<Map<number, pdfjsLib.RenderTask>>(new Map());
   const visibleRangeRef = useRef<{ start: number; end: number }>({ start: 1, end: 1 });
   const allDimsRef = useRef<{ w: number; h: number }[]>([]);
-  const blobUrlRef = useRef<string | null>(null);
 
   // 计算适合宽度的缩放比例
   const calcFitWidthScale = useCallback(() => {
@@ -206,18 +207,15 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       if (observerRef.current) { observerRef.current.disconnect(); observerRef.current = null; }
       canvasMapRef.current.clear();
       pdfRef.current?.destroy();
-      // 清理之前的 blob URL
-      if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
-
       const url = `/api/v1/literatures/${literatureId}/file`;
-      console.log(`[PdfViewer] 预检请求: ${url}`);
-
-      // 预检：先 fetch 检查文件是否存在，避免 PDF.js 内部抛出 ERR_ABORTED 控制台错误
       const token = localStorage.getItem('token') || sessionStorage.getItem('token');
       const headers: Record<string, string> = {};
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
+
+      // GET 预检：确认文件存在（友好 404/错误提示），随后取消 body 读取避免整文件下载
+      console.log(`[PdfViewer] 预检请求: ${url}`);
       const response = await fetch(url, { headers });
       console.log(`[PdfViewer] 预检响应: status=${response.status}, ok=${response.ok}`);
       if (!response.ok) {
@@ -233,15 +231,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         setLoading(false);
         return;
       }
+      // 仅在确认存在后中流产体、关闭连接，避免为预检下载整份文件
+      try { await response.body?.cancel(); } catch { /* ignore */ }
 
-      // 将文件转为 blob URL 供 PDF.js 加载（当前已禁用 range/stream，整体下载无性能差异）
-      const blob = await response.blob();
-      console.log(`[PdfViewer] 文件下载完成: size=${blob.size} bytes, type=${blob.type}`);
-      const blobUrl = URL.createObjectURL(blob);
-      blobUrlRef.current = blobUrl;
-
+      // 直接传入鉴权 URL 供 PDF.js 流式读取（同源 http。不再使用 blob URL，
+      // 规避 pdf.js worker 内 fetch(blob:) 读取失败；同时避免整文件二次下载）
       const loadingTask = pdfjsLib.getDocument({
-        url: blobUrl,
+        url,
+        httpHeaders: headers,
         cMapUrl: CMAP_URL,
         cMapPacked: true,
         useSystemFonts: true,
@@ -299,7 +296,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       pdfRef.current?.destroy();
       pdfRef.current = null;
       canvasMapRef.current.clear();
-      if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
     };
   }, [literatureId]);
 

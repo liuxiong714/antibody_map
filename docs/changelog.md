@@ -1,5 +1,24 @@
 # 变更日志
 
+## v1.19.1 (2026-08-25)
+
+### 修复
+
+- **`/models` 接口 500**：补充 v1.19.0 漏写的 alembic 迁移 `add_api_model_config_expires_at`，为 `api_model_config` 补上 `expires_at` 列（时区、可空、索引），消除 DB 与 Schema 漂移导致的 `UndefinedColumnError`。
+- **PDF 预览 worker 动态 import 失败**：nginx 新增 `.mjs` 专属 location，强制 `Content-Type: text/javascript`——默认 `mime.types` 将 `.mjs` 按二进制流返回，配合 `nosniff` 导致 pdf.js worker 加载失败、PDF 无法预览。
+- **PDF 预览加载链路重构**：pdf.js worker 改为 Vite 内联构建产物（`?worker&inline` + `workerPort`），不再依赖运行时动态 module fetch，规避反代 MIME / 浏览器缓存 / CSP 限制；取消「整文件下载 → blob URL」中转，改为带 JWT 鉴权头（`httpHeaders`）的同源 URL 直接流式读取，规避 worker 内 `fetch(blob:)` 失败并省去整文件二次下载；预检请求确认文件存在后立即取消响应体读取。
+- **文献列表**：移除 antd Table 虚拟滚动属性（`virtual`），修复列宽拖拽与横向滚动场景下的渲染异常。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/alembic/versions/add_api_model_config_expires_at.py` | 补迁移：`api_model_config.expires_at` 列 |
+| `frontend/nginx.conf` | `.mjs` MIME 类型强制为 `text/javascript` |
+| `frontend/src/components/PdfViewer.tsx` | 内联 worker、鉴权 URL 流式加载、预检后取消响应体 |
+| `frontend/src/pages/Literature.tsx` | 移除 Table `virtual` 虚拟滚动 |
+| `backend/app/config.py` | 版本号 1.19.0 → 1.19.1 |
+
 ## v1.19.0 (2026-08-24)
 
 ### LLM 提取管线加固（安全/健壮性/数据一致性/审核工作流）

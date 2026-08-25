@@ -1856,7 +1856,6 @@ const LiteraturePage: React.FC = () => {
             showTotal: (t) => `共 ${t} 条${selectedRowKeys.length > 0 ? `，已选 ${selectedRowKeys.length} 条` : ''}`,
           }}
           scroll={{ x: 1045, y: 560 }}
-          virtual={items.length >= 50}
           size="middle"
         />
       </Card>

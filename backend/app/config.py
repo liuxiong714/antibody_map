@@ -174,7 +174,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "production"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.19.0"
+    APP_VERSION: str = "1.19.1"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
     # 提取状态卡死阈值（分钟）：processing/queued 超过此时间未变，列表查询时自动重置为 failed
