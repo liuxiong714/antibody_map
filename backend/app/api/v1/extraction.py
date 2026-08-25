@@ -1141,6 +1141,10 @@ async def reset_stuck_extractions(db: AsyncSession = Depends(get_db)):
 @router.get("/extractions/queue-status", response_model=ApiResponse, summary="查询提取队列状态", description="查询当前AI提取队列状态：待处理数、排队中数、提取中数等，以及排队中的文献列表")
 async def get_extraction_queue_status(db: AsyncSession = Depends(get_db)):
     """查询AI提取队列状态，用于前端展示当前工作负载"""
+    # 先重置卡死状态，与列表查询口径一致，避免两者数字不一致
+    from app.services.literature.crud import reset_stale_extraction_status
+    await reset_stale_extraction_status(db)
+
     # 各状态计数
     count_result = await db.execute(
         select(Literature.extraction_status, func.count(Literature.id))
@@ -1179,7 +1183,8 @@ async def get_extraction_queue_status(db: AsyncSession = Depends(get_db)):
         "pending_count": counts.get("pending", 0),
         "queued_count": counts.get("queued", 0),
         "processing_count": counts.get("processing", 0),
-        "done_count": counts.get("done", 0) + counts.get("done_no_data", 0),
+        "done_count": counts.get("done", 0),
+        "done_no_data_count": counts.get("done_no_data", 0),
         "failed_count": counts.get("failed", 0),
         "total": sum(counts.values()),
         "queued_literatures": queued_list,

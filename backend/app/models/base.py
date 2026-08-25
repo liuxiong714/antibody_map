@@ -18,6 +18,16 @@ engine = create_async_engine(
     pool_timeout=30,
     pool_pre_ping=False,
     pool_recycle=1800,
+    # 数据库写入保险（防文献提取长事务导致整表行锁被长时间占用、列表查询卡死）：
+    # - statement_timeout：单条 SQL 执行超过 120s 主动终止，兜住异常慢语句
+    # - idle_in_transaction_session_timeout：事务空转（语句已执行完却不提交/回滚）超过
+    #   120s 自动回滚并断开，防止 idle-in-transaction 长期持有行锁（本次卡死根因）
+    connect_args={
+        "server_settings": {
+            "statement_timeout": "120000",
+            "idle_in_transaction_session_timeout": "120000",
+        }
+    },
 )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

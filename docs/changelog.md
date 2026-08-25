@@ -1,5 +1,28 @@
 # 变更日志
 
+## v1.19.2 (2026-08-25)
+
+### 修复
+
+- **提取状态口径统一**：抽出公共函数 `reset_stale_extraction_status`，文献列表查询与「提取状态」弹窗（`/extractions/queue-status`）统计前**均先执行卡死重置**（`processing/queued` 超 30 分钟自动置为 `failed`），消除两处统计不一致——此前弹窗会计入卡死残留、查询时却已将其重置为失败，导致数字对不上。
+- **提取状态细分展示**：`queue-status` 新增 `done_no_data_count`，不再把「完成（无数据）」并入「已完成」；前端「提取状态」弹窗由 5 框扩展为 6 框，新增橙色「完成（无数据）」，与列表筛选器、状态徽章的三终局口径对齐。
+- **退出登录自动备份**：恢复退出前的自动备份对话框（默认自动执行数据库备份，成功后自动退出登录；提供「跳过备份并退出」「取消」）。
+- **数据库写入保险**：连接池增加 `statement_timeout=120s` 与 `idle_in_transaction_session_timeout=120s`，防止文献提取长事务空转长期占行锁导致列表查询卡死。
+- **nginx 动态解析后端**：`/api/` 反向代理改用 `resolver 127.0.0.11 + 变量`，按 TTL 重新解析 `backend`，避免容器重建换 IP 后全站 502。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/services/literature/crud.py` | 抽出 `reset_stale_extraction_status` 公共函数，列表查询复用 |
+| `backend/app/api/v1/extraction.py` | queue-status 拆分 `done_no_data_count` 并在统计前执行卡死重置 |
+| `frontend/src/pages/Literature.tsx` | 弹窗新增「完成（无数据）」统计框 |
+| `frontend/src/services/literature.ts` | `ExtractionQueueStatus` 增加 `done_no_data_count` |
+| `frontend/src/layouts/MainLayout.tsx` | 退出登录自动备份对话框 |
+| `backend/app/models/base.py` | 数据库连接 `statement_timeout` / `idle_in_transaction_session_timeout` |
+| `frontend/nginx.conf` | `/api/` 反向代理 `resolver` 动态解析后端 |
+| `backend/app/config.py` | 版本号 1.19.1 → 1.19.2 |
+
 ## v1.19.1 (2026-08-25)
 
 ### 修复

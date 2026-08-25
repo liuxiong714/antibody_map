@@ -2679,6 +2679,7 @@ const LiteraturePage: React.FC = () => {
               <StatBox label="排队中" count={queueStatus.queued_count} color="#1677ff" />
               <StatBox label="提取中" count={queueStatus.processing_count} color="#faad14" />
               <StatBox label="已完成" count={queueStatus.done_count} color="#52c41a" />
+              <StatBox label="完成（无数据）" count={queueStatus.done_no_data_count} color="#fa8c16" />
               <StatBox label="失败" count={queueStatus.failed_count} color="#ff4d4f" />
             </div>
             <Divider style={{ margin: '12px 0' }} />

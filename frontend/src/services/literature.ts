@@ -626,6 +626,7 @@ export interface ExtractionQueueStatus {
   queued_count: number;
   processing_count: number;
   done_count: number;
+  done_no_data_count: number;
   failed_count: number;
   total: number;
   queued_literatures: { id: string; title: string }[];

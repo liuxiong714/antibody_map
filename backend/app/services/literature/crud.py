@@ -22,31 +22,11 @@ from app.services.literature._common import (
 )
 
 
-async def list_literature(
-    db: AsyncSession,
-    keyword: Optional[str] = None,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    journal: Optional[str] = None,
-    title: Optional[str] = None,
-    authors: Optional[str] = None,
-    created_start: Optional[datetime] = None,
-    created_end: Optional[datetime] = None,
-    sort_by: Optional[str] = None,
-    sort_order: Optional[str] = None,
-    review_status: Optional[str] = None,
-    extraction_status: Optional[str] = None,
-    file_format: Optional[str] = None,
-    tag_id: Optional[uuid.UUID] = None,
-    has_abstract: Optional[bool] = None,
-    page: int = 1,
-    page_size: int = 20,
-) -> tuple[list[Literature], int]:
-    query = select(Literature).where(Literature.deleted_at.is_(None))
-    count_query = select(func.count(Literature.id)).where(Literature.deleted_at.is_(None))
+async def reset_stale_extraction_status(db: AsyncSession) -> int:
+    """重置卡死的提取状态：将 processing/queued 超过阈值且无心跳的记录自动置为 failed。
 
+    供列表查询与提取状态统计共用，保证两处统计口径一致。
+    """
     # 卡死检测：将 processing/queued 超过阈值的记录自动重置为 failed
     # F14：心跳感知——worker 心跳持续刷新的任务视为存活，不误判；
     #   - worker_heartbeat 非空：仅当心跳本身超过阈值才回收（worker 崩溃后心跳停止）
@@ -77,6 +57,36 @@ async def list_literature(
     result = await db.execute(stale_stmt)
     if result.rowcount > 0:
         logger.info(f"自动重置了 {result.rowcount} 条卡死提取状态为 failed")
+    return result.rowcount or 0
+
+
+async def list_literature(
+    db: AsyncSession,
+    keyword: Optional[str] = None,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+    year_start: Optional[int] = None,
+    year_end: Optional[int] = None,
+    journal: Optional[str] = None,
+    title: Optional[str] = None,
+    authors: Optional[str] = None,
+    created_start: Optional[datetime] = None,
+    created_end: Optional[datetime] = None,
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = None,
+    review_status: Optional[str] = None,
+    extraction_status: Optional[str] = None,
+    file_format: Optional[str] = None,
+    tag_id: Optional[uuid.UUID] = None,
+    has_abstract: Optional[bool] = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[Literature], int]:
+    query = select(Literature).where(Literature.deleted_at.is_(None))
+    count_query = select(func.count(Literature.id)).where(Literature.deleted_at.is_(None))
+
+    # 卡死检测：与提取状态统计共用同一重置逻辑，保证两处口径一致
+    await reset_stale_extraction_status(db)
 
     if tag_id:
         from app.models.literature_tag import literature_tag

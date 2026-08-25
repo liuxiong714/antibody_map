@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, Dropdown, Modal, Input, Button, Space, message, type MenuProps } from 'antd';
+import { Layout, Menu, Dropdown, Modal, Input, Button, Space, Spin, message, type MenuProps } from 'antd';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -22,6 +22,7 @@ import {
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import ThemeSwitcher from '../components/ThemeSwitcher';
 import api, { clearAuthStorage } from '../services/api';
+import { backupDatabase } from '../services/system';
 
 const { Sider, Content, Header } = Layout;
 
@@ -37,6 +38,10 @@ const MainLayout: React.FC = () => {
   const [oldPwd, setOldPwd] = useState('');
   const [newPwd, setNewPwd] = useState('');
   const [confirmPwd, setConfirmPwd] = useState('');
+  // 退出登录前自动备份数据
+  const [logoutModalOpen, setLogoutModalOpen] = useState(false);
+  const [backupRunning, setBackupRunning] = useState(false);
+  const [backupResult, setBackupResult] = useState<'success' | 'failed' | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
@@ -73,10 +78,35 @@ const MainLayout: React.FC = () => {
       ]
     : baseMenuItems;
 
-  const handleLogout = () => {
+  const doLogout = () => {
     clearAuthStorage();
     message.success(t('logout.success'));
     navigate('/login');
+  };
+
+  const runBackup = async () => {
+    setBackupRunning(true);
+    setBackupResult(null);
+    try {
+      await backupDatabase();
+      setBackupResult('success');
+      // 备份成功，自动退出登录
+      setTimeout(doLogout, 800);
+    } catch (err: any) {
+      setBackupResult('failed');
+    } finally {
+      setBackupRunning(false);
+    }
+  };
+
+  const handleLogout = () => {
+    // 弹出备份确认对话框，默认自动执行数据库备份
+    setLogoutModalOpen(true);
+    runBackup();
+  };
+
+  const skipBackupAndLogout = () => {
+    doLogout();
   };
 
   const handleChangePassword = async () => {
@@ -188,6 +218,33 @@ const MainLayout: React.FC = () => {
             value={confirmPwd}
             onChange={e => setConfirmPwd(e.target.value)}
           />
+        </div>
+      </Modal>
+
+      {/* 退出登录前的自动备份确认弹窗 */}
+      <Modal
+        title={t('logout.backupTitle')}
+        open={logoutModalOpen}
+        closable={false}
+        maskClosable={false}
+        footer={[
+          <Button key="cancel" onClick={() => setLogoutModalOpen(false)}>{t('action.cancel')}</Button>,
+          <Button key="skip" danger loading={backupRunning} onClick={skipBackupAndLogout}>
+            {t('logout.skipBackup')}
+          </Button>,
+        ]}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 8 }}>
+          {backupRunning && <Spin />}
+          <span>
+            {backupRunning
+              ? t('logout.backupRunning')
+              : backupResult === 'success'
+                ? `${t('logout.backupSuccess')}，${t('logout.backupLoggingOut')}`
+                : backupResult === 'failed'
+                  ? t('logout.backupFailed')
+                  : t('logout.backupRunning')}
+          </span>
         </div>
       </Modal>
     </Layout>
