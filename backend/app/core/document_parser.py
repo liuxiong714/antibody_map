@@ -20,6 +20,7 @@ from app.core.pdf_parser import extract_text as pdf_extract_text
 from app.core.processors import get_parser
 from app.core.processors import anydoc_parser
 from app.core.processors import pdf_inspector_parser
+from app.core.parse_trace import record as trace_record
 
 logger = logging.getLogger("uvicorn")
 
@@ -57,6 +58,25 @@ def normalize_ext(file_ext: str) -> str:
     return ext
 
 
+def _is_quality_acceptable(text: str) -> bool:
+    """粗略质量检测：判定提取出的文本是否可用。
+
+    条件（任一不满足即视为低质量，触发 MinerU GPU 增强回退）：
+    - 文本长度 > 100 字符
+    - 字母/数字占比 > 10%（排除大量乱码或特殊符号）
+    - 至少包含 3 个数字（可能是表格数据）
+    """
+    if not text or len(text) <= 100:
+        return False
+    alnum = sum(c.isalnum() or c.isspace() for c in text)
+    if alnum / len(text) <= 0.10:
+        return False
+    digit_count = sum(c.isdigit() for c in text[:2000])
+    if digit_count < 3:
+        return False
+    return True
+
+
 def extract_text(file_bytes: bytes, file_ext: str = ".pdf") -> str:
     """按扩展名分发到对应解析器，提取纯文本。
 
@@ -77,6 +97,7 @@ def extract_text(file_bytes: bytes, file_ext: str = ".pdf") -> str:
         md = anydoc_parser.to_markdown_bytes(file_bytes, ext)
         if md:
             logger.info(f"[文档解析] 解析路径=AnyDoc, 格式={ext}, 输出={len(md)} 字符")
+            trace_record("anydoc")
             return md
         logger.info(f"[文档解析] 回退=策略解析器, 格式={ext}（AnyDoc 无有效输出）")
 
@@ -89,10 +110,16 @@ def extract_text(file_bytes: bytes, file_ext: str = ".pdf") -> str:
         and pdf_inspector_parser.is_available()
     ):
         md = pdf_inspector_parser.to_markdown_bytes(file_bytes)
-        if md:
+        if md and _is_quality_acceptable(md):
             logger.info(f"[文档解析] 解析路径=pdf-inspector, 格式={ext}, 输出={len(md)} 字符")
+            trace_record("pdf-inspector")
             return md
-        logger.info(f"[文档解析] 回退=现有解析链, 格式={ext}（pdf-inspector 无有效输出）")
+        if md:
+            logger.info(
+                f"[文档解析] pdf-inspector 输出质量不足({len(md)} 字符)，触发 MinerU GPU 增强回退"
+            )
+        else:
+            logger.info(f"[文档解析] 回退=现有解析链, 格式={ext}（pdf-inspector 无有效输出）")
 
     try:
         if ext == ".pdf":
@@ -100,6 +127,7 @@ def extract_text(file_bytes: bytes, file_ext: str = ".pdf") -> str:
             text_len = len(result)
             # 具体走 MinerU 还是 PyMuPDF+OCR 的路径日志，由 pdf_parser 内部打印
             logger.info(f"[文档解析] PDF 解析完成: {text_len} 字符")
+            trace_record("pdf")
             return result
 
         if ext == ".caj":
@@ -108,6 +136,7 @@ def extract_text(file_bytes: bytes, file_ext: str = ".pdf") -> str:
             logger.info(f"[文档解析] CAJ 转换成功: {len(pdf_bytes)} 字节 PDF")
             result = pdf_extract_text(pdf_bytes)
             logger.info(f"[文档解析] CAJ 解析完成: {len(result)} 字符")
+            trace_record("caj")
             return result
 
         # 策略模式：从 processors 注册表获取解析器
@@ -118,6 +147,7 @@ def extract_text(file_bytes: bytes, file_ext: str = ".pdf") -> str:
             result = parser.extract_text(file_bytes)
             text_len = len(result)
             logger.info(f"[文档解析] {parser_name} 解析完成: {text_len} 字符")
+            trace_record(parser_name)
             return result
 
         logger.warning(f"[文档解析] 未找到匹配的解析器: {ext}")

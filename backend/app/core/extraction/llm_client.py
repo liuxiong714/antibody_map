@@ -156,6 +156,11 @@ def _classify_llm_error(exc: Exception) -> dict:
             "proxyerror",
         )
     ):
+        # 本地 Ollama（端口 11434）连不上时打独立错误码 ollama_unreachable，
+        # 便于前端/日志明确提示"模型服务未连接"；但重试/URL 切换语义与
+        # connection_error 完全一致（见 _is_connection_error 与调用方判断）。
+        if "11434" in lower_full:
+            return {"type": "ollama_unreachable", "message": full[:2000]}
         return {"type": "connection_error", "message": full[:2000]}
     if lower.startswith(("4", "5")) and len(lower) >= 3 and lower[1:3].isdigit():
         return {"type": "http_5xx" if lower.startswith("5") else "http_4xx", "message": full[:2000]}
@@ -164,7 +169,7 @@ def _classify_llm_error(exc: Exception) -> dict:
 
 def _is_connection_error(exc: Exception) -> bool:
     """判断异常是否为连接类错误（可重试/可切换 URL）。"""
-    return _classify_llm_error(exc)["type"] == "connection_error"
+    return _classify_llm_error(exc)["type"] in ("connection_error", "ollama_unreachable")
 
 
 class LLMClientMixin:
@@ -300,8 +305,8 @@ class LLMClientMixin:
                 candidates.append(ollama_cfg)
             # host.docker.internal 仅在 Docker Desktop 下指向宿主
             candidates.append("http://host.docker.internal:11434/v1")
-            # 容器默认网关（部分 docker 网络配置下可直达宿主/网关 Ollama）
-            candidates.append("http://172.17.0.1:11434/v1")
+            # 注意：不再追加 docker 默认网桥 172.17.0.1 —— 在 WSL2(Hyper-V 直连) 环境下
+            # 该地址并非宿主，永远连不上，只会制造误导性的 "All connection attempts failed" 日志。
             for c in candidates:
                 if c and c not in chain:
                     chain.append(c)
@@ -425,7 +430,7 @@ class LLMClientMixin:
                     return await self._chat_once(client, prompt, system_prompt)
                 except Exception as e:
                     err = _classify_llm_error(e)
-                    if err["type"] == "connection_error":
+                    if err["type"] in ("connection_error", "ollama_unreachable"):
                         last_conn_exc = e
                         logger.warning(
                             f"LLM 连接失败（url={url}, attempt={attempt + 1}）: {err['message'][:300]}"

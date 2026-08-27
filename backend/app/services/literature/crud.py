@@ -8,7 +8,9 @@ from sqlalchemy import and_, case, or_, select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.literature import Literature
+from app.models.extraction_history import ExtractionHistory
 from app.models.literature_file_history import LiteratureFileHistory
+from app.models.base import async_session as _db_async_session
 from app.schemas.literature import LiteratureCreate
 from app.core.minio_client import delete_file
 from app.config import settings
@@ -23,41 +25,64 @@ from app.services.literature._common import (
 
 
 async def reset_stale_extraction_status(db: AsyncSession) -> int:
-    """重置卡死的提取状态：将 processing/queued 超过阈值且无心跳的记录自动置为 failed。
+    """重置卡死的提取状态：将 processing/queued 超过阈值且无心跳的记录自动置为 failed，并同步写失败历史。
 
     供列表查询与提取状态统计共用，保证两处统计口径一致。
+    使用独立数据库会话执行并提交（get_db 不负责提交），确保重置与历史都真正落库。
     """
     # 卡死检测：将 processing/queued 超过阈值的记录自动重置为 failed
     # F14：心跳感知——worker 心跳持续刷新的任务视为存活，不误判；
     #   - worker_heartbeat 非空：仅当心跳本身超过阈值才回收（worker 崩溃后心跳停止）
     #   - worker_heartbeat 为空（历史记录/未启用心跳）：回退用 extraction_started_at 判活
     stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=settings.EXTRACTION_STALE_MINUTES)
-    stale_stmt = (
-        update(Literature)
-        .where(
-            Literature.extraction_status.in_(["processing", "queued"]),
-            or_(
-                and_(
-                    Literature.worker_heartbeat.isnot(None),
-                    Literature.worker_heartbeat < stale_threshold,
-                ),
-                and_(
-                    Literature.worker_heartbeat.is_(None),
-                    Literature.extraction_started_at.isnot(None),
-                    Literature.extraction_started_at < stale_threshold,
-                ),
-            ),
-        )
-        .values(
-            extraction_status="failed",
-            extraction_started_at=None,
-            worker_heartbeat=None,
-        )
+    stale_cond = or_(
+        and_(
+            Literature.worker_heartbeat.isnot(None),
+            Literature.worker_heartbeat < stale_threshold,
+        ),
+        and_(
+            Literature.worker_heartbeat.is_(None),
+            Literature.extraction_started_at.isnot(None),
+            Literature.extraction_started_at < stale_threshold,
+        ),
     )
-    result = await db.execute(stale_stmt)
-    if result.rowcount > 0:
-        logger.info(f"自动重置了 {result.rowcount} 条卡死提取状态为 failed")
-    return result.rowcount or 0
+    async with _db_async_session() as db2:
+        # 先取出本次将被重置为 failed 的文献，写入失败历史，避免「有结果无历史」缺口
+        stale_rows = await db2.execute(
+            select(Literature.id, Literature.llm_model_used, Literature.updated_at)
+            .where(
+                Literature.extraction_status.in_(["processing", "queued"]),
+                stale_cond,
+            )
+        )
+        stale_lits = stale_rows.all()
+        await db2.execute(
+            update(Literature)
+            .where(
+                Literature.extraction_status.in_(["processing", "queued"]),
+                stale_cond,
+            )
+            .values(
+                extraction_status="failed",
+                extraction_started_at=None,
+                worker_heartbeat=None,
+            )
+        )
+        for lit_id, lit_model, lit_updated in stale_lits:
+            db2.add(
+                ExtractionHistory(
+                    literature_id=lit_id,
+                    model=lit_model,
+                    status="failed",
+                    data_point_count=0,
+                    error_message="卡死自动重置：提取状态 processing/queued 超过阈值被回收",
+                    extracted_at=lit_updated or datetime.now(timezone.utc),
+                )
+            )
+        await db2.commit()
+    if stale_lits:
+        logger.info(f"自动重置了 {len(stale_lits)} 条卡死提取状态为 failed，并写入失败历史")
+    return len(stale_lits)
 
 
 async def list_literature(
@@ -252,6 +277,7 @@ async def create_literature(db: AsyncSession, data: LiteratureCreate) -> Literat
         title=data.title,
         title_en=data.title_en,
         authors=data.authors,
+        author_affiliations=data.author_affiliations,
         journal=data.journal,
         pub_year=data.pub_year,
         doi=data.doi,
@@ -281,7 +307,7 @@ async def update_literature(
         return None
 
     updatable_fields = [
-        "title", "title_en", "authors", "journal", "pub_year", "doi", "pmid",
+        "title", "title_en", "authors", "author_affiliations", "journal", "pub_year", "doi", "pmid",
         "abstract", "keywords", "region", "province", "publication_types",
         "source_db", "has_fulltext", "extraction_status",
         "extracted_count", "approved_count",

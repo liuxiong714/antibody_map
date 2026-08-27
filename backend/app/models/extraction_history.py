@@ -35,6 +35,8 @@ class ExtractionHistory(Base):
     llm_call_count: Mapped[int] = mapped_column(Integer, default=0)
     # 详细的模型用量信息（JSON）
     llm_usage_detail: Mapped[Optional[dict]] = mapped_column(JSON)
+    # 本次 AI 提取时长（秒，3 位小数）。成功路径为 LLM 提取耗时；失败路径为从任务抢占到失败的整段耗时
+    duration_seconds: Mapped[Any] = mapped_column(Numeric(12, 3), default=0)
 
     __table_args__ = (
         CheckConstraint(

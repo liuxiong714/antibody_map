@@ -216,6 +216,17 @@ export async function resetStuckExtractions(): Promise<{
   return data;
 }
 
+// 终止「我的」提取：仅重置当前登录用户自己提交（owner）文献的卡住提取任务
+export async function resetMyExtractions(): Promise<{
+  reset_count: number;
+  literature_ids?: string[];
+  purged_count: number;
+  revoked_count: number;
+}> {
+  const { data } = await api.post('/literatures/extraction/reset-my');
+  return data;
+}
+
 export interface SyncMetadataResult {
   id: string;
   pub_year: number | null;
@@ -273,6 +284,7 @@ export interface ExtractionHistoryItem {
   llm_cost_usd: number;
   llm_call_count: number;
   llm_usage_detail: Record<string, { prompt_tokens: number; completion_tokens: number; total_tokens: number; call_count: number }> | null;
+  duration_seconds: number | null;
 }
 
 export async function getExtractionHistory(literatureId: string): Promise<ExtractionHistoryItem[]> {
@@ -507,9 +519,16 @@ export async function batchUploadFiles(
   return data;
 }
 
+export interface CleanupEmptyItem {
+  id: string;
+  title: string;
+  created_at: string | null;
+}
+
 export interface CleanupEmptyResult {
   preview_count: number;
   deleted_count: number;
+  items?: CleanupEmptyItem[];
 }
 
 export async function cleanupEmpty(dryRun: boolean = true): Promise<CleanupEmptyResult> {

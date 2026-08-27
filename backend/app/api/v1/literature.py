@@ -11,7 +11,7 @@ from urllib.parse import quote
 logger = logging.getLogger("uvicorn")
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -124,6 +124,82 @@ def _build_safe_filename(title: Optional[str], ext: str, literature_id: uuid.UUI
             break
     safe = "".join(c for c in raw if c not in r'\/:*?"<>|').strip() or str(literature_id)
     return quote(f"{safe}{ext}")
+
+
+_RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)", re.IGNORECASE)
+_CHUNK_SIZE = 1024 * 1024
+
+
+def _read_file_chunked(path: Path, start: int, length: int):
+    """按 1MB 分块读取文件的 [start, start+length) 区间，用于流式响应，避免一次性读入内存。"""
+    remaining = length
+    with open(path, "rb") as f:
+        f.seek(start)
+        while remaining > 0:
+            data = f.read(min(_CHUNK_SIZE, remaining))
+            if not data:
+                break
+            remaining -= len(data)
+            yield data
+
+
+def _build_file_response(
+    file_path: Path,
+    mime_type: str,
+    disposition: str,
+    filename: str,
+    range_header: Optional[str],
+) -> Response:
+    """构建支持 HTTP Range（206 Partial Content）的文件响应。
+
+    pdf.js 等前端预览器加载 PDF 时会发起 Range 请求；若服务端不支持，
+    会返回 200 全量流，导致 pdf.js abort 重试并报 "Rendering cancelled"。
+    """
+    file_size = file_path.stat().st_size
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f'{disposition}; filename="{filename}"',
+        "X-Content-Type-Options": "nosniff",
+    }
+
+    if range_header:
+        m = _RANGE_RE.match(range_header.strip())
+        if m:
+            start_s, end_s = m.groups()
+            start = int(start_s) if start_s else None
+            end = int(end_s) if end_s else None
+
+            if start is None and end is not None:
+                # bytes=-N 后缀区间：取最后 N 字节
+                suffix = min(end, file_size)
+                start = max(file_size - suffix, 0)
+                end = file_size - 1
+            else:
+                start = start if start is not None else 0
+                if start >= file_size:
+                    raise HTTPException(status_code=416, detail="请求的文件范围不可满足")
+                if end is None or end >= file_size:
+                    end = file_size - 1
+
+            if start <= end:
+                length = end - start + 1
+                headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+                headers["Content-Length"] = str(length)
+                logger.info(f"[预览] Range 请求: {range_header!r} -> bytes {start}-{end}/{file_size}")
+                return StreamingResponse(
+                    _read_file_chunked(file_path, start, length),
+                    status_code=206,
+                    media_type=mime_type,
+                    headers=headers,
+                )
+
+    headers["Content-Length"] = str(file_size)
+    return StreamingResponse(
+        _read_file_chunked(file_path, 0, file_size),
+        status_code=200,
+        media_type=mime_type,
+        headers=headers,
+    )
 
 
 # 简单魔数签名（文件头前 N 字节），无需 python-magic
@@ -257,7 +333,7 @@ async def upload(
             )
 
         try:
-            literature, _action = await upload_literature(db, file_bytes, file.filename, title, doi, province)
+            literature, _action = await upload_literature(db, file_bytes, file.filename, title, doi, province, owner_id=current_user.id)
         except Exception as e:
             logger.error(f"[上传] upload_literature 抛出异常: filename={file.filename}, error={e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)[:200]}")
@@ -501,8 +577,9 @@ class ImportReferencesBody(BaseModel):
     ref_text: str
     fmt: str = "auto"  # 格式：auto / ris / enw / pubmed / wos / woscsv / duxiu，auto 时自动探测
     file_name: str = ""  # 导入的文件名，用于日志记录
-    start: int = 0  # 从解析结果的第几条开始处理（用于分批导入）
-    limit: int = 0  # 0=全部，>0 时只处理 limit 条（用于分批导入）
+    start: int = 0  # 从解析结果的第几条开始处理（用于分批导入，使用 indices 时忽略）
+    limit: int = 0  # 0=全部，>0 时只处理 limit 条（用于分批导入，使用 indices 时忽略）
+    indices: list[int] | None = None  # 精确指定要导入的解析结果行号（去重后按实际行号分批），优先级高于 start/limit
     skip_log: bool = False  # True=跳过日志记录（分批子请求），False=正常记录
 
 
@@ -536,7 +613,7 @@ async def import_references(
     - 复用 service 层 create_literature 入库
     """
     try:
-        result = await import_references_from_text(db, body.ref_text, body.fmt, body.start, body.limit)
+        result = await import_references_from_text(db, body.ref_text, body.fmt, body.start, body.limit, indices=body.indices)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -599,16 +676,17 @@ async def batch_import_from_folder(
     folder_path: str = Form(..., description="服务器上的文件夹路径，包含要导入的 PDF 等文件"),
     trigger_extraction_after: bool = Form(True, description="新导入的文献是否自动触发 AI 提取"),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """从服务器本地文件夹批量导入文件，自动匹配已有文献或新建文献记录。
 
     - 匹配策略：按文件名清洗后精确/模糊匹配已有文献标题
     - 已存在且无文件的文献 → 关联文件（不新建）
     - 已存在且有文件的文献 → 跳过
-    - 不存在的文献 → 新建记录 + 可选 AI 提取
+    - 不存在的文献 → 新建记录 + 可选 AI 提取，归属记录为当前用户
     """
     try:
-        result = await batch_import_files_from_folder(db, folder_path, trigger_extraction_after)
+        result = await batch_import_files_from_folder(db, folder_path, trigger_extraction_after, owner_id=current_user.id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
@@ -635,13 +713,14 @@ async def batch_upload_files(
     files: list[UploadFile] = File(..., description="从浏览器上传的文件列表"),
     trigger_extraction_after: bool = Form(True),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """从浏览器上传文件批量导入，自动匹配已有文献或新建文献记录。
 
     与 batch_import_from_folder 逻辑相同，但文件从浏览器上传而非服务器本地路径。
     """
     try:
-        result = await batch_import_uploaded_files(db, files, trigger_extraction_after)
+        result = await batch_import_uploaded_files(db, files, trigger_extraction_after, owner_id=current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -935,6 +1014,7 @@ async def ai_verify_titles_endpoint(
 @router.get("/literatures/{literature_id}/file", summary="预览文献文件", description="返回文件流供前端预览（仅PDF支持浏览器内预览，其余格式前端会禁用预览按钮）")
 async def get_pdf_file(
     literature_id: uuid.UUID,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """返回文件流供前端预览（仅 PDF 支持浏览器内预览，其余格式前端会禁用预览按钮）"""
@@ -961,12 +1041,12 @@ async def get_pdf_file(
         f"[预览] 返回文件流: id={literature_id}, ext={ext}, mime={mime_type}, "
         f"disposition={disposition}, size={file_path.stat().st_size} bytes"
     )
-    return FileResponse(
-        path=str(file_path),
-        media_type=mime_type,
+    return _build_file_response(
+        file_path=file_path,
+        mime_type=mime_type,
+        disposition=disposition,
         filename=safe_filename,
-        content_disposition_type=disposition,
-        headers={"X-Content-Type-Options": "nosniff"},
+        range_header=request.headers.get("range"),
     )
 
 

@@ -39,6 +39,48 @@ def list_supported_exts() -> list[str]:
     return list(_PARSER_REGISTRY.keys())
 
 
+def _clean_cell(cell) -> str:
+    """把单元格值转成干净字符串：None→空串，去除换行并折叠多余空白。"""
+    if cell is None:
+        return ""
+    s = str(cell).replace("\n", " ").replace("\r", " ")
+    while "  " in s:
+        s = s.replace("  ", " ")
+    return s.strip()
+
+
+def grid_to_markdown(rows: list, title: Optional[str] = None) -> str:
+    """把二维列表渲染成 GFM 表格字符串（首行为表头）。
+
+    - None/空行自动过滤（行内全空则整行丢弃）
+    - 短行按最大列数右对齐补齐
+    - 单元格内的 | 转义为 \\|
+    - title 非空时输出 "title\\n\\n表格"
+    - 无可渲染数据时返回空串
+    """
+    grid = [[_clean_cell(c) for c in row] for row in rows]
+    grid = [r for r in grid if any(c for c in r)]
+    if not grid:
+        return ""
+
+    max_cols = max(len(r) for r in grid)
+    grid = [r + [""] * (max_cols - len(r)) for r in grid]
+
+    def esc(s: str) -> str:
+        return s.replace("|", "\\|")
+
+    header = "| " + " | ".join(esc(c) for c in grid[0]) + " |"
+    separator = "| " + " | ".join("---" for _ in grid[0]) + " |"
+    body_lines = [
+        "| " + " | ".join(esc(c) for c in row) + " |"
+        for row in grid[1:]
+    ]
+    table = "\n".join([header, separator] + body_lines)
+    if title:
+        return f"{title}\n\n{table}"
+    return table
+
+
 class BaseParser(ABC):
     """解析器基类。子类必须定义 supported_ext 并实现 extract()。"""
 

@@ -21,17 +21,10 @@ def clean_text(text: str) -> str:
 
 
 
-def focus_relevant_sections(text: str, lang: str = "zh") -> str:
-    """聚焦最相关段落：结果 > 方法 > 摘要 > 全文，减少 LLM 输入量。
-
-    原实现会对 >5000 字符文本按关键词逐行打分，并丢弃约 1/3 的低分行，导致
-    含真实数据但命中低频关键词的行被提前丢弃，系统性降低召回。
-
-    现长文档由 orchestrator 按 LLM_CHUNK_THRESHOLD/SIZE/OVERLAP 全量切块、
-    逐块交给 LLM（见 extraction/orchestrator.py），因此此处不再做关键词行级过滤，
-    直接返回全文，避免在进入 LLM 前丢失任何可能含有效数据的行。
-    """
-    return text
+# 说明：为不丢失可能含有效数据的行，预处理阶段不再做关键词行级过滤
+# （原 focus_relevant_sections 按行打分丢弃约 1/3 低分行，系统性降低召回）。
+# 长文档由 orchestrator 按 LLM_CHUNK_THRESHOLD/SIZE/OVERLAP 全量切块、逐块交给 LLM
+# （见 extraction/orchestrator.py），故此处直接使用全文。
 
 
 
@@ -90,7 +83,6 @@ def preprocess(text: str, file_type: str = "text") -> str:
     """文本预处理主入口"""
     text = clean_text(text)
     lang = detect_language(text)
-    text = focus_relevant_sections(text, lang)
     text = truncate(text)
 
     # 尝试移除参考文献部分，减少噪音

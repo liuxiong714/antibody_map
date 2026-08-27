@@ -61,27 +61,59 @@ def _normalize_for_match(s: str) -> str:
     return s
 
 
-def _exact_match(text_norm: str, ctx_norm: str, ctx_raw: str) -> Optional[tuple[int, int, str]]:
-    """Try exact match on normalized text, return (start, end) indices on ORIGINAL text.
+def _build_norm_and_map(raw: str) -> tuple[str, list[int]]:
+    """Normalize raw text while building a norm->raw char index map.
 
-    Because normalization removes characters, we map normalized-offset back to
-    original offsets by maintaining a per-char index map.
+    Returns ``(norm, norm_to_raw)`` where ``norm`` is the whitespace-collapsed /
+    quote-normalized form of ``raw``, and ``norm_to_raw[i]`` gives the index in the
+    *original* ``raw`` string of the i-th character of ``norm``.
+
+    This is the P0-2 fix: match coordinates computed in normalized (= compact) space
+    must be translated back to raw-text offsets, otherwise characters removed by
+    normalization shift the reported interval and highlight points to the wrong place.
+    """
+    norm_chars: list[str] = []
+    norm_to_raw: list[int] = []
+    for i, ch in enumerate(raw):
+        if ch.isspace():
+            continue
+        if ch in "“”":
+            ch = '"'
+        elif ch in "‘’":
+            ch = "'"
+        norm_chars.append(ch)
+        norm_to_raw.append(i)
+    return "".join(norm_chars), norm_to_raw
+
+
+def _to_raw_span(norm_to_raw: list[int], s_norm: int, e_norm: int, raw: str) -> tuple[int, int, str]:
+    """Map a normalized-space half-open [s_norm, e_norm) span to raw coordinates.
+
+    Returns ``(raw_start, raw_end, raw_snippet)`` where raw_snippet is sliced from the
+    original raw text. Everything is clamped so an overflowing/underflowing normalized
+    span degrades gracefully to a valid raw interval.
+    """
+    if not norm_to_raw:
+        s = max(0, s_norm)
+        e = max(s + 1, min(e_norm, len(raw)))
+        return s, e, raw[s:e]
+    s = max(0, min(s_norm, len(norm_to_raw) - 1))
+    e = max(s + 1, min(e_norm, len(norm_to_raw)))
+    raw_start = norm_to_raw[s]
+    raw_end = norm_to_raw[e - 1] + 1
+    return raw_start, raw_end, raw[raw_start:raw_end]
+
+
+def _exact_match(text_norm: str, ctx_norm: str) -> Optional[tuple[int, int]]:
+    """Try exact match on normalized text, return (start, end) in NORMALIZED space.
+
+    The returned span is in ``text_norm`` coordinates; the caller maps it back to raw
+    original-text coordinates via ``_build_norm_and_map``/``_to_raw_span``.
     """
     if not ctx_norm or len(ctx_norm) < 4:
         return None
 
-    # Build index map: norm_idx -> original_idx
-    original_indices: list[int] = []
-    norm_chars: list[str] = []
-    for i, ch in enumerate(text_norm):
-        # Re-run normalization logic: skip whitespace / full-width spaces
-        if ch in (" ", "\t", "\n", "\r", "\u3000"):
-            continue
-        norm_chars.append(ch)
-        original_indices.append(i)
-    collapsed = "".join(norm_chars)
-
-    pos = collapsed.find(ctx_norm)
+    pos = text_norm.find(ctx_norm)
     if pos == -1:
         # try a substring match (LLM often adds/removes a few chars at edges)
         for window in (len(ctx_norm), max(4, len(ctx_norm) - 2), max(4, len(ctx_norm) - 4)):
@@ -89,7 +121,7 @@ def _exact_match(text_norm: str, ctx_norm: str, ctx_raw: str) -> Optional[tuple[
                 sub = ctx_norm[slide:slide + window]
                 if len(sub) < 4:
                     continue
-                p = collapsed.find(sub)
+                p = text_norm.find(sub)
                 if p != -1:
                     pos = p
                     break
@@ -98,11 +130,7 @@ def _exact_match(text_norm: str, ctx_norm: str, ctx_raw: str) -> Optional[tuple[
         if pos == -1:
             return None
 
-    end = min(pos + len(ctx_norm), len(original_indices))
-    orig_start = original_indices[pos]
-    orig_end = original_indices[end - 1] + 1 if end - 1 < len(original_indices) else orig_start + len(ctx_raw)
-    matched = text_norm[orig_start:orig_end]
-    return orig_start, orig_end, matched
+    return pos, pos + len(ctx_norm)
 
 
 def _fuzzy_match(
@@ -329,43 +357,35 @@ def ground_extraction(
         return res
 
     threshold = fuzzy_threshold if fuzzy_threshold is not None else _DEFAULT_FUZZY_THRESHOLD
-    text_norm = _normalize_for_match(source_text)
+    # P0-2：只规范一次文本，并建立 norm->raw 坐标映射，确保返回的字符区间落在**原始文本**上。
+    text_norm, norm_to_raw = _build_norm_and_map(source_text)
     ctx_norm = _normalize_for_match(source_context or "")
 
-    # Strategy 1: exact match on source_context
-    exact = _exact_match(text_norm, ctx_norm, source_context or "")
-    if exact is not None:
-        s, e, matched = exact
+    def _apply_span(s_norm: int, e_norm: int, method: str) -> None:
+        raw_start, raw_end, matched = _to_raw_span(norm_to_raw, s_norm, e_norm, source_text)
         res.is_grounded = True
-        res.source_char_start = s
-        res.source_char_end = e
+        res.source_char_start = raw_start
+        res.source_char_end = raw_end
         res.matched_snippet = matched
-        res.method = "exact"
-        logger.info(f"[grounding] exact match @ [{s},{e}): {matched[:40]!r}")
+        res.method = method
+        logger.info(f"[grounding] {method} match (raw) @ [{raw_start},{raw_end}): {matched[:40]!r}")
+
+    # Strategy 1: exact match on source_context
+    exact = _exact_match(text_norm, ctx_norm)
+    if exact is not None:
+        _apply_span(exact[0], exact[1], "exact")
 
     # Strategy 2: fuzzy match on source_context
     if not res.is_grounded:
         fuzzy = _fuzzy_match(text_norm, ctx_norm, threshold=threshold)
         if fuzzy is not None:
-            s, e, matched = fuzzy
-            res.is_grounded = True
-            res.source_char_start = s
-            res.source_char_end = e
-            res.matched_snippet = matched
-            res.method = "fuzzy"
-            logger.info(f"[grounding] fuzzy match @ [{s},{e}): len={e-s}")
+            _apply_span(fuzzy[0], fuzzy[1], "fuzzy")
 
     # Strategy 3: key-phrase overlap match
     if not res.is_grounded:
         kp = _keyphrase_match(text_norm, ctx_norm, extract_item or {})
         if kp is not None:
-            s, e, matched = kp
-            res.is_grounded = True
-            res.source_char_start = s
-            res.source_char_end = e
-            res.matched_snippet = matched
-            res.method = "keyphrase"
-            logger.info(f"[grounding] keyphrase match @ [{s},{e}): len={e-s}")
+            _apply_span(kp[0], kp[1], "keyphrase")
 
     if not res.is_grounded:
         logger.warning(

@@ -252,29 +252,56 @@ def _meta_merge_cell(rows: list[DataPoint]) -> dict:
 def _compute_province_asr(group_rows: list[DataPoint]) -> dict:
     """计算省份年龄标准化阳性率（ASR，直接法，七普标准人口）。
 
-    将省内容格数据按年龄段（_get_age_group_label）聚合，得到各年龄段率与样本量，
-    再把标准人口权重聚合到相同年龄段（_STD_BAND_MAP），调用 direct_standardize。
+    - 精确落在单一标准年龄段（如 5-14 岁）的数据点 → 按该段用 _meta_merge_cell
+      Meta 合并，得到该段阳性率与样本量；
+    - 跨多段的宽年龄段（如 0-14 岁）→ 按七普标准人口权重（_age_band_split）
+      拆分叠加到各重叠标准段，避免数据点被静默丢弃；
+    - 再把标准人口权重聚合到相同年龄段（_STD_BAND_MAP），调用 direct_standardize。
     有效年龄段 < 3 组时 asr=None（note 注明）。
     """
-    band_map: dict[str, list[DataPoint]] = {}
+    # 精确单段：label -> 归属数据点（沿用 Meta 合并）
+    band_exact: dict[str, list[DataPoint]] = {}
+    # 宽段拆分贡献：label -> {"n": 加权样本量, "x": 加权阳性数}
+    wide_contrib: dict[str, dict[str, float]] = {}
     for r in group_rows:
-        label = _get_age_group_label(r.age_min, r.age_max) or "其他"
-        if label not in band_map:
-            band_map[label] = []
-        band_map[label].append(r)
+        if r.data_type != "seroprevalence" or r.value is None:
+            continue
+        p = float(r.value) / 100.0 if float(r.value) > 1.0 else float(r.value)
+        if p < 0.0 or p > 1.0 or not r.sample_size or r.sample_size <= 0:
+            continue
+        n = float(r.sample_size)
+        splits = _age_band_split(r.age_min, r.age_max)
+        if not splits:
+            continue
+        if len(splits) == 1:
+            band_exact.setdefault(splits[0][1], []).append(r)
+        else:
+            for w, label in splits:
+                acc = wide_contrib.setdefault(label, {"n": 0.0, "x": 0.0})
+                acc["n"] += n * w
+                acc["x"] += p * n * w
 
     strata: list[tuple[str, float, float]] = []
     std_bands: list[dict] = []
-    for label, rows_ in band_map.items():
+    for label in set(list(band_exact.keys()) + list(wide_contrib.keys())):
         std_groups = _STD_BAND_MAP.get(label)
         if not std_groups:
             continue
-        mi = _meta_merge_cell(rows_)
-        rate = mi["positivity"]
-        n = mi["total_sample"]
-        if rate is None or not n or n <= 0:
+        n = 0.0
+        x = 0.0
+        if label in band_exact:
+            mi = _meta_merge_cell(band_exact[label])
+            mp = mi.get("positivity")
+            mt = mi.get("total_sample")
+            if mp is not None and mt:
+                n += float(mt)
+                x += (mp / 100.0 if mp > 1.0 else mp) * float(mt)
+        if label in wide_contrib:
+            n += wide_contrib[label]["n"]
+            x += wide_contrib[label]["x"]
+        if n <= 0:
             continue
-        rate = rate / 100.0 if rate > 1.0 else rate
+        rate = x / n
         w = sum(_STD_WEIGHT_BY_GROUP.get(g, 0.0) for g in std_groups)
         if w <= 0:
             continue
@@ -302,14 +329,45 @@ AGE_GROUPS = [
 ]
 
 
-def _get_age_group_label(age_min: Optional[int], age_max: Optional[int]) -> Optional[str]:
-    """根据年龄范围判断年龄段标签"""
+def _age_band_split(age_min, age_max):
+    """将数据点年龄范围映射为标准年龄段分布，返回 [(权重, 标签)]。
+
+    - 年龄范围完整落在某一标准段内 → 仅返回该段（权重 1.0）；
+    - 跨多个标准段（如 0-14 岁跨 1-4/5-14）→ 按七普标准人口权重拆分到各重叠段，
+      权重归一化为 1，避免宽年龄段数据点被静默丢弃；
+    - 无法命中任何标准段（age_min 缺失或范围越界）→ 返回空列表。
+    """
+    if age_min is None:
+        return []
+    band_min = float(age_min)
+    band_max = float(age_max) if age_max is not None else float("inf")
+    hits = []
+    for label, lo, hi in AGE_GROUPS:
+        # 标准段 [lo, hi] 与数据点区间 [band_min, band_max] 有交集
+        if band_min <= hi and band_max >= lo:
+            w = sum(_STD_WEIGHT_BY_GROUP.get(g, 0.0) for g in _STD_BAND_MAP[label])
+            if w > 0:
+                hits.append((w, label))
+    if not hits:
+        return []
+    total = sum(w for w, _ in hits)
+    return [(w / total, label) for w, label in hits]
+
+
+def _get_age_group_label(age_min, age_max):
+    """根据年龄范围返回标准年龄段标签（不再静默丢弃跨组数据）。
+
+    年龄范围完整落在某标准段 → 返回该段；跨多个标准段（如 0-14 岁）→
+    返回人口权重最大的代表段；age_min 缺失 → None；无法命中任何标准段 → "其他"。
+    """
     if age_min is None:
         return None
-    for label, lo, hi in AGE_GROUPS:
-        if age_min >= lo and (age_max is not None and age_max <= hi):
-            return label
-    return "其他"
+    splits = _age_band_split(age_min, age_max)
+    if not splits:
+        return "其他"
+    if len(splits) == 1:
+        return splits[0][1]
+    return max(splits, key=lambda it: it[0])[1]
 
 
 # ============================================================

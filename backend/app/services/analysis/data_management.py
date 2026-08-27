@@ -105,7 +105,10 @@ async def get_approved_data_points(
     total = count_result.scalar() or 0
 
     # 获取分页数据，关联文献表获取标题（_build_base_query 已 join Literature 并过滤软删除）
-    query = query.add_columns(Literature.title)
+    query = query.add_columns(
+        Literature.title, Literature.authors, Literature.doi, Literature.pmid,
+        Literature.pub_year, Literature.journal,
+    )
 
     # 动态排序
     sort_column_map = {
@@ -139,10 +142,21 @@ async def get_approved_data_points(
     for r in rows:
         dp = r[0]  # DataPoint 对象
         literature_title = r[1]  # Literature.title
+        literature_authors = r[2]
+        literature_doi = r[3]
+        literature_pmid = r[4]
+        literature_year = r[5]
+        literature_journal = r[6]
         items.append({
             "id": str(dp.id),
             "literature_id": str(dp.literature_id) if dp.literature_id else None,
             "literature_title": literature_title,
+            # P1-3：Excel 导出新增作者/DOI/PMID/年份/期刊
+            "literature_authors": literature_authors,
+            "literature_doi": literature_doi,
+            "literature_pmid": literature_pmid,
+            "literature_year": literature_year,
+            "literature_journal": literature_journal,
             "disease": dp.disease,
             "region": dp.region,
             "province": dp.province,
@@ -195,7 +209,8 @@ async def get_approved_data_points_for_snapshot(
     )
     # 关联文献元数据（_build_base_query 已 join Literature 并过滤软删除）
     query = query.add_columns(
-        Literature.title, Literature.pub_year, Literature.journal
+        Literature.title, Literature.pub_year, Literature.journal,
+        Literature.authors, Literature.doi, Literature.pmid,
     )
     query = query.order_by(DataPoint.collection_year.desc().nullslast()).limit(limit)
 
@@ -208,6 +223,9 @@ async def get_approved_data_points_for_snapshot(
         lit_title = r[1]
         lit_year = r[2]
         lit_journal = r[3]
+        lit_authors = r[4]
+        lit_doi = r[5]
+        lit_pmid = r[6]
         items.append({
             "disease": dp.disease,
             "province": dp.province,
@@ -231,6 +249,10 @@ async def get_approved_data_points_for_snapshot(
             "literature_title": lit_title,
             "literature_year": lit_year,
             "literature_journal": lit_journal,
+            # P1-3：导出新增作者/DOI/PMID 列
+            "literature_authors": lit_authors,
+            "literature_doi": lit_doi,
+            "literature_pmid": lit_pmid,
         })
     return items
 

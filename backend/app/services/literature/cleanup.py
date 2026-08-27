@@ -41,22 +41,34 @@ async def cleanup_empty_literatures(
     - dry_run=True: 只统计不删除
     - dry_run=False: 执行删除
     """
+    # 仅清理未删除（不在回收站）的既无文档又无摘要的文献，与列表查询口径一致
     stmt = select(Literature).where(
         and_(
+            Literature.deleted_at.is_(None),
             Literature.file_path.is_(None),
             func.coalesce(Literature.abstract, '') == '',
         )
-    )
+    ).order_by(Literature.created_at.desc())
     result = await db.execute(stmt)
     lits = result.scalars().all()
     preview_count = len(lits)
 
+    # 返回候选文献明细，供前端列出具体是哪些文献
+    items = [
+        {
+            "id": str(lit.id),
+            "title": lit.title or "",
+            "created_at": lit.created_at.isoformat() if lit.created_at else None,
+        }
+        for lit in lits
+    ]
+
     if dry_run:
-        return {"preview_count": preview_count, "deleted_count": 0}
+        return {"preview_count": preview_count, "deleted_count": 0, "items": items}
 
     if not lits:
-        return {"preview_count": 0, "deleted_count": 0}
+        return {"preview_count": 0, "deleted_count": 0, "items": []}
 
     ids = [lit.id for lit in lits]
     deleted = await batch_delete_literatures(db, ids)
-    return {"preview_count": preview_count, "deleted_count": deleted}
+    return {"preview_count": preview_count, "deleted_count": deleted, "items": items}

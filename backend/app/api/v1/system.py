@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user, get_db, require_admin
 from app.config import settings
 from app.core.logging_config import LOGS_DIR
+from app.core.parser_status import get_parser_status
 from app.schemas.common import ApiResponse
 from app.services import goal_threshold_service
 
@@ -91,6 +92,7 @@ async def system_info(_user=Depends(get_current_user)):
             "features": FEATURES,
             "log_dir": str(LOGS_DIR),
             "repo_url": "https://github.com/liuxiong714/antibody_map",
+            "parsers": get_parser_status(),
         }
     )
 

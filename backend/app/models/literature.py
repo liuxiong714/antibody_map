@@ -31,6 +31,8 @@ class Literature(Base):
     )
     title_en: Mapped[Optional[str]] = mapped_column(String(500))
     authors: Mapped[Optional[str]] = mapped_column(Text)
+    # P1-1：作者单位（LLM 从文献中提取，AI 提取后回填；此前因无字段被丢弃）
+    author_affiliations: Mapped[Optional[str]] = mapped_column(Text)
     journal: Mapped[Optional[str]] = mapped_column(String(300))
     pub_year: Mapped[Optional[int]]
     doi: Mapped[Optional[str]] = mapped_column(String(200))
@@ -69,6 +71,13 @@ class Literature(Base):
     deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID,  # 仅记录删除者，不设外键约束
         nullable=True
+    )
+    # 文献归属人（上传/创建文献的用户）。用于「按归属终止 AI 提取」：
+    # 普通用户只能终止自己归属(owner_id)文献的提取；管理员可终止全部。
+    # 存量/后台导入文献 owner_id 为空，视为共享文献（普通用户不可终止，管理员可）。
+    owner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID,  # 仅记录归属人，不设外键约束（与 deleted_by 一致）
+        nullable=True, index=True
     )
     # 提取任务开始时间戳（用于检测卡死：processing 超过 30 分钟自动重置为 failed）
     extraction_started_at: Mapped[Optional[datetime]] = mapped_column(

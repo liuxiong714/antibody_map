@@ -101,6 +101,17 @@ export interface DataPoint {
   source_char_start: number | null;
   source_char_end: number | null;
   is_grounded: boolean;
+  // P1-6：同省同病同年已有已审核数据点冲突对比（审核页只读提示，无冲突/无对比数据时为 []）
+  conflicts?: Array<{
+    literature_id: string | null;
+    literature_title: string;
+    value: number;
+    unit?: string | null;
+    sample_size?: number | null;
+    collection_year?: number | null;
+    relative_diff: number;
+    conflict: boolean;
+  }>;
   created_at: string;
   updated_at: string;
 }

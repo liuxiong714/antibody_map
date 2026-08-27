@@ -4,7 +4,7 @@ import uuid
 from typing import Optional
 from datetime import datetime, timezone
 
-from sqlalchemy import select, func, update, delete as sa_delete
+from sqlalchemy import select, func, update, delete as sa_delete, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.literature import Literature
@@ -15,6 +15,103 @@ from app.models.base import async_session
 from app.tasks.extract_task import process_literature
 
 logger = logging.getLogger("uvicorn")
+
+
+# P1-6：同省+同病+同年+同类型 已审核数据点的冲突检测阈值
+#   seroprevalence：相对差异 ≥ 50% 且绝对差异 ≥ 10 个百分点（避免低值噪声）
+#   gmc：相对差异 ≥ 50%
+CONFLICT_RELATIVE_THRESHOLD = 0.5
+CONFLICT_ABS_THRESHOLD_SEROPREVALENCE = 10.0
+
+
+def _relative_diff(a: float, b: float) -> float:
+    """相对差异 = |a-b| / max(|a|,|b|)；两者皆为 0 时为 0。"""
+    if a == 0 and b == 0:
+        return 0.0
+    base = max(abs(a), abs(b))
+    return abs(a - b) / base if base > 0 else 0.0
+
+
+def _is_conflict(data_type: str, value: float, existing_value: float) -> bool:
+    rel = _relative_diff(value, existing_value)
+    if rel < CONFLICT_RELATIVE_THRESHOLD:
+        return False
+    if data_type == "seroprevalence" and abs(value - existing_value) < CONFLICT_ABS_THRESHOLD_SEROPREVALENCE:
+        return False
+    return True
+
+
+async def compute_data_point_conflicts(
+    db: AsyncSession,
+    data_points: list[DataPoint],
+) -> dict[str, list[dict]]:
+    """P1-6：为数据点查找「同省+同病+同年+同类型」已审核通过的主估计数据点并计算差异。
+
+    仅比较 estimate_type='primary' 的数据点（避免子估计与汇总值误判冲突）；
+    排除同一文献内的数据点，聚焦跨文献的「已有数据」对比。
+    返回 {dp_id_str: [{literature_id, literature_title, value, unit, sample_size,
+                       collection_year, relative_diff, conflict}]}
+    """
+    conflicts: dict[str, list[dict]] = {}
+    candidates = [
+        dp for dp in data_points
+        if dp.estimate_type == "primary"
+        and dp.province and dp.disease and dp.collection_year
+        and dp.value is not None and dp.data_type
+    ]
+    if not candidates:
+        return conflicts
+
+    keys = {
+        (dp.province, dp.disease, dp.collection_year, dp.data_type)
+        for dp in candidates
+    }
+    own_lit_ids = {dp.literature_id for dp in candidates if dp.literature_id}
+
+    stmt = (
+        select(DataPoint, Literature.title)
+        .join(Literature, DataPoint.literature_id == Literature.id)
+        .where(Literature.deleted_at.is_(None))
+        .where(DataPoint.review_status == "approved")
+        .where(DataPoint.estimate_type == "primary")
+        .where(DataPoint.value.is_not(None))
+        .where(
+            tuple_(
+                DataPoint.province, DataPoint.disease,
+                DataPoint.collection_year, DataPoint.data_type,
+            ).in_(keys)
+        )
+    )
+    if own_lit_ids:
+        stmt = stmt.where(DataPoint.literature_id.notin_(own_lit_ids))
+    existing_rows = (await db.execute(stmt)).all()
+
+    from collections import defaultdict
+
+    by_key: dict[tuple, list[tuple[DataPoint, str]]] = defaultdict(list)
+    for edp, title in existing_rows:
+        by_key[(edp.province, edp.disease, edp.collection_year, edp.data_type)].append((edp, title))
+
+    for dp in candidates:
+        matches = by_key.get((dp.province, dp.disease, dp.collection_year, dp.data_type), [])
+        if not matches:
+            continue
+        rels = []
+        for edp, title in matches:
+            rel = _relative_diff(float(dp.value), float(edp.value))
+            rels.append({
+                "literature_id": str(edp.literature_id) if edp.literature_id else None,
+                "literature_title": title or "",
+                "value": float(edp.value),
+                "unit": edp.unit,
+                "sample_size": edp.sample_size,
+                "collection_year": edp.collection_year,
+                "relative_diff": round(rel, 4),
+                "conflict": _is_conflict(dp.data_type, float(dp.value), float(edp.value)),
+            })
+        conflicts[str(dp.id)] = rels
+
+    return conflicts
 
 
 def _metadata_quality_breakdown(dp: DataPoint) -> dict | None:
@@ -179,6 +276,9 @@ async def get_extraction_results(
         ).scalars().all()
         reviewer_names = {u.id: (u.display_name or u.username) for u in users}
 
+    # P1-6：同省同病同年已有已审核数据点冲突对比（审核页只读提示）
+    conflicts = await compute_data_point_conflicts(db, data_points)
+
     return [
         {
             "id": str(dp.id),
@@ -215,6 +315,8 @@ async def get_extraction_results(
             "quality_grade": dp.quality_grade,
             "estimate_grade": dp.estimate_grade,
             "quality_breakdown": _metadata_quality_breakdown(dp),
+            # P1-6：同省同病同年已有已审核数据点冲突对比（审核页只读提示）
+            "conflicts": conflicts.get(str(dp.id), []),
             "created_at": dp.created_at.isoformat() if dp.created_at else None,
             "updated_at": dp.updated_at.isoformat() if dp.updated_at else None,
         }
@@ -248,6 +350,7 @@ async def get_extraction_history(
             "llm_cost_usd": float(h.llm_cost_usd) if h.llm_cost_usd is not None else 0.0,
             "llm_call_count": h.llm_call_count,
             "llm_usage_detail": h.llm_usage_detail,
+            "duration_seconds": float(h.duration_seconds) if h.duration_seconds is not None else None,
         }
         for h in history_list
     ]

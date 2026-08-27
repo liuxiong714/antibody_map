@@ -29,6 +29,17 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
 
 ## JSON 输出格式
 {{
+  "article": {{
+    "title": "文献标题",
+    "title_en": "英文标题（中文文献可为空）",
+    "abstract": "文献摘要（若文本中含摘要则摘录，否则填null）",
+    "doi": "DOI标识（如 10.xxxx/xxxx，无则填null）",
+    "pmid": "PubMed ID（无则填null）",
+    "journal": "发表杂志名称",
+    "authors": "全部作者（多个用分号分隔）",
+    "author_affiliations": "作者单位",
+    "pub_year": 发表年份（整数）
+  }},
   "data_points": [
     {{
       "disease_name": "从文中提取的疾病名称（中文）",
@@ -74,6 +85,7 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
 }}
 
 ## 重要规则
+- **article 元数据**：从文献文本（标题、首页、摘要区）提取文献级元数据填入顶层 `article` 对象；文本中明确存在才填，无法确定的字段填null，**禁止编造 DOI/PMID/摘要/年份**。
 - **省份必须匹配**：从上述标准列表中选取最匹配的省份名称。如文中"鲁"→"山东"，"广东省"→"广东"，"上海"→"上海"
 - **百分比处理**：87.3% → 填87.3（去掉%符号）；如果多个年份/组别有%数据，全部提取为多个数据点
 - **GMC注意**：GMC和阳性率是不同的指标。GMC通常以IU/ml、μg/ml等单位给出。文中同时有阳性率和GMC时，两者都要提取
@@ -109,6 +121,22 @@ EXTRACTION_JSON_SCHEMA = {
     "required": ["data_points", "titer_tables"],
     "additionalProperties": False,
     "properties": {
+        # P1-1：顶层文献级元数据（可选，模型不输出时走空值兜底）
+        "article": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "title": {"type": ["string", "null"]},
+                "title_en": {"type": ["string", "null"]},
+                "abstract": {"type": ["string", "null"]},
+                "doi": {"type": ["string", "null"]},
+                "pmid": {"type": ["string", "null"]},
+                "journal": {"type": ["string", "null"]},
+                "authors": {"type": ["string", "null"]},
+                "author_affiliations": {"type": ["string", "null"]},
+                "pub_year": {"type": ["integer", "null"]},
+            },
+        },
         "data_points": {
             "type": "array",
             "items": {
@@ -188,6 +216,17 @@ Chinese Province Name Reference List:
 
 ## JSON Output Format
 {{
+  "article": {{
+    "title": "article title",
+    "title_en": "English title",
+    "abstract": "abstract (null if not present)",
+    "doi": "DOI identifier (e.g. 10.xxxx/xxxx, null if none)",
+    "pmid": "PubMed ID (null if none)",
+    "journal": "journal name",
+    "authors": "all authors (semicolon separated)",
+    "author_affiliations": "author affiliations",
+    "pub_year": publication year (integer)
+  }},
   "data_points": [
     {{
       "disease_name": "disease name from text",
@@ -281,6 +320,17 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
 
 ## JSON 输出格式
 {{
+  "article": {{
+    "title": "文献标题",
+    "title_en": "英文标题（中文文献可为空）",
+    "abstract": "文献摘要（若文本中含摘要则摘录，否则填null）",
+    "doi": "DOI标识（如 10.xxxx/xxxx，无则填null）",
+    "pmid": "PubMed ID（无则填null）",
+    "journal": "发表杂志名称",
+    "authors": "全部作者（多个用分号分隔）",
+    "author_affiliations": "作者单位",
+    "pub_year": 发表年份（整数）
+  }},
   "data_points": [
     {{
       "disease_name": "从文中提取的疾病名称（中文）",
@@ -326,6 +376,7 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
 }}
 
 ## 重要规则
+- **article 元数据**：从文献文本（标题、首页、摘要区）提取文献级元数据填入顶层 `article` 对象；文本中明确存在才填，无法确定的字段填null，**禁止编造 DOI/PMID/摘要/年份**。
 - **省份必须匹配**：从上述标准列表中选取最匹配的省份名称。如文中"鲁"→"山东"，"广东省"→"广东"，"上海"→"上海"
 - **百分比处理**：87.3% → 填87.3（去掉%符号）；如果多个年份/组别有%数据，全部提取为多个数据点
 - **GMC注意**：GMC和阳性率是不同的指标。GMC通常以IU/ml、μg/ml等单位给出。文中同时有阳性率和GMC时，两者都要提取

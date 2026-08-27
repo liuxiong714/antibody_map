@@ -16,12 +16,13 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import select, update, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_current_user
+from app.api.deps import get_db, get_current_user, require_admin
 from app.models.data_point import DataPoint
+from app.models.extraction_history import ExtractionHistory
 from app.models.literature import Literature
 from app.models.titer_table import TiterTable
 from app.models.api_model_config import ApiModelConfig
@@ -35,6 +36,7 @@ from app.services.extraction_service import (
     get_extraction_history,
     review_data_points,
     get_review_stats,
+    compute_data_point_conflicts,
 )
 from app.core.traceability_html import (
     generate_traceability_html,
@@ -77,6 +79,63 @@ def clean_literature_title(title: str) -> str:
 
 # ── 请求体模型 ──────────────────────────────────────────
 
+_DP_DATA_TYPES = {"seroprevalence", "gmc"}
+_DP_CONFIDENCES = {"high", "medium", "low"}
+
+
+def _validate_datapoint_consistency(
+    data_type: Optional[str],
+    value: Optional[float],
+    ci_lower: Optional[float],
+    ci_upper: Optional[float],
+    sample_size: Optional[int],
+    age_min: Optional[float],
+    age_max: Optional[float],
+    collection_year: Optional[int],
+    confidence: Optional[str],
+    source_char_start: Optional[int],
+    source_char_end: Optional[int],
+) -> None:
+    """P0-5：数据点字段级一致性校验，杜绝阳性率 150%、age_max<age_min、年份 9999 等脏数据入库。
+
+    仅对显式给出的字段校验；字段为 None 视为"不修改/未知"，跳过。非法抛 ValueError，
+    由 FastAPI 统一转为 422 响应。
+    """
+    if data_type is not None:
+        if data_type not in _DP_DATA_TYPES:
+            raise ValueError(
+                f"data_type 必须是 {sorted(_DP_DATA_TYPES)} 之一，当前为 {data_type!r}"
+            )
+        if value is not None:
+            if data_type == "seroprevalence" and not (0.0 <= value <= 100.0):
+                raise ValueError(f"血清阳性率 value 必须在 [0,100] 区间，当前为 {value!r}")
+            if data_type == "gmc" and value < 0:
+                raise ValueError(f"GMC value 不能为负，当前为 {value!r}")
+    if ci_lower is not None and ci_upper is not None and ci_upper < ci_lower:
+        raise ValueError(f"CI 下限不能大于上限（lower={ci_lower} > upper={ci_upper}）")
+    if sample_size is not None and sample_size < 0:
+        raise ValueError(f"sample_size 不能为负，当前为 {sample_size!r}")
+    if age_min is not None and age_min < 0:
+        raise ValueError(f"age_min 不能为负，当前为 {age_min!r}")
+    if age_max is not None and age_max < 0:
+        raise ValueError(f"age_max 不能为负，当前为 {age_max!r}")
+    if age_min is not None and age_max is not None and age_max < age_min:
+        raise ValueError(f"age_max({age_max!r}) 不能小于 age_min({age_min!r})")
+    if collection_year is not None:
+        y = int(collection_year)
+        if not (1900 <= y <= 2100):
+            raise ValueError(f"collection_year 必须在 [1900,2100] 区间，当前为 {collection_year!r}")
+    if confidence is not None and confidence not in _DP_CONFIDENCES:
+        raise ValueError(f"confidence 必须是 {sorted(_DP_CONFIDENCES)} 之一，当前为 {confidence!r}")
+    if source_char_start is not None and source_char_start < 0:
+        raise ValueError(f"source_char_start 不能为负，当前为 {source_char_start!r}")
+    if source_char_end is not None and source_char_end < 0:
+        raise ValueError(f"source_char_end 不能为负，当前为 {source_char_end!r}")
+    if source_char_start is not None and source_char_end is not None and source_char_end < source_char_start:
+        raise ValueError(
+            f"source_char_end({source_char_end!r}) 不能小于 source_char_start({source_char_start!r})"
+        )
+
 class DataPointReviewItem(BaseModel):
     id: str
     review_status: Optional[str] = None  # "approved" | "rejected" | None (仅编辑时不审核)
@@ -103,6 +162,16 @@ class DataPointReviewItem(BaseModel):
     source_char_start: Optional[int] = None
     source_char_end: Optional[int] = None
     is_grounded: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def _check_consistency(self):
+        _validate_datapoint_consistency(
+            self.data_type, self.value, None, None,
+            self.sample_size, self.age_min, self.age_max,
+            self.collection_year, self.confidence,
+            self.source_char_start, self.source_char_end,
+        )
+        return self
 
 
 class UpdateDataPointsRequest(BaseModel):
@@ -160,6 +229,16 @@ class CreateDataPointRequest(BaseModel):
     source_char_end: Optional[int] = None
     is_grounded: bool = False
 
+    @model_validator(mode="after")
+    def _check_consistency(self):
+        _validate_datapoint_consistency(
+            self.data_type, self.value, None, None,
+            self.sample_size, self.age_min, self.age_max,
+            self.collection_year, self.confidence,
+            self.source_char_start, self.source_char_end,
+        )
+        return self
+
 
 # ── 提取相关路由 ────────────────────────────────────────
 
@@ -187,10 +266,19 @@ async def start_extraction(
 async def start_batch_extraction(
     req: BatchExtractionRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """批量触发文献 AI 数据提取任务"""
     if not req.literature_ids:
         raise HTTPException(status_code=400, detail="请选择至少一个文献")
+
+    # 普通用户每次批量提交受数量上限约束；管理员不受限
+    MAX_BATCH = 100
+    if not current_user.is_admin and len(req.literature_ids) > MAX_BATCH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"普通用户单次最多提交 {MAX_BATCH} 篇，当前选择了 {len(req.literature_ids)} 篇",
+        )
 
     submitted: list[dict] = []
     skipped: list[dict] = []
@@ -566,10 +654,25 @@ async def create_data_point(
     await db.flush()
 
     # 更新文献提取状态和计数
+    newly_done = False
     if literature.extraction_status in (None, "", "failed", "pending"):
         literature.extraction_status = "done"
+        newly_done = True
     literature.extracted_count = (literature.extracted_count or 0) + 1
     literature.updated_at = datetime.now(timezone.utc)
+
+    # 手动补录数据点把状态置为 done 时同步写历史，避免「有结果无历史」缺口
+    if newly_done:
+        db.add(
+            ExtractionHistory(
+                literature_id=literature_id,
+                model=literature.llm_model_used,
+                status="success",
+                data_point_count=literature.extracted_count or 1,
+                error_message="手动补录数据点：文献提取状态由 failed/pending 置为 done",
+                extracted_at=literature.updated_at,
+            )
+        )
 
     await db.commit()
 
@@ -1043,6 +1146,17 @@ async def stop_extraction(
 
     literature.extraction_status = "failed"
     literature.updated_at = datetime.now(timezone.utc)
+    # 手动停止提取时同步写失败历史，避免「有结果无历史」缺口
+    db.add(
+        ExtractionHistory(
+            literature_id=literature_id,
+            model=literature.llm_model_used,
+            status="failed",
+            data_point_count=0,
+            error_message="手动停止：文献提取状态由 processing 重置为 failed",
+            extracted_at=literature.updated_at,
+        )
+    )
     await db.commit()
 
     logger.warning(f"文献 {literature_id} 提取已被手动停止，状态重置为 failed")
@@ -1065,8 +1179,11 @@ async def get_history(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse, summary="批量重置卡住的提取", description="批量重置所有卡在processing或queued状态的文献为failed，并强制终止运行中的Celery提取任务，清空队列，用于服务器重启后恢复状态")
-async def reset_stuck_extractions(db: AsyncSession = Depends(get_db)):
+@router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse, summary="批量重置卡住的提取（管理员）", description="管理员专用：批量重置所有卡在processing或queued状态的文献为failed，并强制终止运行中的Celery提取任务，清空队列，用于服务器重启后恢复状态")
+async def reset_stuck_extractions(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
     """批量重置所有卡在 'processing' 或 'queued' 状态的文献为 'failed'，
     同时强制终止运行中的 Celery 提取任务并清空队列。
 
@@ -1105,6 +1222,17 @@ async def reset_stuck_extractions(db: AsyncSession = Depends(get_db)):
         lit.extraction_status = "failed"
         lit.updated_at = datetime.now(timezone.utc)
         reset_ids.append(str(lit.id))
+        # 重置卡住状态时同步写失败历史，避免「有结果无历史」缺口
+        db.add(
+            ExtractionHistory(
+                literature_id=lit.id,
+                model=lit.llm_model_used,
+                status="failed",
+                data_point_count=0,
+                error_message="管理员批量重置：提取状态 processing/queued 被重置为 failed",
+                extracted_at=lit.updated_at,
+            )
+        )
 
     await db.commit()
 
@@ -1132,6 +1260,96 @@ async def reset_stuck_extractions(db: AsyncSession = Depends(get_db)):
             "literature_ids": reset_ids,
             "purged_count": purged_count,
             "revoked_count": revoked_count,
+        },
+    )
+
+
+@router.post("/literatures/extraction/reset-my", response_model=ApiResponse, summary="终止我的提取（仅限自己提交的文献）", description="终止当前登录用户自己提交（owner_id 匹配）的卡在 processing/queued 状态的 AI 提取任务，重置为 failed，并尽力终止运行中/排队中属于本人的任务。不影响其他用户提交的提取任务。")
+async def reset_my_extractions(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """终止仅属于当前用户（owner_id == current_user.id）的卡住提取任务。
+
+    仅能影响自己提交（归属）的文献，不触碰其他用户的提取任务，也不做全局清队列。
+    """
+    # 1. 找出属于自己的卡住文献（processing / queued）
+    result = await db.execute(
+        select(Literature).where(
+            Literature.owner_id == current_user.id,
+            Literature.extraction_status.in_(["processing", "queued"]),
+        )
+    )
+    own_stuck = result.scalars().all()
+    own_ids = [lit.id for lit in own_stuck]
+    own_id_strs = {str(lit_id) for lit_id in own_ids}
+
+    revoked_count = 0
+    if own_id_strs:
+        # 2. 尽力终止运行中/排队中属于本人文献的 Celery 提取任务
+        try:
+            inspect = celery_app.control.inspect(timeout=5.0)
+            active_tasks = inspect.active() or {}
+            for worker, tasks in active_tasks.items():
+                for task in tasks:
+                    task_name = task.get("name") or ""
+                    if not task_name.endswith("process_literature"):
+                        continue
+                    args = task.get("args") or ()
+                    kwargs = task.get("kwargs") or {}
+                    lit_ref = ""
+                    if args:
+                        lit_ref = str(args[0])
+                    elif kwargs.get("literature_id"):
+                        lit_ref = str(kwargs["literature_id"])
+                    if lit_ref in own_id_strs:
+                        task_id = task.get("id")
+                        if task_id:
+                            celery_app.control.revoke(task_id, terminate=True)
+                            revoked_count += 1
+                            logger.warning(f"[ResetMy] 终止属于本人的运行中任务: {task_id} (文献 {lit_ref})")
+        except Exception as e:
+            logger.warning(f"[ResetMy] Celery 控制操作失败（不影响数据库重置）: {e}")
+
+    # 3. 重置本人文献状态为 failed
+    reset_ids = []
+    for lit in own_stuck:
+        lit.extraction_status = "failed"
+        lit.updated_at = datetime.now(timezone.utc)
+        reset_ids.append(str(lit.id))
+        # 终止本人卡住提取时同步写失败历史，避免「有结果无历史」缺口
+        db.add(
+            ExtractionHistory(
+                literature_id=lit.id,
+                model=lit.llm_model_used,
+                status="failed",
+                data_point_count=0,
+                error_message="终止(reset-my)：本人提交的 processing/queued 提取被重置为 failed",
+                extracted_at=lit.updated_at,
+            )
+        )
+
+    await db.commit()
+
+    message_parts = []
+    if reset_ids:
+        message_parts.append(f"已重置 {len(reset_ids)} 篇属于您的文献状态为失败")
+    if revoked_count > 0:
+        message_parts.append(f"已终止 {revoked_count} 个属于您的运行中任务")
+    if not message_parts:
+        message_parts.append("没有属于您的卡住提取任务")
+
+    final_message = "，".join(message_parts)
+    logger.warning(
+        f"[ResetMy] {final_message} | user={current_user.username}, reset_ids={reset_ids}, revoked={revoked_count}"
+    )
+    return ApiResponse(
+        message=final_message,
+        data={
+            "reset_count": len(reset_ids),
+            "literature_ids": reset_ids,
+            "revoked_count": revoked_count,
+            "purged_count": 0,
         },
     )
 
@@ -1203,7 +1421,7 @@ _CONFIDENCE_RANK = case(
 )
 
 
-def _serialize_review_dp(dp: DataPoint, literature_title: Optional[str]) -> dict:
+def _serialize_review_dp(dp: DataPoint, literature_title: Optional[str], conflicts: Optional[list] = None) -> dict:
     """审核队列数据点序列化（与 get_extraction_results 字段对齐，附加文献标题）。"""
     return {
         "id": str(dp.id),
@@ -1234,6 +1452,8 @@ def _serialize_review_dp(dp: DataPoint, literature_title: Optional[str]) -> dict
         "quality_score": dp.quality_score,
         "quality_grade": dp.quality_grade,
         "estimate_grade": dp.estimate_grade,
+        # P1-6：同省同病同年已有已审核数据点冲突对比（审核页只读提示）
+        "conflicts": conflicts or [],
         "created_at": dp.created_at.isoformat() if dp.created_at else None,
     }
 
@@ -1289,7 +1509,17 @@ async def get_review_queue(
         )
     ).all()
 
-    items = [_serialize_review_dp(dp, title) for dp, title in rows]
+    # P1-6：同省同病同年已有已审核数据点冲突对比（审核页只读提示）
+    conflict_map: dict = {}
+    try:
+        conflict_map = await compute_data_point_conflicts(db, [dp for dp, _ in rows])
+    except Exception as e:  # 冲突检测失败不应影响审核队列加载
+        logger.warning(f"P1-6 审核队列冲突检测失败（忽略）: {e}")
+    items = [
+        _serialize_review_dp(dp, title, conflict_map.get(str(dp.id), []))
+        for dp, title in rows
+    ]
+
     return PagedResponse(
         items=items, total=total, page=page, page_size=page_size,
         message=f"审核队列：{total} 条",

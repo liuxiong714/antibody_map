@@ -181,10 +181,12 @@ const PubmedSearchPage: React.FC = () => {
         ref_text: refText,
         fmt: REF_FMT_MAP[refFmt] || 'auto',
       });
-      const previewData = previewResp.data as { total?: number; skipped?: number; imported?: number } || {};
+      const previewData = previewResp.data as { total?: number; skipped?: number; imported?: number; importable_indices?: number[] } || {};
       const total = previewData.total ?? 0;
       const skipped = previewData.skipped ?? 0;
       const imported = previewData.imported ?? 0;
+      // 可导入记录的真实行号（后端 /preview 返回，去重后按实际位置分批，避免重复记录散落时漏导）
+      const importableIndices: number[] = previewData.importable_indices ?? [];
 
       if (imported === 0) {
         message.info('所有题录均已存在，无需导入');
@@ -215,34 +217,37 @@ const PubmedSearchPage: React.FC = () => {
         }
       }
 
-      // 3. 分批导入，进度条从 0 逐渐增加到 100
+      // 3. 分批导入，进度条从 0 逐渐增加到 100；按真实可导入行号分批，避免重复记录散落时漏导
       const BATCH = 25;
-      setImportRefProgress({ done: 0, total: imported > 0 ? imported : 1 });
+      // 旧版后端无 importable_indices：回退到按 count 连续切片（与旧行为一致）
+      const targetIndices: number[] = importableIndices.length > 0
+        ? importableIndices
+        : Array.from({ length: imported }, (_, i) => i);
+      setImportRefProgress({ done: 0, total: targetIndices.length > 0 ? targetIndices.length : 1 });
       let totalImported = 0;
       let totalSkipped = 0;
 
-      if (imported > 0) {
-        for (let i = 0; i < imported; i += BATCH) {
-          const batchLimit = Math.min(BATCH, imported - i);
+      if (targetIndices.length > 0) {
+        for (let i = 0; i < targetIndices.length; i += BATCH) {
+          const chunk = targetIndices.slice(i, i + BATCH);
           try {
             const resp = await api.post('/literatures/import-references', {
               ref_text: refText,
               fmt: REF_FMT_MAP[refFmt] || 'auto',
               file_name: file.name,
-              start: i,
-              limit: batchLimit,
+              indices: chunk,
               skip_log: true,
             });
             const data = resp.data as { imported?: number; skipped?: number } || {};
             totalImported += data.imported ?? 0;
             totalSkipped += data.skipped ?? 0;
           } catch (err: any) {
-            totalSkipped += batchLimit;
+            totalSkipped += chunk.length;
           }
 
           setImportRefProgress((p) => ({
             ...p,
-            done: Math.min(p.done + batchLimit, imported),
+            done: Math.min(p.done + chunk.length, targetIndices.length),
           }));
         }
       } else {

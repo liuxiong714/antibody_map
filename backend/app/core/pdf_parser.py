@@ -1,6 +1,7 @@
 import asyncio
 import concurrent.futures
 import hashlib
+import json
 import logging
 import io
 import re
@@ -270,8 +271,25 @@ def extract_text(file_bytes: bytes) -> str:
                     extract_with_vision(page_images_for_vision, EXTRACTION_JSON_SCHEMA)
                 )
                 if vision_text and vision_text.strip():
-                    full_text_parts.append(vision_text)
-                    logger.info(f"[视觉增强] 视觉提取返回 {len(vision_text)} 字符，已追加")
+                    # 视觉提取器输出的是"严格按 Schema 的结构化 JSON"（已提取的数据点），
+                    # 不能当作文档正文追加进文本，否则下游 LLM 会拿这段历史 JSON 当文献
+                    # 文本再次提取，造成重复提取/数据混乱（见 问题3）。
+                    # 仅当输出是散文（非 JSON）时才作为正文候选追加。
+                    stripped = vision_text.lstrip()
+                    looks_json = stripped.startswith("{") or stripped.startswith("[")
+                    if looks_json:
+                        try:
+                            json.loads(stripped)  # 校验确为合法 JSON，避免误判
+                            logger.info(
+                                f"[视觉增强] 视觉输出为结构化 JSON({len(vision_text)} 字符)，"
+                                f"不追加为正文（避免重复提取）"
+                            )
+                        except (ValueError, TypeError):
+                            # 以 { 或 [ 开头但不是合法 JSON → 按散文兜底追加
+                            looks_json = False
+                    if not looks_json:
+                        full_text_parts.append(vision_text)
+                        logger.info(f"[视觉增强] 视觉提取返回 {len(vision_text)} 字符，已追加")
             except Exception as e:
                 logger.warning(f"[视觉增强] 视觉提取失败，忽略: {e}")
 

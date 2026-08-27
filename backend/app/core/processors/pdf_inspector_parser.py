@@ -13,17 +13,48 @@
 注意：本模块不在 import 时加载 pdf-inspector（惰性加载），便于在绑定缺失时
 容器仍能正常启动并回退到现有解析器。
 """
+import hashlib
 import importlib
 import logging
 import os
 import tempfile
 import threading
+from collections import OrderedDict
 from typing import Optional
 
 logger = logging.getLogger("uvicorn")
 
 _pdf_inspector_mod = None
 _available: Optional[bool] = None
+
+# 进程内解析结果缓存（md5(file_bytes) -> markdown），
+# 避免同一 PDF 在一次提取任务中被 pdf-inspector 重复全量解析（全文 + 表格各一次）。
+# 键用 md5 而非 bytes 本身，避免 LRU 长期持有大 PDF 字节导致内存膨胀。
+_CACHE_MAXSIZE = 64
+_cache: "OrderedDict[str, str]" = OrderedDict()
+_cache_lock = threading.Lock()
+
+
+def _cache_get(md5_hex: str) -> Optional[str]:
+    with _cache_lock:
+        if md5_hex in _cache:
+            _cache.move_to_end(md5_hex)  # 命中即视为最近使用
+            return _cache[md5_hex]
+    return None
+
+
+def _cache_put(md5_hex: str, markdown: str) -> None:
+    with _cache_lock:
+        _cache[md5_hex] = markdown
+        _cache.move_to_end(md5_hex)
+        while len(_cache) > _CACHE_MAXSIZE:
+            _cache.popitem(last=False)
+
+
+def _clear_cache() -> None:
+    """测试辅助：清空解析结果缓存。"""
+    with _cache_lock:
+        _cache.clear()
 
 
 def _load_module():
@@ -89,6 +120,28 @@ def to_markdown_bytes(file_bytes: bytes, timeout: Optional[int] = None) -> str:
     3. 任何异常返回空字符串
 
     返回 Markdown 字符串，失败返回空字符串。
+
+    对同一文件字节做进程内缓存：全文提取与表格提取会先后复用结果，
+    避免在同一提取任务里重复全量解析。
+    """
+    md5_hex = hashlib.md5(file_bytes).hexdigest()
+    cached = _cache_get(md5_hex)
+    if cached is not None:
+        logger.info("[pdf-inspector] 命中解析结果缓存，跳过重复全量解析")
+        return cached
+
+    md = _parse_to_markdown(file_bytes, timeout)
+    _cache_put(md5_hex, md)
+    return md
+
+
+def _parse_to_markdown(file_bytes: bytes, timeout: Optional[int]) -> str:
+    """pdf-inspector 实际解析逻辑（无缓存）—— 由 to_markdown_bytes 统一缓存调用。
+
+    解析流程：
+    1. 直接调用 pdf-inspector 的 process_pdf_bytes()
+    2. 若失败且错误为 invalid file trailer，用 PyMuPDF 修复后重试
+    3. 任何异常返回空字符串
     """
     mod = _load_module()
     if mod is None:

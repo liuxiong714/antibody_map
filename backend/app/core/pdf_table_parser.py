@@ -18,6 +18,7 @@ from typing import Optional
 from app.config import settings
 from app.core.processors import anydoc_parser
 from app.core.processors import pdf_inspector_parser
+from app.core.parse_trace import record as trace_record
 
 logger = logging.getLogger("uvicorn")
 
@@ -75,6 +76,57 @@ def _table_to_markdown(table: list[list]) -> str:
     return "\n".join([header, separator] + body_lines)
 
 
+def _extract_table_blocks(md: str) -> str:
+    """从完整文档 Markdown 中抽取 GFM 表格块，只返回表格部分（不泄漏全文）。
+
+    GFM 表格块特征：表头行后紧跟一条由 `|` 与 `-`/`:` 组成的分隔行，接着是可选的
+    若干数据行。逐行扫描，识别分隔行作为表格起点，向前合并表头、向后收集数据行，
+    直到遇到非表格行。每个表格统一补一条表头分隔行，保证输出是合法 GFM 表格。
+
+    返回：拼接后的 Markdown 表格字符串；未提取到任何表格时返回空串。
+    """
+    if not md:
+        return ""
+    lines = md.splitlines()
+    tables: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        # 分隔行形如 | --- | :---: | ---: |，仅含 |、-、:、空格
+        if re.match(r"^\s*\|[\s:|-]+\|\s*$", line) and "-" in line:
+            # 向前收集表头行（紧跟的第 1 行通常就是表头）
+            head_idx = i - 1
+            header = ""
+            if head_idx >= 0 and re.match(r"^\s*\|.*\|\s*$", lines[head_idx]):
+                header = lines[head_idx]
+            # 向后收集数据行（以 | 开头且不是分隔行）
+            data = []
+            j = i + 1
+            while j < n:
+                lj = lines[j].strip()
+                if lj.startswith("|") and not re.match(r"^\|[\s:|-]+\|$", lj):
+                    data.append(lines[j])
+                    j += 1
+                else:
+                    break
+            blocks_lines = []
+            if header:
+                blocks_lines.append(header)
+            blocks_lines.append(line)
+            blocks_lines.extend(data)
+            tables.append("\n".join(blocks_lines))
+            i = j
+            continue
+        i += 1
+
+    if not tables:
+        return ""
+    result = "\n\n".join(f"### 表格 {k}\n\n{blk}" for k, blk in enumerate(tables, 1))
+    logger.info(f"[表格提取] 从文档 Markdown 抽取 {len(tables)} 个表格块，共 {len(result)} 字符")
+    return result
+
+
 def extract_tables_markdown(file_bytes: bytes, max_pages: int = 50) -> str:
     """提取 PDF 中所有表格，返回拼接后的 Markdown 字符串。
 
@@ -95,8 +147,13 @@ def extract_tables_markdown(file_bytes: bytes, max_pages: int = 50) -> str:
     ):
         md = anydoc_parser.to_markdown_bytes(file_bytes, ".pdf")
         if md and anydoc_parser.contains_table(md):
-            logger.info(f"[表格提取] 解析路径=AnyDoc，Markdown 含表格: {len(md)} 字符")
-            return md
+            tables_only = _extract_table_blocks(md)
+            if tables_only:
+                logger.info(f"[表格提取] 解析路径=AnyDoc，仅抽取表格: 原文 {len(md)} 字符 → 表格 {len(tables_only)} 字符")
+                trace_record("anydoc-tables")
+                return tables_only
+            logger.info("[表格提取] AnyDoc 含表格但抽取为空，回退=pdfplumber")
+            return ""
         logger.info("[表格提取] 回退=pdfplumber（AnyDoc 无表格或失败）")
 
     # pdf-inspector 增强路径：仅对 PDF 格式，优先尝试 pdf-inspector。
@@ -107,8 +164,13 @@ def extract_tables_markdown(file_bytes: bytes, max_pages: int = 50) -> str:
     ):
         md = pdf_inspector_parser.to_markdown_bytes(file_bytes)
         if md and anydoc_parser.contains_table(md):
-            logger.info(f"[表格提取] 解析路径=pdf-inspector，Markdown 含表格: {len(md)} 字符")
-            return md
+            tables_only = _extract_table_blocks(md)
+            if tables_only:
+                logger.info(f"[表格提取] 解析路径=pdf-inspector，仅抽取表格: 原文 {len(md)} 字符 → 表格 {len(tables_only)} 字符")
+                trace_record("pdf-inspector-tables")
+                return tables_only
+            logger.info("[表格提取] pdf-inspector 含表格但抽取为空，回退=pdfplumber")
+            return ""
         logger.info("[表格提取] 回退=pdfplumber（pdf-inspector 无表格或失败）")
 
     if not HAS_PDFPLUMBER:
@@ -141,6 +203,7 @@ def extract_tables_markdown(file_bytes: bytes, max_pages: int = 50) -> str:
 
         result = "\n\n".join(tables_md_parts)
         logger.info(f"[表格提取] 共提取 {table_count} 个表格，Markdown 长度 {len(result)} 字符")
+        trace_record("pdfplumber")
         return result
     except Exception as e:
         logger.warning(f"[表格提取] 表格提取失败（不影响纯文本提取）: {e}")

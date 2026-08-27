@@ -53,8 +53,7 @@ const LiteratureDetail: React.FC = () => {
   // 最近一次提取的 token 用量摘要（来自 extraction/status 接口）
   const [lastUsage, setLastUsage] = useState<ExtractionStatusWithUsage | null>(null);
 
-  // 提取历史弹窗
-  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  // 提取历史（内联展示）
   const [historyList, setHistoryList] = useState<ExtractionHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
@@ -499,11 +498,10 @@ const LiteratureDetail: React.FC = () => {
     try { localStorage.setItem('lit_show_usage_on_complete', checked ? '1' : '0'); } catch { /* ignore */ }
   };
 
-  // 加载提取历史
-  const loadExtractionHistory = async () => {
+  // 加载提取历史（内联展示，随文献 id 变化自动加载）
+  const loadExtractionHistory = useCallback(async () => {
     if (!id) return;
     setHistoryLoading(true);
-    setHistoryModalOpen(true);
     try {
       const history = await getExtractionHistory(id);
       setHistoryList(history);
@@ -514,7 +512,14 @@ const LiteratureDetail: React.FC = () => {
     } finally {
       setHistoryLoading(false);
     }
-  };
+  }, [id]);
+
+  // 切换文献时自动加载历次提取历史
+  useEffect(() => {
+    setHistoryList([]);
+    loadExtractionHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadExtractionHistory]);
 
   // 提取历史状态映射
   const HISTORY_STATUS_META: Record<string, { color: string; label: string }> = {
@@ -662,6 +667,41 @@ const LiteratureDetail: React.FC = () => {
         ) : (
           r.value != null ? `${r.value} ${r.unit || ''}` : '-'
         ),
+    },
+    {
+      title: '冲突提示', key: 'conflict', width: 110,
+      sorter: (a, b) =>
+        (a.conflicts?.some((c) => c.conflict) ? 1 : 0) - (b.conflicts?.some((c) => c.conflict) ? 1 : 0),
+      render: (_: unknown, r: DataPoint) => {
+        const rels = r.conflicts || [];
+        const conflicts = rels.filter((c) => c.conflict);
+        if (conflicts.length === 0) return '-';
+        const lines = rels.map((c, i) => {
+          const diffPct = (c.relative_diff * 100).toFixed(1);
+          return (
+            <div key={i} style={{ marginBottom: 4 }}>
+              <span style={{ color: c.conflict ? '#cf1322' : '#8c8c8c' }}>
+                {c.conflict ? '⚠ 差异大' : '· 有对比'}：已有值 {c.value}{c.unit ? ` ${c.unit}` : ''}
+                {c.collection_year ? `（${c.collection_year}年）` : ''}，相对差异 {diffPct}%
+              </span>
+              <div style={{ color: '#bfbfbf', fontSize: 12 }}>《{c.literature_title || '未知文献'}》</div>
+            </div>
+          );
+        });
+        return (
+          <Tooltip
+            title={
+              <div style={{ maxWidth: 380 }}>
+                <div style={{ marginBottom: 4 }}>同省同病同年已有已审核数据点（仅提示，不阻止审核）：</div>
+                {lines}
+              </div>
+            }
+            placement="topLeft"
+          >
+            <Tag color="red" style={{ margin: 0, cursor: 'help' }}>⚠ {conflicts.length} 处差异大</Tag>
+          </Tooltip>
+        );
+      },
     },
     {
       title: '样本量', dataIndex: 'sample_size', key: 'ss', width: 80,
@@ -942,11 +982,13 @@ const LiteratureDetail: React.FC = () => {
                 style={{ height: '100%' }}
                 styles={{ body: { height: '100%', overflow: 'auto' } }}
                 title={
-                  <Space>
-                    <span style={{ cursor: 'pointer' }} onClick={() => setIsTopCollapsed(true)}>
+                  <Space align="start">
+                    <span style={{ cursor: 'pointer', flexShrink: 0 }} onClick={() => setIsTopCollapsed(true)}>
                       <UpOutlined style={{ marginRight: 4, color: '#888' }} />
                     </span>
-                    {editing ? '编辑文献信息' : (literature?.title || '文献详情')}
+                    <span style={{ whiteSpace: 'normal', wordBreak: 'break-word', lineHeight: 1.5 }}>
+                      {editing ? '编辑文献信息' : (literature?.title || '文献详情')}
+                    </span>
                   </Space>
                 }
                 extra={
@@ -1056,9 +1098,6 @@ const LiteratureDetail: React.FC = () => {
                       <Button icon={<ExperimentOutlined />} onClick={handleExtract} loading={extracting}>
                         AI 提取
                       </Button>
-                      <Button icon={<HistoryOutlined />} onClick={loadExtractionHistory}>
-                        提取历史
-                      </Button>
                       <Tooltip title="从已提取的数据点中同步年份和省份信息">
                         <Button
                           icon={<SyncOutlined spin={syncing} />}
@@ -1070,6 +1109,133 @@ const LiteratureDetail: React.FC = () => {
                         </Button>
                       </Tooltip>
                     </Space>
+
+                    {/* 历次 AI 提取历史（内联展示） */}
+                    <div style={{ marginTop: 16 }}>
+                      <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 600 }}>
+                        <HistoryOutlined style={{ marginRight: 6 }} />历次 AI 提取历史
+                      </div>
+                      <Spin spinning={historyLoading}>
+                        {historyList.length === 0 && !historyLoading ? (
+                          <div style={{ padding: '20px 0', color: '#999', fontSize: 13 }}>
+                            <ClockCircleOutlined style={{ marginRight: 6 }} />暂无提取历史记录
+                          </div>
+                        ) : (
+                          <Table
+                            rowKey="id"
+                            dataSource={historyList}
+                            pagination={false}
+                            size="small"
+                            scroll={{ x: 900 }}
+                            columns={[
+                              {
+                                title: '提取时间',
+                                dataIndex: 'extracted_at',
+                                key: 'time',
+                                width: 160,
+                                render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
+                              },
+                              {
+                                title: '使用模型',
+                                dataIndex: 'model',
+                                key: 'model',
+                                width: 160,
+                                render: (v: string | null) => v || '-',
+                              },
+                              {
+                                title: '状态',
+                                dataIndex: 'status',
+                                key: 'status',
+                                width: 100,
+                                render: (s: string) => {
+                                  const meta = HISTORY_STATUS_META[s] || { color: 'default', label: s };
+                                  return <Tag color={meta.color}>{meta.label}</Tag>;
+                                },
+                              },
+                              {
+                                title: '数据点数',
+                                dataIndex: 'data_point_count',
+                                key: 'count',
+                                width: 80,
+                                render: (v: number) => v || 0,
+                              },
+                              {
+                                title: 'Token 用量',
+                                key: 'tokens',
+                                width: 120,
+                                render: (_: unknown, r: ExtractionHistoryItem) =>
+                                  r.total_tokens > 0
+                                    ? <Tag color="blue">{r.total_tokens.toLocaleString()} tokens</Tag>
+                                    : '-',
+                              },
+                              {
+                                title: '调用次数',
+                                dataIndex: 'llm_call_count',
+                                key: 'calls',
+                                width: 80,
+                                render: (v: number) => v || 0,
+                              },
+                              {
+                                title: '耗时',
+                                key: 'duration',
+                                width: 90,
+                                render: (_: unknown, r: ExtractionHistoryItem) => {
+                                  if (!r.duration_seconds || r.duration_seconds <= 0) return '-';
+                                  const s = r.duration_seconds;
+                                  if (s < 60) return <span>{s.toFixed(1)}s</span>;
+                                  if (s < 3600) return <span>{(s / 60).toFixed(1)}min</span>;
+                                  return <span>{(s / 3600).toFixed(2)}h</span>;
+                                },
+                              },
+                              {
+                                title: '费用',
+                                key: 'cost',
+                                width: 100,
+                                render: (_: unknown, r: ExtractionHistoryItem) =>
+                                  r.llm_cost_usd > 0
+                                    ? <Tag color="gold">${r.llm_cost_usd.toFixed(4)}</Tag>
+                                    : '-',
+                              },
+                              {
+                                title: '错误信息',
+                                dataIndex: 'error_message',
+                                key: 'error',
+                                render: (v: string | null) =>
+                                  v ? <Tooltip title={v}><Tag color="red" style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}>{v}</Tag></Tooltip> : '-',
+                              },
+                              {
+                                title: '操作',
+                                key: 'action',
+                                width: 100,
+                                render: (_: unknown, r: ExtractionHistoryItem) => (
+                                  <Button
+                                    type="link"
+                                    size="small"
+                                    onClick={() => {
+                                      if (!id) return;
+                                      // 点击历史记录，使用相同模型重新提取
+                                      if (r.model) {
+                                        setExtractModel(r.model);
+                                        // 自动根据模型匹配默认 baseUrl
+                                        const vendor = modelOptions.find((o) => o.value === r.model)?.vendor || '';
+                                        setExtractBaseUrl(VENDOR_INFO[vendor]?.defaultBaseUrl || '');
+                                      } else {
+                                        setExtractModel(undefined);
+                                        setExtractBaseUrl('');
+                                      }
+                                      setExtractApiKey('');
+                                      setExtractModalOpen(true);
+                                    }}
+                                  >
+                                    重新提取
+                                  </Button>
+                                ),
+                              },
+                            ]}
+                          />
+                        )}
+                      </Spin>
+                    </div>
                   </>
                 )}
               </Card>
@@ -1704,126 +1870,7 @@ const LiteratureDetail: React.FC = () => {
         )}
       </Modal>
 
-      {/* 提取历史弹窗 */}
-      <Modal
-        title={<><HistoryOutlined /> 历次 AI 提取历史</>}
-        open={historyModalOpen}
-        onCancel={() => { setHistoryModalOpen(false); setHistoryList([]); }}
-        footer={null}
-        width={800}
-      >
-        <Spin spinning={historyLoading}>
-          {historyList.length === 0 && !historyLoading ? (
-            <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
-              <ClockCircleOutlined style={{ fontSize: 36, display: 'block', marginBottom: 12 }} />
-              暂无提取历史记录
-            </div>
-          ) : (
-            <Table
-              rowKey="id"
-              dataSource={historyList}
-              pagination={false}
-              size="small"
-              columns={[
-                {
-                  title: '提取时间',
-                  dataIndex: 'extracted_at',
-                  key: 'time',
-                  width: 160,
-                  render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
-                },
-                {
-                  title: '使用模型',
-                  dataIndex: 'model',
-                  key: 'model',
-                  width: 160,
-                  render: (v: string | null) => v || '-',
-                },
-                {
-                  title: '状态',
-                  dataIndex: 'status',
-                  key: 'status',
-                  width: 100,
-                  render: (s: string) => {
-                    const meta = HISTORY_STATUS_META[s] || { color: 'default', label: s };
-                    return <Tag color={meta.color}>{meta.label}</Tag>;
-                  },
-                },
-                {
-                  title: '数据点数',
-                  dataIndex: 'data_point_count',
-                  key: 'count',
-                  width: 80,
-                  render: (v: number) => v || 0,
-                },
-                {
-                  title: 'Token 用量',
-                  key: 'tokens',
-                  width: 120,
-                  render: (_: unknown, r: ExtractionHistoryItem) =>
-                    r.total_tokens > 0
-                      ? <Tag color="blue">{r.total_tokens.toLocaleString()} tokens</Tag>
-                      : '-',
-                },
-                {
-                  title: '调用次数',
-                  dataIndex: 'llm_call_count',
-                  key: 'calls',
-                  width: 80,
-                  render: (v: number) => v || 0,
-                },
-                {
-                  title: '费用',
-                  key: 'cost',
-                  width: 100,
-                  render: (_: unknown, r: ExtractionHistoryItem) =>
-                    r.llm_cost_usd > 0
-                      ? <Tag color="gold">${r.llm_cost_usd.toFixed(4)}</Tag>
-                      : '-',
-                },
-                {
-                  title: '错误信息',
-                  dataIndex: 'error_message',
-                  key: 'error',
-                  render: (v: string | null) =>
-                    v ? <Tooltip title={v}><Tag color="red" style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}>{v}</Tag></Tooltip> : '-',
-                },
-                {
-                  title: '操作',
-                  key: 'action',
-                  width: 100,
-                  fixed: 'right' as const,
-                  render: (_: unknown, r: ExtractionHistoryItem) => (
-                    <Button
-                      type="link"
-                      size="small"
-                      onClick={() => {
-                        if (!id) return;
-                        // 点击历史记录，使用相同模型重新提取
-                        if (r.model) {
-                          setExtractModel(r.model);
-                          // 自动根据模型匹配默认 baseUrl
-                          const vendor = modelOptions.find((o) => o.value === r.model)?.vendor || '';
-                          setExtractBaseUrl(VENDOR_INFO[vendor]?.defaultBaseUrl || '');
-                        } else {
-                          setExtractModel(undefined);
-                          setExtractBaseUrl('');
-                        }
-                        setExtractApiKey('');
-                        setHistoryModalOpen(false);
-                        setExtractModalOpen(true);
-                      }}
-                    >
-                      重新提取
-                    </Button>
-                  ),
-                },
-              ]}
-            />
-          )}
-        </Spin>
-      </Modal>
-    </>
+      </>
   );
 };
 

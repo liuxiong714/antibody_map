@@ -1,5 +1,51 @@
 # 变更日志
 
+## v1.21.0 (2026-08-28)
+
+### 新增
+
+- **AI 提取耗时记录**：`extraction_history` 新增 `duration_seconds` 列，记录每篇文献每次 AI 提取的实际耗时——成功路径记录 LLM 提取耗时，失败路径记录从任务抢占到失败的整段耗时（迁移 `add_extraction_history_duration`）。
+- **文献详情页内联提取历史**：文献详情页摘要下方移除「提取历史」弹窗按钮（按钮精简为「AI 提取 / 同步信息」），改为直接内联展示「历次 AI 提取历史」表格，进入详情页即自动加载，无需再点击。表格新增「耗时」列（秒 / 分钟 / 小时自动换算）。
+- **提取历史自动补写**：卡死自动重置（`reset_stale_extraction_status`，`processing/queued` 超 30 分钟回收）与手动「终止 / 重置我的」操作现在都会向 `extraction_history` 写入 `failed` 历史记录，杜绝状态变更后历史缺失。
+- **存量提取历史回填**：新增脚本 `backend/scripts/backfill_extraction_history.py`，为既有已到终局（`done`/`done_no_data`/`failed`）但缺失历史记录的文献批量补写历史（幂等，可重复执行），并支持 `--dry-run` 预览。
+
+### 修复
+
+- **文献详情标题自动换行**：详情卡片标题长文不再被截断，支持自动换行（`word-break: break-word`）。
+- **Alembic 版本号列加宽**：迁移 `widen_alembic_version_num` 将 `alembic_version.version_num` 由 `varchar(32)` 加宽至 `varchar(64)`，解决长 revision ID 迁移失败问题；`add_literature_author_affiliations` 依赖该迁移以正确在后端启动时应用。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/alembic/versions/add_extraction_history_duration.py` | 迁移：`extraction_history.duration_seconds` 列 |
+| `backend/alembic/versions/widen_alembic_version_num.py` | 迁移：`alembic_version.version_num` 加宽至 64 |
+| `backend/alembic/versions/add_literature_author_affiliations.py` | 调整迁移依赖到加宽迁移 |
+| `backend/scripts/backfill_extraction_history.py` | 新增：存量提取历史幂等回填脚本（含 dry-run） |
+| `backend/app/services/literature/crud.py` | `reset_stale_extraction_status` 补写 `failed` 历史 |
+| `backend/app/api/v1/extraction.py` | 「终止 / 重置我的」操作补写失败历史 |
+| `backend/app/models/extraction_history.py` | 模型：`duration_seconds` 字段 |
+| `frontend/src/pages/LiteratureDetail.tsx` | 提取历史内联展示 + 耗时列 + 标题换行 + 按钮精简 |
+| `backend/app/config.py` | 版本号 1.20.1 → 1.21.0 |
+
+## v1.20.1 (2026-08-27)
+
+### 修复
+
+- **P0-2 溯源坐标错位**：字符级 grounding 返回的字符区间原为归一化（去空白/规范引号）文本的偏移量，被下游当作原文偏移量使用，导致溯源高亮指向错误位置。新增 `_build_norm_and_map` 建立 norm→raw 索引映射，`_to_raw_span` 将 exact / fuzzy / keyphrase 三种匹配结果统一翻译回**原始文本坐标**，`matched_snippet` 直接从原文切片。
+- **P0-5 审核/编辑缺字段级校验**：手动新增与批量审核/编辑数据点接口加字段级一致性校验（`_validate_datapoint_consistency` 挂到 `CreateDataPointRequest` 与 `DataPointReviewItem`）：阳性率须在 `[0,100]`、GMC ≥0、`age_max≥age_min` 且不小于 0、`collection_year∈[1900,2100]`、`sample_size≥0`、`confidence∈{high,medium,low}`、溯源区间非负且 end≥start；非法返回 422，杜绝脏数据入库。
+- **P0-4 批内数据点重复**：写库前对本次提取批内做值级去重（键 = disease+province+city+data_type+age_min+age_max+collection_year+value），保留首见记录，阻断 LLM 单次输出近似重复行堆叠导致的重复计权。
+- **P0-6 时间字段映射补兜底**：核实 `_extract_result_to_datapoints` 的 `collection_year = sample_year or study_start_year` 映射已正确，补充 `study_end_year` 作为最后一层兜底，避免仅报告单一年份的研究丢失年份信息。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/core/extraction_grounding.py` | P0-2：新增 `_build_norm_and_map` / `_to_raw_span`，匹配区间统一回映到原文坐标 |
+| `backend/app/api/v1/extraction.py` | P0-5：新增 `_validate_datapoint_consistency`，挂到创建/审核请求模型 |
+| `backend/app/tasks/extract_task.py` | P0-4 批内值级去重；P0-6 `collection_year` 补 `study_end_year` 兜底 |
+| `backend/app/config.py` | 版本号 1.20.0 → 1.20.1 |
+
 ## v1.20.0 (2026-08-27)
 
 ### 新增

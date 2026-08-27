@@ -48,6 +48,7 @@ async def upload_literature(
     title: Optional[str] = None,
     doi: Optional[str] = None,
     province: Optional[str] = None,
+    owner_id: Optional[uuid.UUID] = None,
 ) -> tuple[Optional[Literature], str]:
     """上传/导入文献文件。
 
@@ -110,6 +111,7 @@ async def upload_literature(
         pdf_hash=pdf_hash,
         has_fulltext=True,
         source_db="upload",
+        owner_id=owner_id,
     )
     db.add(literature)
     try:
@@ -273,7 +275,8 @@ async def preview_import_references(
 
     total = len(refs)
     skipped = 0
-    for ref in refs:
+    importable_indices: list[int] = []
+    for idx, ref in enumerate(refs):
         title = (ref.get("title") or "").strip()
         if not title:
             skipped += 1
@@ -294,9 +297,13 @@ async def preview_import_references(
         if existing:
             skipped += 1
             continue
+        importable_indices.append(idx)
 
     imported = total - skipped
-    return {"total": total, "skipped": skipped, "imported": imported}
+    results = {"total": total, "skipped": skipped, "imported": imported}
+    # 返回可导入记录的真实行号，供前端按实际位置分批，避免重复记录散落时漏导
+    results["importable_indices"] = importable_indices
+    return results
 
 
 async def import_references_from_text(
@@ -305,6 +312,7 @@ async def import_references_from_text(
     fmt: str = "auto",
     start: int = 0,
     limit: int = 0,
+    indices: list[int] | None = None,
 ) -> dict:
     """解析题录文本并入库（RIS / EndNote(.enw) / PubMed / WoS / 读秀超星）。
 
@@ -313,6 +321,9 @@ async def import_references_from_text(
     - 跳过条件：标题为空；source_id（pmid，兜底 doi）或归一化标题已存在
     - 复用 create_literature 入库
     - start/limit：分批导入时指定从第几条开始处理、处理多少条（0=全部）
+    - indices：精确指定要处理的解析结果行号（优先级高于 start/limit）。
+       前端先在 /preview 拿到 importable_indices（真实可导入的行号），再按此分批，
+       避免重复记录散落时按 count 连续切片导致漏导。
     返回 {"imported", "skipped", "total", "errors"}。
     """
     text = (ref_text or "").strip()
@@ -323,17 +334,22 @@ async def import_references_from_text(
     if not refs:
         raise ValueError("未解析到有效题录（支持 RIS / EndNote / PubMed / WoS / 读秀超星 格式）")
 
-    # 分批切片：start/limit 作用于解析后的记录列表
+    # 分批选择要处理的记录：indices 优先；其次 start/limit 连续切片
     total = len(refs)
-    if limit > 0:
-        refs = refs[start:start + limit]
-    elif start > 0:
-        refs = refs[start:]
+    if indices is not None:
+        picked = [(i, refs[i]) for i in sorted(set(indices)) if 0 <= i < len(refs)]
+    else:
+        if limit > 0:
+            picked = list(enumerate(refs[start:start + limit], start=start))
+        elif start > 0:
+            picked = list(enumerate(refs[start:], start=start))
+        else:
+            picked = list(enumerate(refs))
 
     imported = 0
     skipped = 0
     errors: list[dict] = []
-    for idx, ref in enumerate(refs):
+    for idx, ref in picked:
         title = (ref.get("title") or "").strip()
         if not title:
             skipped += 1
@@ -404,6 +420,7 @@ async def _batch_import_files_core(
     entries: list[dict],
     trigger_extraction_after: bool = True,
     max_size_bytes: Optional[int] = None,
+    owner_id: Optional[uuid.UUID] = None,
 ) -> dict:
     """通用批量导入核心：遍历 entries 调用 upload_literature 自动匹配/新建。
 
@@ -438,7 +455,7 @@ async def _batch_import_files_core(
 
         # 判断是否已匹配——upload_literature 内部处理标题匹配与文件关联
         try:
-            lit, action = await upload_literature(db, file_bytes, filename)
+            lit, action = await upload_literature(db, file_bytes, filename, owner_id=owner_id)
         except Exception as e:
             logger.error(f"[batch-import] 导入出错: {filename}, error={e}", exc_info=True)
             failed += 1
@@ -501,6 +518,7 @@ async def batch_import_files_from_folder(
     db: AsyncSession,
     folder_path: str,
     trigger_extraction_after: bool = True,
+    owner_id: Optional[uuid.UUID] = None,
 ) -> dict:
     """从服务器本地文件夹批量导入文件。
 
@@ -526,13 +544,14 @@ async def batch_import_files_from_folder(
             logger.error(f"[batch-import] 读取文件失败: {f.name}, error={e}")
             entries.append({"filename": f.name, "bytes": None, "read_error": str(e)})
 
-    return await _batch_import_files_core(db, entries, trigger_extraction_after)
+    return await _batch_import_files_core(db, entries, trigger_extraction_after, owner_id=owner_id)
 
 
 async def batch_import_uploaded_files(
     db: AsyncSession,
     files: list,
     trigger_extraction_after: bool = True,
+    owner_id: Optional[uuid.UUID] = None,
 ) -> dict:
     """从浏览器上传的文件批量导入（与文件夹导入共用核心逻辑，但文件来自上传）。
 
@@ -563,6 +582,7 @@ async def batch_import_uploaded_files(
 
     return await _batch_import_files_core(
         db, entries, trigger_extraction_after, max_size_bytes=settings.MAX_UPLOAD_SIZE,
+        owner_id=owner_id,
     )
 
 

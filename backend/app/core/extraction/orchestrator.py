@@ -63,6 +63,8 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         self._usage_accumulator: dict[str, dict] = {}
         # P2-tt：titer_table 提取试点（LLM 返回的滴度矩阵，置信度 < 0.8 落人工）
         self._titer_tables: list[dict] = []
+        # P1-1：顶层 article 元数据（LLM 提取的文献级元数据，首个非空者胜出）
+        self._article_meta: dict = {}
 
     # ===== B5：分级模型策略 =====
 
@@ -105,6 +107,10 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
     def get_titer_tables(self) -> list[dict]:
         """返回本次提取累计的滴度矩阵结果（P2-tt 试点）。"""
         return list(self._titer_tables)
+
+    def get_article_meta(self) -> dict:
+        """返回本次提取捕获的顶层 article 元数据（P1-1）。"""
+        return dict(self._article_meta)
 
     def _has_key_fields(self, points: list[dict]) -> bool:
         """检查是否包含关键字段"""
@@ -357,6 +363,13 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         # 调用 LLM（B6：system prompt 分离）
         content = await self._call_llm_api(user_content, system_prompt=system_prompt)
         data = self._parse_json(content)
+
+        # P1-1：捕获顶层 article 元数据（首个非空者胜出，供任务层回填 literature）
+        if isinstance(data, dict) and not self._article_meta:
+            art = data.get("article")
+            if isinstance(art, dict) and art:
+                self._article_meta = art
+
         points = self._post_process(data)
 
         # P2-tt 试点：累计本次输出中的滴度矩阵（confidence<0.8 已标记落人工）
@@ -452,6 +465,11 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
             return []
 
         points = self._post_process(data)
+        # P1-1：视觉提取同样捕获顶层 article 元数据（首个非空者胜出）
+        if not self._article_meta:
+            art = data.get("article")
+            if isinstance(art, dict) and art:
+                self._article_meta = art
         # grounding 溯源：对每个数据点调用 ground_extraction，并回写结果字段
         for dp in points:
             if not isinstance(dp, dict):
@@ -489,6 +507,8 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
 
         # P2-tt 试点：每次完整提取前重置滴度矩阵累加器
         self._titer_tables = []
+        # P1-1：每次完整提取前重置 article 元数据累加器
+        self._article_meta = {}
 
         # A1：表格优先提取 — 先从表格单独提取一轮
         all_points: list[dict] = []

@@ -9,6 +9,7 @@ class LiteratureCreate(BaseModel):
     title: str
     title_en: Optional[str] = None
     authors: Optional[str] = None
+    author_affiliations: Optional[str] = None
     journal: Optional[str] = None
     pub_year: Optional[int] = None
     doi: Optional[str] = None
@@ -27,6 +28,7 @@ class LiteratureUpdate(BaseModel):
     title: Optional[str] = None
     title_en: Optional[str] = None
     authors: Optional[str] = None
+    author_affiliations: Optional[str] = None
     journal: Optional[str] = None
     pub_year: Optional[int] = None
     doi: Optional[str] = None
@@ -48,6 +50,7 @@ class LiteratureResponse(BaseModel):
     title: str
     title_en: Optional[str] = None
     authors: Optional[str] = None
+    author_affiliations: Optional[str] = None
     journal: Optional[str] = None
     pub_year: Optional[int] = None
     doi: Optional[str] = None

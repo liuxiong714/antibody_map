@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # 趟数越多召回率越高但 API 调用成本线性增加，推荐 2
     LLM_EXTRACTION_PASSES: int = 2
 
+    # P1-2：PDF 内自动识别 DOI 并回填 Crossref 元数据（默认开启）
+    CROSSREF_DOI_BACKFILL: bool = True
+
     # 本地大模型（如 32B/70B）推理慢，请求超时需放宽，单位：秒
     LLM_REQUEST_TIMEOUT: int = 600
 
@@ -174,7 +177,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "production"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.20.0"
+    APP_VERSION: str = "1.21.0"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
     # 提取状态卡死阈值（分钟）：processing/queued 超过此时间未变，列表查询时自动重置为 failed

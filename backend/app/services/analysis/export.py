@@ -180,11 +180,36 @@ def build_excel_export(
             "文献标题", "疾病", "省份", "城市", "年龄组", "样本量", "数据类型",
             "数值", "单位", "CI下限", "CI上限", "采集年份", "检测方法", "人群", "置信度",
         ]
+        # P1-3：导出新增作者/DOI/PMID/引用列
+        dp_extra_fields = ["literature_authors", "literature_doi", "literature_pmid", "literature_citation"]
+        dp_extra_headers = ["文献作者", "DOI", "PMID", "引用"]
+        dp_fields = dp_fields + dp_extra_fields
+        dp_headers = dp_headers + dp_extra_headers
         _write_header(ws_dp, dp_headers)
         for i, item in enumerate(approved_items, 2):
             if isinstance(item, dict):
                 for j, field in enumerate(dp_fields, 1):
-                    ws_dp.cell(row=i, column=j, value=item.get(field))
+                    val = item.get(field)
+                    if field == "literature_citation":
+                        # 构建引用字符串：作者. 标题. 期刊. 年份. doi: DOI
+                        _parts = []
+                        _a = (item.get("literature_authors") or "").strip()
+                        _t = (item.get("literature_title") or "").strip()
+                        _jn = (item.get("literature_journal") or "").strip()
+                        _yr = item.get("literature_year")
+                        _doi = (item.get("literature_doi") or "").strip()
+                        if _a:
+                            _parts.append(_a)
+                        if _t:
+                            _parts.append(_t)
+                        if _jn:
+                            _parts.append(_jn)
+                        if _yr:
+                            _parts.append(str(_yr))
+                        if _doi:
+                            _parts.append(f"doi: {_doi}")
+                        val = ". ".join(_parts)
+                    ws_dp.cell(row=i, column=j, value=val)
         for col_idx in range(1, len(dp_headers) + 1):
             ws_dp.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else "A"].width = 18
 

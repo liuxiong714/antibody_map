@@ -13,6 +13,7 @@ from app.config import settings
 from app.core.llm_extractor import LLMExtractor, _classify_llm_error
 from app.core.document_parser import extract_text
 from app.core.pdf_table_parser import extract_tables_markdown
+from app.core.parse_trace import reset as trace_reset, snapshot as trace_snapshot
 from app.core.text_preprocessor import preprocess
 from app.models.base import async_session
 from app.models.data_point import DataPoint
@@ -21,6 +22,7 @@ from app.models.extraction_history import ExtractionHistory
 from app.models.titer_table import TiterTable
 from app.models.api_model_config import ApiModelConfig
 from app.services.quality_service import score_data_point as _score_data_point
+from app.services.crossref_service import extract_doi_from_text
 from app.tasks.celery_app import celery_app
 from app.tasks.async_runner import run_async
 from app.core.minio_client import get_minio_client
@@ -433,7 +435,7 @@ async def _extract_result_to_datapoints(
         "method": cleaned.get("detection_method"),
         "assay": cleaned.get("antibody_type"),
         "population": cleaned.get("population_type"),
-        "collection_year": cleaned.get("sample_year") or cleaned.get("study_start_year"),
+        "collection_year": cleaned.get("sample_year") or cleaned.get("study_start_year") or cleaned.get("study_end_year"),
         "source_page": cleaned.get("source_page"),
         "source_context": final_source_context,
         # P0：精确字符级溯源字段
@@ -495,6 +497,9 @@ async def _process_literature_async(
 ) -> dict:
     """异步文献处理：PDF 解析 → LLM 提取 → 保存数据点（含精确溯源和强 Schema）"""
     async with async_session() as db:
+        # 本次 AI 提取耗时计时起点。抢占后置为 time.perf_counter()；抢占前异常时为 None，
+        # 历史写入时按 0 处理，避免 NameError。
+        _run_clock_start: Optional[float] = None
         # 1. 查找文献记录
         result = await db.execute(
             select(Literature).where(Literature.id == literature_id)
@@ -536,6 +541,10 @@ async def _process_literature_async(
         logger.info(
             f"文献 {literature_id} 已抢占提取任务（generation={my_generation}）"
         )
+        # 记录本次 AI 提取耗时：_run_clock_start 覆盖整段任务时长（成功=LLM 提取 / 失败=整段），
+        # _llm_seconds 记录真实 LLM 提取耗时（仅非缓存命中路径）。
+        _run_clock_start = time.perf_counter()
+        _llm_seconds = 0.0
 
         # F14：后台心跳刷新循环。提取期间每 60s 刷新一次 worker_heartbeat（独立 session），
         # 任务完成/失败/被接管后自动停止。心跳持续刷新说明任务仍活着，超时回收不误判。
@@ -594,6 +603,7 @@ async def _process_literature_async(
             # 3. 解析文件文本（按扩展名分发：PDF/CAJ/EPUB/DOCX/TXT/HTML）
             file_ext = ("." + str(literature.file_path).replace("\\", "/").split("/")[-1].split(".")[-1]).lower() \
                 if "." in str(literature.file_path).replace("\\", "/").split("/")[-1] else ""
+            trace_reset()
             raw_text = extract_text(file_bytes, file_ext)
             if not raw_text or not raw_text.strip():
                 raise RuntimeError(
@@ -608,24 +618,42 @@ async def _process_literature_async(
             logger.info(f"无 PDF，使用摘要作为提取输入: {len(raw_text)} 字符")
 
         # 3b. P0-1：PDF/CAJ 文件额外提取结构化表格 Markdown，注入 LLM 提示词
-        # B6：表格 Markdown 哈希缓存，同一文件重抽时跳过 pdfplumber 提取
+        # 双轨去重:当正文(raw_text)已由 pdf-inspector/AnyDoc 解析(其 Markdown 天然内联表格)
+        # 时,再注入 tables_md 会把同一批表格喂给 LLM 两遍,造成重复计数/数据混乱,此时跳过。
         tables_md = ""
         if file_ext in (".pdf", ".caj"):
-            file_hash = hashlib.md5(file_bytes).hexdigest()
-            if file_hash in _table_hash_cache:
-                tables_md = _table_hash_cache[file_hash]
-                logger.info(f"B6 表格 Markdown 命中缓存: {len(tables_md)} 字符 (hash={file_hash[:8]})")
+            full_text_engines = trace_snapshot()
+            tables_already_inline = any(
+                e in full_text_engines for e in ("pdf-inspector", "anydoc")
+            )
+            if tables_already_inline:
+                tables_md = ""
+                logger.info(
+                    f"B6 正文已含内联表格({', '.join(full_text_engines)}),"
+                    f"跳过 tables_md 注入以避免双轨重复 (id={literature_id})"
+                )
             else:
-                try:
-                    tables_md = extract_tables_markdown(file_bytes)
-                    if tables_md:
-                        logger.info(f"P0-1 表格提取成功: {len(tables_md)} 字符 Markdown")
-                        _table_hash_cache[file_hash] = tables_md
-                    else:
-                        logger.info("P0-1 未检测到结构化表格或 pdfplumber 不可用，跳过表格注入")
-                except Exception as e:
-                    logger.warning(f"P0-1 表格提取失败（不影响纯文本提取）: {e}")
-                    tables_md = ""
+                # B6: 表格 Markdown 哈希缓存,同一文件重抽时跳过 pdfplumber 提取
+                file_hash = hashlib.md5(file_bytes).hexdigest()
+                if file_hash in _table_hash_cache:
+                    tables_md = _table_hash_cache[file_hash]
+                    logger.info(f"B6 表格 Markdown 命中缓存: {len(tables_md)} 字符 (hash={file_hash[:8]})")
+                else:
+                    try:
+                        tables_md = extract_tables_markdown(file_bytes)
+                        if tables_md:
+                            logger.info(f"P0-1 表格提取成功: {len(tables_md)} 字符 Markdown")
+                            _table_hash_cache[file_hash] = tables_md
+                        else:
+                            logger.info("P0-1 未检测到结构化表格或 pdfplumber 不可用,跳过表格注入")
+                    except Exception as e:
+                        logger.warning(f"P0-1 表格提取失败(不影响纯文本提取): {e}")
+                        tables_md = ""
+
+            # 解析路径可观测性:汇总本次提取实际走过的全文/表格解析引擎
+            trace_paths = trace_snapshot()
+            if trace_paths:
+                logger.info(f"文献解析路径(实际): {', '.join(trace_paths)} (id={literature_id})")
 
         # 4. 预处理文本（保留 clean_text 用于 grounding）
         clean_text = preprocess(raw_text)
@@ -667,6 +695,7 @@ async def _process_literature_async(
             resolved_base_url = settings.LLM_BASE_URL or None
 
         # 5b. 先查提取结果缓存；命中则跳过 LLM 调用，直接重建数据点
+        article_meta: dict = {}
         if use_cache and getattr(settings, "EXTRACTION_CACHE_ENABLED", True):
             cache_key = _build_extraction_cache_key(
                 literature_id, effective_model, passes,
@@ -679,6 +708,8 @@ async def _process_literature_async(
                 extract_results = cached.get("extract_results") or []
                 titer_tables = cached.get("titer_tables") or []
                 usage_summary = cached.get("usage_summary") or {}
+                # P1-1：缓存也携带 article 元数据
+                article_meta = cached.get("article_meta") or {}
                 extractor = None
             else:
                 extractor = LLMExtractor(model=model, api_key=resolved_api_key, base_url=resolved_base_url)
@@ -720,9 +751,12 @@ async def _process_literature_async(
                 record_llm_completion(effective_model, "error", None)
                 raise
             _extract_seconds = time.perf_counter() - _extract_start
+            _llm_seconds = _extract_seconds
             logger.info(f"LLM 提取完成: {len(extract_results)} 个数据点")
             usage_summary = extractor.get_usage_summary()
             titer_tables = extractor.get_titer_tables()
+            # P1-1：捕获顶层 article 元数据用于回填 literature
+            article_meta = extractor.get_article_meta()
             # 记录 Prometheus 指标：提取耗时 + LLM token/费用/结局
             observe_extraction_duration(effective_model, _extract_seconds)
             record_llm_completion(effective_model, "success", usage_summary)
@@ -734,6 +768,19 @@ async def _process_literature_async(
         # 导致"LLM 已成功识别数据、但写库 commit 时连接已closed"的提取失败。
         # 本节 commit 结束抢占据/读配置等只读事务并归还连接，后续转换+写库在干净连接上进行。
         await db.commit()
+
+        # P1-2：PDF 内自动识别 DOI → Crossref 回填文献级元数据。
+        # 网络调用放在"不持有数据库连接"阶段（F13 方案A），失败静默降级，不影响提取。
+        crossref_meta: Optional[dict] = None
+        try:
+            _crossref_doi = extract_doi_from_text(clean_text)
+            if not _crossref_doi and article_meta:
+                _crossref_doi = (article_meta.get("doi") or "").strip() or None
+            if _crossref_doi and getattr(settings, "CROSSREF_DOI_BACKFILL", True):
+                from app.services.crossref_service import fetch_crossref_by_doi
+                crossref_meta = await fetch_crossref_by_doi(_crossref_doi)
+        except Exception as e:
+            logger.warning(f"P1-2 Crossref DOI 回填失败（不影响提取）: {e}")
 
         # 6. 为每个提取数据点创建 DataPoint 记录（含 grounding + schema 校验）。
         #    纯内存计算，不访问数据库；若触发 A3 的 LLM 重抽，也不占用任何数据库连接。
@@ -763,6 +810,29 @@ async def _process_literature_async(
                 except Exception as _qs_e:
                     logger.warning(f"数据点提取期质量打分失败（不影响提取）: {_qs_e}")
                 all_data_points.append(dp)
+
+        # P0-4：批内值级去重。防止 LLM 单次输出近似重复行（同病/省/市/类型/年龄/年份/值）
+        # 堆叠成重复数据点导致分析时重复计权。保留首见记录，其余跳过。
+        if all_data_points:
+            _seen_keys: set[tuple] = set()
+            _deduped: list[DataPoint] = []
+            for _dp in all_data_points:
+                _val = round(_dp.value, 6) if _dp.value is not None else None
+                _key = (
+                    _dp.disease, _dp.province, _dp.city, _dp.data_type,
+                    _dp.age_min, _dp.age_max, _dp.collection_year, _val,
+                )
+                if _key in _seen_keys:
+                    logger.info(
+                        f"P0-4 数据点去重：跳过重复点 "
+                        f"disease={_dp.disease} province={_dp.province} city={_dp.city} "
+                        f"type={_dp.data_type} age={_dp.age_min}-{_dp.age_max} "
+                        f"year={_dp.collection_year} value={_val}"
+                    )
+                    continue
+                _seen_keys.add(_key)
+                _deduped.append(_dp)
+            all_data_points = _deduped
 
         # ---- 以下为写库事务（短窗口，纯 DB 操作，事务很快结束）----
 
@@ -863,7 +933,60 @@ async def _process_literature_async(
             f"primary: {stats_primary}, subgroup: {stats_subgroup})"
         )
 
-        # 7. 更新文献元信息（从所有提取数据点中聚合）
+        # 7. 更新文献元信息
+        # 7a. P1-1：回填 LLM 提取的顶层 article 元数据（缺失字段才回填，不覆盖已有值）。
+        # 文献级元数据（标题/摘要/DOI/PMID/作者/单位/年份）此前因无字段或未透传被丢弃。
+        if article_meta:
+            _backfilled: list[str] = []
+            for _field in ("title_en", "abstract", "doi", "pmid",
+                           "authors", "author_affiliations", "journal"):
+                _v = article_meta.get(_field)
+                if _v and not getattr(literature, _field, None):
+                    setattr(literature, _field, str(_v).strip())
+                    _backfilled.append(_field)
+            _py = article_meta.get("pub_year")
+            if _py and not literature.pub_year:
+                try:
+                    literature.pub_year = int(_py)
+                    _backfilled.append("pub_year")
+                except (TypeError, ValueError):
+                    pass
+            if _backfilled:
+                logger.info(
+                    f"[MetadataSync] 文献 {literature_id} 回填 article 元数据: "
+                    f"{', '.join(_backfilled)}"
+                )
+
+        # 7a2. P1-2：Crossref 按 DOI 回填（复用 crossref_service）。
+        # 权威外部源，仅回填 article 元数据后仍缺失的字段，不覆盖 LLM/已有值。
+        if crossref_meta:
+            _cr_backfilled: list[str] = []
+            _cr_map = (
+                ("doi", "doi"),
+                ("title_en", "title"),
+                ("authors", "authors"),
+                ("journal", "journal"),
+                ("abstract", "abstract"),
+            )
+            for _lit_field, _src_key in _cr_map:
+                _cv = crossref_meta.get(_src_key)
+                if _cv and not getattr(literature, _lit_field, None):
+                    setattr(literature, _lit_field, str(_cv).strip())
+                    _cr_backfilled.append(_lit_field)
+            _cy = crossref_meta.get("year")
+            if _cy and not literature.pub_year:
+                try:
+                    literature.pub_year = int(str(_cy).strip())
+                    _cr_backfilled.append("pub_year")
+                except (TypeError, ValueError):
+                    pass
+            if _cr_backfilled:
+                logger.info(
+                    f"[MetadataSync] 文献 {literature_id} Crossref(DOI) 回填: "
+                    f"{', '.join(_cr_backfilled)}"
+                )
+
+        # 7b. 从所有提取数据点中聚合（作为 article 元数据的兜底）
         if extract_results and all_data_points:
             first = extract_results[0]
             if first.get("authors") and not literature.authors:
@@ -945,6 +1068,7 @@ async def _process_literature_async(
                 llm_cost_usd=usage_summary.get("estimated_cost_usd", 0),
                 llm_call_count=usage_summary.get("total_call_count", 0),
                 llm_usage_detail=usage_summary.get("models"),
+                duration_seconds=_llm_seconds,
             )
             db.add(history)
         except Exception as e:
@@ -983,6 +1107,7 @@ async def _process_literature_async(
                     "extract_results": extract_results,
                     "titer_tables": titer_tables,
                     "usage_summary": usage_summary,
+                    "article_meta": article_meta,
                 })
                 logger.info(f"提取结果已写入缓存（文献 {literature_id}）")
             except Exception as e:
@@ -1029,7 +1154,13 @@ def process_literature(
                 literature_id, model, model_config_id, clear_existing_data, use_cache
             )
         )
-        logger.info(f"文献 {literature_id} 提取完成，数据点: {result['extracted_count']}")
+        # 正常完成路径返回带 extracted_count；竞态保护/被取代等跳过路径仅返回 status，此处安全取值，避免 KeyError
+        if result.get("status") == "skipped_race":
+            logger.info(f"文献 {literature_id} 提取跳过（竞态保护），未执行")
+        elif result.get("status") == "superseded":
+            logger.info(f"文献 {literature_id} 提取被新任务取代，跳过")
+        else:
+            logger.info(f"文献 {literature_id} 提取完成，数据点: {result.get('extracted_count', 0)}")
         return result
 
     except Exception as e:
@@ -1044,11 +1175,12 @@ def process_literature(
         _fail_generation = _hb_entry.get("generation")
         _stop_heartbeat_for(literature_id)
 
-        # 连接类错误：保持 processing 状态快速重试（15s/30s/45s），
-        # 只有重试耗尽时才标记 failed，避免瞬时网络故障直接把文献判死。
-        is_conn = err_type == "connection_error"
+        # 连接类错误（含本地 Ollama 连不上 ollama_unreachable）：保持 processing 状态快速重试
+        # （15s/30s/45s）。重试耗尽后不再永久判死，而是回退到 pending，待模型服务恢复后
+        # 由后续批量提取自动续跑，避免"端点短暂不可用"就整库被批量打为 failed。
+        is_conn = err_type in ("connection_error", "ollama_unreachable")
 
-        # 更新状态为 failed（连接类错误在最后一次重试耗尽时才标记）
+        # 更新状态为 failed（连接类错误在最后一次重试耗尽时不走此分支，见 _reopen_pending）
         async def _mark_failed():
             async with async_session() as db:
                 stmt = (
@@ -1071,6 +1203,11 @@ def process_literature(
                     return
                 lit_id, lit_model = row[0], row[1]
                 # 写入失败历史记录（错误信息带类型前缀，便于前端/日志诊断）
+                _fail_elapsed = (
+                    time.perf_counter() - _run_clock_start
+                    if _run_clock_start is not None
+                    else 0.0
+                )
                 try:
                     history = ExtractionHistory(
                         literature_id=lit_id,
@@ -1078,19 +1215,44 @@ def process_literature(
                         status="failed",
                         data_point_count=0,
                         error_message=f"[{err_type}] {err['message'][:2000]}",
+                        duration_seconds=_fail_elapsed,
                     )
                     db.add(history)
                 except Exception as he:
                     logger.warning(f"写入失败历史记录出错: {he}")
                 await db.commit()
 
-        if not is_conn or self.request.retries >= self.max_retries:
-            try:
-                run_async(_mark_failed())
-            except Exception:
-                pass
+        # 连接类错误重试耗尽：回退到 pending（不判死、不写 failed 历史），
+        # 使该文献在模型服务恢复后可被重新提取。
+        async def _reopen_pending():
+            async with async_session() as db:
+                stmt = (
+                    update(Literature)
+                    .where(Literature.id == literature_id)
+                    .where(Literature.extraction_status == "processing")
+                )
+                if _fail_generation is not None:
+                    stmt = stmt.where(Literature.extraction_generation == _fail_generation)
+                result = await stmt.values(
+                    extraction_status="pending",
+                    extraction_started_at=None,
+                    worker_heartbeat=None,
+                    llm_model_used=None,
+                ).returning(Literature.id)
+                if result.first() is not None:
+                    logger.warning(
+                        f"文献 {literature_id} 连接类错误重试已耗尽，回退 pending（待模型服务恢复后续跑），"
+                        f"err=[{err_type}] {err['message'][:300]}"
+                    )
 
         if is_conn:
+            if self.request.retries >= self.max_retries:
+                # 重试耗尽：回退 pending，结束本次任务（不 raise retry）
+                try:
+                    run_async(_reopen_pending())
+                except Exception:
+                    pass
+                return
             # 连接类错误：短退避快速重试（避免 60s/120s/240s 的长时间空等）
             retry_in = 15 * (self.request.retries + 1)
             logger.warning(
@@ -1099,6 +1261,10 @@ def process_literature(
             )
             raise self.retry(exc=e, countdown=retry_in)
 
-        # 非连接错误：保留原有 60/120/240s 退避重试
+        # 非连接错误：与原有行为一致——立即标记 failed 后按 60/120/240s 退避重试
+        try:
+            run_async(_mark_failed())
+        except Exception:
+            pass
         retry_in = 60 * (2 ** self.request.retries)
         raise self.retry(exc=e, countdown=retry_in)

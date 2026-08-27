@@ -12,7 +12,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, previewOrphanCleanup, executeOrphanCleanup, OrphanCleanupPreview, OrphanCleanupResult, fixTitles, FixTitlesResult, applyFixTitles, FixTitleApplyItem, aiVerifyTitles, AiVerifyTitlesResult, getExtractionQueueStatus, ExtractionQueueStatus, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult } from '../services/literature';
+import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, resetMyExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, previewOrphanCleanup, executeOrphanCleanup, OrphanCleanupPreview, OrphanCleanupResult, fixTitles, FixTitlesResult, applyFixTitles, FixTitleApplyItem, aiVerifyTitles, AiVerifyTitlesResult, getExtractionQueueStatus, ExtractionQueueStatus, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
@@ -219,6 +219,8 @@ const LiteraturePage: React.FC = () => {
   const [savedDefault, setSavedDefault] = useState<SavedModelConfig | null>(() => loadSavedDefaultModel());
   // 批量提取模式
   const [batchExtractMode, setBatchExtractMode] = useState(false);
+  // 当前用户是否为管理员（登录时已写入 storage）
+  const isAdmin = localStorage.getItem('is_admin') === 'true' || sessionStorage.getItem('is_admin') === 'true';
   // 提取时是否保留已审核数据
   const [clearExistingData, setClearExistingData] = useState(false);
   // 表格多选
@@ -691,9 +693,13 @@ const LiteraturePage: React.FC = () => {
     }
   };
 
-  // 强制终止所有提取任务 + 批量重置卡住的提取状态
+  // 强制终止所有提取任务 + 批量重置卡住的提取状态（仅管理员）
   const [resettingStuck, setResettingStuck] = useState(false);
   const handleResetStuck = async () => {
+    if (!isAdmin) {
+      message.error('无权限：仅管理员可终止所有用户的提取任务');
+      return;
+    }
     setResettingStuck(true);
     try {
       const result = await resetStuckExtractions();
@@ -712,6 +718,26 @@ const LiteraturePage: React.FC = () => {
       message.error('终止提取任务失败，请检查后端服务是否正常');
     } finally {
       setResettingStuck(false);
+    }
+  };
+
+  // 终止「我的」提取：仅重置当前用户自己提交文献的卡住提取任务（所有角色可用）
+  const [resettingMy, setResettingMy] = useState(false);
+  const handleResetMy = async () => {
+    setResettingMy(true);
+    try {
+      const result = await resetMyExtractions();
+      if (result.reset_count > 0) {
+        message.success(`已重置 ${result.reset_count} 篇属于您的文献状态为失败`);
+      } else {
+        message.info('没有属于您的卡住提取任务');
+      }
+      fetchList();
+    } catch (err) {
+      console.error('[Literature] 终止我的提取任务失败:', err);
+      message.error('终止我的提取任务失败，请检查后端服务是否正常');
+    } finally {
+      setResettingMy(false);
     }
   };
 
@@ -738,6 +764,11 @@ const LiteraturePage: React.FC = () => {
   const handleBatchExtract = () => {
     if (selectedRowKeys.length === 0) {
       message.warning('请先选择要重新提取的文献');
+      return;
+    }
+    // 普通用户单次批量提交受上限约束；管理员不受限
+    if (!isAdmin && selectedRowKeys.length > 100) {
+      message.error(`普通用户单次最多提交 100 篇进行 AI 提取，当前选择了 ${selectedRowKeys.length} 篇`);
       return;
     }
     setBatchExtractMode(true);
@@ -1271,11 +1302,22 @@ const LiteraturePage: React.FC = () => {
       onHeaderCell: () => ({ width: colWidths.review_status, onResize: handleColumnResize('review_status') }),
       render: (_: unknown, r: Literature) => {
         const total = r.extracted_count || 0;
-        const approved = r.approved_count || 0;
+        const approved = Math.max(0, r.approved_count || 0);
         if (total === 0) {
           return <Tag color="default">无数据</Tag>;
         }
-        const percent = Math.round((approved / total) * 100);
+        // 提取失败但仍有数据：这些是上次成功提取的历史数据，并非本次失败产出的新数据
+        if (r.extraction_status === 'failed') {
+          return (
+            <Tooltip
+              title={`本次提取失败；当前 ${approved}/${total} 条为上次成功提取的历史数据（非本次失败产物），可正常审核，审核后仍可用于分析`}
+            >
+              <Tag color="orange" style={{ cursor: 'help' }}>提取失败·沿用旧数据</Tag>
+              <span style={{ fontSize: 12, marginLeft: 4 }}>{approved}/{total}</span>
+            </Tooltip>
+          );
+        }
+        const percent = Math.min(100, Math.round((approved / total) * 100));
         if (approved === total) {
           return (
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -1575,20 +1617,32 @@ const LiteraturePage: React.FC = () => {
           </Button>
           <Button icon={<DeleteOutlined />} onClick={() => {
               // 先预览，确认后再执行
-              cleanupEmpty(true).then((result) => {
+              cleanupEmpty(true).then((result: CleanupEmptyResult) => {
                 if (result.preview_count === 0) {
                   message.info('没有需要清理的文献（所有文献均有文档或摘要）');
                   return;
                 }
+                const items = result.items || [];
                 Modal.confirm({
                   title: '确认清理无文档无摘要的文献',
                   content: (
                     <div>
-                      <p>发现 <strong>{result.preview_count}</strong> 篇既无文档文件又无摘要内容的文献。</p>
-                      <p>删除后不可恢复，确定继续？</p>
+                      <p>发现 <strong>{result.preview_count}</strong> 篇既无文档文件又无摘要内容的文献：</p>
+                      <div style={{ maxHeight: 280, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 4, padding: '4px 8px', margin: '8px 0' }}>
+                        {items.map((it) => (
+                          <div key={it.id} style={{ padding: '6px 0', borderBottom: '1px solid #fafafa', fontSize: 13 }}>
+                            <div style={{ wordBreak: 'break-all' }}>{it.title || '(无标题)'}</div>
+                            <div style={{ fontSize: 12, color: '#888' }}>
+                              {it.created_at ? `入库 ${new Date(it.created_at).toLocaleString()}` : ''}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p>删除后不可恢复（进入回收站），确定继续？</p>
                     </div>
                   ),
-                  okText: '确认清理',
+                  width: 560,
+                  okText: `确认清理 ${result.preview_count} 篇`,
                   cancelText: '取消',
                   okButtonProps: { danger: true },
                   onOk: async () => {
@@ -1614,27 +1668,45 @@ const LiteraturePage: React.FC = () => {
                   message.info('没有孤儿文件，pdfs 目录所有文件均有对应数据库记录');
                   return;
                 }
+                const orphanFileList = result.orphan_files || [];
+                const minioProtectedList = result.minio_protected_files || [];
+                function renderFileBox(title: string, fileList: string[]) {
+                  return (
+                    <div>
+                      <p style={{ margin: '6px 0 2px', fontWeight: 600 }}>{title}（{fileList.length}）</p>
+                      <div style={{ maxHeight: 180, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 4, padding: '4px 8px', margin: '2px 0 8px', fontSize: 12, color: '#555' }}>
+                        {fileList.map((f) => (
+                          <div key={f} style={{ wordBreak: 'break-all', padding: '2px 0', borderBottom: '1px solid #fafafa' }}>{f}</div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                }
                 Modal.confirm({
                   title: '确认清理孤儿文件',
                   content: (
                     <div>
-                      <p>扫描 <strong>{result.scanned}</strong> 个文件，发现 <strong>{result.orphan_count}</strong> 个孤儿文件（已不在数据库但仍留在 pdfs 目录中）。</p>
+                      <p>扫描 <strong>{result.scanned}</strong> 个文件，发现 <strong>{result.orphan_count}</strong> 个孤儿文件（已不在数据库但仍留在 pdfs 目录中）。以下为待清理文件清单：</p>
+                      {orphanFileList.length > 0 && renderFileBox('待清理文件', orphanFileList)}
                       {result.cooldown_count ? (
-                        <p style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
-                          另有 <strong>{result.cooldown_count}</strong> 个近期变更文件处于冷静期（7 天内），自动跳过、不会移动。
-                        </p>
+                        <div>
+                          <p style={{ fontSize: 12, color: '#888', margin: '4px 0' }}>另有 <strong>{result.cooldown_count}</strong> 个近期变更文件处于冷静期（7 天内），自动跳过、不会移动。</p>
+                          {renderFileBox('冷静期跳过文件', result.cooldown_files || [])}
+                        </div>
                       ) : null}
                       {result.minio_protected_count ? (
-                        <p style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
-                          另有 <strong>{result.minio_protected_count}</strong> 个文件因 MinIO/文献引用仍在使用被保护，不会移动。
-                        </p>
+                        <div>
+                          <p style={{ fontSize: 12, color: '#888', margin: '4px 0' }}>另有 <strong>{result.minio_protected_count}</strong> 个文件因 MinIO/文献引用仍在使用被保护，不会移动。</p>
+                          {minioProtectedList.length > 0 && renderFileBox('被保护跳过文件', minioProtectedList)}
+                        </div>
                       ) : null}
                       <p style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
                         将移入回收目录（默认保留 30 天后自动删除），可手动还原。
                       </p>
                     </div>
                   ),
-                  okText: '确认清理',
+                  width: 640,
+                  okText: `确认清理 ${result.orphan_count} 个`,
                   cancelText: '取消',
                   onOk: async () => {
                     try {
@@ -1772,15 +1844,34 @@ const LiteraturePage: React.FC = () => {
             </Button>
           </Popconfirm>
           <Popconfirm
-            title="强制终止所有提取任务"
-            description="将强制终止运行中的 AI 提取、清空排队队列，并重置所有提取中文献的状态为失败。确定继续？"
-            onConfirm={handleResetStuck}
-            disabled={resettingStuck}
+            title="终止我的提取任务"
+            description="仅终止您自己提交文献的卡住 AI 提取任务并重置为失败，不影响其他用户的提取。确定继续？"
+            onConfirm={handleResetMy}
+            disabled={resettingMy}
           >
-            <Button icon={<StopOutlined />} loading={resettingStuck} danger>
-              终止所有提取
+            <Button icon={<StopOutlined />} loading={resettingMy}>
+              终止我的提取
             </Button>
           </Popconfirm>
+          {isAdmin ? (
+            <Popconfirm
+              title="强制终止所有提取任务"
+              description="将强制终止运行中的 AI 提取、清空排队队列，并重置所有提取中文献的状态为失败。确定继续？"
+              onConfirm={handleResetStuck}
+              disabled={resettingStuck}
+            >
+              <Button icon={<StopOutlined />} loading={resettingStuck} danger disabled={resettingStuck}>
+                终止所有提取
+              </Button>
+            </Popconfirm>
+          ) : (
+            <Button
+              icon={<StopOutlined />}
+              onClick={() => message.error('无权限：仅管理员可终止所有用户的提取任务')}
+            >
+              终止所有提取
+            </Button>
+          )}
           <Dropdown menu={{
             items: [
               { key: 'all_csv', icon: <FileTextOutlined />, label: '导出全部 CSV（仅文献信息）' },

@@ -54,7 +54,11 @@ site/
 /_*.sh
 /_*.txt
 /_*.ps1
+/_*.png
+/_*.sql
+/_*.cjs
 /_browser_work/
+/_sr_npm/
 /import_*.py
 
 # 临时脚本与调试文件（防止今后再混入版本控制）

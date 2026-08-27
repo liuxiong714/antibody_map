@@ -183,7 +183,8 @@ Invoke-WebRequest -Uri "http://127.0.0.1:8080/api/v1/literatures/<文献ID>/extr
 ### 6.6 OCR 识别出的中文乱码 / 数字错乱
 
 - 扫描件质量低时识别精度有限，属正常现象
-- 可换用标准版语言包（`tessdata` 而非 `tessdata_fast`）提升精度；也可配置百度 OCR 兜底（`.env` 中 `BAIDU_OCR_API_KEY` / `BAIDU_OCR_SECRET_KEY` / `OCR_FALLBACK_TO_BAIDU=True`）
+- 可换用标准版语言包（`tessdata` 而非 `tessdata_fast`）提升精度
+- 注：百度 OCR 兜底的配置开关（`OCR_FALLBACK_TO_BAIDU` / `BAIDU_OCR_API_KEY` / `BAIDU_OCR_SECRET_KEY`）已移除，主解析链路不再通过环境变量启用百度 OCR；如需使用，可在代码中显式调用 `ocr_image(..., fallback_to_baidu=True, baidu_api_key=..., baidu_secret_key=...)`
 
 ---
 

@@ -49,6 +49,11 @@ DATA_DICTIONARY = [
     ("literature_title", "string", "来源文献标题", "已脱敏，不含作者信息"),
     ("literature_year", "integer", "文献发表年份", "如 2021；可能为空"),
     ("literature_journal", "string", "发表期刊", "可能为空"),
+    # P1-3：导出新增作者/DOI/引用列
+    ("literature_authors", "string", "来源文献作者", "多个作者以分号分隔；可能为空"),
+    ("literature_doi", "string", "来源文献 DOI", "如 10.xxxx/xxxx；可能为空"),
+    ("literature_pmid", "string", "来源文献 PubMed ID", "可能为空"),
+    ("literature_citation", "string", "来源文献引用格式（作者. 标题. 期刊. 年份. DOI）", "供外部直接引用"),
 ]
 
 # 导出的 CSV 列顺序（与数据字典对应）
@@ -76,6 +81,27 @@ def _anonymize_id(index: int) -> str:
     return f"dp_{index:04d}"
 
 
+def _build_citation(r: dict) -> str:
+    """P1-3：构建文献引用字符串（作者. 标题. 期刊. 年份. DOI）。"""
+    parts = []
+    authors = (r.get("literature_authors") or "").strip()
+    if authors:
+        parts.append(authors)
+    title = (r.get("literature_title") or "").strip()
+    if title:
+        parts.append(title)
+    journal = (r.get("literature_journal") or "").strip()
+    if journal:
+        parts.append(journal)
+    year = r.get("literature_year")
+    if year:
+        parts.append(str(year))
+    doi = (r.get("literature_doi") or "").strip()
+    if doi:
+        parts.append(f"doi: {doi}")
+    return ". ".join(parts)
+
+
 def _build_data_points_csv(rows: list[dict]) -> str:
     """构建数据点 CSV 字符串（UTF-8 with BOM）"""
     output = io.StringIO()
@@ -83,10 +109,14 @@ def _build_data_points_csv(rows: list[dict]) -> str:
     writer.writerow(EXPORT_COLUMNS)
 
     for idx, r in enumerate(rows, start=1):
-        # 从关联的文献信息中提取标题/年份/期刊
+        # 从关联的文献信息中提取标题/年份/期刊/作者/DOI/PMID/引用
         lit_title = r.get("literature_title") or ""
         lit_year = r.get("literature_year")
         lit_journal = r.get("literature_journal") or ""
+        lit_authors = r.get("literature_authors") or ""
+        lit_doi = r.get("literature_doi") or ""
+        lit_pmid = r.get("literature_pmid") or ""
+        lit_citation = _build_citation(r)
 
         writer.writerow([
             _anonymize_id(idx),
@@ -112,6 +142,10 @@ def _build_data_points_csv(rows: list[dict]) -> str:
             lit_title,
             lit_year,
             lit_journal,
+            lit_authors,
+            lit_doi,
+            lit_pmid,
+            lit_citation,
         ])
 
     return output.getvalue()
