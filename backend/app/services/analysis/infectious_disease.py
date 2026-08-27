@@ -12,7 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
+from app.config import settings
 from app.core.term_normalizer import normalize_disease, normalize_province
+from app.core.uncertainty_quantification import (
+    barrier_probability,
+    fusion_hit,
+    sample_positivity,
+)
 from app.core.methodology import build_methodology_note
 from app.core.stats import (
     geometric_mean_with_ci,
@@ -23,6 +29,14 @@ from app.core.stats import (
     reliability_grade,
     lowess,
     inverse_variance_meta,
+)
+from app.core.immunity_dynamics import (
+    DEFAULT_BIRTH_COHORT_SIZE,
+    DEFAULT_BARRIER_THRESHOLD,
+    DEFAULT_PROJECTION_YEARS,
+    DEFAULT_WANING_RATE,
+    estimate_waning_rate,
+    project_barrier,
 )
 from app.core.stats_engine import (
     gmc_ci,
@@ -213,6 +227,181 @@ async def get_simulation(
         "notes": notes,
     }
 
+
+
+async def get_immunity_projection(
+    db: AsyncSession,
+    disease: str,
+    province: Optional[str] = None,
+    waning_rate: Optional[float] = None,
+    projection_years: int = DEFAULT_PROJECTION_YEARS,
+    birth_cohort_size: float = DEFAULT_BIRTH_COHORT_SIZE,
+    barrier_threshold: float = DEFAULT_BARRIER_THRESHOLD,
+) -> dict:
+    """免疫屏障动态预测（抗体衰减 + 新出生队列驱动）。
+
+    流程：
+      1. 复用 ``_build_base_query`` 查取该省该病种已审核的 seroprevalence 数据点；
+      2. 按年份聚合总体阳性率，调用 ``estimate_waning_rate`` 从多年份数据估计
+         年抗体衰减率（waning_rate）；若年份数不足 2 或估计失败，则回退默认值
+         0.02 并在 ``waning_rate_source`` 标注为默认；
+      3. 取最近一年的年龄-阳性率曲线（按 ``_get_age_group_label`` 聚合、样本量
+         加权），连同估计出的衰减率调用 ``project_barrier`` 得到未来屏障轨迹；
+      4. 计算屏障首次跌破设定安全阈值（默认 0.92）的年份。
+
+    返回
+    ----
+    dict
+        {
+            province, disease, waning_rate, waning_rate_source,
+            projection_years, baseline_year, baseline_barrier,
+            barrier_trajectory, hit_threshold, below_threshold_year, notes
+        }
+        ``barrier_trajectory`` 下标 i 对应 ``baseline_year + i``（i=0 为当前基线）。
+    """
+    notes: list[str] = []
+
+    if waning_rate is not None:
+        _waning_rate = float(waning_rate)
+        _waning_source = "user"
+    else:
+        _waning_rate = None
+        _waning_source = None
+
+    query = _build_base_query(disease, province, None, None, None, None,
+                              data_type="seroprevalence", review_status="approved",
+                              include_subgroups=False)
+    result = await db.execute(query)
+    rows: list[DataPoint] = result.scalars().all()
+    logger.info(
+        f"[ImmunityProjection] 查询: disease={disease}, province={province}, "
+        f"rows={len(rows)}"
+    )
+
+    if not rows:
+        return {
+            "province": province,
+            "disease": disease,
+            "waning_rate": None,
+            "waning_rate_source": "none",
+            "projection_years": projection_years,
+            "baseline_year": None,
+            "baseline_barrier": None,
+            "barrier_trajectory": [],
+            "hit_threshold": barrier_threshold,
+            "below_threshold_year": None,
+            "notes": ["无已审核通过的 seroprevalence 数据，无法进行免疫屏障动态预测"],
+        }
+
+    # 按年份聚合（用于总体阳性率时序 → 估计衰减率）
+    year_groups: dict[int, list[DataPoint]] = {}
+    for r in rows:
+        if r.collection_year is None or r.value is None:
+            continue
+        year_groups.setdefault(r.collection_year, []).append(r)
+
+    observed_by_year: dict[int, float] = {}
+    for year, group in year_groups.items():
+        _wpr = _calc_weighted_positivity(group)
+        if _wpr["weighted_positivity"] is not None:
+            observed_by_year[year] = _wpr["weighted_positivity"]
+
+    if not observed_by_year:
+        return {
+            "province": province,
+            "disease": disease,
+            "waning_rate": None,
+            "waning_rate_source": "none",
+            "projection_years": projection_years,
+            "baseline_year": None,
+            "baseline_barrier": None,
+            "barrier_trajectory": [],
+            "hit_threshold": barrier_threshold,
+            "below_threshold_year": None,
+            "notes": ["无带年份与阳性率的有效数据，无法进行免疫屏障动态预测"],
+        }
+
+    # 估计衰减率（或回退默认）
+    if _waning_rate is None:
+        _waning_rate = estimate_waning_rate(observed_by_year, default=DEFAULT_WANING_RATE)
+        if len(observed_by_year) < 2:
+            _waning_source = "default"
+            notes.append("有效年份数不足 2 个，无法从实测值拟合衰减率，采用默认衰减率 0.02")
+        else:
+            _waning_source = "estimated"
+    logger.info(
+        f"[ImmunityProjection] waning_rate={_waning_rate}, source={_waning_source}, "
+        f"observed_years={sorted(observed_by_year.keys())}"
+    )
+
+    # 最近一年的年龄-阳性率曲线（样本量加权聚合到标准年龄组）
+    baseline_year = max(observed_by_year.keys())
+    latest_rows = [r for r in year_groups.get(baseline_year, []) if r.value is not None]
+    age_buckets: dict[str, dict] = {}
+    for r in latest_rows:
+        label = _get_age_group_label(r.age_min, r.age_max) or "其他"
+        bucket = age_buckets.setdefault(label, {"sp_sum": 0.0, "sample_sum": 0})
+        sp = float(r.value)
+        ss = r.sample_size or 0
+        if ss > 0:
+            bucket["sp_sum"] += sp * ss
+            bucket["sample_sum"] += ss
+    age_seropositivity: dict[str, float] = {}
+    for label, bucket in age_buckets.items():
+        if bucket["sample_sum"] > 0:
+            age_seropositivity[label] = round(
+                bucket["sp_sum"] / bucket["sample_sum"], 4
+            )
+
+    if not age_seropositivity:
+        return {
+            "province": province,
+            "disease": disease,
+            "waning_rate": _waning_rate,
+            "waning_rate_source": _waning_source,
+            "projection_years": projection_years,
+            "baseline_year": baseline_year,
+            "baseline_barrier": None,
+            "barrier_trajectory": [],
+            "hit_threshold": barrier_threshold,
+            "below_threshold_year": None,
+            "notes": ["最近年份无有效年龄-阳性率数据，无法投影屏障轨迹"],
+        }
+
+    trajectory = project_barrier(
+        age_seropositivity,
+        waning_rate=_waning_rate,
+        years=projection_years,
+        birth_cohort_size=birth_cohort_size,
+    )
+    baseline_barrier = trajectory[0] if trajectory else None
+
+    # 首次跌破阈值的年份（trajectory[0] 为基线年，从未来年 i>=1 开始判定）
+    threshold = max(0.0, min(1.0, float(barrier_threshold)))
+    below_offset: Optional[int] = None
+    for i, val in enumerate(trajectory[1:], start=1):
+        if val < threshold:
+            below_offset = i
+            break
+    below_threshold_year = (
+        baseline_year + below_offset
+        if below_offset is not None and baseline_year is not None
+        else None
+    )
+
+    return {
+        "province": province,
+        "disease": disease,
+        "waning_rate": round(_waning_rate, 4),
+        "waning_rate_source": _waning_source,
+        "projection_years": projection_years,
+        "baseline_year": baseline_year,
+        "baseline_barrier": baseline_barrier,
+        "barrier_trajectory": trajectory,
+        "hit_threshold": threshold,
+        "below_threshold_year": below_threshold_year,
+        "notes": notes,
+    }
 
 
 
@@ -533,6 +722,122 @@ async def get_immune_barrier_assessment(
     }
 
 
+
+
+async def get_barrier_probability(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+    n_samples: Optional[int] = None,
+) -> dict:
+    """免疫屏障评估的不确定性量化：输出达标概率替代二元结论。
+
+    1. 查该省该病种已审核的 seroprevalence 数据点（含 sample_size、value、ci）；
+    2. 用每个数据点的样本量与阳性率构造 Beta 分布，Monte Carlo 采样 n_samples 次；
+    3. 每次采样按样本量加权汇成"加权总阳性率"，与各 HIT 候选阈值
+       （FOI 估计 / WHO 硬编码 / 文献 R0，优先级 FOI > WHO > 文献 R0）比较，
+       统计超过阈值的采样占比 → 达标概率 pass_probability；
+    4. 依据 pass_probability 给出建议：<0.5 补种，0.5~0.8 监测，>0.8 达标。
+    """
+    empty = {
+        "province": province,
+        "disease": disease,
+        "n_data_points": 0,
+        "total_samples": 0,
+        "pass_probability": None,
+        "primary_threshold_source": None,
+        "recommended_action": "证据不足",
+        "hit_thresholds": {"foi": None, "who": None, "r0_lit": None},
+        "weighted_mean": None,
+        "weighted_ci": None,
+        "fusion_hit": None,
+        "sampling": {"n_samples": n_samples or settings.IMMUNITY_MC_SAMPLES, "n_groups": 0},
+        "notes": ["无已审核通过的血清阳性率数据，无法进行不确定性量化"],
+    }
+
+    dis_key = normalize_disease(disease) if disease else (disease or None)
+    query = _build_base_query(disease, province, None, None, None, None,
+                              data_type="seroprevalence", review_status="approved",
+                              include_subgroups=False)
+    rows = (await db.execute(query)).scalars().all()
+    sp_rows = [r for r in rows if r.value is not None and (r.sample_size or 0) > 0]
+    if not sp_rows:
+        logger.warning(f"[BarrierProb] 无有效数据: disease={disease}, province={province}")
+        return empty
+
+    # ---- 1) HIT 多来源候选值（proportion 0-1）----
+    catalytic_records = _build_catalytic_records(rows)
+    catalytic_result = fit_catalytic_models(catalytic_records)
+    r0_hit_info = _catalytic_r0_hit(catalytic_result, dis_key)
+    foi_hit = (
+        _calc_hit_from_r0(r0_hit_info["r0_to_hit"])
+        if r0_hit_info["r0_to_hit"] is not None
+        else None
+    )
+    who_threshold = WHO_THRESHOLDS.get(dis_key) if dis_key else None
+    literature_hit = r0_hit_info["literature_hit"]
+    hit_prop = {
+        "foi": foi_hit / 100.0 if foi_hit is not None else None,
+        "who": who_threshold / 100.0 if who_threshold is not None else None,
+        "r0_lit": literature_hit / 100.0 if literature_hit is not None else None,
+    }
+    thresholds = {k: v for k, v in hit_prop.items() if v is not None}
+    if not thresholds:
+        return {
+            **empty,
+            "notes": ["无法估计任何 HIT 候选阈值（无 FOI 数据且无 WHO/文献阈值）"],
+        }
+
+    # ---- 2) Monte Carlo 采样 ----
+    n_samples = n_samples or settings.IMMUNITY_MC_SAMPLES
+    sampled = sample_positivity(sp_rows, n_samples=n_samples)
+    weights = [float(r.sample_size) for r in sp_rows]
+
+    result = barrier_probability(sampled, thresholds, weights=weights)
+    primary = result["primary_threshold"]
+
+    # ---- 3) 建议动作：<0.5 补种，0.5~0.8 监测，>0.8 达标 ----
+    pp = result["pass_probability"]
+    if pp is None:
+        recommended_action = "证据不足"
+    elif pp < 0.5:
+        recommended_action = "补种"
+    elif pp < 0.8:  # 0.5 <= pp < 0.8
+        recommended_action = "监测"
+    else:
+        recommended_action = "达标"
+
+    fusion = fusion_hit(thresholds)
+
+    total_samples = sum(r.sample_size or 0 for r in sp_rows)
+    return {
+        "province": normalize_province(province) if province else None,
+        "disease": dis_key,
+        "n_data_points": len(sp_rows),
+        "total_samples": total_samples,
+        "pass_probability": pp,
+        "primary_threshold_source": primary,
+        "per_threshold": result.get("thresholds_used", {}),
+        "recommended_action": recommended_action,
+        "hit_thresholds": {
+            "foi": (hit_prop["foi"] * 100.0) if hit_prop["foi"] is not None else None,
+            "who": (hit_prop["who"] * 100.0) if hit_prop["who"] is not None else None,
+            "r0_lit": (hit_prop["r0_lit"] * 100.0) if hit_prop["r0_lit"] is not None else None,
+        },
+        "weighted_mean": (result["weighted_mean"] * 100.0) if result["weighted_mean"] is not None else None,
+        "weighted_ci": (
+            [result["weighted_ci"][0] * 100.0, result["weighted_ci"][1] * 100.0]
+            if result.get("weighted_ci") else None
+        ),
+        "fusion_hit": {
+            "mean": fusion[0] * 100.0 if fusion[0] is not None else None,
+            "ci_low": fusion[1] * 100.0 if fusion[1] is not None else None,
+            "ci_high": fusion[2] * 100.0 if fusion[2] is not None else None,
+        },
+        "sampling": {"n_samples": n_samples, "n_groups": len(sp_rows)},
+        "action_rule": "pass_probability < 0.5 → 补种；0.5~0.8 → 监测；>0.8 → 达标",
+        "notes": [],
+    }
 
 
 async def get_foi_analysis(
@@ -1152,5 +1457,83 @@ async def get_vaccine_analysis(
         "province_coverage_matrix": province_coverage_matrix,
         "notes": notes,
     }
+
+
+async def get_effective_barrier(
+    db: AsyncSession,
+    disease: Optional[str] = None,
+    province: Optional[str] = None,
+) -> dict:
+    """有效免疫屏障：用年龄接触矩阵对人群阳性率加权。
+
+    查该省该病种「最近一年」的已审核 seroprevalence 数据点，按接触矩阵
+    年龄组（effective_immunity.map_age_to_group）聚合成各年龄组阳性率
+    （复用现有样本量加权聚合口径），再调用 effective_barrier 计算传播权重
+    加权的有效免疫屏障、各组权重/缺口，并定位最薄弱年龄组。
+    """
+    from app.core.effective_immunity import (
+        AGE_GROUPS_CONTACT,
+        effective_barrier,
+        load_contact_matrix,
+        map_age_to_group,
+    )
+
+    empty = {
+        "disease": disease,
+        "province": province,
+        "effective_barrier": None,
+        "group_weights": {},
+        "group_gaps": [],
+        "weakest_groups": [],
+        "age_group_positivity": {},
+        "note": "无已审核通过的血清阳性率数据，无法计算有效免疫屏障",
+    }
+
+    query = _build_base_query(
+        disease, province, None, None, None, None,
+        data_type="seroprevalence", review_status="approved",
+        include_subgroups=False,
+    )
+    result = await db.execute(query)
+    rows = result.scalars().all()
+    if not rows:
+        return empty
+
+    # 锁定「最近一年」：取全部数据点的最大调查年份
+    years = [r.collection_year for r in rows if r.collection_year is not None]
+    if not years:
+        return {**empty, "note": "数据点缺少调查年份，无法锁定最近一年"}
+    latest_year = max(years)
+    latest_rows = [r for r in rows if r.collection_year == latest_year]
+
+    # 按接触矩阵年龄组聚合各年龄组阳性率（样本量加权，复用现有聚合口径）
+    buckets: dict[str, dict] = {
+        g: {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0} for g in AGE_GROUPS_CONTACT
+    }
+    for r in latest_rows:
+        if r.value is None:
+            continue
+        label = map_age_to_group(r.age_min, r.age_max)
+        if label is None:
+            continue
+        sp = float(r.value)
+        ss = r.sample_size or 0
+        if ss > 0:
+            buckets[label]["sp_sum"] += sp * ss
+            buckets[label]["sample_sum"] += ss
+        buckets[label]["dp_count"] += 1
+
+    age_group_positivity = {
+        label: round(b["sp_sum"] / b["sample_sum"], 2)
+        for label, b in buckets.items() if b["sample_sum"] > 0
+    }
+
+    result_data = effective_barrier(age_group_positivity, load_contact_matrix())
+    result_data["disease"] = disease
+    result_data["province"] = province
+    result_data["latest_year"] = latest_year
+    result_data["age_group_positivity"] = age_group_positivity
+    result_data["note"] = "接触矩阵数值为占位，需替换为中国社会接触调查实测值"
+    return result_data
 
 

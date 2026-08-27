@@ -1,5 +1,22 @@
 # 变更日志
 
+## v1.20.0 (2026-08-27)
+
+### 新增
+
+- **免疫屏障不确定性量化（达标概率）**：新增端点 `GET /api/v1/analysis/barrier-probability`，把数据点的置信区间误差经 Monte Carlo 采样传播到 HIT 判断，输出「达标概率」替代「达标 / 不达标」二元结论。对每个已审核血清学数据点，用其样本量与阳性率构造 Beta 分布采样 `IMMUNITY_MC_SAMPLES`（默认 1000）次，每次采样按样本量加权汇成加权总阳性率，与各 HIT 候选阈值（优先级 FOI > WHO > 文献 R0）比较，统计超过阈值的采样占比即达标概率；并按 `pass_probability` 给出建议动作（`<0.5` 补种、`0.5~0.8` 监测、`>0.8` 达标）。仅在 `backend/app/core/uncertainty_quantification.py` 用 numpy 实现，未引入重型贝叶斯库、未改动 `binomial_ci`。
+
+#### 修改文件
+
+| 文件 | 变更说明 |
+|------|----------|
+| `backend/app/core/uncertainty_quantification.py` | 新增：`sample_positivity` / `barrier_probability` / `fusion_hit` |
+| `backend/app/services/analysis/infectious_disease.py` | 新增服务函数 `get_barrier_probability` |
+| `backend/app/services/analysis/__init__.py` | 导出 `get_barrier_probability` |
+| `backend/app/api/v1/analysis.py` | 新增端点 `GET /analysis/barrier-probability` |
+| `backend/app/config.py` | 新增 `IMMUNITY_MC_SAMPLES`；版本号 1.19.2 → 1.20.0 |
+| `docs/barrier-probability_test_report.md` | 新增端点端到端验证测试报告 |
+
 ## v1.19.2 (2026-08-25)
 
 ### 修复

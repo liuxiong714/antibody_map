@@ -140,6 +140,9 @@ class Settings(BaseSettings):
     # 累计样本量少于该值同样标记"证据不足"
     MIN_SAMPLE_FOR_META: int = 30
 
+    # 免疫屏障不确定性量化（Monte Carlo）采样次数，越大结果越稳但越慢
+    IMMUNITY_MC_SAMPLES: int = 1000
+
     # Database (默认值适用于 Docker Compose 本地开发环境)
     DATABASE_URL: str = "postgresql+asyncpg://antibody:antibody123@localhost:5432/antibody_map"
 
@@ -161,9 +164,6 @@ class Settings(BaseSettings):
     CELERY_QUEUES: str = "celery"
 
     # OCR
-    BAIDU_OCR_API_KEY: str = ""
-    BAIDU_OCR_SECRET_KEY: str = ""
-    OCR_FALLBACK_TO_BAIDU: bool = False
     # Tesseract 可执行文件路径（默认自动探测：PATH 或 Windows 常见安装位置）
     TESSERACT_CMD: str = ""
     # Tesseract 语言数据目录（tessdata），默认取可执行文件同目录下的 tessdata
@@ -174,7 +174,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "production"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.19.2"
+    APP_VERSION: str = "1.20.0"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
     # 提取状态卡死阈值（分钟）：processing/queued 超过此时间未变，列表查询时自动重置为 failed

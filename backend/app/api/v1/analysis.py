@@ -535,6 +535,73 @@ async def get_immune_barrier(
     ))
 
 
+@router.get("/analysis/immunity-projection", response_model=ApiResponse, summary="免疫屏障动态预测", description="基于抗体衰减 + 新出生队列，预测某省某病种未来若干年的有效免疫屏障轨迹，并给出屏障首次跌破安全阈值（默认0.92）的年份。")
+@with_snapshot("immunity_projection", filter_keys=("disease", "province"))
+async def get_immunity_projection(
+    disease: str = Query(..., description="疾病筛选（必填）"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    waning_rate: Optional[float] = Query(None, ge=0, le=0.5, description="每年抗体转阴比例（0~0.5，留空则从多年份实测数据自动估计）"),
+    projection_years: int = Query(10, ge=1, le=50, description="预测年数（默认10）"),
+    birth_cohort_size: float = Query(0.012, ge=0, le=0.5, description="每年新出生零保护人口占比（默认0.012）"),
+    barrier_threshold: float = Query(0.92, gt=0, le=1, description="屏障安全阈值（默认0.92，跌破则预警）"),
+    db: AsyncSession = Depends(get_db),
+):
+    """免疫屏障动态预测（抗体衰减 + 新出生队列）"""
+    data = await analysis_service.get_immunity_projection(
+        db=db,
+        disease=disease,
+        province=province,
+        waning_rate=waning_rate,
+        projection_years=projection_years,
+        birth_cohort_size=birth_cohort_size,
+        barrier_threshold=barrier_threshold,
+    )
+    return ApiResponse(data=_attach_methodology_note(
+        data, "immunity_projection",
+        {"disease": disease, "province": province, "waning_rate": waning_rate,
+         "projection_years": projection_years, "birth_cohort_size": birth_cohort_size,
+         "barrier_threshold": barrier_threshold},
+    ))
+
+
+@router.get("/analysis/effective-barrier", response_model=ApiResponse, summary="有效免疫屏障", description="用年龄接触矩阵（社会接触调查）对人群阳性率加权计算有效免疫屏障，量化各年龄组传播权重与缺口，定位最薄弱年龄组。替代仅看总阳性率的粗糙评估")
+@with_snapshot("effective_barrier", filter_keys=("disease", "province"))
+async def get_effective_barrier(
+    disease: Optional[str] = Query(None, description="疾病筛选"),
+    province: Optional[str] = Query(None, description="省份筛选"),
+    db: AsyncSession = Depends(get_db),
+):
+    """有效免疫屏障（接触矩阵加权）"""
+    data = await analysis_service.get_effective_barrier(
+        db=db,
+        disease=disease,
+        province=province,
+    )
+    return ApiResponse(data=_attach_methodology_note(
+        data, "effective_barrier",
+        {"disease": disease, "province": province},
+    ))
+
+
+@router.get("/analysis/barrier-probability", response_model=ApiResponse, summary="免疫屏障达标概率评估", description="把数据点的置信区间误差经 Monte Carlo 传播到 HIT，输出达标概率（替代达标/不达标二元结论）。传入 disease、province 必填。")
+@with_snapshot("barrier_probability", filter_keys=("disease", "province"),
+               data_type_override="seroprevalence")
+async def get_barrier_probability(
+    disease: str = Query(..., description="疾病筛选（必填）"),
+    province: str = Query(..., description="省份筛选（必填）"),
+    db: AsyncSession = Depends(get_db),
+):
+    """免疫屏障不确定性量化：达标概率 + 建议动作。"""
+    data = await analysis_service.get_barrier_probability(
+        db=db,
+        disease=disease,
+        province=province,
+    )
+    return ApiResponse(data=_attach_methodology_note(
+        data, "barrier_probability", {"disease": disease, "province": province},
+    ))
+
+
 @router.get("/analysis/approved-data-points", response_model=ApiResponse, summary="获取审核通过的数据点", description="分页获取所有审核通过的数据点，用于数据分析模块，支持多维度筛选和排序")
 @with_snapshot("approved_data_points")
 async def get_approved_data_points(

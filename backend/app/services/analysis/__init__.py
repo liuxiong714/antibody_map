@@ -36,8 +36,11 @@ from app.services.analysis.meta import (  # noqa: E402,F401
 from app.services.analysis.infectious_disease import (  # noqa: E402,F401
     get_simulation,
     get_immune_barrier_assessment,
+    get_barrier_probability,
+    get_immunity_projection,
     get_foi_analysis,
     get_vaccine_analysis,
+    get_effective_barrier,
 )
 from app.services.analysis.spatial import (  # noqa: E402,F401
     get_spatial_hotspots,
@@ -74,8 +77,11 @@ __all__ = [
     "get_assay_heterogeneity",
     "get_simulation",
     "get_immune_barrier_assessment",
+    "get_barrier_probability",
+    "get_immunity_projection",
     "get_foi_analysis",
     "get_vaccine_analysis",
+    "get_effective_barrier",
     "get_spatial_hotspots",
     "get_equity_analysis",
     "get_quality_assessment",
