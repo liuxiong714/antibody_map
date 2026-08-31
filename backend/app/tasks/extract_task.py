@@ -580,10 +580,17 @@ async def _process_literature_async(
         async def _stop_heartbeat():
             _heartbeat_registry.pop(str(literature_id), None)
             _hb_stop.set()
+            # F14-修复：心跳循环可能因与主写库事务竞争同一文献行锁而被阻塞，
+            # 无限 await 会让主事务 idle 超 120s 被服务端断开（connection is closed）。
+            # 改为有限等待 + 取消兜底，保证写库流程绝不被心跳拖死。
             try:
-                await _hb_task
-            except _asyncio.CancelledError:
-                pass
+                await _asyncio.wait_for(_hb_task, timeout=10)
+            except (_asyncio.TimeoutError, _asyncio.CancelledError):
+                _hb_task.cancel()
+                try:
+                    await _hb_task
+                except (_asyncio.CancelledError, Exception):
+                    pass
 
         logger.info(
             f"开始处理文献 {literature_id}: title={literature.title}, "
@@ -835,6 +842,11 @@ async def _process_literature_async(
             all_data_points = _deduped
 
         # ---- 以下为写库事务（短窗口，纯 DB 操作，事务很快结束）----
+
+        # F14-修复：写库事务开始前停止心跳循环，避免心跳 UPDATE 与事务内
+        # _cas UPDATE 竞争同一文献行锁形成自锁死锁（主事务 idle 超 120s 被
+        # 服务端断开，导致 commit 报 connection is closed）。
+        await _stop_heartbeat()
 
         # F13：幂等写库 CAS 门。清旧点/写新点前核对提取代数与状态——
         # 若提取期间被超时回收重置、或被更新任务重新触发（generation 变化），
@@ -1089,7 +1101,6 @@ async def _process_literature_async(
                 updated_at=datetime.now(timezone.utc),
             )
         )
-        await _stop_heartbeat()
         if _cas.rowcount == 0:
             await db.rollback()
             logger.warning(
@@ -1099,6 +1110,29 @@ async def _process_literature_async(
             return {"literature_id": str(literature_id), "status": "superseded", "data_point_count": 0}
 
         await db.commit()
+
+        # 9. KG 知识图谱抽取（独立于主提取流程，失败不影响任何已有功能）
+        if not cache_hit and getattr(settings, "ENABLE_KG_EXTRACTION", False):
+            try:
+                from app.services.kg_llm_integration import run_kg_extraction
+                from app.models.base import async_session as _kg_session_factory
+
+                async with _kg_session_factory() as _kg_db:
+                    _kg_written = await run_kg_extraction(
+                        db=_kg_db,
+                        text=clean_text,
+                        literature_id=literature_id,
+                        title=literature.title or "",
+                        journal=literature.journal or "",
+                        pub_year=literature.pub_year,
+                        model=effective_model,
+                        api_key=resolved_api_key,
+                        base_url=resolved_base_url,
+                    )
+                    if _kg_written:
+                        logger.info(f"KG 抽取写入 {_kg_written} 条三元组（文献 {literature_id}）")
+            except Exception as _kg_e:
+                logger.error(f"KG 抽取整体失败（不影响主提取）: {_kg_e}")
 
         # 8c. 提取成功后写入缓存（失败不缓存；命中时无需重写）
         if not cache_hit and cache_key:

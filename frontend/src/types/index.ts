@@ -1111,3 +1111,110 @@ export interface TiterTableListData {
   total: number;
 }
 
+// ===== 知识图谱 =====
+
+/** 实体类型（与后端 app/ontology.py EntityType 保持一致） */
+export type KgEntityType =
+  | 'survey'
+  | 'pathogen'
+  | 'geo_area'
+  | 'time_period'
+  | 'host_group'
+  | 'lab_assay'
+  | 'indicator'
+  | 'institution'
+  | 'author'
+  | 'sample'
+  | 'vaccine'
+  | 'data_quality'
+  | 'publication';
+
+/** 关系类型（与后端 app/ontology.py RelationType 保持一致） */
+export type KgRelationType =
+  | 'surveyed_at'
+  | 'covered_time'
+  | 'targets_host'
+  | 'detects_pathogen'
+  | 'uses_assay'
+  | 'reports_indicator'
+  | 'conducted_by'
+  | 'authored_by'
+  | 'affiliated_with'
+  | 'has_sample'
+  | 'vaccinated_with'
+  | 'has_quality'
+  | 'contains_survey'
+  | 'same_cohort'
+  | 'adjusted_for'
+  | 'higher_than'
+  | 'belongs_to'
+  | 'influences';
+
+export interface KgNode {
+  id: string;
+  type: KgEntityType;
+  label: string;
+  survey_count: number;
+  props: Record<string, unknown>;
+}
+
+export interface KgEdge {
+  id: string;
+  source: string;
+  target: string;
+  type: KgRelationType;
+  label: string;
+  props?: Record<string, unknown>;
+}
+
+export interface KgGraphData {
+  survey_count: number;
+  nodes: KgNode[];
+  edges: KgEdge[];
+  trimmed_nodes: number;
+}
+
+export interface KgOverviewData {
+  survey_count: number;
+  entity_counts: Record<string, number>;
+  relation_counts: Record<string, number>;
+}
+
+export interface KgOptionsData {
+  diseases: string[];
+  provinces: string[];
+  years: number[];
+  populations: string[];
+  methods: string[];
+  data_types: string[];
+}
+
+export interface KgSearchResult {
+  id: string;
+  entity_type: string;
+  name: string;
+  attributes: Record<string, unknown>;
+  triple_count: number;
+  source?: string;
+}
+
+export interface KgPathStep {
+  id: string;
+  predicate: string | null;
+  name?: string;
+  entity_type?: string;
+}
+
+export interface KgPathResult {
+  found: boolean;
+  path: KgPathStep[];
+  depth: number;
+}
+
+export interface KgStatsData {
+  total_entities: number;
+  total_triples: number;
+  entity_counts: Record<string, number>;
+  relation_counts: Record<string, number>;
+}
+

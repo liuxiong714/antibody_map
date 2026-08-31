@@ -15,6 +15,7 @@ from app.api.v1.model_config import router as model_config_router
 from app.api.v1.pubmed import router as pubmed_router
 from app.api.v1.tag import router as tag_router
 from app.api.v1.system import router as system_router
+from app.api.v1.knowledge_graph import router as knowledge_graph_router
 
 router = APIRouter()
 
@@ -41,4 +42,5 @@ _protected.include_router(model_config_router, tags=["models"])
 _protected.include_router(pubmed_router, tags=["pubmed"])
 _protected.include_router(tag_router, tags=["tags"])
 _protected.include_router(system_router, tags=["system"])
+_protected.include_router(knowledge_graph_router)
 router.include_router(_protected)

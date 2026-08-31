@@ -11,7 +11,7 @@
 import * as echarts from 'echarts/core';
 
 // 图表系列（series）
-import { LineChart, BarChart, ScatterChart, MapChart, BoxplotChart, HeatmapChart, RadarChart, CustomChart } from 'echarts/charts';
+import { LineChart, BarChart, ScatterChart, MapChart, BoxplotChart, HeatmapChart, RadarChart, CustomChart, GraphChart } from 'echarts/charts';
 
 // 组件
 import {
@@ -45,6 +45,7 @@ echarts.use([
   HeatmapChart,
   RadarChart,
   CustomChart,
+  GraphChart,
   // 组件
   TitleComponent,
   TooltipComponent,

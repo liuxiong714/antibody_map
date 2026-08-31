@@ -18,6 +18,7 @@ import {
   DownOutlined,
   LockOutlined,
   SettingOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons';
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import ThemeSwitcher from '../components/ThemeSwitcher';
@@ -68,6 +69,7 @@ const MainLayout: React.FC = () => {
     { key: '/report', icon: <FileTextOutlined />, label: t('nav.report') },
     { key: '/folders', icon: <FolderOpenOutlined />, label: t('nav.folders') },
     { key: '/pubmed', icon: <SearchOutlined />, label: t('nav.pubmed') },
+    { key: '/knowledge-graph', icon: <ApartmentOutlined />, label: t('nav.knowledgeGraph') },
   ];
 
   const menuItems = isAdmin

@@ -100,7 +100,7 @@ def _run_ocr_gather(page_images: list[bytes]) -> Optional[str]:
     except RuntimeError:
         return asyncio.run(_run())
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, _run).result()
+        return pool.submit(asyncio.run, _run()).result()
 
 
 def _extract_with_mineru(file_bytes: bytes) -> Optional[str]:

@@ -19,6 +19,7 @@ const Analysis = React.lazy(() => import('./pages/Analysis'));
 const Report = React.lazy(() => import('./pages/Report'));
 const FolderMonitor = React.lazy(() => import('./pages/FolderMonitor'));
 const PubmedSearch = React.lazy(() => import('./pages/PubmedSearch'));
+const KnowledgeGraph = React.lazy(() => import('./pages/KnowledgeGraph'));
 const UserManagement = React.lazy(() => import('./pages/UserManagement'));
 const Settings = React.lazy(() => import('./pages/Settings'));
 
@@ -82,6 +83,7 @@ const App: React.FC = () => {
               <Route path="/report" element={<PageBoundary><Report /></PageBoundary>} />
               <Route path="/folders" element={<PageBoundary><FolderMonitor /></PageBoundary>} />
               <Route path="/pubmed" element={<PageBoundary><PubmedSearch /></PageBoundary>} />
+              <Route path="/knowledge-graph" element={<PageBoundary><KnowledgeGraph /></PageBoundary>} />
               <Route path="/users" element={<PageBoundary><UserManagement /></PageBoundary>} />
               <Route path="/settings" element={<PageBoundary><Settings /></PageBoundary>} />
               <Route path="*" element={<PageBoundary><NotFound /></PageBoundary>} />

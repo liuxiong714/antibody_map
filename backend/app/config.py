@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     # 遇到文件尾部损坏时自动用 PyMuPDF 修复后再提取，失败回退现有解析链
     ENABLE_PDF_INSPECTOR: bool = True
 
+    # ===== 知识图谱配置 =====
+    # KG 抽取开关：开启后文献提取成功时自动抽取三元组写入 kg_entity/kg_triple 表
+    ENABLE_KG_EXTRACTION: bool = False
+
     # ===== 孤儿文件清理配置 =====
     # 是否启用后台定时清理（backend/data/pdfs 中已不在数据库的残留文件）
     ORPHAN_CLEANUP_ENABLED: bool = True

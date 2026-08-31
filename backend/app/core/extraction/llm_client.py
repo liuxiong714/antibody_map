@@ -154,6 +154,21 @@ def _classify_llm_error(exc: Exception) -> dict:
             "errno 101",
             "errno 110",
             "proxyerror",
+            # F14-2：asyncpg/SQLAlchemy 数据库连接断开（写库阶段连接被服务端/池回收关闭）。
+            # 属瞬时基础设施故障，应按 connection_error 处理（快速重试 + 重试耗尽回退 pending），
+            # 而非落入 "other" 被判死为 failed。沿异常链收集的 full 文本会包含根因类名
+            # InterfaceError 与消息 "cannot call Transaction.commit(): the underlying connection is closed"。
+            "connection is closed",
+            "connection is not open",
+            "cannot call transaction",
+            "the underlying connection",
+            "server closed the connection",
+            "connection has been terminated",
+            "connectionpool",
+            "interfaceerror",
+            "lost connection",
+            "broken pipe",
+            "terminating connection",
         )
     ):
         # 本地 Ollama（端口 11434）连不上时打独立错误码 ollama_unreachable，
