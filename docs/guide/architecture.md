@@ -47,9 +47,16 @@ antibody_map/
 │   │   │   ├── reference_data/     # 常量表（标准人口、邻接矩阵等）
 │   │   │   └── ...                 # 其他核心模块
 │   │   ├── models/                 # SQLAlchemy ORM 模型
+│   │   │   ├── kg_entity.py        # 知识图谱实体表
+│   │   │   ├── kg_triple.py        # 知识图谱三元组表
+│   │   │   └── ...
+│   │   ├── ontology.py             # 知识图谱本体定义（13 种实体 + 18 种关系）
 │   │   ├── services/               # 业务逻辑层
 │   │   │   ├── analysis/           # 分析服务模块包
 │   │   │   ├── literature/         # 文献服务模块包（导入导出/查重/清理/元数据）
+│   │   │   ├── knowledge_graph_service.py  # 知识图谱服务（计算式推导 + 图谱查询）
+│   │   │   ├── kg_entity_resolver.py       # 实体消歧服务
+│   │   │   ├── kg_llm_integration.py       # LLM 三元组抽取集成
 │   │   │   └── ...
 │   │   ├── schemas/                # Pydantic 数据模型
 │   │   └── tasks/                  # Celery 异步任务
@@ -106,6 +113,9 @@ FOI 感染力分析 + VE 疫苗效果分析
     │
     ▼
 LLM 生成免疫学报告 + 疫苗接种策略报告
+    │
+    ▼
+知识图谱（计算式推导 + LLM 三元组抽取 → 力导向图可视化）
 ```
 
 ## 数据库模型

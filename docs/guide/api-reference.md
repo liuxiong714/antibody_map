@@ -156,6 +156,18 @@ LLM 生成免疫学报告 + 疫苗接种策略报告
 | GET | `/map/summary` | 全国汇总统计 |
 | GET | `/map/yearly-data` | 逐年数据 |
 
+### 知识图谱
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/kg/overview` | 知识图谱概览（实体/关系总数） |
+| GET | `/kg/options` | 筛选选项（疾病/省份/数据类型/年份） |
+| GET | `/kg/graph` | 图谱数据（节点+边，支持筛选） |
+| GET | `/kg/entities/search` | 实体搜索（关键词+类型过滤） |
+| GET | `/kg/query/path` | 路径推理（起点→终点，最大深度 3 跳） |
+| GET | `/kg/stats` | 实体类型统计分布 |
+| POST | `/kg/batch` | 批量触发 LLM 三元组抽取 |
+
 ### 数据分析
 
 | 方法 | 路径 | 说明 |

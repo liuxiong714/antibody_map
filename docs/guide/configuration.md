@@ -41,6 +41,8 @@
 | `ORPHAN_TRASH_RETENTION_DAYS` | 回收目录保留天数 | `30` |
 | `EXTRACTION_CACHE_ENABLED` | 提取结果缓存 | `true` |
 | `EXTRACTION_CACHE_TTL_HOURS` | 缓存 TTL（小时） | `168` |
+| `ENABLE_KG_EXTRACTION` | 启用知识图谱 LLM 三元组抽取 | `false` |
+| `EXTRACTION_STALE_MINUTES` | 提取状态卡死回收阈值（分钟） | `30` |
 | `APP_ENV` | 运行环境 | `development` |
 
 ## 本地 Ollama 模型配置
