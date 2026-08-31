@@ -66,10 +66,10 @@ const MainLayout: React.FC = () => {
     { key: '/analysis', icon: <BarChartOutlined />, label: t('nav.analysis') },
     { key: '/assessment', icon: <SafetyOutlined />, label: t('nav.assessment') },
     { key: '/antigenic-map', icon: <RadarChartOutlined />, label: t('nav.antigenicMap') },
+    { key: '/knowledge-graph', icon: <ApartmentOutlined />, label: t('nav.knowledgeGraph') },
     { key: '/report', icon: <FileTextOutlined />, label: t('nav.report') },
     { key: '/folders', icon: <FolderOpenOutlined />, label: t('nav.folders') },
     { key: '/pubmed', icon: <SearchOutlined />, label: t('nav.pubmed') },
-    { key: '/knowledge-graph', icon: <ApartmentOutlined />, label: t('nav.knowledgeGraph') },
   ];
 
   const menuItems = isAdmin
