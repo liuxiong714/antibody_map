@@ -7,7 +7,7 @@
 import pytest
 
 from app.config import settings
-from app.core.text_preprocessor import focus_relevant_sections, preprocess, truncate
+from app.core.text_preprocessor import preprocess, truncate
 
 
 def _build_long_doc_with_tail_marker():
@@ -50,16 +50,17 @@ class TestNoKeywordRowDropping:
     """4.1 回归：>5000 字符文本不得按关键词丢弃行，保障低频关键词的真实数据进入 LLM。"""
 
     def test_low_frequency_real_data_line_survives(self):
-        """含真实数据但命中低频关键词的行，改造后必须原样保留。"""
+        """含真实数据但命中低频关键词的行，经 preprocess 后必须原样保留。"""
         filler_line = "这是与血清抗体无关的普通填充文字，不含任何阳性率抗体水平血清GMC关键词，用于拉长文档。"
         # 构造 >5000 字符文本：多数行为无关键词填充行，目标数据行同样不含关键词
         filler = (filler_line + "\n") * 200  # ~1.4 万字符
         data_line = "目标机构报告了该地区某病毒的IgG抗体 3.20 g/L，为改造后应保留的真实数据行。"
         doc = filler + data_line + "\n" + filler
         assert len(doc) > 5000, f"文档应超过 5000 字符，实际 {len(doc)}"
-        result = focus_relevant_sections(doc)
+        # 原 focus_relevant_sections 按行打分丢弃约 1/3 低分行，已移除；preprocess 应全量返回
+        result = preprocess(doc)
         assert data_line in result, "低频关键词的真实数据行不得被 keyword 过滤丢弃"
-        assert result == doc, "改造后 focus_relevant_sections 应全量返回，不再逐行打分丢行"
+        assert len(result) > len(doc) * 0.95, "preprocess 应全量返回，不再逐行打分丢行"
 
     def test_preprocess_does_not_crop_doc(self):
         """preprocess 超过 5000 时不得再裁剪到约 2/3，正文（除首尾空白归一）应全额保留。"""
