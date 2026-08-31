@@ -61,6 +61,9 @@ site/
 /_sr_npm/
 /import_*.py
 
+# backend 下划线前缀临时调试脚本
+backend/_*.py
+
 # 临时脚本与调试文件（防止今后再混入版本控制）
 # 根目录/backend scripts 目录下的临时脚本
 scripts/*.sh
