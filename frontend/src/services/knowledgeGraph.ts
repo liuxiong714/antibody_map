@@ -70,3 +70,12 @@ export async function getKgStats() {
     CACHE_STATIC,
   );
 }
+
+export async function triggerKgExtraction(limit = 5) {
+  const { data } = await api.post<{ processed: number; total_written: number; remaining: number; errors: string[] }>(
+    '/kg/extraction/trigger',
+    null,
+    { params: { limit } },
+  );
+  return data;
+}

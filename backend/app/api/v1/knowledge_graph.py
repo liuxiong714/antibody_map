@@ -1,18 +1,23 @@
+import asyncio
 import logging
 import uuid
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import get_db, get_current_user
+from app.config import settings
 from app.models.kg_entity import KGEntity
 from app.models.kg_triple import KGTriple
+from app.models.literature import Literature
 from app.schemas.common import ApiResponse
 from app.schemas.kg_schemas import KGBatchRequest
 from app.services import knowledge_graph_service as kg
 from app.services.kg_entity_resolver import persist_triples
+from app.services.kg_llm_integration import run_kg_extraction
 
 router = APIRouter(prefix="/kg", tags=["knowledge_graph"])
 logger = logging.getLogger("kg")
@@ -279,4 +284,85 @@ async def stats(db: AsyncSession = Depends(get_db)):
         "total_triples": total_triples,
         "entity_counts": entity_counts,
         "relation_counts": relation_counts,
+    })
+
+
+@router.post("/extraction/trigger", response_model=ApiResponse, summary="手动触发三元组抽取")
+async def trigger_kg_extraction(
+    limit: int = Query(5, ge=1, le=50, description="本次处理篇数"),
+    db: AsyncSession = Depends(get_db),
+):
+    """手动触发 LLM 三元组抽取。
+
+    从缓存文本中筛选未处理文献，串行执行抽取，每篇超时 300 秒。
+    需要提前在 .env 中配置 ENABLE_KG_EXTRACTION=true。
+    """
+    if not getattr(settings, "ENABLE_KG_EXTRACTION", False):
+        raise HTTPException(status_code=400, detail="ENABLE_KG_EXTRACTION 未开启，请在 .env 中配置后重启容器")
+
+    text_dir = Path("/app/backend/data/pdfs")
+    if not text_dir.exists():
+        raise HTTPException(status_code=500, detail="缓存文本目录 /app/backend/data/pdfs 不存在")
+
+    # 已抽取的文献 ID
+    done_stmt = select(KGEntity.source_literature_id).where(KGEntity.source_literature_id.isnot(None))
+    done_result = await db.execute(done_stmt)
+    already = {str(r) for r in done_result.scalars().all()}
+
+    txt_ids = [p.stem for p in text_dir.glob("*.txt")]
+    todo = [i for i in txt_ids if i not in already]
+
+    if not todo:
+        return ApiResponse(data={
+            "processed": 0, "total_written": 0, "remaining": 0,
+            "message": "所有文献已抽取完毕，无需处理",
+        })
+
+    chunk = todo[:limit]
+    processed = 0
+    total_written = 0
+    errors = []
+
+    for lit_id in chunk:
+        txt_path = text_dir / f"{lit_id}.txt"
+        clean_text = txt_path.read_text(encoding="utf-8")
+        if len(clean_text) < 100:
+            logger.debug(f"文献 {lit_id} 文本过短，跳过")
+            continue
+
+        row = await db.execute(
+            select(Literature.title, Literature.journal, Literature.pub_year)
+            .where(Literature.id == lit_id)
+        )
+        title, journal, pub_year = row.first() or (None, None, None)
+
+        try:
+            written = await asyncio.wait_for(
+                run_kg_extraction(
+                    db=db,
+                    text=clean_text,
+                    literature_id=lit_id,
+                    title=title or "",
+                    journal=journal or "",
+                    pub_year=pub_year,
+                    model=settings.LLM_MODEL,
+                    api_key="",
+                    base_url=settings.LLM_BASE_URL,
+                ),
+                timeout=300,
+            )
+            total_written += written
+            processed += 1
+        except asyncio.TimeoutError:
+            errors.append(f"{lit_id}: 超时")
+            logger.warning(f"文献 {lit_id} 抽取超时（300s）")
+        except Exception as e:
+            errors.append(f"{lit_id}: {type(e).__name__}")
+            logger.error(f"文献 {lit_id} 抽取失败", exc_info=True)
+
+    return ApiResponse(data={
+        "processed": processed,
+        "total_written": total_written,
+        "remaining": len(todo) - len(chunk),
+        "errors": errors,
     })

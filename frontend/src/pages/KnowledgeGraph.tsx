@@ -5,15 +5,16 @@ import {
 } from 'antd';
 import {
   ReloadOutlined, ApartmentOutlined, SearchOutlined, NodeIndexOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import EChart from '../components/EChart';
 import {
   getKgOverview, getKgOptions, getKgGraph,
-  searchKgEntities, queryKgPath,
+  searchKgEntities, queryKgPath, getKgStats, triggerKgExtraction,
 } from '../services/knowledgeGraph';
 import type {
   KgGraphData, KgNode, KgOverviewData, KgOptionsData,
-  KgSearchResult, KgPathResult,
+  KgSearchResult, KgPathResult, KgStatsData,
 } from '../types';
 
 const { Text, Link: TextLink } = Typography;
@@ -80,6 +81,11 @@ const KnowledgeGraph: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [detailNode, setDetailNode] = useState<KgNode | null>(null);
 
+  // 持久化统计 + 抽取
+  const [kgStats, setKgStats] = useState<KgStatsData | null>(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractResult, setExtractResult] = useState<{ processed: number; total_written: number; remaining: number; errors: string[] } | null>(null);
+
   // 搜索面板状态
   const [searchQ, setSearchQ] = useState('');
   const [searchType, setSearchType] = useState<string | undefined>(undefined);
@@ -92,10 +98,11 @@ const KnowledgeGraph: React.FC = () => {
   const [pathResult, setPathResult] = useState<KgPathResult | null>(null);
   const [pathLoading, setPathLoading] = useState(false);
 
-  // 加载筛选选项 + 概览
+  // 加载筛选选项 + 概览 + 持久化统计
   useEffect(() => {
     getKgOptions().then(setOptions).catch(() => message.error('加载筛选选项失败'));
     getKgOverview().then(setOverview).catch(() => message.error('加载图谱概览失败'));
+    getKgStats().then(setKgStats).catch(() => message.error('加载持久化统计失败'));
   }, []);
 
   // 筛选条件变化时重新构建图谱
@@ -133,6 +140,27 @@ const KnowledgeGraph: React.FC = () => {
     setYearStart(undefined);
     setYearEnd(undefined);
     setMaxNodes(600);
+  };
+
+  // 手动触发三元组抽取
+  const handleExtract = async () => {
+    setExtracting(true);
+    setExtractResult(null);
+    try {
+      const result = await triggerKgExtraction(5);
+      setExtractResult(result);
+      if (result.processed > 0) {
+        message.success(`抽取完成：处理 ${result.processed} 篇，写入 ${result.total_written} 条三元组`);
+        // 刷新统计
+        getKgStats().then(setKgStats).catch(() => {});
+      } else {
+        message.info(result.errors?.length ? '抽取全部失败' : '无待处理文献');
+      }
+    } catch {
+      message.error('触发抽取失败，请检查后端 ENABLE_KG_EXTRACTION 配置');
+    } finally {
+      setExtracting(false);
+    }
   };
 
   // 搜索实体
@@ -430,6 +458,47 @@ const KnowledgeGraph: React.FC = () => {
                   )}
                 </Card>
               </Spin>
+
+              {/* 持久化统计 + 手动抽取 */}
+              <Card style={{ marginTop: 16 }}>
+                <Row gutter={16} align="middle">
+                  <Col span={6}>
+                    <Statistic title="持久化实体" value={kgStats?.total_entities ?? 0} />
+                  </Col>
+                  <Col span={6}>
+                    <Statistic title="持久化三元组" value={kgStats?.total_triples ?? 0} />
+                  </Col>
+                  <Col span={6}>
+                    <Statistic title="抽取后剩余" value={extractResult?.remaining ?? '-'} />
+                  </Col>
+                  <Col span={6}>
+                    <Button
+                      type="primary"
+                      icon={<ThunderboltOutlined />}
+                      onClick={handleExtract}
+                      loading={extracting}
+                      size="large"
+                      block
+                    >
+                      {extracting ? '抽取中（每篇约 2 分钟）...' : '手动三元组抽取'}
+                    </Button>
+                  </Col>
+                </Row>
+                {extractResult && (
+                  <Alert
+                    style={{ marginTop: 12 }}
+                    type={extractResult.errors?.length ? 'warning' : 'success'}
+                    showIcon
+                    message={`处理 ${extractResult.processed} 篇，写入 ${extractResult.total_written} 条三元组，剩余 ${extractResult.remaining} 篇未处理`}
+                    description={extractResult.errors?.length ? `错误：${extractResult.errors.join('；')}` : undefined}
+                    closable
+                    onClose={() => setExtractResult(null)}
+                  />
+                )}
+                {!kgStats && (
+                  <Alert style={{ marginTop: 12 }} type="info" showIcon message="持久化统计来自 LLM 抽取写入的实体和三元组，计算式推导的维度实体不计入" />
+                )}
+              </Card>
             </>
           ),
         },
