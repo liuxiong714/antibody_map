@@ -136,6 +136,62 @@ async def list_literatures(
     )
 
 
+# ===== 回收站（必须放在 /literatures/{literature_id} 之前，避免 "trash" 被匹配为 literature_id）=====
+
+
+@router.get("/literatures/trash", response_model=ApiResponse, summary="回收站列表", description="列出回收站中的文献（已软删除的），支持分页和关键词搜索")
+async def list_trash(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    keyword: str | None = Query(None, description="关键词搜索标题/作者/期刊"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    items, total = await list_trash_literatures(db, page=page, page_size=page_size, keyword=keyword)
+    data = [LiteratureResponse.model_validate(item).model_dump() for item in items]
+    return ApiResponse(data=PagedResponse(items=data, total=total, page=page, page_size=page_size))
+
+
+@router.post("/literatures/trash/{literature_id}/restore", response_model=ApiResponse, summary="还原文献", description="从回收站还原文献")
+async def restore(
+    literature_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    success = await restore_literature(db, literature_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="文献不在回收站中")
+    return ApiResponse(message="还原成功")
+
+
+@router.delete("/literatures/trash/{literature_id}", response_model=ApiResponse, summary="永久删除文献", description="从回收站中永久删除单篇文献（含文件，不可恢复）")
+async def permanent_delete(
+    literature_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    success = await permanently_delete_literature(db, literature_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="文献不在回收站中")
+    return ApiResponse(message="已永久删除")
+
+
+@router.post("/literatures/trash/empty", response_model=ApiResponse, summary="清空回收站", description="永久删除回收站中超过30天的文献（含文件）；指定 older_than_days=0 永久删除回收站中所有文献")
+async def empty_trash_endpoint(
+    older_than_days: int = Query(30, ge=0, description="删除超过此天数的文献，0=全部"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    if older_than_days == 0:
+        result = await permanently_delete_all_trash(db)
+        return ApiResponse(message=f"已永久删除回收站中所有 {result['permanently_deleted']} 篇文献", data=result)
+    result = await empty_trash(db, older_than_days=older_than_days)
+    return ApiResponse(
+        message=f"已永久删除 {result['permanently_deleted']} 篇超过 {older_than_days} 天的文献，回收站剩余 {result['remaining']} 篇",
+        data=result,
+    )
+
+
 @router.get("/literatures/{literature_id}", response_model=ApiResponse, summary="获取文献详情", description="根据文献ID获取单篇文献的详细信息")
 async def get_one(
     literature_id: uuid.UUID,
@@ -209,62 +265,6 @@ async def batch_delete(
             )
     deleted = await batch_delete_literatures(db, req.literature_ids, deleted_by=current_user.id)
     return ApiResponse(message=f"成功将 {deleted} 篇文献移入回收站")
-
-
-# ===== 回收站（必须放在 /literatures/{literature_id} 之前，避免 "trash" 被匹配为 literature_id）=====
-
-
-@router.get("/literatures/trash", response_model=ApiResponse, summary="回收站列表", description="列出回收站中的文献（已软删除的），支持分页和关键词搜索")
-async def list_trash(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    keyword: str | None = Query(None, description="关键词搜索标题/作者/期刊"),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
-    items, total = await list_trash_literatures(db, page=page, page_size=page_size, keyword=keyword)
-    data = [LiteratureResponse.model_validate(item).model_dump() for item in items]
-    return ApiResponse(data=PagedResponse(items=data, total=total, page=page, page_size=page_size))
-
-
-@router.post("/literatures/trash/{literature_id}/restore", response_model=ApiResponse, summary="还原文献", description="从回收站还原文献")
-async def restore(
-    literature_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
-    success = await restore_literature(db, literature_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="文献不在回收站中")
-    return ApiResponse(message="还原成功")
-
-
-@router.delete("/literatures/trash/{literature_id}", response_model=ApiResponse, summary="永久删除文献", description="从回收站中永久删除单篇文献（含文件，不可恢复）")
-async def permanent_delete(
-    literature_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
-    success = await permanently_delete_literature(db, literature_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="文献不在回收站中")
-    return ApiResponse(message="已永久删除")
-
-
-@router.post("/literatures/trash/empty", response_model=ApiResponse, summary="清空回收站", description="永久删除回收站中超过30天的文献（含文件）；指定 older_than_days=0 永久删除回收站中所有文献")
-async def empty_trash_endpoint(
-    older_than_days: int = Query(30, ge=0, description="删除超过此天数的文献，0=全部"),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
-    if older_than_days == 0:
-        result = await permanently_delete_all_trash(db)
-        return ApiResponse(message=f"已永久删除回收站中所有 {result['permanently_deleted']} 篇文献", data=result)
-    result = await empty_trash(db, older_than_days=older_than_days)
-    return ApiResponse(
-        message=f"已永久删除 {result['permanently_deleted']} 篇超过 {older_than_days} 天的文献，回收站剩余 {result['remaining']} 篇",
-        data=result,
-    )
 
 
 # ===== 导入日志 =====
