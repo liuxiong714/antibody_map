@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
-from sqlalchemy import ForeignKey, Integer, String, DateTime, CheckConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,19 +23,19 @@ class TiterTable(Base):
     # 检测类型：hi=血凝抑制, vnt=病毒中和, elisa=酶联免疫吸附
     assay_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     # 参考抗血清名称列表（JSON 数组）
-    ref_antisera: Mapped[Optional[list[Any]]] = mapped_column(JSON, comment="抗血清名称列表")
+    ref_antisera: Mapped[list[Any] | None] = mapped_column(JSON, comment="抗血清名称列表")
     # 抗原名称列表（JSON 数组）
-    antigens: Mapped[Optional[list[Any]]] = mapped_column(JSON, comment="抗原名称列表")
+    antigens: Mapped[list[Any] | None] = mapped_column(JSON, comment="抗原名称列表")
     # 滴度矩阵：二维数组，行为抗原、列为抗血清（JSON）
-    titers: Mapped[Optional[list[Any]]] = mapped_column(JSON, comment="滴度矩阵（行=抗原，列=抗血清）")
+    titers: Mapped[list[Any] | None] = mapped_column(JSON, comment="滴度矩阵（行=抗原，列=抗血清）")
     # 滴度单位（如 1:10, 1:100, IU/ml）
-    unit: Mapped[Optional[str]] = mapped_column(String(50))
+    unit: Mapped[str | None] = mapped_column(String(50))
     # 质量评分（0-100），由 LLM 提取置信度或人工审核后赋值
-    quality_score: Mapped[Optional[int]] = mapped_column(Integer)
+    quality_score: Mapped[int | None] = mapped_column(Integer)
     # 来源页码
-    source_page: Mapped[Optional[int]]
+    source_page: Mapped[int | None]
     # 原文片段
-    source_context: Mapped[Optional[str]] = mapped_column(String(500))
+    source_context: Mapped[str | None] = mapped_column(String(500))
     # LLM 提取置信度
     confidence: Mapped[str] = mapped_column(String(10), default="medium")
     # 人工审核状态：pending / approved / rejected

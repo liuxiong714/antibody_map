@@ -1,55 +1,48 @@
+import contextlib
 import csv
 import io
 import json
 import os
 import re
+import subprocess  # 打开宿主机文件夹使用
 import sys
 import uuid
-import subprocess  # 打开宿主机文件夹使用
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
 
-from sqlalchemy import and_, case, select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.literature import Literature
-from app.models.data_point import DataPoint
-from app.models.literature_file_history import LiteratureFileHistory
-from app.schemas.literature import LiteratureCreate
 from app.config import settings
 from app.core.document_parser import get_mime_type
-from app.core.minio_client import upload_file, delete_file
-from app.services.reference_parser import parse_references
+from app.core.minio_client import upload_file
+from app.models.data_point import DataPoint
+from app.models.literature import Literature
+from app.schemas.literature import LiteratureCreate
 from app.services.literature._common import (
-    logger,
     LOCAL_STORAGE_DIR,
-    _is_safe_local_path,
-    compute_pdf_hash,
     _clean_filename_title,
     _find_existing_by_title,
-    _read_literature_file_bytes,
-    normalize_title,
-    _first_author_surname,
-    _title_similarity,
+    compute_pdf_hash,
+    logger,
 )
 from app.services.literature.crud import (
-    get_literature,
     create_literature,
-    log_file_action,
+    get_literature,
     list_literature,
 )
+from app.services.reference_parser import parse_references
 
 
 async def upload_literature(
     db: AsyncSession,
     file_bytes: bytes,
     filename: str,
-    title: Optional[str] = None,
-    doi: Optional[str] = None,
-    province: Optional[str] = None,
-    owner_id: Optional[uuid.UUID] = None,
-) -> tuple[Optional[Literature], str]:
+    title: str | None = None,
+    doi: str | None = None,
+    province: str | None = None,
+    owner_id: uuid.UUID | None = None,
+) -> tuple[Literature | None, str]:
     """上传/导入文献文件。
 
     返回值: (Literature 对象 or None, 状态标记)
@@ -136,9 +129,9 @@ async def _save_and_associate(
     file_bytes: bytes,
     filename: str,
     ext: str,
-    doi: Optional[str] = None,
-    province: Optional[str] = None,
-    clean_title: Optional[str] = None,
+    doi: str | None = None,
+    province: str | None = None,
+    clean_title: str | None = None,
 ) -> Literature:
     """保存文件并关联到已有文献（仅替换文件，不新建记录）。"""
     # 保存文件
@@ -182,10 +175,8 @@ async def _save_and_associate(
         logger.info(f"[upload_literature] 文献文件关联更新成功: id={literature.id}, title={literature.title}, path={stored_path}")
     except Exception as e:
         logger.error(f"[upload_literature] 关联文件数据库提交失败: id={literature.id}, error={e}", exc_info=True)
-        try:
+        with contextlib.suppress(Exception):
             os.remove(local_path)
-        except Exception:
-            pass
     return literature
 
 
@@ -194,7 +185,7 @@ async def upload_literature_file(
     literature_id: uuid.UUID,
     file_bytes: bytes,
     filename: str,
-) -> Optional[Literature]:
+) -> Literature | None:
     """为已有文献关联上传文件（替换原有文件）。"""
     logger.info(f"[upload_literature_file] 开始: literature_id={literature_id}, filename={filename}, size={len(file_bytes)} bytes")
 
@@ -248,10 +239,8 @@ async def upload_literature_file(
         logger.info(f"[upload_literature_file] 文献文件关联成功: id={literature.id}, path={stored_path}")
     except Exception as e:
         logger.error(f"[upload_literature_file] 数据库提交失败: id={literature_id}, error={e}", exc_info=True)
-        try:
+        with contextlib.suppress(Exception):
             os.remove(local_path)
-        except Exception:
-            pass
         return None
     return literature
 
@@ -335,7 +324,6 @@ async def import_references_from_text(
         raise ValueError("未解析到有效题录（支持 RIS / EndNote / PubMed / WoS / 读秀超星 格式）")
 
     # 分批选择要处理的记录：indices 优先；其次 start/limit 连续切片
-    total = len(refs)
     if indices is not None:
         picked = [(i, refs[i]) for i in sorted(set(indices)) if 0 <= i < len(refs)]
     else:
@@ -419,8 +407,8 @@ async def _batch_import_files_core(
     db: AsyncSession,
     entries: list[dict],
     trigger_extraction_after: bool = True,
-    max_size_bytes: Optional[int] = None,
-    owner_id: Optional[uuid.UUID] = None,
+    max_size_bytes: int | None = None,
+    owner_id: uuid.UUID | None = None,
 ) -> dict:
     """通用批量导入核心：遍历 entries 调用 upload_literature 自动匹配/新建。
 
@@ -518,7 +506,7 @@ async def batch_import_files_from_folder(
     db: AsyncSession,
     folder_path: str,
     trigger_extraction_after: bool = True,
-    owner_id: Optional[uuid.UUID] = None,
+    owner_id: uuid.UUID | None = None,
 ) -> dict:
     """从服务器本地文件夹批量导入文件。
 
@@ -551,7 +539,7 @@ async def batch_import_uploaded_files(
     db: AsyncSession,
     files: list,
     trigger_extraction_after: bool = True,
-    owner_id: Optional[uuid.UUID] = None,
+    owner_id: uuid.UUID | None = None,
 ) -> dict:
     """从浏览器上传的文件批量导入（与文件夹导入共用核心逻辑，但文件来自上传）。
 
@@ -605,9 +593,9 @@ async def import_literatures_from_json(
     try:
         data = json.loads(content.decode("utf-8"))
     except json.JSONDecodeError as e:
-        raise ValueError(f"JSON 解析失败: {e}")
+        raise ValueError(f"JSON 解析失败: {e}") from e
     except Exception as e:
-        raise ValueError(f"文件读取失败: {e}")
+        raise ValueError(f"文件读取失败: {e}") from e
 
     literatures = data.get("literatures", [])
     if not literatures:
@@ -754,15 +742,15 @@ async def build_literatures_export(
     db: AsyncSession,
     format: str,
     include_data_points: bool,
-    keyword: Optional[str] = None,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    journal: Optional[str] = None,
-    review_status: Optional[str] = None,
-    file_format: Optional[str] = None,
-    literature_ids: Optional[str] = None,
+    keyword: str | None = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    journal: str | None = None,
+    review_status: str | None = None,
+    file_format: str | None = None,
+    literature_ids: str | None = None,
 ) -> dict:
     """导出文献列表（CSV / Excel / JSON），返回字节内容与响应元信息。
 
@@ -1006,7 +994,7 @@ def reveal_in_host_file_manager(resolved: str, folder: str) -> None:
                 logger.info(f"[打开文件夹] root用户，使用runuser({username})调用")
             else:
                 cmd = ["explorer.exe", f"/select,{win_path}"]
-                logger.info(f"[打开文件夹] 非root用户，直接调用explorer.exe")
+                logger.info("[打开文件夹] 非root用户，直接调用explorer.exe")
             try:
                 env = os.environ.copy()
                 if interop_socket:

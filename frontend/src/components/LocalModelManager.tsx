@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Modal, Table, Button, Form, Input, Space, message, Popconfirm, Tooltip, Tag } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, DesktopOutlined } from '@ant-design/icons';
 import { listLocalModels, createLocalModel, updateLocalModel, deleteLocalModel } from '../services/map';
@@ -17,6 +17,36 @@ const LocalModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
   const [form] = Form.useForm();
   const [formVisible, setFormVisible] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // 拖动弹窗支持：记录拖拽起始信息与两个弹窗各自的位移
+  const dragRef = useRef<{ startX: number; startY: number; dx: number; dy: number; key: 'manager' | 'form' } | null>(null);
+  const posRef = useRef<{ manager: { x: number; y: number }; form: { x: number; y: number } }>({
+    manager: { x: 0, y: 0 },
+    form: { x: 0, y: 0 },
+  });
+  const [, forceRender] = useState(0);
+
+  const beginDrag = (key: 'manager' | 'form', e: React.MouseEvent<HTMLElement>) => {
+    if (e.button !== 0) return; // 仅左键拖拽
+    const p = posRef.current[key];
+    dragRef.current = { startX: e.clientX, startY: e.clientY, dx: p.x, dy: p.y, key };
+    const onMove = (ev: MouseEvent) => {
+      const dr = dragRef.current;
+      if (!dr) return;
+      posRef.current[dr.key] = {
+        x: ev.clientX - dr.startX + dr.dx,
+        y: ev.clientY - dr.startY + dr.dy,
+      };
+      forceRender(i => i + 1);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      dragRef.current = null;
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
 
   const fetchConfigs = async () => {
     setLoading(true);
@@ -79,6 +109,12 @@ const LocalModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
     { title: '状态', dataIndex: 'is_active', key: 'active', width: 80,
       render: (v: boolean) => v ? <Tag color="green">启用</Tag> : <Tag>禁用</Tag>,
     },
+    { title: '已下载', dataIndex: 'installed', key: 'installed', width: 90,
+      render: (v: boolean | null | undefined) =>
+        v === null || v === undefined ? <Tag color="orange">未知</Tag>
+          : v ? <Tag color="green">已下载</Tag>
+          : <Tag color="red">未下载</Tag>,
+    },
     { title: '操作', key: 'action', width: 120,
       render: (_: unknown, record: LocalModelConfig) => (
         <Space>
@@ -94,10 +130,23 @@ const LocalModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
   return (
     <>
       <Modal
-        title={<><DesktopOutlined /> 本地模型管理</>}
+        title={
+          <div
+            style={{ cursor: 'move', userSelect: 'none', display: 'inline-block' }}
+            onMouseDown={e => beginDrag('manager', e)}
+          >
+            <DesktopOutlined /> 本地模型管理
+          </div>
+        }
         open={visible}
         onCancel={onClose}
         width={860}
+        zIndex={1000}
+        modalRender={node => (
+          <div style={{ transform: `translate(${posRef.current.manager.x}px, ${posRef.current.manager.y}px)` }}>
+            {node}
+          </div>
+        )}
         footer={<Button onClick={onClose}>关闭</Button>}
       >
         <div style={{ marginBottom: 12 }}>
@@ -108,9 +157,22 @@ const LocalModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
       </Modal>
 
       <Modal
-        title={editing ? '编辑本地模型' : '添加本地模型'}
+        title={
+          <div
+            style={{ cursor: 'move', userSelect: 'none', display: 'inline-block' }}
+            onMouseDown={e => beginDrag('form', e)}
+          >
+            {editing ? '编辑本地模型' : '添加本地模型'}
+          </div>
+        }
         open={formVisible}
         forceRender
+        zIndex={1100}
+        modalRender={node => (
+          <div style={{ transform: `translate(${posRef.current.form.x}px, ${posRef.current.form.y}px)` }}>
+            {node}
+          </div>
+        )}
         onCancel={() => setFormVisible(false)}
         onOk={handleSave}
         confirmLoading={saving}

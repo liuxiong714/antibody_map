@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Dict, Optional
 
 import numpy as np
 
@@ -34,7 +33,7 @@ DEFAULT_PROJECTION_YEARS = 10      # 默认预测年数
 DEFAULT_BARRIER_THRESHOLD = 0.92   # 默认屏障安全阈值（92% 有效免疫）
 
 
-def _as_fraction(value: Optional[float]) -> Optional[float]:
+def _as_fraction(value: float | None) -> float | None:
     """把阳性率统一为 0~1 的比例。
 
     项目内 ``DataPoint.value``（seroprevalence）通常以百分数（0~100）存储，
@@ -50,7 +49,7 @@ def _as_fraction(value: Optional[float]) -> Optional[float]:
 
 
 def project_barrier(
-    age_seropositivity: Dict[str, float],
+    age_seropositivity: dict[str, float],
     waning_rate: float = DEFAULT_WANING_RATE,
     years: int = DEFAULT_PROJECTION_YEARS,
     birth_cohort_size: float = DEFAULT_BIRTH_COHORT_SIZE,
@@ -113,7 +112,7 @@ def project_barrier(
 
 
 def estimate_waning_rate(
-    observed_by_year: Dict[int, float],
+    observed_by_year: dict[int, float],
     default: float = DEFAULT_WANING_RATE,
 ) -> float:
     """用多年份总体阳性率实测值拟合年抗体衰减率。

@@ -1,6 +1,5 @@
 import io
 import logging
-from typing import Optional
 
 from minio import Minio
 from minio.error import S3Error
@@ -9,10 +8,10 @@ from app.config import settings
 
 logger = logging.getLogger("uvicorn")
 
-_minio_client: Optional[Minio] = None
+_minio_client: Minio | None = None
 
 
-def get_minio_client() -> Optional[Minio]:
+def get_minio_client() -> Minio | None:
     global _minio_client
     if _minio_client is not None:
         return _minio_client
@@ -45,7 +44,7 @@ def get_minio_client() -> Optional[Minio]:
     return _minio_client
 
 
-def upload_file(file_bytes: bytes, object_name: str, content_type: str = "application/pdf") -> Optional[str]:
+def upload_file(file_bytes: bytes, object_name: str, content_type: str = "application/pdf") -> str | None:
     client = get_minio_client()
     if client is None:
         return None
@@ -78,7 +77,7 @@ def delete_file(object_name: str) -> bool:
         return False
 
 
-def get_file_url(object_name: str, expires: int = 3600) -> Optional[str]:
+def get_file_url(object_name: str, expires: int = 3600) -> str | None:
     client = get_minio_client()
     if client is None:
         return None

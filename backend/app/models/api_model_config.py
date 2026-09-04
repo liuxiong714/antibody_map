@@ -1,10 +1,9 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.crypto import decrypt, encrypt
 from app.models.base import Base
@@ -31,11 +30,11 @@ class ApiModelConfig(Base):
     # API 地址密文（列名保持 base_url 兼容历史数据，存储 Fernet 密文）
     _base_url_enc: Mapped[str] = mapped_column("base_url", String(500))
     # 临时配置过期时间（永久配置为 NULL；过期后由后台清理任务删除）
-    expires_at: Mapped[Optional[datetime]] = mapped_column(
+    expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None, index=True
     )
     # 备注说明
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 是否启用
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(

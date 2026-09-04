@@ -1,4 +1,3 @@
-from typing import Optional
 from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, Float, String
@@ -18,9 +17,9 @@ class GoalThresholdConfig(Base):
 
     disease: Mapped[str] = mapped_column(String(64), primary_key=True)
     threshold_percent: Mapped[float] = mapped_column(Float, nullable=False)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(
+    updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
-    updated_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)

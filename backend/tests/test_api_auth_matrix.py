@@ -13,10 +13,55 @@
 - Celery 任务（process_literature.delay）被 monkeypatch 为 no-op，保证离线。
 """
 import os
+import re
+import sqlite3
 
 # 必须在导入 app（进而导入 config/settings）之前注入固定密钥，
 # 否则 config._get_secret() 每次调用返回随机值，token 签/验不一致导致 401。
 os.environ["SECRET_KEY"] = "test-secret-key-0123456789abcdef-0123456789abcdef-0123456789abcdef"
+
+
+def _register_pg_sqlite_functions(raw: sqlite3.Connection) -> None:
+    """在 SQLite 连接上注册 PostgreSQL 常用函数。
+
+    ``literature.title_norm`` 生成列使用 ``btrim`` / ``regexp_replace``（PG 专用），
+    SQLite 原生不支持；此处注册等价实现，使 ``Base.metadata.create_all`` 可离线建表。
+    """
+
+    def btrim1(s):
+        return (s or "").strip()
+
+    def btrim2(s, chars):
+        return (s or "").strip(chars) if s is not None else s
+
+    def regexp_replace_impl(s, pattern, replacement, flags="", count=0):
+        if s is None:
+            return None
+        n = 0 if "g" in (flags or "") else 1
+        return re.sub(pattern, replacement, s, count=n)
+
+    raw.create_function("btrim", 1, btrim1, deterministic=True)
+    raw.create_function("btrim", 2, btrim2, deterministic=True)
+    raw.create_function(
+        "regexp_replace", 3, lambda s, p, r: regexp_replace_impl(s, p, r), deterministic=True
+    )
+    raw.create_function(
+        "regexp_replace", 4, lambda s, p, r, f: regexp_replace_impl(s, p, r, f), deterministic=True
+    )
+
+
+# aiosqlite 在后台线程调用模块级 sqlite3.connect()，因此在此处全局打补丁，
+# 使本模块内创建的每个 SQLite 连接都自动注册上述 PG 函数。
+_orig_sqlite3_connect = sqlite3.connect
+
+
+def _patched_sqlite3_connect(*args, **kwargs):
+    conn = _orig_sqlite3_connect(*args, **kwargs)
+    _register_pg_sqlite_functions(conn)
+    return conn
+
+
+sqlite3.connect = _patched_sqlite3_connect
 
 import pytest
 import pytest_asyncio
@@ -72,6 +117,38 @@ def disable_celery(monkeypatch):
     yield process_literature
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _real_auth_for_matrix():
+    """本模块测试的是真实鉴权边界，需绕开 conftest 注入的假管理员。
+
+    conftest 的 session 级 autouse 夹具把 get_current_user 覆盖为返回假管理员，
+    会掩盖 401 校验（未认证请求也会被当作已认证返回 200）。本模块需恢复真实的
+    JWT 鉴权链路，并 mock 掉 Redis 吊销检查（fail-closed，离线环境无 Redis）。
+
+    模块结束后恢复原覆盖，避免影响后续依赖假管理员的 API 测试。
+    """
+    from app.api import deps as api_deps
+
+    original_user_override = app.dependency_overrides.get(api_deps.get_current_user)
+    app.dependency_overrides.pop(api_deps.get_current_user, None)
+
+    orig_is_token_revoked = api_deps.is_token_revoked
+    orig_pwd_check = api_deps.token_issued_before_password_change
+
+    async def _no_revoke(jti):  # noqa: ANN001
+        return False
+
+    api_deps.is_token_revoked = _no_revoke
+    api_deps.token_issued_before_password_change = lambda iat, pwd: False  # noqa: ARG005
+
+    yield
+
+    api_deps.is_token_revoked = orig_is_token_revoked
+    api_deps.token_issued_before_password_change = orig_pwd_check
+    if original_user_override is not None:
+        app.dependency_overrides[api_deps.get_current_user] = original_user_override
+
+
 @pytest_asyncio.fixture(loop_scope="function")
 async def db_env():
     """在内存 SQLite 上建表并写入测试用户，然后把 get_db 覆盖到该会话。
@@ -122,7 +199,8 @@ async def db_env():
     try:
         yield tokens
     finally:
-        app.dependency_overrides.clear()
+        # 只移除本夹具注入的 get_db，避免 clear() 误删 conftest/其他夹具的覆盖
+        app.dependency_overrides.pop(get_db, None)
         await engine.dispose()
 
 

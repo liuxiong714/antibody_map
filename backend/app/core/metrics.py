@@ -21,10 +21,10 @@
 """
 
 import asyncio
+import contextlib
 import logging
-from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 
 from app.config import settings
 from app.models.base import async_session
@@ -40,7 +40,7 @@ def _init_metrics() -> dict:
     """惰性创建并注册所有业务指标（幂等，重复注册由客户端忽略）。"""
     if _METRICS:
         return _METRICS
-    from prometheus_client import Counter, Histogram, Gauge
+    from prometheus_client import Counter, Gauge, Histogram
 
     metrics = {
         # HTTP 层异常计数（未处理异常→500），与 instrumentator 的请求量互补
@@ -104,20 +104,17 @@ def record_http_exception(status_code: int = 500) -> None:
     """记录一次未处理的 HTTP 异常（用于 5xx 计数的补充）。"""
     m = _metric("http_exceptions_total")
     if m is not None:
-        try:
+        # 指标记录失败不阻断请求
+        with contextlib.suppress(Exception):
             m.labels(status_code=str(status_code)).inc()
-        except Exception:  # 指标记录失败不阻断请求
-            pass
 
 
 def record_llm_extraction(model: str, status: str) -> None:
     """记录一次 LLM 提取的结局（status ∈ success / error）。"""
     m = _metric("llm_extraction_total")
     if m is not None:
-        try:
+        with contextlib.suppress(Exception):
             m.labels(model=model, status=status).inc()
-        except Exception:
-            pass
 
 
 def record_llm_tokens(model: str, prompt_tokens: int, completion_tokens: int) -> None:
@@ -135,13 +132,11 @@ def record_llm_cost(model: str, cost_usd: float) -> None:
     """记录一次 LLM 调用的估算费用（USD）。"""
     m = _metric("llm_cost_usd_total")
     if m is not None:
-        try:
+        with contextlib.suppress(Exception):
             m.labels(model=model).inc(cost_usd)
-        except Exception:
-            pass
 
 
-def record_llm_completion(model: str, status: str, usage_summary: Optional[dict] = None) -> None:
+def record_llm_completion(model: str, status: str, usage_summary: dict | None = None) -> None:
     """提取完成时一次性记录 LLM 指标（结局计数 + token + 费用）。
 
     供 extract_task 在提取完成后调用：status ∈ success / error。
@@ -174,20 +169,16 @@ def observe_extraction_duration(model: str, seconds: float) -> None:
     """记录一次提取耗时。"""
     m = _metric("extraction_duration_seconds")
     if m is not None:
-        try:
+        with contextlib.suppress(Exception):
             m.labels(model=model).observe(seconds)
-        except Exception:
-            pass
 
 
 def record_orphan_scan(storage: str, count: int) -> None:
     """记录一次孤儿扫描结果（storage ∈ local / minio），用于 /metrics 观测。"""
     m = _metric("orphan_cleanup_orphan_total")
     if m is not None:
-        try:
+        with contextlib.suppress(Exception):
             m.labels(storage=storage).set(count)
-        except Exception:
-            pass
 
 
 # ================= /metrics 访问控制 =================
@@ -255,10 +246,8 @@ async def _update_celery_queue_depth() -> None:
             depth = await client.llen(q)
             m.labels(queue=q).set(int(depth or 0))
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await client.aclose()
-        except Exception:
-            pass
 
 
 async def metrics_loop(interval: int = 60) -> None:

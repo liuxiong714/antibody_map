@@ -1,26 +1,26 @@
 import os
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Optional
 import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
-from sqlalchemy import and_, case, or_, select, func, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.literature import Literature
-from app.models.extraction_history import ExtractionHistory
-from app.models.literature_file_history import LiteratureFileHistory
-from app.models.base import async_session as _db_async_session
-from app.schemas.literature import LiteratureCreate
-from app.core.minio_client import delete_file
 from app.config import settings
+from app.core.minio_client import delete_file
+from app.models.base import async_session as _db_async_session
+from app.models.data_point import DataPoint
+from app.models.extraction_history import ExtractionHistory
+from app.models.literature import Literature
+from app.models.literature_file_history import LiteratureFileHistory
+from app.schemas.literature import LiteratureCreate
 from app.services.literature._common import (
-    logger,
-    LOCAL_STORAGE_DIR,
-    _is_safe_local_path,
-    _build_file_format_expr,
     FILE_FORMATS,
+    LOCAL_STORAGE_DIR,
     TRASH_RETENTION_DAYS,
+    _build_file_format_expr,
+    _is_safe_local_path,
+    logger,
 )
 
 
@@ -87,23 +87,24 @@ async def reset_stale_extraction_status(db: AsyncSession) -> int:
 
 async def list_literature(
     db: AsyncSession,
-    keyword: Optional[str] = None,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    journal: Optional[str] = None,
-    title: Optional[str] = None,
-    authors: Optional[str] = None,
-    created_start: Optional[datetime] = None,
-    created_end: Optional[datetime] = None,
-    sort_by: Optional[str] = None,
-    sort_order: Optional[str] = None,
-    review_status: Optional[str] = None,
-    extraction_status: Optional[str] = None,
-    file_format: Optional[str] = None,
-    tag_id: Optional[uuid.UUID] = None,
-    has_abstract: Optional[bool] = None,
+    keyword: str | None = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    journal: str | None = None,
+    title: str | None = None,
+    authors: str | None = None,
+    created_start: datetime | None = None,
+    created_end: datetime | None = None,
+    sort_by: str | None = None,
+    sort_order: str | None = None,
+    review_status: str | None = None,
+    extraction_status: str | None = None,
+    file_format: str | None = None,
+    tag_id: uuid.UUID | None = None,
+    has_abstract: bool | None = None,
+    kg_extracted: bool | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[Literature], int]:
@@ -138,6 +139,12 @@ async def list_literature(
     if province:
         query = query.where(Literature.province == province)
         count_query = count_query.where(Literature.province == province)
+
+    # 疾病筛选：疾病不在 literature 表，而在其 data_point 上，通过子查询匹配
+    if disease:
+        sub = select(DataPoint.literature_id).where(DataPoint.disease == disease).distinct()
+        query = query.where(Literature.id.in_(sub))
+        count_query = count_query.where(Literature.id.in_(sub))
 
     if year_start:
         query = query.where(Literature.pub_year >= year_start)
@@ -208,11 +215,22 @@ async def list_literature(
     # 摘要筛选
     if has_abstract is not None:
         if has_abstract:
-            query = query.where(Literature.abstract != None, Literature.abstract != "")
-            count_query = count_query.where(Literature.abstract != None, Literature.abstract != "")
+            query = query.where(Literature.abstract != None, Literature.abstract != "")  # noqa: E711
+            count_query = count_query.where(Literature.abstract != None, Literature.abstract != "")  # noqa: E711
         else:
-            query = query.where((Literature.abstract == None) | (Literature.abstract == ""))
-            count_query = count_query.where((Literature.abstract == None) | (Literature.abstract == ""))
+            query = query.where((Literature.abstract == None) | (Literature.abstract == ""))  # noqa: E711
+            count_query = count_query.where((Literature.abstract == None) | (Literature.abstract == ""))  # noqa: E711
+
+    # 知识库(KG)三元组抽取状态过滤：仅筛选 已抽取(存在三元组) / 未抽取(无三元组)
+    if kg_extracted is not None:
+        from app.models.kg_triple import KGTriple
+        exists_kg = select(KGTriple.id).where(KGTriple.literature_id == Literature.id).exists()
+        if kg_extracted:
+            query = query.where(exists_kg)
+            count_query = count_query.where(exists_kg)
+        else:
+            query = query.where(~exists_kg)
+            count_query = count_query.where(~exists_kg)
 
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
@@ -239,17 +257,15 @@ async def list_literature(
                 # 审核状态排序：提取总数为 0 → 排最后；按审核比例 approved/extracted 从小到大；
                 # 使用 case when 计算一个排序键：0(无数据) < 1(部分审核)，而区间内部用比例区分
                 ratio = case(
-                    (Literature.extracted_count == None, 0),
+                    (Literature.extracted_count == None, 0),  # noqa: E711
                     (Literature.extracted_count == 0, 0),
                     else_=func.coalesce(Literature.approved_count, 0) * 1.0 / Literature.extracted_count,
                 )
                 sort_column = ratio
             else:
                 sort_column = sort_map.get(sort_by, Literature.created_at)
-            sort_html = False
-
-    if sort_order:
-        sort_desc = sort_order.lower() == "desc"
+            if sort_order:
+                sort_desc = sort_order.lower() == "desc"
 
     # 文档格式排序时，无文件（NULL）始终排在最后，无论升降序
     if sort_by == "file_format":
@@ -265,7 +281,7 @@ async def list_literature(
     return items, total
 
 
-async def get_literature(db: AsyncSession, literature_id: uuid.UUID) -> Optional[Literature]:
+async def get_literature(db: AsyncSession, literature_id: uuid.UUID) -> Literature | None:
     result = await db.execute(
         select(Literature).where(Literature.id == literature_id, Literature.deleted_at.is_(None))
     )
@@ -301,7 +317,7 @@ async def update_literature(
     db: AsyncSession,
     literature_id: uuid.UUID,
     data: dict,
-) -> Optional[Literature]:
+) -> Literature | None:
     literature = await get_literature(db, literature_id)
     if not literature:
         return None
@@ -339,11 +355,11 @@ async def log_file_action(
     db: AsyncSession,
     *,
     pdf_hash: str,
-    file_name: Optional[str],
+    file_name: str | None,
     action: str,
-    operator_id: Optional[uuid.UUID] = None,
-    operator_name: Optional[str] = None,
-    literature_id: Optional[uuid.UUID] = None,
+    operator_id: uuid.UUID | None = None,
+    operator_name: str | None = None,
+    literature_id: uuid.UUID | None = None,
 ) -> LiteratureFileHistory:
     """记录一次文献文件动作（imported=导入 / deleted=软删除）。"""
     record = LiteratureFileHistory(
@@ -366,7 +382,7 @@ async def log_file_action(
 async def delete_literature(
     db: AsyncSession,
     literature_id: uuid.UUID,
-    deleted_by: Optional[uuid.UUID] = None,
+    deleted_by: uuid.UUID | None = None,
 ) -> bool:
     """软删除文献：设置 deleted_at 时间戳，将文献移入回收站。
     保留文件，30天内可还原。
@@ -383,7 +399,7 @@ async def delete_literature(
     return True
 
 
-async def get_literature_from_trash(db: AsyncSession, literature_id: uuid.UUID) -> Optional[Literature]:
+async def get_literature_from_trash(db: AsyncSession, literature_id: uuid.UUID) -> Literature | None:
     """从回收站获取文献（不过滤 deleted_at）。"""
     result = await db.execute(
         select(Literature).where(Literature.id == literature_id)
@@ -395,7 +411,7 @@ async def list_trash_literatures(
     db: AsyncSession,
     page: int = 1,
     page_size: int = 20,
-    keyword: Optional[str] = None,
+    keyword: str | None = None,
 ) -> tuple[list[Literature], int]:
     """列出回收站中的文献（已软删除的）。"""
     query = select(Literature).where(Literature.deleted_at.is_not(None))
@@ -434,6 +450,18 @@ async def restore_literature(db: AsyncSession, literature_id: uuid.UUID) -> bool
     return True
 
 
+def _cleanup_txt_cache(literature_id: str) -> None:
+    """清理文献的 .txt 缓存文件（data/pdfs/{id}.txt），防止后台 KG 抽取任务
+    扫描到已删除文献的缓存后因外键约束失败。"""
+    try:
+        txt_path = LOCAL_STORAGE_DIR / f"{literature_id}.txt"
+        if txt_path.exists():
+            txt_path.unlink()
+            logger.info(f"TXT cache cleaned: {txt_path}")
+    except Exception as e:
+        logger.warning(f"清理 TXT 缓存失败（不影响主流程）: {e}")
+
+
 async def permanently_delete_literature(db: AsyncSession, literature_id: uuid.UUID) -> bool:
     """永久删除文献（从回收站中彻底删除，含文件）。"""
     literature = await get_literature_from_trash(db, literature_id)
@@ -452,6 +480,20 @@ async def permanently_delete_literature(db: AsyncSession, literature_id: uuid.UU
         elif not local_path:
             logger.error(f"[安全] 文件路径越界，跳过删除: {literature.file_path}")
             delete_file(literature.file_path)
+
+    # 清理知识图谱缓存文本（data/pdfs/{id}.txt），防止后台 KG 抽取任务
+    # 扫描到已删除文献的缓存文件后，插入 kg_entity 时因外键约束失败。
+    _cleanup_txt_cache(str(literature_id))
+
+    # 清理已关联的 kg_entity 记录（外键 ondelete=SET NULL 仅处理已有记录，
+    # 此处显式删除，避免残留 NULL 引用数据）
+    try:
+        from app.models.kg_entity import KGEntity
+        await db.execute(
+            KGEntity.__table__.delete().where(KGEntity.source_literature_id == literature_id)
+        )
+    except Exception as e:
+        logger.warning(f"清理 kg_entity 记录失败（不影响删除）: {e}")
 
     await db.delete(literature)
     await db.commit()
@@ -481,6 +523,15 @@ async def empty_trash(db: AsyncSession, older_than_days: int = TRASH_RETENTION_D
                     if local_path is None:
                         logger.error(f"[安全] 文件路径越界，跳过删除: id={lit.id}, path={lit.file_path}")
                     delete_file(lit.file_path)
+            # 清理知识图谱缓存文本与关联实体
+            _cleanup_txt_cache(str(lit.id))
+            try:
+                from app.models.kg_entity import KGEntity
+                await db.execute(
+                    KGEntity.__table__.delete().where(KGEntity.source_literature_id == lit.id)
+                )
+            except Exception as e:
+                logger.warning(f"清理 kg_entity 记录失败（不影响删除）: {e}")
             await db.delete(lit)
             count += 1
         except Exception as e:

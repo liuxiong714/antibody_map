@@ -16,7 +16,6 @@ import importlib
 import logging
 import re
 import threading
-from typing import Optional
 
 logger = logging.getLogger("uvicorn")
 
@@ -42,7 +41,7 @@ _EXT_TO_FORMAT = {
 }
 
 _anydoc_mod = None
-_available: Optional[bool] = None
+_available: bool | None = None
 
 
 def _load_module():
@@ -89,7 +88,7 @@ def contains_table(md: str) -> bool:
     return bool(md and _TABLE_RE.search(md))
 
 
-def to_markdown_bytes(file_bytes: bytes, ext: str, timeout: Optional[int] = None) -> str:
+def to_markdown_bytes(file_bytes: bytes, ext: str, timeout: int | None = None) -> str:
     """调用 anydoc 将文件字节转为 GFM Markdown。
 
     任何异常/超时返回空字符串并记录日志（触发调用方降级）。
@@ -106,7 +105,7 @@ def to_markdown_bytes(file_bytes: bytes, ext: str, timeout: Optional[int] = None
     ext = (ext or "").lower()
     if ext and not ext.startswith("."):
         ext = "." + ext
-    fmt: Optional[str] = _EXT_TO_FORMAT.get(ext)
+    fmt: str | None = _EXT_TO_FORMAT.get(ext)
 
     result: dict = {}
 

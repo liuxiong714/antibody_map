@@ -1,7 +1,6 @@
 import uuid
-from typing import Optional
 
-from sqlalchemy import and_, select, func
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.literature import Literature
@@ -16,7 +15,7 @@ from app.services.literature.crud import (
 async def batch_delete_literatures(
     db: AsyncSession,
     literature_ids: list[uuid.UUID],
-    deleted_by: Optional[uuid.UUID] = None,
+    deleted_by: uuid.UUID | None = None,
 ) -> int:
     """批量软删除文献：逐篇设置 deleted_at，跳过已在回收站中的记录，返回实际删除数。"""
     if not literature_ids:

@@ -4,7 +4,7 @@
 """
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,15 +18,15 @@ async def log_audit(
     db: AsyncSession,
     action: str,
     *,
-    user_id: Optional[str] = None,
-    username: Optional[str] = None,
-    target: Optional[str] = None,
-    detail: Optional[dict[str, Any]] = None,
-    client_ip: Optional[str] = None,
-    entity_type: Optional[str] = None,
-    entity_id: Optional[str] = None,
-    old_value: Optional[dict[str, Any]] = None,
-    new_value: Optional[dict[str, Any]] = None,
+    user_id: str | None = None,
+    username: str | None = None,
+    target: str | None = None,
+    detail: dict[str, Any] | None = None,
+    client_ip: str | None = None,
+    entity_type: str | None = None,
+    entity_id: str | None = None,
+    old_value: dict[str, Any] | None = None,
+    new_value: dict[str, Any] | None = None,
 ) -> None:
     """记录一条审计日志
 

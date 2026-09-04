@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import math
 import sys
-from typing import Any, List, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 import scipy.stats as sps
@@ -30,22 +31,22 @@ from statsmodels.stats.proportion import proportion_confint
 
 __all__ = [
     "binomial_ci",
-    "weighted_rate_ci",
-    "gmc_ci",
-    "proportion_test_ci",
-    "fit_age_curve",
-    "foi_from_curve",
-    "meta_proportion",
-    "fit_catalytic_models",
-    "cochran_armitage_trend",
-    "two_proportion_test",
-    "direct_standardize",
-    "morans_i",
-    "g_star",
-    "classify_hotspot_cluster",
-    "birth_year_from_age",
-    "decade_band",
     "birth_cohort_analysis",
+    "birth_year_from_age",
+    "classify_hotspot_cluster",
+    "cochran_armitage_trend",
+    "decade_band",
+    "direct_standardize",
+    "fit_age_curve",
+    "fit_catalytic_models",
+    "foi_from_curve",
+    "g_star",
+    "gmc_ci",
+    "meta_proportion",
+    "morans_i",
+    "proportion_test_ci",
+    "two_proportion_test",
+    "weighted_rate_ci",
 ]
 
 
@@ -60,7 +61,7 @@ def _get(row: Any, key: str) -> Any:
     return getattr(row, key, None)
 
 
-def _as_percent(p: Any) -> Optional[float]:
+def _as_percent(p: Any) -> float | None:
     """把可能为百分数（>1）或 0-1 比例的输入归一为 0-1 比例；非法返回 None。"""
     if p is None:
         return None
@@ -79,7 +80,7 @@ def _as_percent(p: Any) -> Optional[float]:
 # 1. 单比例二项分布 95% CI
 # ============================================================
 
-def binomial_ci(x: Any, n: Any, alpha: float = 0.05, method: str = "auto") -> Tuple[Optional[float], Optional[float]]:
+def binomial_ci(x: Any, n: Any, alpha: float = 0.05, method: str = "auto") -> tuple[float | None, float | None]:
     """单比例二项分布的 (1-alpha) 置信区间，返回 (ci_lower, ci_upper)（0-1 比例）。
 
     - x: 阳性数（整数）。调用方换算：x = round(seroprevalence/100 * sample_size)。
@@ -128,7 +129,7 @@ def weighted_rate_ci(rows: Sequence[Any], z: float = 1.96) -> dict:
     - 返回 ``{weighted_positivity, ci_lower, ci_upper, n_total, n_dropped, method}``，
       三个比例字段均为百分数（×100，保留 2 位小数）；无有效行时均为 None。
     """
-    pairs: list[Tuple[float, float]] = []  # (p, n)
+    pairs: list[tuple[float, float]] = []  # (p, n)
     dropped = 0
     for row in rows:
         p = _as_percent(_get(row, "value"))
@@ -169,7 +170,7 @@ def weighted_rate_ci(rows: Sequence[Any], z: float = 1.96) -> dict:
         "weighted_positivity": round(p_hat * 100, 2),
         "ci_lower": round(lo * 100, 2),
         "ci_upper": round(hi * 100, 2),
-        "n_total": int(round(w_sum)),
+        "n_total": round(w_sum),
         "n_dropped": dropped,
         "method": "normal_approx",
     }
@@ -179,7 +180,7 @@ def weighted_rate_ci(rows: Sequence[Any], z: float = 1.96) -> dict:
 # 3. GMC 几何均数 + 对数域正态近似 95% CI
 # ============================================================
 
-def _safe_exp(x: float) -> Optional[float]:
+def _safe_exp(x: float) -> float | None:
     """指数运算安全封装：参数过大/非有限时返回 None，避免溢出为 inf。
 
     JSON 序列化不允许 inf/NaN；真实滴度不会逼近 e^709，但防御性兜底
@@ -194,7 +195,7 @@ def _safe_exp(x: float) -> Optional[float]:
         return None
 
 
-def gmc_ci(titers: Sequence[Any], weights: Optional[Sequence[Any]] = None, z: float = 1.96) -> dict:
+def gmc_ci(titers: Sequence[Any], weights: Sequence[Any] | None = None, z: float = 1.96) -> dict:
     """几何均数（GMC）及对数域正态近似 95% CI。
 
     数据点存的是已计算好的 GMC 值（非原始滴度），对 k 个数据点取对数平均：
@@ -214,7 +215,7 @@ def gmc_ci(titers: Sequence[Any], weights: Optional[Sequence[Any]] = None, z: fl
     vals: list[float] = []  # ln v
     ws: list[float] = []
     dropped = 0
-    for v, w in zip(titers, weights):
+    for v, w in zip(titers, weights, strict=False):
         if v is None or v <= 0:
             continue
         if w is None or w <= 0:
@@ -232,17 +233,17 @@ def gmc_ci(titers: Sequence[Any], weights: Optional[Sequence[Any]] = None, z: fl
                 "n": 0, "n_total": 0, "n_dropped": dropped, "method": "lognormal"}
 
     w_sum = sum(ws)
-    mean_ln = sum(w * l for w, l in zip(ws, vals)) / w_sum
+    mean_ln = sum(w * v for w, v in zip(ws, vals, strict=False)) / w_sum
     gmc = _safe_exp(mean_ln)
 
     if k < 2:
         return {"gmc": round(gmc, 4) if gmc is not None else None,
                 "ci_lower": None, "ci_upper": None,
-                "n": k, "n_total": int(round(w_sum)), "n_dropped": dropped, "method": "lognormal"}
+                "n": k, "n_total": round(w_sum), "n_dropped": dropped, "method": "lognormal"}
 
     # 频率权重归一（均值权重 = 1），使 var_ln 与样本方差同量纲
     norm = k / w_sum
-    var_ln = sum(norm * w * (l - mean_ln) ** 2 for w, l in zip(ws, vals)) / (k - 1)
+    var_ln = sum(norm * w * (v - mean_ln) ** 2 for w, v in zip(ws, vals, strict=False)) / (k - 1)
     se = math.sqrt(var_ln / k)
     lo = _safe_exp(mean_ln - z * se)
     hi = _safe_exp(mean_ln + z * se)
@@ -251,7 +252,7 @@ def gmc_ci(titers: Sequence[Any], weights: Optional[Sequence[Any]] = None, z: fl
         "ci_lower": round(lo, 4) if lo is not None else None,
         "ci_upper": round(hi, 4) if hi is not None else None,
         "n": k,
-        "n_total": int(round(w_sum)),
+        "n_total": round(w_sum),
         "n_dropped": dropped,
         "method": "lognormal",
     }
@@ -309,7 +310,7 @@ def _second_diff_penalty(m: int) -> np.ndarray:
     return D.T @ D
 
 
-def fit_age_curve(records: Sequence[Tuple[Any, Any, Any]], z: float = 1.96) -> dict:
+def fit_age_curve(records: Sequence[tuple[Any, Any, Any]], z: float = 1.96) -> dict:
     """惩罚样条平滑拟合血清阳性率-年龄曲线 P(a)。
 
     输入 ``records``：[(age_mid, x, n), ...]——由 service 层按 age_mid 汇总
@@ -388,8 +389,8 @@ def fit_age_curve(records: Sequence[Tuple[Any, Any, Any]], z: float = 1.96) -> d
 
     # λp 网格 {1e-3..1e2 对数 12 点} 加权 GCV 选优
     lam_grid = np.logspace(-3.0, 2.0, 12)
-    lam_opt: Optional[float] = None
-    beta_opt: Optional[np.ndarray] = None
+    lam_opt: float | None = None
+    beta_opt: np.ndarray | None = None
     df_opt = float(m)
     best_gcv = float("inf")
     for lam in lam_grid:
@@ -446,7 +447,7 @@ def fit_age_curve(records: Sequence[Tuple[Any, Any, Any]], z: float = 1.96) -> d
             "ci_lower": round(float(lo) * 100.0, 2),
             "ci_upper": round(float(hi) * 100.0, 2),
         }
-        for ag, pv, lo, hi in zip(grid, p_g, lo_g, hi_g)
+        for ag, pv, lo, hi in zip(grid, p_g, lo_g, hi_g, strict=False)
     ]
 
     return {
@@ -464,7 +465,7 @@ def fit_age_curve(records: Sequence[Tuple[Any, Any, Any]], z: float = 1.96) -> d
 # 6. 年龄别 FOI：λ(a) = P′(a)/(1−P(a))
 # ============================================================
 
-def foi_from_curve(ages: Sequence[Any], p_hat: Any) -> List[dict]:
+def foi_from_curve(ages: Sequence[Any], p_hat: Any) -> list[dict]:
     """由拟合的阳性率曲线 P(a) 计算年龄别 FOI。
 
     λ(a) = P′(a) / (1 − P(a))。
@@ -497,8 +498,8 @@ def foi_from_curve(ages: Sequence[Any], p_hat: Any) -> List[dict]:
         )
         lam = np.where(p < 1.0, dp / np.maximum(1.0 - p, 1e-9), 0.0)
 
-    out: List[dict] = []
-    for ag, pv, lamv in zip(ages_f, p, lam):
+    out: list[dict] = []
+    for ag, pv, lamv in zip(ages_f, p, lam, strict=False):
         if pv >= 0.999:
             out.append({"age": round(ag, 1), "foi": None})
         else:
@@ -621,7 +622,7 @@ def _egger_test(studies: list) -> dict:
 
 
 def meta_proportion(
-    studies: Sequence[Tuple[float, float, Optional[str]]],
+    studies: Sequence[tuple[float, float, str | None]],
     alpha: float = 0.05,
 ) -> dict:
     """多研究血清阳性率的随机效应 Meta 合并（Freeman-Tukey 双反正弦变换）。
@@ -700,15 +701,15 @@ def meta_proportion(
     if k == 1:
         s = parsed[0]
         x, n = s["x"], s["n"]
-        lo, hi = binomial_ci(x=int(round(x)), n=int(round(n)))
+        lo, hi = binomial_ci(x=round(x), n=round(n))
         p = x / n if n > 0 else 0.0
         ci_lower = lo * 100.0 if lo is not None else None
         ci_upper = hi * 100.0 if hi is not None else None
         return {
             "per_study": [{
                 "label": s["label"],
-                "x": int(round(x)),
-                "n": int(round(n)),
+                "x": round(x),
+                "n": round(n),
                 "p": round(p, 6),
                 "weight": 100.0,                          # 主模型权重(%)
                 "transformed": round(_ft_transform(x, n), 6),  # FT 变换值 t
@@ -758,7 +759,7 @@ def meta_proportion(
     # ── DerSimonian-Laird τ² ────────────────────────────────
     w2_sum = sum(s["w_fe"] ** 2 for s in parsed)
     C = w_sum - w2_sum / w_sum
-    tau2 = max(0.0, (Q - df) / C) if C > 0 and Q > df else 0.0
+    tau2 = max(0.0, (Q - df) / C) if C > 0 and df < Q else 0.0
     
     # ── 随机效应 ────────────────────────────────────────────
     for s in parsed:
@@ -820,8 +821,8 @@ def meta_proportion(
     per_study = [
         {
             "label": s["label"],
-            "x": int(round(s["x"])),
-            "n": int(round(s["n"])),
+            "x": round(s["x"]),
+            "n": round(s["n"]),
             "p": round(s["x"] / s["n"] if s["n"] > 0 else 0.0, 6),
             "weight": round(s[primary_pct], 2),          # 主模型权重(%)
             "transformed": round(s["t"], 6),              # FT 变换值 t
@@ -927,7 +928,7 @@ def _catalytic_grad_m2(a: float, lam: float, mu: float) -> np.ndarray:
     return np.array([dlam, dmu])
 
 
-def _catalytic_fisher(ages, ns, p_model, grad_func) -> Optional[np.ndarray]:
+def _catalytic_fisher(ages, ns, p_model, grad_func) -> np.ndarray | None:
     """期望 Fisher 信息矩阵 I = Σ nᵢ/(pᵢ(1−pᵢ))·gᵢgᵢᵀ。
 
     - ``p_model(a)``：返回 p(a)。
@@ -935,38 +936,38 @@ def _catalytic_fisher(ages, ns, p_model, grad_func) -> Optional[np.ndarray]:
     非正定 / 数值异常 → 返回 None（奇异退化）。
     """
     dim = len(grad_func(float(ages[0])))
-    I = np.zeros((dim, dim))
-    for a, n in zip(ages, ns):
+    fisher = np.zeros((dim, dim))
+    for a, n in zip(ages, ns, strict=False):
         p = float(np.clip(p_model(a), 1e-6, 1.0 - 1e-6))
         g = np.asarray(grad_func(a), dtype=float)
-        I += (n / (p * (1.0 - p))) * np.outer(g, g)
-    if not np.all(np.isfinite(I)):
+        fisher += (n / (p * (1.0 - p))) * np.outer(g, g)
+    if not np.all(np.isfinite(fisher)):
         return None
     try:
-        np.linalg.cholesky(I)  # 要求正定
+        np.linalg.cholesky(fisher)  # 要求正定
     except np.linalg.LinAlgError:
         return None
-    return I
+    return fisher
 
 
-def _catalytic_ci(theta: np.ndarray, I: Optional[np.ndarray], alpha: float,
-                  lower_clamp: float = 0.0) -> Optional[dict]:
+def _catalytic_ci(theta: np.ndarray, fisher: np.ndarray | None, alpha: float,
+                  lower_clamp: float = 0.0) -> dict | None:
     """由 Fisher 信息逆求参数 95%CI。
 
-    - ``I`` 为 None（奇异）→ 返回 None（退化）。
+    - ``fisher`` 为 None（奇异）→ 返回 None（退化）。
     - 各参数 SE = √(diag(I⁻¹))；CI 下界 clamp 到 ``lower_clamp``（参数非负约束）。
     返回 {<pname>: {"estimate", "ci_lower", "ci_upper"}} 结构由调用方拼接。
     """
-    if I is None:
+    if fisher is None:
         return None
     try:
-        cov = np.linalg.inv(I)
+        cov = np.linalg.inv(fisher)
     except np.linalg.LinAlgError:
         return None
     se = np.sqrt(np.maximum(np.diag(cov), 0.0))
     z = sps.norm.ppf(1.0 - alpha / 2.0)
     out = {}
-    for i, (th, s) in enumerate(zip(theta, se)):
+    for i, (th, s) in enumerate(zip(theta, se, strict=False)):
         lo = th - z * s
         hi = th + z * s
         if not (np.isfinite(lo) and np.isfinite(hi)):
@@ -995,7 +996,7 @@ def _catalytic_fit_m1(ages, y, n) -> dict:
         lam_s = float(np.asarray(lam).reshape(-1)[0])
         return _catalytic_nll(y, n, pfun(lam_s))
 
-    best: Optional[dict] = None
+    best: dict | None = None
     for x0 in starts:
         res = minimize(nll_of, x0=[x0], method="L-BFGS-B",
                        bounds=[(1e-9, None)], options={"maxiter": 500})
@@ -1018,8 +1019,8 @@ def _catalytic_fit_m1(ages, y, n) -> dict:
         p = float(_catalytic_p_m1(a, lam))
         return np.array([a * (1.0 - p)])
 
-    I = _catalytic_fisher(ages, n, lambda a: _catalytic_p_m1(a, lam), grad)
-    ci = _catalytic_ci(best["theta"], I, alpha=0.05)
+    fisher = _catalytic_fisher(ages, n, lambda a: _catalytic_p_m1(a, lam), grad)
+    ci = _catalytic_ci(best["theta"], fisher, alpha=0.05)
     params = {
         "lambda": round(lam, 6),
         "lambda_ci_lower": round(ci["p0"]["ci_lower"], 6) if ci else None,
@@ -1046,7 +1047,7 @@ def _catalytic_fit_m2(ages, y, n, m1_fit: dict) -> dict:
         lam, mu = float(x[0]), float(x[1])
         return _catalytic_nll(y, n, _catalytic_p_m2(ages, lam, mu))
 
-    best: Optional[dict] = None
+    best: dict | None = None
     for x0 in starts:
         res = minimize(nll_of, x0=x0, method="L-BFGS-B",
                        bounds=[(1e-9, None), (1e-9, None)],
@@ -1065,8 +1066,8 @@ def _catalytic_fit_m2(ages, y, n, m1_fit: dict) -> dict:
     def grad(a):
         return _catalytic_grad_m2(a, lam, mu)
 
-    I = _catalytic_fisher(ages, n, lambda a: _catalytic_p_m2(a, lam, mu), grad)
-    ci = _catalytic_ci(best["theta"], I, alpha=0.05)
+    fisher = _catalytic_fisher(ages, n, lambda a: _catalytic_p_m2(a, lam, mu), grad)
+    ci = _catalytic_ci(best["theta"], fisher, alpha=0.05)
     params = {
         "lambda": round(lam, 6),
         "lambda_ci_lower": round(ci["p0"]["ci_lower"], 6) if ci else None,
@@ -1097,7 +1098,7 @@ def _catalytic_fit_m2_fixed(ages, y, n, mu: float, m1_fit: dict) -> dict:
         lam = float(x[0])
         return _catalytic_nll(y, n, _catalytic_p_m2(ages, lam, mu))
 
-    best: Optional[dict] = None
+    best: dict | None = None
     for x0 in starts:
         res = minimize(nll_of, x0=x0, method="L-BFGS-B",
                        bounds=[(1e-9, None)],
@@ -1116,8 +1117,8 @@ def _catalytic_fit_m2_fixed(ages, y, n, mu: float, m1_fit: dict) -> dict:
     def grad(a):
         return _catalytic_grad_m2(a, lam, mu)
 
-    I = _catalytic_fisher(ages, n, lambda a: _catalytic_p_m2(a, lam, mu), grad)
-    ci = _catalytic_ci(best["theta"], I, alpha=0.05)
+    fisher = _catalytic_fisher(ages, n, lambda a: _catalytic_p_m2(a, lam, mu), grad)
+    ci = _catalytic_ci(best["theta"], fisher, alpha=0.05)
     params = {
         "lambda": round(lam, 6),
         "lambda_ci_lower": round(ci["p0"]["ci_lower"], 6) if ci else None,
@@ -1138,7 +1139,7 @@ def _catalytic_fit_m3(ages, y, n, m1_fit: dict) -> dict:
     c 为超参数（无 CI），λ1/λ2 为待估参数。
     """
     lam1 = m1_fit["theta"][0] if m1_fit["converged"] and m1_fit["theta"] is not None else 0.05
-    best_overall: Optional[dict] = None
+    best_overall: dict | None = None
     for c in _CATALYTIC_C_POINTS:
         starts = [
             [lam1, max(lam1 * 0.5, 1e-6)],
@@ -1146,7 +1147,7 @@ def _catalytic_fit_m3(ages, y, n, m1_fit: dict) -> dict:
             [0.05, 0.05],
         ]
 
-        def nll_of(x):
+        def nll_of(x, c=c):  # 绑定当前循环的 c，避免闭包延迟绑定
             l1, l2 = float(x[0]), float(x[1])
             return _catalytic_nll(y, n, _catalytic_p_m3(ages, l1, l2, c))
 
@@ -1172,8 +1173,8 @@ def _catalytic_fit_m3(ages, y, n, m1_fit: dict) -> dict:
         a2 = float(np.maximum(0.0, a - c))
         return np.array([a1 * (1.0 - p), a2 * (1.0 - p)])
 
-    I = _catalytic_fisher(ages, n, lambda a: _catalytic_p_m3(a, l1, l2, c), grad)
-    ci = _catalytic_ci(best_overall["theta"], I, alpha=0.05)
+    fisher = _catalytic_fisher(ages, n, lambda a: _catalytic_p_m3(a, l1, l2, c), grad)
+    ci = _catalytic_ci(best_overall["theta"], fisher, alpha=0.05)
     params = {
         "lambda1": round(l1, 6),
         "lambda1_ci_lower": round(ci["p0"]["ci_lower"], 6) if ci else None,
@@ -1266,7 +1267,7 @@ def _fit_catalytic_fixed_mu(ages, y, n, m1, mu: float, n_records: int,
     p_vals = np.clip(_catalytic_predict("M2_seroreversion", rec_params, grid), 0.0, 1.0)
     fitted_curve = [
         {"age": round(float(ag), 1), "prevalence": round(float(pv) * 100.0, 2)}
-        for ag, pv in zip(grid, p_vals)
+        for ag, pv in zip(grid, p_vals, strict=False)
     ]
 
     modeling_notes = [
@@ -1288,8 +1289,8 @@ def _fit_catalytic_fixed_mu(ages, y, n, m1, mu: float, n_records: int,
     }
 
 
-def fit_catalytic_models(records: Sequence[Tuple[Any, Any, Any]], alpha: float = 0.05,
-                         mu_fixed: Optional[float] = None) -> dict:
+def fit_catalytic_models(records: Sequence[tuple[Any, Any, Any]], alpha: float = 0.05,
+                         mu_fixed: float | None = None) -> dict:
     """催化模型族 MLE 拟合与模型比较（M1 / M2 / M3）。
 
     输入 ``records``：[(age_mid, x, n), ...]，age_mid 须 > 0，n > 0；非法记录剔除。
@@ -1316,7 +1317,7 @@ def fit_catalytic_models(records: Sequence[Tuple[Any, Any, Any]], alpha: float =
     - ``n_records`` / ``age_range``
     """
     # ── 数据清洗 ───────────────────────────────────────────
-    parsed: list[Tuple[float, float, float]] = []
+    parsed: list[tuple[float, float, float]] = []
     for r in records:
         try:
             a = float(r[0])
@@ -1367,7 +1368,7 @@ def fit_catalytic_models(records: Sequence[Tuple[Any, Any, Any]], alpha: float =
                 "name": name,
                 "label": _CATALYTIC_MODEL_NAMES[name],
                 "k_params": k,
-                "params": {p: None for p in fit["names"]},
+                "params": dict.fromkeys(fit["names"]),
                 "loglik": None, "aic": None, "bic": None,
                 "delta_aic": None, "akaike_weight": None,
                 "converged": False,
@@ -1389,8 +1390,6 @@ def fit_catalytic_models(records: Sequence[Tuple[Any, Any, Any]], alpha: float =
             "converged": True,
         })
 
-    converged = [m for m in models_out if m["converged"]]
-
     # ── 模型比较：按 AIC 升序 + ΔAIC + Akaike 权重 ───────
     models_out.sort(key=lambda m: (m["aic"] if m["aic"] is not None else float("inf")))
     # 排序后重新计算 converged（AIC 最小的为推荐）
@@ -1406,7 +1405,7 @@ def fit_catalytic_models(records: Sequence[Tuple[Any, Any, Any]], alpha: float =
                            for m in models_out], dtype=float)
         exp_neg = np.exp(-deltas / 2.0)
         w_sum = float(np.sum(exp_neg[np.isfinite(exp_neg)]))
-        for m, d in zip(models_out, deltas):
+        for m, d in zip(models_out, deltas, strict=False):
             if np.isfinite(d) and w_sum > 0:
                 m["akaike_weight"] = round(float(np.exp(-d / 2.0)) / w_sum, 6)
             else:
@@ -1440,7 +1439,7 @@ def fit_catalytic_models(records: Sequence[Tuple[Any, Any, Any]], alpha: float =
         p_vals = np.clip(_catalytic_predict(rec_name, rec_params, grid), 0.0, 1.0)
         fitted_curve = [
             {"age": round(float(ag), 1), "prevalence": round(float(pv) * 100.0, 2)}
-            for ag, pv in zip(grid, p_vals)
+            for ag, pv in zip(grid, p_vals, strict=False)
         ]
 
     # ── 说明文案 ─────────────────────────────────────────
@@ -1450,16 +1449,20 @@ def fit_catalytic_models(records: Sequence[Tuple[Any, Any, Any]], alpha: float =
             f"按 AIC 选出推荐模型 {recommended}（{_CATALYTIC_MODEL_NAMES[recommended]}，"
             f"ΔAIC=0.000，Akaike 权重={recommended_block['akaike_weight']}）"
         )
-    if m2["converged"] and m2["nll"] is not None and m1["converged"] and m1["nll"] is not None:
-        if m2["ll"] - m1["ll"] > 1.92:  # LRT p<0.05 的 χ² 阈值(1 df)≈3.84，2ll 差阈值≈3.84/2
-            modeling_notes.append(
-                "M2（seroreversion）显著优于 M1（constant），提示存在血清转阴/抗体衰减"
-            )
-    if m3["converged"] and m3["nll"] is not None and m1["converged"] and m1["nll"] is not None:
-        if m3["ll"] - m1["ll"] > 1.92:
-            modeling_notes.append(
-                "M3（two-phase）显著优于 M1（constant），提示存在随年龄变化的感染率结构（如疫苗时代）"
-            )
+    if (
+        m2["converged"] and m2["nll"] is not None and m1["converged"] and m1["nll"] is not None
+        and m2["ll"] - m1["ll"] > 1.92  # LRT p<0.05 的 χ² 阈值(1 df)≈3.84，2ll 差阈值≈3.84/2
+    ):
+        modeling_notes.append(
+            "M2（seroreversion）显著优于 M1（constant），提示存在血清转阴/抗体衰减"
+        )
+    if (
+        m3["converged"] and m3["nll"] is not None and m1["converged"] and m1["nll"] is not None
+        and m3["ll"] - m1["ll"] > 1.92
+    ):
+        modeling_notes.append(
+            "M3（two-phase）显著优于 M1（constant），提示存在随年龄变化的感染率结构（如疫苗时代）"
+        )
     if len(parsed) < 8:
         modeling_notes.append(f"仅 {len(parsed)} 个有效年龄点，模型比较置信度有限（建议 ≥8 个）")
     if recommended == "M1_constant":
@@ -1485,7 +1488,7 @@ def fit_catalytic_models(records: Sequence[Tuple[Any, Any, Any]], alpha: float =
 # 统计检验与标准化率
 # ============================================================
 
-def cochran_armitage_trend(groups: Sequence[Any]) -> Optional[dict]:
+def cochran_armitage_trend(groups: Sequence[Any]) -> dict | None:
     """Cochran-Armitage 趋势检验（用于有序分组，如逐年阳性率）。
 
     ``groups``：[(score, x, n), ...]，score 为有序分值（如年份），x 为阳性数，n 为总数。
@@ -1558,7 +1561,10 @@ def two_proportion_test(
     z, p_value, significant, conclusion}``（conclusion 为中文结论文案）。
     """
     try:
-        x1 = float(x1); n1 = float(n1); x2 = float(x2); n2 = float(n2)
+        x1 = float(x1)
+        n1 = float(n1)
+        x2 = float(x2)
+        n2 = float(n2)
     except (TypeError, ValueError):
         return {"error": "输入无效"}
 
@@ -1631,7 +1637,7 @@ def two_proportion_test(
 
 def direct_standardize(
     strata: Sequence[Any],
-    standard: Optional[Sequence[Any]] = None,
+    standard: Sequence[Any] | None = None,
     alpha: float = 0.05,
 ) -> dict:
     """直接法标准化率（年龄标准化阳性率 ASR）。
@@ -1650,7 +1656,7 @@ def direct_standardize(
 
     if standard is None:
         _p = _os.path.join(_os.path.dirname(__file__), "reference_data", "china_pop_2020.json")
-        with open(_p, "r", encoding="utf-8") as _f:
+        with open(_p, encoding="utf-8") as _f:
             _data = _json.load(_f)
         standard = _data.get("age_groups", [])
         standard_version = _data.get("version", "unknown")
@@ -1718,7 +1724,7 @@ def direct_standardize(
 # 空间统计：Moran's I 全局自相关 + Getis-Ord Gi* 局部热点
 # ============================================================
 
-def morans_i(rates: Sequence[Any], w: Any, permutations: int = 999) -> Optional[dict]:
+def morans_i(rates: Sequence[Any], w: Any, permutations: int = 999) -> dict | None:
     """全局 Moran's I 空间自相关检验（esda.Moran，permutation 检验）。
 
     - ``rates``：与 ``w`` 观测顺序一致的率数组（省级加权阳性率，0-100 或 0-1 均可；
@@ -1743,12 +1749,12 @@ def morans_i(rates: Sequence[Any], w: Any, permutations: int = 999) -> Optional[
         return None
 
     mi = esda.Moran(vals, w, permutations=permutations)
-    I = float(mi.I)
+    moran_i = float(mi.I)
     p = float(mi.p_sim)
     z = float(mi.z_sim)
 
     if p < 0.05:
-        if I > 0:
+        if moran_i > 0:
             direction = "正向显著聚集"
             interp = "高阳性率省份呈空间聚集"
         else:
@@ -1757,17 +1763,17 @@ def morans_i(rates: Sequence[Any], w: Any, permutations: int = 999) -> Optional[
     else:
         direction = "未检测到显著空间自相关"
         interp = "阳性率空间分布接近随机"
-    conclusion = f"{direction}（I={I:.3f}, p={p:.3f}）：{interp}"
+    conclusion = f"{direction}（I={moran_i:.3f}, p={p:.3f}）：{interp}"
 
     return {
-        "I": round(I, 6),
+        "I": round(moran_i, 6),
         "p_sim": round(p, 6),
         "z": round(z, 6),
         "conclusion": conclusion,
     }
 
 
-def g_star(rates: Sequence[Any], w: Any, permutations: int = 999) -> Optional[list[dict]]:
+def g_star(rates: Sequence[Any], w: Any, permutations: int = 999) -> list[dict] | None:
     """Getis-Ord Gi* 局部空间关联（esda.G_Local，star=True，含焦点单元自身）。
 
     - ``rates``：与 ``w`` 观测顺序一致的率数组；非法值剔除。
@@ -1797,11 +1803,11 @@ def g_star(rates: Sequence[Any], w: Any, permutations: int = 999) -> Optional[li
     _, p_fdr, _, _ = multipletests(pvals, alpha=0.05, method="fdr_bh")
     return [
         {"gi_z": round(float(zz), 6), "p": round(float(pp), 6), "p_fdr": round(float(pf), 6)}
-        for zz, pp, pf in zip(g.Zs, g.p_sim, p_fdr)
+        for zz, pp, pf in zip(g.Zs, g.p_sim, p_fdr, strict=False)
     ]
 
 
-def classify_hotspot_cluster(gi_z: Optional[Any]) -> str:
+def classify_hotspot_cluster(gi_z: Any | None) -> str:
     """把 Gi* z 得分映射为热点/冷点分类标签。
 
     - z ≥ 2.576 → hot_99；≥ 1.96 → hot_95；≥ 1.645 → hot_90；
@@ -1831,7 +1837,7 @@ def classify_hotspot_cluster(gi_z: Optional[Any]) -> str:
 # 出生队列（birth cohort）分析
 # ============================================================
 
-def birth_year_from_age(collection_year: Any, age_mid: Any) -> Optional[int]:
+def birth_year_from_age(collection_year: Any, age_mid: Any) -> int | None:
     """出生年份推算：birth_year = collection_year − age_mid。
 
     - collection_year / age_mid 任一缺失或非法（非数值、年龄为负、年份越界）→ None。
@@ -1847,10 +1853,10 @@ def birth_year_from_age(collection_year: Any, age_mid: Any) -> Optional[int]:
         return None
     if am < 0 or cy < 1900 or cy > 2200:
         return None
-    return int(round(cy - am))
+    return round(cy - am)
 
 
-def decade_band(birth_year: Any) -> Optional[str]:
+def decade_band(birth_year: Any) -> str | None:
     """出生年份 → 十年段标签（1985 → "1980-1989"）；非法 → None。"""
     try:
         y = int(birth_year)
@@ -1918,14 +1924,14 @@ def birth_cohort_analysis(
             continue
         cells.setdefault((band, year), []).append((v, ss))
 
-    x_years = sorted({cy for (_, cy) in cells.keys()})
-    y_bands = sorted({band for (band, _) in cells.keys()})
+    x_years = sorted({cy for (_, cy) in cells})
+    y_bands = sorted({band for (band, _) in cells})
 
     cohorts: list[dict] = []
-    matrix: list[list[Optional[float]]] = []
+    matrix: list[list[float | None]] = []
     for band in y_bands:
         series: list[dict] = []
-        row: list[Optional[float]] = []
+        row: list[float | None] = []
         for year in x_years:
             cell = cells.get((band, year), [])
             if len(cell) < min_cell_points:

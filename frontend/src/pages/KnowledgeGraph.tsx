@@ -1,17 +1,21 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   Card, Row, Col, Select, Slider, Button, Spin, Empty, Alert, Drawer, Descriptions,
   Tag, Statistic, Space, Divider, message, Input, Tabs, List, Typography, Steps,
+  Modal, InputNumber,
 } from 'antd';
 import {
   ReloadOutlined, ApartmentOutlined, SearchOutlined, NodeIndexOutlined,
-  ThunderboltOutlined,
+  ThunderboltOutlined, MessageOutlined, NumberOutlined,
 } from '@ant-design/icons';
 import EChart from '../components/EChart';
+import LiteraturePicker from '../components/LiteraturePicker';
 import {
   getKgOverview, getKgOptions, getKgGraph,
   searchKgEntities, queryKgPath, getKgStats, triggerKgExtraction,
+  askKgQuestion,
 } from '../services/knowledgeGraph';
+import { getTaskStatus } from '../services/system';
 import type {
   KgGraphData, KgNode, KgOverviewData, KgOptionsData,
   KgSearchResult, KgPathResult, KgStatsData,
@@ -85,6 +89,54 @@ const KnowledgeGraph: React.FC = () => {
   const [kgStats, setKgStats] = useState<KgStatsData | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [extractResult, setExtractResult] = useState<{ processed: number; total_written: number; remaining: number; errors: string[] } | null>(null);
+  // 抽取进度提示（"点外卖"模式：提交后原地轮询，按钮显示实时进度）
+  const [kgTip, setKgTip] = useState('');
+  const kgTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stopKgPolling = () => { if (kgTimer.current) { clearInterval(kgTimer.current); kgTimer.current = null; } };
+  /** 轮询知识图谱抽取任务直到结束，期间更新行内进度提示 */
+  const pollKgTask = useCallback((taskId: string, doneCb: () => void, failCb: () => void) => {
+    stopKgPolling();
+    const tick = async () => {
+      try {
+        const st = await getTaskStatus(taskId);
+        const status = String(st.status || 'running');
+        setKgTip(`抽取中…已处理 ${st.processed ?? 0} / ${st.total ?? '-'} 篇`);
+        if (status === 'done') {
+          stopKgPolling();
+          setKgTip('');
+          const res = (st.result ?? {}) as { processed?: number; total_written?: number; errors?: string[] };
+          const processed = res.processed ?? 0;
+          if (processed > 0) {
+            message.success(`抽取完成：处理 ${processed} 篇，写入 ${res.total_written ?? 0} 条三元组`);
+          } else {
+            message.info((res.errors && res.errors.length) ? '抽取全部失败' : '无待处理文献');
+          }
+          doneCb();
+        } else if (status === 'failed') {
+          stopKgPolling();
+          setKgTip('');
+          message.error(`抽取失败: ${String(st.error || '未知错误')}`);
+          failCb();
+        }
+      } catch (e: any) {
+        if (e?.response?.status === 404) { stopKgPolling(); setKgTip(''); message.error('抽取任务不存在或已过期'); failCb(); }
+      }
+    };
+    setKgTip('已提交，正在排队...');
+    kgTimer.current = setInterval(() => void tick(), 3000);
+    void tick();
+  }, []);
+
+  useEffect(() => () => stopKgPolling(), []);
+  // 定向抽取弹窗状态
+  const [directOpen, setDirectOpen] = useState(false);
+  const [directIdsText, setDirectIdsText] = useState('');
+  const [directLimit, setDirectLimit] = useState<number>(10);
+  const [directLoading, setDirectLoading] = useState(false);
+  const [directResult, setDirectResult] = useState<{ processed: number; total_written: number; remaining: number; errors: string[] } | null>(null);
+  // 文献选择器 + 从列表勾选的文献（定向抽取目标）
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [directPicked, setDirectPicked] = useState<string[]>([]);
 
   // 搜索面板状态
   const [searchQ, setSearchQ] = useState('');
@@ -97,6 +149,12 @@ const KnowledgeGraph: React.FC = () => {
   const [pathTo, setPathTo] = useState<string | undefined>(undefined);
   const [pathResult, setPathResult] = useState<KgPathResult | null>(null);
   const [pathLoading, setPathLoading] = useState(false);
+
+  // 咨询问答状态
+  const [qaQuestion, setQaQuestion] = useState('');
+  const [qaLoading, setQaLoading] = useState(false);
+  const [qaHistory, setQaHistory] = useState<Array<{ question: string; answer: string; method: string; result_count: number }>>([]);
+  const [qaMethod, setQaMethod] = useState<string>('');
 
   // 加载筛选选项 + 概览 + 持久化统计
   useEffect(() => {
@@ -147,19 +205,41 @@ const KnowledgeGraph: React.FC = () => {
     setExtracting(true);
     setExtractResult(null);
     try {
-      const result = await triggerKgExtraction(5);
-      setExtractResult(result);
-      if (result.processed > 0) {
-        message.success(`抽取完成：处理 ${result.processed} 篇，写入 ${result.total_written} 条三元组`);
-        // 刷新统计
-        getKgStats().then(setKgStats).catch(() => {});
-      } else {
-        message.info(result.errors?.length ? '抽取全部失败' : '无待处理文献');
-      }
+      const resp = await triggerKgExtraction(5);
+      pollKgTask(
+        resp.task_id,
+        () => { setExtractResult({ processed: 0, total_written: 0, remaining: 0, errors: [] }); getKgStats().then(setKgStats).catch(() => {}); setExtracting(false); },
+        () => setExtracting(false),
+      );
     } catch {
-      message.error('触发抽取失败，请检查后端 ENABLE_KG_EXTRACTION 配置');
-    } finally {
+      setKgTip('');
       setExtracting(false);
+      message.error('触发抽取失败，请检查后端 ENABLE_KG_EXTRACTION 配置');
+    }
+  };
+
+  // 定向三元组抽取（按用户指定文献列表）
+  const handleDirectedExtract = async () => {
+    // 合并两种来源：文献列表勾选 + 手动粘贴 ID
+    const pasted = directIdsText.split(/[\s,]+/).filter((s) => s.trim()).map((s) => s.trim());
+    const unique = Array.from(new Set([...directPicked, ...pasted]));
+    if (!unique.length) {
+      message.warning('请先从文献列表勾选，或输入至少一个文献 ID');
+      return;
+    }
+    setDirectLoading(true);
+    setDirectResult(null);
+    try {
+      const resp = await triggerKgExtraction(directLimit, unique);
+      pollKgTask(
+        resp.task_id,
+        () => { setDirectResult({ processed: 0, total_written: 0, remaining: 0, errors: [] }); getKgStats().then(setKgStats).catch(() => {}); setDirectLoading(false); },
+        () => setDirectLoading(false),
+      );
+    } catch {
+      setKgTip('');
+      setDirectLoading(false);
+      message.error('触发抽取失败，请检查后端 ENABLE_KG_EXTRACTION 配置');
     }
   };
 
@@ -196,6 +276,33 @@ const KnowledgeGraph: React.FC = () => {
       setPathResult(null);
     } finally {
       setPathLoading(false);
+    }
+  };
+
+  // 咨询问答
+  const handleQaAsk = async () => {
+    if (!qaQuestion.trim()) {
+      message.warning('请输入问题');
+      return;
+    }
+    setQaLoading(true);
+    setQaMethod('');
+    try {
+      const result = await askKgQuestion(qaQuestion.trim());
+      setQaHistory((prev) => [
+        ...prev,
+        {
+          question: qaQuestion.trim(),
+          answer: result.answer,
+          method: result.method,
+          result_count: result.result_count,
+        },
+      ]);
+      setQaMethod(result.method);
+    } catch {
+      message.error('问答请求失败，请检查后端服务');
+    } finally {
+      setQaLoading(false);
     }
   };
 
@@ -480,7 +587,21 @@ const KnowledgeGraph: React.FC = () => {
                       size="large"
                       block
                     >
-                      {extracting ? '抽取中（每篇约 2 分钟）...' : '手动三元组抽取'}
+                      {extracting ? '抽取中...' : '手动三元组抽取'}
+                    </Button>
+                    {extracting && kgTip && (
+                      <div style={{ marginTop: 8, textAlign: 'center' }}>
+                        <Tag color="processing">{kgTip}</Tag>
+                      </div>
+                    )}
+                    <Button
+                      style={{ marginTop: 8 }}
+                      icon={<NumberOutlined />}
+                      onClick={() => setDirectOpen(true)}
+                      size="large"
+                      block
+                    >
+                      定向抽取
                     </Button>
                   </Col>
                 </Row>
@@ -499,6 +620,83 @@ const KnowledgeGraph: React.FC = () => {
                   <Alert style={{ marginTop: 12 }} type="info" showIcon message="持久化统计来自 LLM 抽取写入的实体和三元组，计算式推导的维度实体不计入" />
                 )}
               </Card>
+
+              {/* 定向抽取弹窗 */}
+              <Modal
+                open={directOpen}
+                title="定向三元组抽取"
+                onCancel={() => setDirectOpen(false)}
+                footer={null}
+                destroyOnClose
+              >
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <Text type="secondary">
+                    从文献列表勾选需要抽取的文献（推荐），或直接粘贴文献 ID（每行一个，支持下划线/逗号分隔）。仅处理这些文献中已存在缓存文本、且尚未抽取的部分（幂等，已抽取的会被跳过）。
+                  </Text>
+                  <Space align="center" style={{ width: '100%' }}>
+                    <Button icon={<NumberOutlined />} onClick={() => setPickerOpen(true)}>
+                      从文献列表选择
+                    </Button>
+                    {directPicked.length > 0 && (
+                      <>
+                        <Text type="secondary">已选 {directPicked.length} 篇：</Text>
+                        <Button size="small" danger onClick={() => setDirectPicked([])}>清空</Button>
+                      </>
+                    )}
+                  </Space>
+                  {directPicked.length > 0 && (
+                    <Tag closable onClose={() => setDirectPicked([])}>
+                      文献列表已勾选 {directPicked.length} 篇（将用于本次定向抽取）
+                    </Tag>
+                  )}
+                  <Input.TextArea
+                    rows={5}
+                    placeholder="也可在此粘贴文献 ID（UUID），每行 / 逗号一个——已从列表选择的无需填写"
+                    value={directIdsText}
+                    onChange={(e) => setDirectIdsText(e.target.value)}
+                  />
+                  <Space>
+                    <span>单次上限：</span>
+                    <InputNumber
+                      min={1}
+                      max={50}
+                      value={directLimit}
+                      onChange={(v) => setDirectLimit(v ?? 10)}
+                    />
+                    <span style={{ color: '#999' }}>（最多处理前 N 篇，超出的可在下次继续）</span>
+                  </Space>
+                  <Button
+                    type="primary"
+                    block
+                    loading={directLoading}
+                    onClick={handleDirectedExtract}
+                    icon={<ThunderboltOutlined />}
+                  >
+                    {directLoading ? '定向抽取中...' : '开始定向抽取'}
+                  </Button>
+                  {directLoading && kgTip && (
+                    <div style={{ marginTop: 8, textAlign: 'center' }}>
+                      <Tag color="processing">{kgTip}</Tag>
+                    </div>
+                  )}
+                  {directResult && (
+                    <Alert
+                      type={directResult.errors?.length ? 'warning' : 'success'}
+                      showIcon
+                      message={`处理 ${directResult.processed} 篇，写入 ${directResult.total_written} 条三元组，剩余 ${directResult.remaining} 篇未处理`}
+                      description={directResult.errors?.length ? `错误：${directResult.errors.join('；')}` : undefined}
+                    />
+                  )}
+                </Space>
+              </Modal>
+              {/* 文献选择器 */}
+              <LiteraturePicker
+                open={pickerOpen}
+                onClose={() => setPickerOpen(false)}
+                onConfirm={(ids) => {
+                  setDirectPicked((prev) => Array.from(new Set([...prev, ...ids])));
+                }}
+              />
             </>
           ),
         },
@@ -654,6 +852,76 @@ const KnowledgeGraph: React.FC = () => {
                       current={pathResult.path.length - 1}
                       items={pathSteps || []}
                     />
+                  </div>
+                )}
+              </Spin>
+            </Card>
+          ),
+        },
+        {
+          key: 'qa',
+          label: <span><MessageOutlined />咨询问答</span>,
+          children: (
+            <Card title={<Space><MessageOutlined />知识图谱咨询问答</Space>}>
+              <div style={{ marginBottom: 16 }}>
+                <Input.TextArea
+                  rows={3}
+                  placeholder={`输入问题，例如：\n- 北京麻疹阳性率是多少\n- 北京和上海麻疹阳性率对比\n- 哈尔滨医科大学做过哪些调查\n- 儿童麻疹抗体阳性率`}
+                  value={qaQuestion}
+                  onChange={(e) => setQaQuestion(e.target.value)}
+                  onPressEnter={(e) => { if (!e.shiftKey) { e.preventDefault(); handleQaAsk(); }}}
+                />
+                <Button
+                  type="primary"
+                  icon={<MessageOutlined />}
+                  onClick={handleQaAsk}
+                  loading={qaLoading}
+                  style={{ marginTop: 8 }}
+                >
+                  {qaLoading ? '思考中...' : '提问'}
+                </Button>
+                <Tag style={{ marginLeft: 8 }} color="blue">{qaMethod === 'template' ? '模板匹配' : qaMethod === 'llm' ? 'AI 回答' : qaMethod || ''}</Tag>
+              </div>
+
+              <Spin spinning={qaLoading}>
+                {qaHistory.length === 0 ? (
+                  <Empty description="输入问题开始咨询知识图谱" />
+                ) : (
+                  <div style={{ maxHeight: 500, overflow: 'auto' }}>
+                    {qaHistory.map((item, idx) => (
+                      <div key={idx} style={{ marginBottom: 16 }}>
+                        <Alert
+                          type="info"
+                          showIcon
+                          message={<Text strong>{item.question}</Text>}
+                          style={{ marginBottom: 4, whiteSpace: 'pre-wrap' }}
+                        />
+                        <Card
+                          size="small"
+                          style={{
+                            background: '#f6ffed',
+                            border: '1px solid #b7eb8f',
+                          }}
+                        >
+                          <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.8 }}>
+                            {item.answer.split('\n').map((line, i) => {
+                              if (line.startsWith('## ')) {
+                                return <Typography.Title key={i} level={5} style={{ marginTop: 8, marginBottom: 4 }}>{line.replace('## ', '')}</Typography.Title>;
+                              }
+                              if (line.startsWith('**') && line.endsWith('**')) {
+                                return <Text key={i} strong style={{ display: 'block' }}>{line.replace(/\*\*/g, '')}</Text>;
+                              }
+                              return <div key={i}>{line}</div>;
+                            })}
+                          </div>
+                          <Divider style={{ margin: '8px 0' }} />
+                          <Space size="small">
+                            <Tag color={item.method === 'template' ? 'green' : 'blue'}>{item.method === 'template' ? '模板匹配' : 'AI 回答'}</Tag>
+                            {item.result_count > 0 && <Text type="secondary">{item.result_count} 条数据</Text>}
+                          </Space>
+                        </Card>
+                      </div>
+                    ))}
                   </div>
                 )}
               </Spin>

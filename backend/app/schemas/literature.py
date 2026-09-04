@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -7,80 +7,83 @@ from pydantic import BaseModel
 
 class LiteratureCreate(BaseModel):
     title: str
-    title_en: Optional[str] = None
-    authors: Optional[str] = None
-    author_affiliations: Optional[str] = None
-    journal: Optional[str] = None
-    pub_year: Optional[int] = None
-    doi: Optional[str] = None
-    pmid: Optional[str] = None
-    abstract: Optional[str] = None
-    keywords: Optional[list[str]] = None
-    region: Optional[str] = None
-    province: Optional[str] = None
-    publication_types: Optional[list[str]] = None
-    source_db: Optional[str] = None
-    file_path: Optional[str] = None
+    title_en: str | None = None
+    authors: str | None = None
+    author_affiliations: str | None = None
+    journal: str | None = None
+    pub_year: int | None = None
+    doi: str | None = None
+    pmid: str | None = None
+    abstract: str | None = None
+    keywords: list[str] | None = None
+    region: str | None = None
+    province: str | None = None
+    publication_types: list[str] | None = None
+    source_db: str | None = None
+    file_path: str | None = None
     has_fulltext: bool = False
 
 
 class LiteratureUpdate(BaseModel):
-    title: Optional[str] = None
-    title_en: Optional[str] = None
-    authors: Optional[str] = None
-    author_affiliations: Optional[str] = None
-    journal: Optional[str] = None
-    pub_year: Optional[int] = None
-    doi: Optional[str] = None
-    pmid: Optional[str] = None
-    abstract: Optional[str] = None
-    keywords: Optional[list[str]] = None
-    region: Optional[str] = None
-    province: Optional[str] = None
-    publication_types: Optional[list[str]] = None
-    source_db: Optional[str] = None
-    has_fulltext: Optional[bool] = None
-    extraction_status: Optional[str] = None
-    extracted_count: Optional[int] = None
-    approved_count: Optional[int] = None
+    title: str | None = None
+    title_en: str | None = None
+    authors: str | None = None
+    author_affiliations: str | None = None
+    journal: str | None = None
+    pub_year: int | None = None
+    doi: str | None = None
+    pmid: str | None = None
+    abstract: str | None = None
+    keywords: list[str] | None = None
+    region: str | None = None
+    province: str | None = None
+    publication_types: list[str] | None = None
+    source_db: str | None = None
+    has_fulltext: bool | None = None
+    extraction_status: str | None = None
+    extracted_count: int | None = None
+    approved_count: int | None = None
 
 
 class LiteratureResponse(BaseModel):
     id: UUID
     title: str
-    title_en: Optional[str] = None
-    authors: Optional[str] = None
-    author_affiliations: Optional[str] = None
-    journal: Optional[str] = None
-    pub_year: Optional[int] = None
-    doi: Optional[str] = None
-    pmid: Optional[str] = None
-    abstract: Optional[str] = None
-    keywords: Optional[list[str]] = None
-    region: Optional[str] = None
-    province: Optional[str] = None
-    publication_types: Optional[list[str]] = None
-    source_db: Optional[str] = None
-    file_path: Optional[str] = None
-    pdf_hash: Optional[str] = None
+    title_en: str | None = None
+    authors: str | None = None
+    author_affiliations: str | None = None
+    journal: str | None = None
+    pub_year: int | None = None
+    doi: str | None = None
+    pmid: str | None = None
+    abstract: str | None = None
+    keywords: list[str] | None = None
+    region: str | None = None
+    province: str | None = None
+    publication_types: list[str] | None = None
+    source_db: str | None = None
+    file_path: str | None = None
+    pdf_hash: str | None = None
     has_fulltext: bool = False
-    file_format: Optional[str] = None
+    file_format: str | None = None
     extraction_status: str
     extracted_count: int
     approved_count: int
     # LLM 提取的 token 用量与费用统计
-    llm_model_used: Optional[str] = None
+    llm_model_used: str | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
-    llm_cost_usd: Optional[float] = None
+    llm_cost_usd: float | None = None
     llm_call_count: int = 0
-    llm_usage_detail: Optional[dict] = None
-    tags: Optional[list[dict]] = None
+    llm_usage_detail: dict | None = None
+    tags: list[dict] | None = None
+    # 知识库(KG)三元组抽取状态：kg_extracted=true 表示该文献已在知识库中抽取过
+    kg_extracted: bool | None = None
+    kg_triple_count: int = 0
     created_at: datetime
     updated_at: datetime
-    deleted_at: Optional[datetime] = None
-    deleted_by: Optional[UUID] = None
+    deleted_at: datetime | None = None
+    deleted_by: UUID | None = None
 
     model_config = {"from_attributes": True}
 
@@ -88,11 +91,11 @@ class LiteratureResponse(BaseModel):
 # ===== 查重与合并相关 Schema =====
 
 class CheckDuplicateRequest(BaseModel):
-    literature_id: Optional[UUID] = None
-    title: Optional[str] = None
-    doi: Optional[str] = None
-    authors: Optional[str] = None
-    pdf_hash: Optional[str] = None
+    literature_id: UUID | None = None
+    title: str | None = None
+    doi: str | None = None
+    authors: str | None = None
+    pdf_hash: str | None = None
 
 
 class DuplicateMatchItem(BaseModel):
@@ -102,7 +105,7 @@ class DuplicateMatchItem(BaseModel):
 
 
 class CheckDuplicateResponse(BaseModel):
-    literature_id: Optional[str] = None
+    literature_id: str | None = None
     duplicates: list[DuplicateMatchItem]
     total: int
 

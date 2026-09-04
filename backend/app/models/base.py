@@ -25,11 +25,13 @@ engine = create_async_engine(
     # 数据库写入保险（防文献提取长事务导致整表行锁被长时间占用、列表查询卡死）：
     # - statement_timeout：单条 SQL 执行超过 120s 主动终止，兜住异常慢语句
     # - idle_in_transaction_session_timeout：事务空转（语句已执行完却不提交/回滚）超过
-    #   120s 自动回滚并断开，防止 idle-in-transaction 长期持有行锁（本次卡死根因）
+    #   10 分钟自动回滚并断开。此前 120s 为早期"卡死"根因修复；现任务已确保 LLM 推理
+    #   期间不持有数据库连接（见 extract_task F13），故可将空转宽限延长到 10 分钟，
+    #   避免偶发长事务被过早强断；若再出现行锁积压可回调至 120s。
     connect_args={
         "server_settings": {
             "statement_timeout": "120000",
-            "idle_in_transaction_session_timeout": "120000",
+            "idle_in_transaction_session_timeout": "600000",
         }
     },
 )

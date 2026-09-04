@@ -16,11 +16,9 @@ import tempfile
 from pathlib import Path
 
 from app.config import settings
-from app.core.pdf_parser import extract_text as pdf_extract_text
-from app.core.processors import get_parser
-from app.core.processors import anydoc_parser
-from app.core.processors import pdf_inspector_parser
 from app.core.parse_trace import record as trace_record
+from app.core.pdf_parser import extract_text as pdf_extract_text
+from app.core.processors import anydoc_parser, get_parser, pdf_inspector_parser
 
 logger = logging.getLogger("uvicorn")
 
@@ -72,9 +70,7 @@ def _is_quality_acceptable(text: str) -> bool:
     if alnum / len(text) <= 0.10:
         return False
     digit_count = sum(c.isdigit() for c in text[:2000])
-    if digit_count < 3:
-        return False
-    return True
+    return not digit_count < 3
 
 
 def extract_text(file_bytes: bytes, file_ext: str = ".pdf") -> str:
@@ -186,9 +182,9 @@ def _caj_to_pdf_bytes(caj_bytes: bytes) -> bytes:
                 timeout=120,
             )
         except FileNotFoundError as e:
-            raise RuntimeError(f"caj2pdf 命令调用失败: {e}")
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("CAJ 转换超时（120s）")
+            raise RuntimeError(f"caj2pdf 命令调用失败: {e}") from e
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError("CAJ 转换超时（120s）") from e
 
         if not pdf_path.exists() or pdf_path.stat().st_size == 0:
             stderr = (result.stderr or "").strip()

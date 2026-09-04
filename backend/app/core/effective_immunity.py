@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional
 
 import numpy as np
 
@@ -28,12 +27,12 @@ _CONTACT_MATRIX_PATH = os.path.join(
 
 def load_contact_matrix() -> np.ndarray:
     """读取 china_contact_matrix.json，返回 n×n 的 numpy 接触矩阵（float）。"""
-    with open(_CONTACT_MATRIX_PATH, "r", encoding="utf-8") as f:
+    with open(_CONTACT_MATRIX_PATH, encoding="utf-8") as f:
         data = json.load(f)
     return np.asarray(data["matrix"], dtype=float)
 
 
-def map_age_to_group(age_min: Optional[int], age_max: Optional[int]) -> Optional[str]:
+def map_age_to_group(age_min: int | None, age_max: int | None) -> str | None:
     """把数据点的年龄区间 [age_min, age_max] 映射到 5 个接触矩阵年龄组之一。
 
     区间需完全落在某年龄组范围内才判定命中；无年龄信息（age_min 为 None）
@@ -41,7 +40,7 @@ def map_age_to_group(age_min: Optional[int], age_max: Optional[int]) -> Optional
     """
     if age_min is None:
         return None
-    for label, (lo, hi) in zip(AGE_GROUPS_CONTACT, _AGE_GROUP_RANGES):
+    for label, (lo, hi) in zip(AGE_GROUPS_CONTACT, _AGE_GROUP_RANGES, strict=False):
         if age_min >= lo and (age_max is not None and age_max <= hi):
             return label
     return None
@@ -82,10 +81,7 @@ def effective_barrier(age_group_positivity: dict, contact_matrix: np.ndarray) ->
     w_raw = np.real(eigvecs[:, idx])
     w = np.abs(w_raw)
     total = w.sum()
-    if total <= 0:
-        w = np.ones(n) / n
-    else:
-        w = w / total
+    w = np.ones(n) / n if total <= 0 else w / total
 
     group_weights: dict[str, float] = {
         AGE_GROUPS_CONTACT[i]: round(float(w[i]), 6) for i in range(n)

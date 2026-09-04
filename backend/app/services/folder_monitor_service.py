@@ -1,23 +1,21 @@
 """文件夹监控服务：定期扫描本地文件夹，自动导入新文件并触发提取。"""
 import asyncio
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.monitored_folder import MonitoredFolder, MonitoredFile
-from app.models.literature import Literature
-from app.models.base import async_session
 from app.config import settings
-from app.services.literature_service import upload_literature, compute_pdf_hash
-from app.services.extraction_service import trigger_extraction
-from app.core.crypto import encrypt, decrypt, is_encrypted
+from app.core.crypto import decrypt, encrypt, is_encrypted
 from app.core.document_parser import ALLOWED_EXTS
+from app.models.base import async_session
+from app.models.literature import Literature
+from app.models.monitored_folder import MonitoredFile, MonitoredFolder
+from app.services.extraction_service import trigger_extraction
+from app.services.literature_service import compute_pdf_hash, upload_literature
 
 logger = logging.getLogger("uvicorn")
 
@@ -32,7 +30,7 @@ async def list_monitored_folders(db: AsyncSession) -> list[MonitoredFolder]:
     return list(r.scalars().all())
 
 
-async def get_monitored_folder(db: AsyncSession, folder_id: uuid.UUID) -> Optional[MonitoredFolder]:
+async def get_monitored_folder(db: AsyncSession, folder_id: uuid.UUID) -> MonitoredFolder | None:
     r = await db.execute(select(MonitoredFolder).where(MonitoredFolder.id == folder_id))
     return r.scalar_one_or_none()
 
@@ -57,13 +55,13 @@ async def create_monitored_folder(db: AsyncSession, data: dict) -> MonitoredFold
     return folder
 
 
-async def update_monitored_folder(db: AsyncSession, folder_id: uuid.UUID, data: dict) -> Optional[MonitoredFolder]:
+async def update_monitored_folder(db: AsyncSession, folder_id: uuid.UUID, data: dict) -> MonitoredFolder | None:
     folder = await get_monitored_folder(db, folder_id)
     if not folder:
         return None
 
     # 如果更新了 folder_path，需要校验
-    if "folder_path" in data and data["folder_path"]:
+    if data.get("folder_path"):
         p = Path(data["folder_path"])
         if not p.exists() or not p.is_dir():
             raise ValueError(f"文件夹路径无效: {data['folder_path']}")
@@ -105,7 +103,7 @@ async def list_monitored_files(db: AsyncSession, folder_id: uuid.UUID) -> list[M
 
 # ===== 扫描逻辑 =====
 
-def _parse_extensions(ext_str: Optional[str]) -> set[str]:
+def _parse_extensions(ext_str: str | None) -> set[str]:
     """解析扩展名字符串为集合，默认返回 ALLOWED_EXTS。"""
     if not ext_str or not ext_str.strip():
         return ALLOWED_EXTS

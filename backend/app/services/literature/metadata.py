@@ -1,21 +1,15 @@
 import re
-from typing import Optional
 
 from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.literature import Literature
 from app.config import settings
+from app.models.literature import Literature
 from app.services.literature._common import (
-    logger,
-    LOCAL_STORAGE_DIR,
     _clean_filename_title,
     _read_literature_file_bytes,
-    _TITLE_EXT_PATTERN,
-    _TITLE_YEAR_PREFIX,
-    _TITLE_SUFFIX,
+    logger,
 )
-
 
 # 中文字符间下划线 → 斜杠（如 麻疹_风疹 → 麻疹/风疹）
 _TITLE_UNDERSCORE_TO_SLASH = re.compile(r"([\u4e00-\u9fff])_([\u4e00-\u9fff])")
@@ -48,7 +42,7 @@ def _propose_title_fix(raw: str) -> str:
 async def fix_titles(
     db: AsyncSession,
     dry_run: bool = True,
-    fixes: Optional[list[tuple[str, str]]] = None,
+    fixes: list[tuple[str, str]] | None = None,
 ) -> dict:
     """扫描并修正文件名来源的文献标题（年份前缀、中文字符间 `_` 等）。
 
@@ -56,7 +50,7 @@ async def fix_titles(
     返回修正数量。
     否则走原有 dry_run 逻辑，返回 {"preview_count": int, "fixed_count": int, "changes": list[dict]}。
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import select
 
     # 选择性提交模式
     if fixes is not None:
@@ -117,7 +111,7 @@ _TITLE_VERIFY_USER_PROMPT = (
 async def ai_verify_titles(
     db: AsyncSession,
     limit: int = 50,
-    model: Optional[str] = None,
+    model: str | None = None,
 ) -> dict:
     """用 LLM 从文献文档内容中提取真实标题，与数据库存储标题比对找出差异。
 
@@ -127,6 +121,7 @@ async def ai_verify_titles(
     返回 {"total": int, "verified": int, "mismatches": list[dict]}。
     """
     from difflib import SequenceMatcher
+
     from openai import AsyncOpenAI
 
     from app.core.document_parser import extract_text
@@ -214,7 +209,8 @@ async def ai_verify_titles(
         # 比对相似度
         stored = (lit.title or "").strip()
         # 简单归一化后比较
-        _norm = lambda s: re.sub(r"\s+", "", s).lower()
+        def _norm(s: str) -> str:
+            return re.sub(r"\s+", "", s).lower()
         sim = SequenceMatcher(None, _norm(stored), _norm(ai_title)).ratio()
         if sim < 0.6:
             mismatches.append({

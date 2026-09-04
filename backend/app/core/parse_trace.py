@@ -7,10 +7,9 @@
 用副本读写避免污染 context 默认值，跨并发任务安全。
 """
 import contextvars
-from typing import List
 
-_parse_path: contextvars.ContextVar[List[str]] = contextvars.ContextVar(
-    "parse_path_trace", default=[]
+_parse_path: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
+    "parse_path_trace", default=()
 )
 
 
@@ -27,7 +26,7 @@ def record(path: str) -> None:
         _parse_path.set(paths)
 
 
-def snapshot() -> List[str]:
+def snapshot() -> list[str]:
     """返回并清空当前记录，供日志汇总后一次消费。"""
     paths = list(_parse_path.get())
     _parse_path.set([])

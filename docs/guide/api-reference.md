@@ -167,6 +167,8 @@ LLM 生成免疫学报告 + 疫苗接种策略报告
 | GET | `/kg/query/path` | 路径推理（起点→终点，最大深度 3 跳） |
 | GET | `/kg/stats` | 实体类型统计分布 |
 | POST | `/kg/batch` | 批量触发 LLM 三元组抽取 |
+| POST | `/kg/extraction/trigger` | 手动触发三元组抽取任务（自动筛选未处理文献，串行 LLM 抽取） |
+| POST | `/kg/qa/ask` | 知识图谱咨询问答（模板命中或 LLM 兜底，回答绑定数据点证据） |
 
 ### 数据分析
 

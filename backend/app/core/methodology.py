@@ -9,7 +9,7 @@
 """
 
 from datetime import date
-from typing import Any, Optional
+from typing import Any
 
 # 模块显示名（中文）
 MODULE_NAMES = {
@@ -76,7 +76,7 @@ def _today() -> str:
     return date.today().isoformat()
 
 
-def _fmt_assumption(key: str, value: Any) -> Optional[str]:
+def _fmt_assumption(key: str, value: Any) -> str | None:
     """把假设键值转成可读中文片段；无法展示的值返回 None。"""
     if value is None or value == "" or value is False:
         return None

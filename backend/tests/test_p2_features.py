@@ -198,8 +198,8 @@ def test_source_text_endpoint():
 
     # 3a: 验证端点路由已注册
     import inspect
-    from app.api.v1 import literature
-    source = inspect.getsource(literature)
+    from app.api.v1.literature import file as literature_file
+    source = inspect.getsource(literature_file)
     if "get_source_text" in source and "/source-text" in source:
         _ok("溯源文本端点已注册")
     else:

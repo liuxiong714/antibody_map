@@ -1,21 +1,21 @@
 from fastapi import APIRouter, Depends
 
-from app.config import settings
 from app.api.deps import get_current_user
+from app.api.v1.analysis import router as analysis_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.dictionary import router as dictionary_router
 from app.api.v1.extraction import router as extraction_router
+from app.api.v1.folder_monitor import router as folder_monitor_router
+from app.api.v1.knowledge_graph import router as knowledge_graph_router
 from app.api.v1.literature import router as literature_router
 from app.api.v1.map_data import router as map_router
-from app.api.v1.search import router as search_router
-from app.api.v1.analysis import router as analysis_router
-from app.api.v1.report import router as report_router
-from app.api.v1.folder_monitor import router as folder_monitor_router
 from app.api.v1.model_config import router as model_config_router
 from app.api.v1.pubmed import router as pubmed_router
-from app.api.v1.tag import router as tag_router
+from app.api.v1.report import router as report_router
+from app.api.v1.search import router as search_router
 from app.api.v1.system import router as system_router
-from app.api.v1.knowledge_graph import router as knowledge_graph_router
+from app.api.v1.tag import router as tag_router
+from app.config import settings
 
 router = APIRouter()
 

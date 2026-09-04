@@ -1,15 +1,13 @@
 import csv
 import io
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.data_point import DataPoint
-
 from app.api.deps import get_db
+from app.models.data_point import DataPoint
 from app.schemas.common import ApiResponse
 from app.services import map_service
 
@@ -18,15 +16,15 @@ router = APIRouter()
 
 @router.get("/map/province-data", response_model=ApiResponse, summary="获取省级地图数据", description="获取省级抗体水平地图数据，支持按疾病、数据类型、省份、年龄、年份、性别、职业筛选")
 async def province_data(
-    disease: Optional[str] = Query(None, description="disease key"),
-    data_type: Optional[str] = Query(None, description="data type: seroprevalence | gmc"),
-    province: Optional[str] = Query(None, description="province filter"),
-    age_min: Optional[int] = Query(None, description="minimum age"),
-    age_max: Optional[int] = Query(None, description="maximum age"),
-    year_start: Optional[int] = Query(None, description="start year"),
-    year_end: Optional[int] = Query(None, description="end year"),
-    gender: Optional[str] = Query(None, description="gender"),
-    occupation: Optional[str] = Query(None, description="occupation"),
+    disease: str | None = Query(None, description="disease key"),
+    data_type: str | None = Query(None, description="data type: seroprevalence | gmc"),
+    province: str | None = Query(None, description="province filter"),
+    age_min: int | None = Query(None, description="minimum age"),
+    age_max: int | None = Query(None, description="maximum age"),
+    year_start: int | None = Query(None, description="start year"),
+    year_end: int | None = Query(None, description="end year"),
+    gender: str | None = Query(None, description="gender"),
+    occupation: str | None = Query(None, description="occupation"),
     db: AsyncSession = Depends(get_db),
 ):
     """get province-level map data"""
@@ -48,8 +46,8 @@ async def province_data(
 @router.get("/map/city-data", response_model=ApiResponse, summary="获取市级地图数据", description="获取指定省份下各城市的抗体水平地图数据，支持按疾病和数据类型筛选")
 async def city_data(
     province: str = Query(..., description="province name, required"),
-    disease: Optional[str] = Query(None, description="disease key"),
-    data_type: Optional[str] = Query(None, description="data type"),
+    disease: str | None = Query(None, description="disease key"),
+    data_type: str | None = Query(None, description="data type"),
     db: AsyncSession = Depends(get_db),
 ):
     """get city-level map data"""
@@ -64,8 +62,8 @@ async def city_data(
 
 @router.get("/map/summary", response_model=ApiResponse, summary="获取全国汇总", description="获取全国范围的抗体水平汇总数据，包括覆盖省份、数据点数、均值等统计信息")
 async def summary(
-    disease: Optional[str] = Query(None, description="disease key"),
-    data_type: Optional[str] = Query(None, description="data type"),
+    disease: str | None = Query(None, description="disease key"),
+    data_type: str | None = Query(None, description="data type"),
     db: AsyncSession = Depends(get_db),
 ):
     """get national summary"""
@@ -79,15 +77,15 @@ async def summary(
 
 @router.get("/map/yearly-data", response_model=ApiResponse, summary="获取年度数据", description="按年份分组返回各省抗体水平数据，用于时间序列动态展示，支持多维度筛选")
 async def yearly_province_data(
-    disease: Optional[str] = Query(None, description="disease key"),
-    data_type: Optional[str] = Query(None, description="data type: seroprevalence | gmc"),
-    province: Optional[str] = Query(None, description="province filter"),
-    age_min: Optional[int] = Query(None, description="minimum age"),
-    age_max: Optional[int] = Query(None, description="maximum age"),
-    year_start: Optional[int] = Query(None, description="start year"),
-    year_end: Optional[int] = Query(None, description="end year"),
-    gender: Optional[str] = Query(None, description="gender"),
-    occupation: Optional[str] = Query(None, description="occupation"),
+    disease: str | None = Query(None, description="disease key"),
+    data_type: str | None = Query(None, description="data type: seroprevalence | gmc"),
+    province: str | None = Query(None, description="province filter"),
+    age_min: int | None = Query(None, description="minimum age"),
+    age_max: int | None = Query(None, description="maximum age"),
+    year_start: int | None = Query(None, description="start year"),
+    year_end: int | None = Query(None, description="end year"),
+    gender: str | None = Query(None, description="gender"),
+    occupation: str | None = Query(None, description="occupation"),
     db: AsyncSession = Depends(get_db),
 ):
     """按年份分组返回各省抗体水平数据，用于时间序列动态展示"""
@@ -108,7 +106,7 @@ async def yearly_province_data(
 
 @router.get("/map/available-years", response_model=ApiResponse, summary="获取可用年份列表", description="获取数据中包含的所有可用年份，用于前端时间滑块配置，支持按疾病筛选")
 async def available_years(
-    disease: Optional[str] = Query(None, description="disease key"),
+    disease: str | None = Query(None, description="disease key"),
     db: AsyncSession = Depends(get_db),
 ):
     """获取可用年份列表，用于时间滑块"""
@@ -118,7 +116,7 @@ async def available_years(
 
 @router.get("/map/population-options", response_model=ApiResponse, summary="获取人群分类选项", description="获取所有已审核数据点中出现的人群分类列表，用于前端的职业下拉框动态选项，支持按疾病筛选")
 async def population_options(
-    disease: Optional[str] = Query(None, description="disease key, optional filter"),
+    disease: str | None = Query(None, description="disease key, optional filter"),
     db: AsyncSession = Depends(get_db),
 ):
     """获取所有已审核数据点中出现的人群分类列表。
@@ -132,15 +130,15 @@ async def population_options(
 
 @router.get("/map/export-data-points", summary="导出地图数据点CSV", description="导出已审核数据点为CSV文件，应用地图页面的筛选条件，便于下载分析")
 async def export_map_data_points(
-    disease: Optional[str] = Query(None, description="disease key"),
-    data_type: Optional[str] = Query(None, description="data type: seroprevalence | gmc"),
-    province: Optional[str] = Query(None, description="province filter"),
-    age_min: Optional[int] = Query(None, description="minimum age"),
-    age_max: Optional[int] = Query(None, description="maximum age"),
-    year_start: Optional[int] = Query(None, description="start year"),
-    year_end: Optional[int] = Query(None, description="end year"),
-    gender: Optional[str] = Query(None, description="gender"),
-    occupation: Optional[str] = Query(None, description="occupation"),
+    disease: str | None = Query(None, description="disease key"),
+    data_type: str | None = Query(None, description="data type: seroprevalence | gmc"),
+    province: str | None = Query(None, description="province filter"),
+    age_min: int | None = Query(None, description="minimum age"),
+    age_max: int | None = Query(None, description="maximum age"),
+    year_start: int | None = Query(None, description="start year"),
+    year_end: int | None = Query(None, description="end year"),
+    gender: str | None = Query(None, description="gender"),
+    occupation: str | None = Query(None, description="occupation"),
     db: AsyncSession = Depends(get_db),
 ):
     """导出已审核数据点为 CSV（地图页筛选条件）"""

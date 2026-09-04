@@ -1,90 +1,30 @@
 """Submodule of app.services.analysis (split from analysis_service.py)."""
 
 
-import logging
-import math
-from datetime import date
-from typing import Optional
 
 import scipy.stats as sps
-from sqlalchemy import select, func, distinct
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.data_point import DataPoint
-from app.models.literature import Literature
-from app.core.term_normalizer import normalize_disease, normalize_province
-from app.core.methodology import build_methodology_note
 from app.core.stats import (
-    geometric_mean_with_ci,
-    weighted_proportion_with_ci,
-    weighted_linear_trend,
-    gini,
-    coefficient_of_variation,
-    reliability_grade,
-    lowess,
     inverse_variance_meta,
 )
 from app.core.stats_engine import (
-    gmc_ci,
-    weighted_rate_ci,
-    fit_age_curve,
-    foi_from_curve,
     meta_proportion,
-    fit_catalytic_models,
-    cochran_armitage_trend,
-    two_proportion_test,
-    direct_standardize,
-    morans_i,
-    g_star,
-    classify_hotspot_cluster,
-    birth_cohort_analysis,
 )
-from app.core.goal_thresholds import GOAL_THRESHOLDS
-
+from app.models.data_point import DataPoint
+from app.models.literature import Literature
 from app.services.analysis._common import (
-    AGE_GROUPS,
-    CHINA_POP_STD_VERSION,
-    CHINA_PROVINCES,
-    DEFAULT_LIFE_EXPECTANCY,
-    NIP_COVERAGE_REFERENCE,
-    NON_ENDEMIC_LIFELONG,
-    R0_ASSUMPTION_NOTE,
-    R0_REFERENCE,
-    WHO_THRESHOLDS,
-    _CHINA_POP_2020,
-    _STD_BAND_MAP,
-    _STD_WEIGHT_BY_GROUP,
-    _barrier_status_from_rate,
-    _barrier_status_with_message,
     _build_base_query,
-    _build_catalytic_records,
-    _build_province_weights,
-    _calc_foi_from_sp,
-    _calc_gmc,
-    _calc_hit_from_r0,
-    _calc_r0_from_foi,
-    _calc_ve_from_sp,
     _calc_weighted_positivity,
-    _catalytic_r0_hit,
-    _compute_province_asr,
     _get_age_group_label,
-    _get_reference_coverage,
-    _implied_coverage_from_hit,
-    _load_disease_note,
-    _load_province_adjacency,
-    _load_std_pop,
-    _meta_merge_cell,
-    _midpoint_age,
-    _resolve_hit_target,
-    _split_vax_unvax,
-    logger,
 )
 
 
 async def get_meta_merge(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
     include_low_quality: bool = False,
 ) -> dict:
     """同省同病多研究 meta 合并（固定/随机效应）+ 异质性 I²。
@@ -180,12 +120,12 @@ async def get_meta_merge(
 async def get_meta_analysis(
     db: AsyncSession,
     disease: str,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
-    group_by: Optional[str] = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
+    group_by: str | None = None,
     include_low_quality: bool = False,
 ) -> dict:
     """多文献血清阳性率随机效应 Meta 分析（Freeman-Tukey 双反正弦变换）。
@@ -213,7 +153,7 @@ async def get_meta_analysis(
         )
         title_map = {str(lid): title for lid, title in lit_res.all()}
 
-    def _row_to_study(r: DataPoint) -> Optional[tuple]:
+    def _row_to_study(r: DataPoint) -> tuple | None:
         """转换 DataPoint 为 (x, n, label) 三元组。"""
         if r.value is None or not r.sample_size:
             return None
@@ -239,7 +179,7 @@ async def get_meta_analysis(
                 parts.append(_get_age_group_label(r.age_min, r.age_max) or "未分类")
         return "|".join(parts)
 
-    def _compute_q_between(groups: list[dict]) -> Optional[dict]:
+    def _compute_q_between(groups: list[dict]) -> dict | None:
         """亚组异质性 Q_between 检验（Cochran Q 分解）。
 
         Q_between = Q_total − Σ Q_within_j
@@ -288,7 +228,7 @@ async def get_meta_analysis(
                 studies.append(s)
         meta = meta_proportion(studies) if studies else meta_proportion([])
         per_study = []
-        for s, m in zip(studies, meta.get("per_study", [])):
+        for _, m in zip(studies, meta.get("per_study", []), strict=False):
             per_study.append(m)
 
         resp = {
@@ -342,8 +282,8 @@ async def get_meta_analysis(
 
 async def get_assay_heterogeneity(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
 ) -> dict:
     """按 assay（检测方法）分层的异质性对比。
 

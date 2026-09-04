@@ -1,11 +1,12 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { Card, Button, Input, Select, Spin, Empty, message, Tag, Divider, Table, Modal, Space, Tooltip, Tabs, Popconfirm } from 'antd';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { Card, Button, Input, Select, Spin, Empty, message, Tag, Divider, Table, Modal, Space, Tooltip, Tabs, Popconfirm, Dropdown } from 'antd';
 import { FileTextOutlined, EyeOutlined, DownloadOutlined, HistoryOutlined, ExperimentOutlined, EditOutlined, SaveOutlined, CloseOutlined, DeleteOutlined, ExclamationCircleOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import AntibodyReportForm from '../components/AntibodyReportForm';
 import StrategyReportForm from '../components/StrategyReportForm';
 import ReportContentView from '../components/ReportContentView';
 import TemplateManager from '../components/TemplateManager';
-import { generateReport, generateVaccinationStrategy, generateImmuneBarrier, listReports, getDownloadUrl, updateReport, deleteReport, getReport, listTemplates } from '../services/map';
+import { generateReport, generateVaccinationStrategy, generateImmuneBarrier, listReports, updateReport, deleteReport, getReport, listTemplates } from '../services/map';
+import { getTaskStatus } from '../services/system';
 import { ReportData, ReportRecord, ReportTemplate } from '../types';
 import dayjs from 'dayjs';
 
@@ -113,6 +114,66 @@ const Report: React.FC = () => {
 
   useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
+  // ---- 报告后台异步"点外卖"模式：提交后原地轮询任务状态，完成后自动展示报告 ----
+  const [genTip, setGenTip] = useState('AI 正在生成报告...');
+  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = () => {
+    if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
+  };
+
+  /** 轮询单任务直到 done/failed，自动解析历史并展示生成报告（沿用原同步拉起 ReportContentView 的行为） */
+  const pollReportTask = useCallback(async (taskId: string): Promise<void> => {
+    return new Promise<void>((resolve) => {
+      stopPolling();
+      const tick = async () => {
+        try {
+          const st = await getTaskStatus(taskId);
+          const status = String(st.status || 'running');
+          const progress = String(st.progress || '');
+          if (progress) setGenTip(`AI 正在生成报告…${progress}`);
+          if (status === 'done') {
+            stopPolling();
+            const rid = (st.result as { report_id?: string } | undefined)?.report_id;
+            if (rid) {
+              try {
+                const data = await getReport(rid);
+                // 详情接口返回 ReportRecord（content 可空）；生成报告必有内容，转成内容视图所需的 ReportData
+                setReport({
+                  id: data.id,
+                  title: data.title,
+                  content: data.content || '',
+                  report_type: data.report_type || 'antibody_analysis',
+                  literature_count: 0,
+                  data_point_count: 0,
+                  language: data.language || 'zh',
+                  llm_model: data.llm_model,
+                  generated_at: data.generated_at || new Date().toISOString(),
+                });
+              } catch (e) { console.error('[Report] 加载生成报告失败:', e); }
+            }
+            message.success('报告生成成功');
+            fetchHistory();
+            resolve();
+          } else if (status === 'failed') {
+            stopPolling();
+            message.error(`报告生成失败: ${String(st.error || '未知错误')}`);
+            resolve();
+          }
+          // running/queued: 继续轮询
+        } catch (e: any) {
+          // 任务可能刚结束尚未写入 Redis，或后端暂时不可达：稍后重试
+          const st = e?.response?.status;
+          if (st === 404) { stopPolling(); message.error('报告任务不存在或已过期'); resolve(); }
+        }
+      };
+      pollTimer.current = setInterval(() => void tick(), 3000);
+      void tick();
+    });
+  }, [fetchHistory]);
+
+  useEffect(() => () => stopPolling(), []);
+
   const handleGenerateAntibody = async () => {
     setLoading(true);
     setReport(null);
@@ -125,7 +186,7 @@ const Report: React.FC = () => {
       if (model) params.model = model;
       if (templateId) params.template_id = templateId;
       const resp = await generateReport(params);
-      setReport(resp);
+      await pollReportTask(resp.task_id);
       message.success('报告生成成功');
       fetchHistory();
     } catch (err: any) {
@@ -157,7 +218,7 @@ const Report: React.FC = () => {
       if (templateId) body.template_id = templateId;
       if (strategyModel) body.model = strategyModel;
       const resp = await generateVaccinationStrategy(body);
-      setReport(resp);
+      await pollReportTask(resp.task_id);
       message.success('疫苗接种策略报告生成成功');
       fetchHistory();
     } catch (err) { console.error('[Report] 策略报告生成失败:', err); message.error('报告生成失败'); }
@@ -176,7 +237,7 @@ const Report: React.FC = () => {
       if (barrierModel) params.model = barrierModel;
       if (templateId) params.template_id = templateId;
       const resp = await generateImmuneBarrier(params);
-      setReport(resp);
+      await pollReportTask(resp.task_id);
       message.success('免疫屏障评估报告生成成功');
       fetchHistory();
     } catch (err: any) {
@@ -200,9 +261,59 @@ const Report: React.FC = () => {
     setPreviewVisible(true);
   };
 
-  const handleDownload = (record: ReportRecord) => {
-    window.open(getDownloadUrl(record.id), '_blank');
+  /** 下载报告（format: md/docx/pdf）：下载端点位于受保护路由，需携带 JWT；故用 fetch 带
+   *  Authorization 头拉取，再以 blob+<a download> 触发浏览器原生保存对话框（可选择保存位置、可拖动）。
+   *  原 window.open(url) 因不带鉴权头返回 401，且新开页面易被当作弹窗拦截而"没反应"。 */
+  const handleDownload = async (record: ReportRecord, format: 'md' | 'docx' | 'pdf' = 'md') => {
+    const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+    try {
+      const resp = await fetch(`/api/v1/reports/${record.id}/download?format=${format}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => null);
+        throw new Error(body?.detail || `下载失败（${resp.status}）`);
+      }
+      const blob = await resp.blob();
+      let filename = `${record.title || '报告'}.${format}`;
+      const cd = resp.headers.get('Content-Disposition');
+      if (cd) {
+        const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+        if (m?.[1]) {
+          try { filename = decodeURIComponent(m[1]); } catch { filename = m[1]; }
+        }
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err: any) {
+      console.error('[Report] 下载报告失败:', err);
+      message.error(err?.message || '下载失败');
+    }
   };
+
+  /** 下载下拉：提供 Markdown/Word/PDF 三种格式选择 */
+  const DownloadDropdown: React.FC<{ record: ReportRecord; compact?: boolean }> = ({ record, compact }) => (
+    <Dropdown
+      menu={{
+        items: [
+          { key: 'md', label: 'Markdown (.md)' },
+          { key: 'docx', label: 'Word (.docx)' },
+          { key: 'pdf', label: 'PDF (.pdf)' },
+        ],
+        onClick: ({ key }) => { void handleDownload(record, key as 'md' | 'docx' | 'pdf'); },
+      }}
+    >
+      {compact
+        ? <Button size="small" icon={<DownloadOutlined />}>下载</Button>
+        : <Button icon={<DownloadOutlined />}>下载</Button>}
+    </Dropdown>
+  );
 
   const handleStartEdit = () => {
     if (!report) return;
@@ -266,13 +377,7 @@ const Report: React.FC = () => {
       render: (_: unknown, record: ReportRecord) => (
         <Space>
           <Tooltip title="预览"><Button size="small" icon={<EyeOutlined />} onClick={() => handlePreview(record)} /></Tooltip>
-          <Popconfirm
-            title="确认下载" description="确定要下载该报告吗？"
-            onConfirm={() => handleDownload(record)}
-            okText="确认下载" cancelText="取消"
-          >
-            <Tooltip title="下载"><Button size="small" icon={<DownloadOutlined />} /></Tooltip>
-          </Popconfirm>
+          <DownloadDropdown record={record} compact />
           <Popconfirm
             title="确认删除" description="删除后不可恢复，确定要删除该报告吗？"
             onConfirm={() => handleDelete(record)}
@@ -353,7 +458,7 @@ const Report: React.FC = () => {
         ]}
       />
 
-      <Spin spinning={isGenerating} tip="AI 正在生成报告...">
+      <Spin spinning={isGenerating} tip={genTip}>
         {!report ? (
           <Empty description="配置条件后点击生成报告" style={{ marginBottom: 16 }} />
         ) : (
@@ -375,13 +480,7 @@ const Report: React.FC = () => {
                   ) : (
                     <>
                       <Button icon={<EditOutlined />} onClick={handleStartEdit}>编辑</Button>
-                      <Popconfirm
-                        title="确认下载" description="确定要下载该报告吗？"
-                        onConfirm={() => { if (report?.id) handleDownload({ id: report.id, title: report.title } as ReportRecord); }}
-                        okText="确认下载" cancelText="取消"
-                      >
-                        <Button icon={<DownloadOutlined />}>下载</Button>
-                      </Popconfirm>
+                      <DownloadDropdown record={{ id: report.id, title: report.title } as ReportRecord} />
                       <Popconfirm
                         title="确认删除" description="删除后不可恢复，确定要删除该报告吗？"
                         onConfirm={() => { if (report?.id) handleDelete({ id: report.id, title: report.title } as ReportRecord); }}
@@ -430,12 +529,7 @@ const Report: React.FC = () => {
         open={previewVisible}
         onCancel={() => setPreviewVisible(false)}
         footer={[
-          <Popconfirm key="download" title="确认下载" description="确定要下载该报告吗？"
-            onConfirm={() => { if (previewReport) handleDownload(previewReport); }}
-            okText="确认下载" cancelText="取消"
-          >
-            <Button icon={<DownloadOutlined />}>下载</Button>
-          </Popconfirm>,
+          previewReport ? <DownloadDropdown key="download" record={previewReport} /> : null,
           <Button key="close" onClick={() => setPreviewVisible(false)}>关闭</Button>,
         ]}
         width={1100}

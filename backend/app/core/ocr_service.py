@@ -1,10 +1,10 @@
 import asyncio
-import logging
 import io
+import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any
 
 try:
     import pytesseract
@@ -37,7 +37,7 @@ LANGUAGE_MAP = {
 }
 
 
-def _resolve_tesseract_cmd() -> Optional[str]:
+def _resolve_tesseract_cmd() -> str | None:
     """解析 tesseract 可执行文件路径：配置 > PATH > Windows 常见安装位置"""
     cmd = (settings.TESSERACT_CMD or "").strip()
     if cmd:
@@ -60,7 +60,7 @@ def _resolve_tesseract_cmd() -> Optional[str]:
     return None
 
 
-def _resolve_tessdata_dir() -> Optional[str]:
+def _resolve_tessdata_dir() -> str | None:
     """解析 tessdata 目录：配置 > 可执行文件同目录下的 tessdata"""
     data_dir = (settings.TESSERACT_DATA_DIR or "").strip()
     if data_dir:
@@ -120,7 +120,7 @@ def preprocess_image(image_bytes: bytes) -> PIL_IMAGE_TYPE:
     return image
 
 
-def ocr_tesseract(image_bytes: bytes, lang: str = "chi_sim+eng") -> Optional[str]:
+def ocr_tesseract(image_bytes: bytes, lang: str = "chi_sim+eng") -> str | None:
     """使用 Tesseract 执行 OCR"""
     if not HAS_TESSERACT:
         logger.warning("Tesseract OCR 不可用（pytesseract 或 tesseract 可执行文件缺失），跳过 Tesseract OCR")
@@ -142,7 +142,7 @@ async def ocr_tesseract_with_timeout(
     image_bytes: bytes,
     lang: str = "chi_sim+eng",
     timeout: float = 60,
-) -> Optional[str]:
+) -> str | None:
     """带超时的 Tesseract OCR 包装：超时返回 None，不抛异常中断整篇。
 
     ocr_tesseract 是阻塞同步调用，用 asyncio.to_thread 放到独立线程中执行，
@@ -158,7 +158,7 @@ async def ocr_tesseract_with_timeout(
         return None
 
 
-def ocr_baidu(image_bytes: bytes, api_key: str, secret_key: str, lang: str = "CHN_ENG") -> Optional[str]:
+def ocr_baidu(image_bytes: bytes, api_key: str, secret_key: str, lang: str = "CHN_ENG") -> str | None:
     """使用百度 OCR API（备选方案）"""
     if not HAS_REQUESTS:
         logger.warning("requests 未安装，跳过百度 OCR")
@@ -166,7 +166,6 @@ def ocr_baidu(image_bytes: bytes, api_key: str, secret_key: str, lang: str = "CH
 
     try:
         import base64
-        import json
 
         access_token = _get_baidu_access_token(api_key, secret_key)
         if not access_token:
@@ -196,7 +195,7 @@ def ocr_baidu(image_bytes: bytes, api_key: str, secret_key: str, lang: str = "CH
         return None
 
 
-def _get_baidu_access_token(api_key: str, secret_key: str) -> Optional[str]:
+def _get_baidu_access_token(api_key: str, secret_key: str) -> str | None:
     """获取百度 API access_token"""
     try:
         url = "https://aip.baidubce.com/oauth/2.0/token"
@@ -215,7 +214,7 @@ def _get_baidu_access_token(api_key: str, secret_key: str) -> Optional[str]:
 
 
 def ocr_image(image_bytes: bytes, lang: str = "zh", fallback_to_baidu: bool = False,
-              baidu_api_key: str = "", baidu_secret_key: str = "") -> Optional[str]:
+              baidu_api_key: str = "", baidu_secret_key: str = "") -> str | None:
     """
     对单张图片执行 OCR（主入口）
     
@@ -230,10 +229,7 @@ def ocr_image(image_bytes: bytes, lang: str = "zh", fallback_to_baidu: bool = Fa
         识别到的文本，失败返回 None
     """
     lang_code = LANGUAGE_MAP.get(lang, "chi_sim")
-    if lang == "zh":
-        lang_code = "chi_sim+eng"
-    else:
-        lang_code = f"{lang_code}+eng"
+    lang_code = "chi_sim+eng" if lang == "zh" else f"{lang_code}+eng"
 
     result = ocr_tesseract(image_bytes, lang=lang_code)
 
@@ -251,7 +247,7 @@ def ocr_image(image_bytes: bytes, lang: str = "zh", fallback_to_baidu: bool = Fa
 
 def ocr_pdf_pages(page_images: list[bytes], lang: str = "zh",
                   fallback_to_baidu: bool = False,
-                  baidu_api_key: str = "", baidu_secret_key: str = "") -> Optional[str]:
+                  baidu_api_key: str = "", baidu_secret_key: str = "") -> str | None:
     """
     对 PDF 各页图片执行 OCR，拼接结果
     
@@ -285,7 +281,7 @@ def ocr_pdf_pages(page_images: list[bytes], lang: str = "zh",
     return None
 
 
-def get_ocr_status() -> Dict[str, Any]:
+def get_ocr_status() -> dict[str, Any]:
     """获取 OCR 服务状态"""
     return {
         "tesseract_available": HAS_TESSERACT,

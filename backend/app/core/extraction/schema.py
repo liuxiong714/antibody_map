@@ -145,7 +145,7 @@ EXTRACTION_JSON_SCHEMA = {
                 "additionalProperties": False,
                 "properties": {
                     "disease_name": {"type": ["string", "null"]},
-                    "province": {"type": ["string", "null"], "enum": CHINA_PROVINCE_NAMES + [None]},
+                    "province": {"type": ["string", "null"], "enum": [*CHINA_PROVINCE_NAMES, None]},
                     "city": {"type": ["string", "null"]},
                     "study_start_year": {"type": ["integer", "null"]},
                     "study_end_year": {"type": ["integer", "null"]},

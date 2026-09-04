@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 import json
 
+from app.core.extraction.json_parser import LLMJSONParseError
 from app.core.llm_extractor import LLMExtractor
 
 
@@ -51,13 +52,16 @@ class TestLLMExtractor:
         mock_message.content = "not valid json"
         mock_choice.message = mock_message
         mock_response.choices = [mock_choice]
+        mock_response.usage = MagicMock()
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 2
+        mock_response.usage.total_tokens = 12
         mock_client.chat.completions.create.return_value = mock_response
         mock_openai.return_value = mock_client
 
         extractor = LLMExtractor(model="deepseek-chat")
-        result = await extractor.extract("测试文本", language="zh")
-
-        assert result == []
+        with pytest.raises(LLMJSONParseError):
+            _ = await extractor.extract("测试文本", language="zh")
 
     @pytest.mark.asyncio
     @patch("app.core.extraction.llm_client.AsyncOpenAI")

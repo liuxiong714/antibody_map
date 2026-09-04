@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
-from sqlalchemy import ForeignKey, Integer, String, Text, DateTime, CheckConstraint, Numeric
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,11 +22,11 @@ class ExtractionHistory(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
     # 本次提取使用的模型
-    model: Mapped[Optional[str]] = mapped_column(String(100))
+    model: Mapped[str | None] = mapped_column(String(100))
     # 状态: success=提取到数据点, no_data=成功但无数据, failed=提取失败
     status: Mapped[str] = mapped_column(String(20), default="failed", index=True)
     data_point_count: Mapped[int] = mapped_column(Integer, default=0)
-    error_message: Mapped[Optional[str]] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
     # Token 用量
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
@@ -34,7 +34,7 @@ class ExtractionHistory(Base):
     llm_cost_usd: Mapped[Any] = mapped_column(Numeric(10, 6), default=0)
     llm_call_count: Mapped[int] = mapped_column(Integer, default=0)
     # 详细的模型用量信息（JSON）
-    llm_usage_detail: Mapped[Optional[dict]] = mapped_column(JSON)
+    llm_usage_detail: Mapped[dict | None] = mapped_column(JSON)
     # 本次 AI 提取时长（秒，3 位小数）。成功路径为 LLM 提取耗时；失败路径为从任务抢占到失败的整段耗时
     duration_seconds: Mapped[Any] = mapped_column(Numeric(12, 3), default=0)
 

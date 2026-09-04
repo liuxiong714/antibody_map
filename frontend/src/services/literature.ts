@@ -127,6 +127,8 @@ export interface ExtractionOptions {
   model: string;
   apiKey?: string;
   baseUrl?: string;
+  // 远程 API 模型配置 ID（对应 api_model_config 表），指定后后端按该配置读取 API Key/Base URL
+  modelConfigId?: string;
   clearExistingData?: boolean;
 }
 
@@ -134,6 +136,7 @@ export async function triggerExtraction(literatureId: string, options?: Extracti
   const body: Record<string, unknown> = {};
   if (options) {
     body.model = options.model;
+    body.model_config_id = options.modelConfigId;
     body.api_key = options.apiKey;
     body.base_url = options.baseUrl;
     if (options.clearExistingData !== undefined) {
@@ -163,6 +166,7 @@ export async function triggerBatchExtraction(
   };
   if (options) {
     body.model = options.model;
+    body.model_config_id = options.modelConfigId;
     body.api_key = options.apiKey;
     body.base_url = options.baseUrl;
     if (options.clearExistingData !== undefined) {

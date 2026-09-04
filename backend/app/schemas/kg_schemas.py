@@ -1,6 +1,6 @@
 """知识图谱 Pydantic 请求/响应模型。"""
 
-from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -25,7 +25,7 @@ class KGBatchRequest(BaseModel):
     """批量写入三元组请求。"""
     entities: list[KGEntityInput] = Field(default_factory=list)
     triples: list[KGTripleInput] = Field(default_factory=list)
-    literature_id: Optional[str] = None
+    literature_id: str | None = None
 
 
 class KGBatchResponse(BaseModel):

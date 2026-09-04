@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import contextlib
 import datetime
 import logging
 import re
@@ -16,7 +17,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-
+from sqlalchemy import func, select
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,10 @@ from app.api.deps import get_current_user, get_db, require_admin
 from app.config import settings
 from app.core.logging_config import LOGS_DIR
 from app.core.parser_status import get_parser_status
+from app.core.redis_background_tasks import active_tasks as _redis_active_tasks
+from app.core.redis_background_tasks import get_task as _redis_get_task
+from app.core.running_tasks import active as _running_active
+from app.models.literature import Literature
 from app.schemas.common import ApiResponse
 from app.services import goal_threshold_service
 
@@ -98,6 +103,75 @@ async def system_info(_user=Depends(get_current_user)):
     )
 
 
+@router.get("/active-tasks", response_model=ApiResponse, summary="获取当前后台运行任务", description="返回当前正在执行的后台/长任务状态：文献AI信息提取、知识图谱抽取、报告生成等")
+async def system_active_tasks(_user=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """聚合当前后台/长任务运行状态，供系统设置「任务状态」页展示。
+
+    - 文献AI信息提取：由 Celery worker 在独立进程后台执行，以 DB 中 queued/processing 计数为准（跨进程可靠）
+    - 报告生成 / 知识图谱抽取：FastAPI 进程内长协程，从进程内运行注册表读取（长时间运行或异常中断时，
+      /system/active-tasks 返回的 updated_at 与前端轮询能反映其仍在/仍在存续）
+    """
+    lit_counts = {"processing": 0, "queued": 0}
+    try:
+        rows = await db.execute(
+            select(Literature.extraction_status, func.count())
+            .where(Literature.extraction_status.in_(["queued", "processing"]))
+            .group_by(Literature.extraction_status)
+        )
+        for status, c in rows.all():
+            lit_counts.setdefault(status, 0)
+            lit_counts[status] = c
+    except Exception:
+        logger.warning("查询文献提取任务状态失败", exc_info=True)
+
+    report_items = await _redis_active_tasks("report_generation") or _running_active("report_generation")
+    kg_items = await _redis_active_tasks("kg_extraction") or _running_active("kg_extraction")
+
+    tasks = [
+        {
+            "type": "literature_extraction",
+            "name": "文献AI信息提取",
+            "status": "running" if (lit_counts["processing"] or lit_counts["queued"]) else "idle",
+            "processing": lit_counts["processing"],
+            "queued": lit_counts["queued"],
+            "items": [],
+        },
+        {
+            "type": "kg_extraction",
+            "name": "知识图谱抽取",
+            "status": "running" if kg_items else "idle",
+            "running": len(kg_items),
+            "items": kg_items,
+        },
+        {
+            "type": "report_generation",
+            "name": "报告生成",
+            "status": "running" if report_items else "idle",
+            "running": len(report_items),
+            "items": report_items,
+        },
+    ]
+    return ApiResponse(
+        data={
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            "tasks": tasks,
+        }
+    )
+
+
+@router.get("/tasks/{task_id}", response_model=ApiResponse, summary="查询单个后台任务状态", description="按任务ID查询报告生成/知识图谱抽取的实时状态与结果（前端原地轮询进度用）")
+async def system_task_detail(task_id: str, _user=Depends(get_current_user)):
+    """读取某个后台任务（报告生成/知识图谱抽取）的状态。
+
+    任务完成后其 id 会从 active 集合移除（不再出现在 /system/active-tasks），
+    但状态仍保留在 Redis 中一段时间，前端据此轮询拿到最终 result（如 report_id）。
+    """
+    state = await _redis_get_task(task_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return ApiResponse(data={"task_id": task_id, **state})
+
+
 @router.get("/logs", response_model=ApiResponse, summary="列出日志文件", description="列出日志目录下的所有日志文件（名称、大小、修改时间），按修改时间倒序")
 async def list_log_files(_user=Depends(get_current_user)):
     """列出日志目录下的所有 .log 文件。"""
@@ -136,7 +210,7 @@ async def read_log_content(
         raise HTTPException(status_code=400, detail=f"非法的日志级别: {level}")
 
     # 只读取文件尾部，避免大文件整体加载
-    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+    with open(file_path, encoding="utf-8", errors="replace") as f:
         f.seek(0, 2)
         size = f.tell()
         read_from = max(0, size - 256 * 1024)  # 最多向后回读 256KB 足够覆盖数千行
@@ -154,13 +228,8 @@ async def read_log_content(
     for idx, line in enumerate(tail_lines):
         line_no = idx + 1
         m = _LOG_LINE_RE.match(line)
-        if m:
-            lv = m.group("level").strip().upper()
-            rest = m.group("rest")
-        else:
-            # 非标准行（如多行堆栈），归为所属上一级别，仅做关键字过滤
-            lv = "INFO"
-            rest = line
+        # 非标准行（如多行堆栈），归为所属上一级别，仅做关键字过滤
+        lv = m.group("level").strip().upper() if m else "INFO"
 
         if level_upper and lv != level_upper:
             continue
@@ -201,7 +270,7 @@ async def backup_database(_user=Depends(get_current_user)):
             backup_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             logger.error(f"[备份] 创建备份目录失败: {backup_dir} error={e}")
-            raise HTTPException(status_code=500, detail=f"备份目录不可写: {e}")
+            raise HTTPException(status_code=500, detail=f"备份目录不可写: {e}") from e
 
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         dump_file = backup_dir / f"antibody_map_backup_{ts}.sql"
@@ -230,7 +299,7 @@ async def backup_database(_user=Depends(get_current_user)):
                 _, stderr = await asyncio.wait_for(
                     proc.communicate(), timeout=settings.BACKUP_TIMEOUT
                 )
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
             if proc:
                 proc.kill()
                 await proc.wait()
@@ -238,13 +307,13 @@ async def backup_database(_user=Depends(get_current_user)):
             raise HTTPException(
                 status_code=500,
                 detail=f"备份超时（>{settings.BACKUP_TIMEOUT}s），请稍后重试",
-            )
+            ) from e
         except OSError as e:
             logger.error(f"[备份] pg_dump 执行失败（可能未安装 postgresql-client）: {e}")
             raise HTTPException(
                 status_code=500,
                 detail="备份工具不可用：容器缺少 pg_dump，请联系管理员",
-            )
+            ) from e
 
         if proc.returncode != 0:
             err_text = stderr.decode("utf-8", errors="replace").strip()
@@ -291,10 +360,8 @@ def _safe_backup_path(filename: str) -> Path:
 async def list_backups(_user=Depends(get_current_user)):
     backup_dir = Path(settings.BACKUP_DIR)
     files = []
-    try:
+    with contextlib.suppress(OSError):
         backup_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
     try:
         for f in sorted(backup_dir.glob("*.sql"), key=lambda x: x.stat().st_mtime, reverse=True):
             st = f.stat()
@@ -370,14 +437,14 @@ async def restore_database(
         _, stderr = await asyncio.wait_for(
             proc.communicate(combined), timeout=settings.BACKUP_TIMEOUT
         )
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as e:
         if proc:
             proc.kill()
             await proc.wait()
-        raise HTTPException(status_code=500, detail=f"还原超时（>{settings.BACKUP_TIMEOUT}s）")
+        raise HTTPException(status_code=500, detail=f"还原超时（>{settings.BACKUP_TIMEOUT}s）") from e
     except OSError as e:
         logger.error(f"[还原] psql 执行失败: {e}")
-        raise HTTPException(status_code=500, detail="还原工具不可用：容器缺少 psql，请联系管理员")
+        raise HTTPException(status_code=500, detail="还原工具不可用：容器缺少 psql，请联系管理员") from e
 
     if proc.returncode != 0:
         err_text = stderr.decode("utf-8", errors="replace").strip()
@@ -422,7 +489,7 @@ async def upsert_goal_threshold(
             updated_by=str(getattr(_user, "id", "")),
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return ApiResponse(message="阈值已更新", data=data)
 
 

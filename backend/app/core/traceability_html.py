@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import html
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -23,27 +23,27 @@ logger = logging.getLogger(__name__)
 class TracePoint:
     """溯源数据点的最小表示（从 DataPoint ORM/字典转换而来）"""
     dp_id: str
-    disease: Optional[str]
-    province: Optional[str]
-    city: Optional[str]
-    data_type: Optional[str]
-    value: Optional[float]
-    unit: Optional[str]
-    sample_size: Optional[int]
-    age_min: Optional[int]
-    age_max: Optional[int]
-    collection_year: Optional[int]
-    confidence: Optional[str]
-    review_status: Optional[str]
-    source_page: Optional[int]
-    source_context: Optional[str]
-    source_char_start: Optional[int]
-    source_char_end: Optional[int]
+    disease: str | None
+    province: str | None
+    city: str | None
+    data_type: str | None
+    value: float | None
+    unit: str | None
+    sample_size: int | None
+    age_min: int | None
+    age_max: int | None
+    collection_year: int | None
+    confidence: str | None
+    review_status: str | None
+    source_page: int | None
+    source_context: str | None
+    source_char_start: int | None
+    source_char_end: int | None
     is_grounded: bool
-    estimate_type: Optional[str]
+    estimate_type: str | None
 
 
-def _confidence_color(confidence: Optional[str]) -> str:
+def _confidence_color(confidence: str | None) -> str:
     """置信度 → 边框/底色"""
     c = (confidence or "medium").lower()
     if c == "high":
@@ -53,7 +53,7 @@ def _confidence_color(confidence: Optional[str]) -> str:
     return "#ca8a04"  # 中：黄
 
 
-def _review_badge(status: Optional[str]) -> str:
+def _review_badge(status: str | None) -> str:
     """审核状态徽章"""
     s = (status or "pending").lower()
     colors = {
@@ -66,7 +66,7 @@ def _review_badge(status: Optional[str]) -> str:
     return f'<span class="badge" style="color:{fg};background:{bg}">{html.escape(label)}</span>'
 
 
-def _estimate_badge(estimate_type: Optional[str]) -> str:
+def _estimate_badge(estimate_type: str | None) -> str:
     """主估计/子估计徽章"""
     t = (estimate_type or "primary").lower()
     if t == "subgroup":

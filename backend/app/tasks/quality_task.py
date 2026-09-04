@@ -8,8 +8,8 @@ from sqlalchemy import select
 from app.models.base import async_session
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
-from app.tasks.celery_app import celery_app
 from app.tasks.async_runner import run_async
+from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger("celery.task")
 
@@ -83,4 +83,4 @@ def score_data_point_task(self, data_point_id: str):
         return run_async(_run())
     except Exception as e:
         logger.error(f"数据点质量打分失败 dp={data_point_id}: {e}")
-        raise self.retry(exc=e)
+        raise self.retry(exc=e) from e

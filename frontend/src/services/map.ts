@@ -1,6 +1,6 @@
 import api from './api';
 import { cachedGet, clearApiCache } from '../lib/apiCache';
-import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportData, ReportRecord, ReportTemplate, ReportSection, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, ApiModelConfig, LocalModelConfig, ModelsListData, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, BirthCohortResponse, MetaMergeResponse, MetaAnalysisResponse, AssayHeterogeneityResponse, SimulationResponse, CoverageReviewResult, ReviewStatsResult, SpatialHotspotsResponse, AntigenicMapData, TiterTableListData } from '../types';
+import type { ImmuneBarrierData, MapDataPoint, PagedResponse, ReportRecord, ReportTemplate, ReportSection, YearlyMapData, DataGapAnalysisResult, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, ApiModelConfig, LocalModelConfig, ModelsListData, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, BirthCohortResponse, MetaMergeResponse, MetaAnalysisResponse, AssayHeterogeneityResponse, SimulationResponse, CoverageReviewResult, ReviewStatsResult, SpatialHotspotsResponse, AntigenicMapData, TiterTableListData } from '../types';
 
 // 拦截器已将 ApiResponse.data 提升到 resp.data，此处解包 AxiosResponse
 
@@ -190,19 +190,24 @@ export function clearAnalysisApiCache() {
   clearApiCache('/analysis/');
 }
 
+export interface ReportSubmitResp {
+  task_id: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+}
+
 export async function generateReport(params: Record<string, unknown>) {
-  // 报告生成需要调用 LLM，超时时间放宽到 600s（匹配后端 LLM_REQUEST_TIMEOUT）
-  const { data } = await api.post<ReportData>('/reports/generate', null, { params, timeout: 600_000 });
+  // 报告生成已改为后台异步任务（"点外卖"）：提交后立即返回任务 id，前端轮询任务状态拿进度与结果
+  const { data } = await api.post<ReportSubmitResp>('/reports/generate', null, { params });
   return data;
 }
 
 export async function generateVaccinationStrategy(body: Record<string, unknown>) {
-  const { data } = await api.post<ReportData>('/reports/generate-vaccination-strategy', body, { timeout: 600_000 });
+  const { data } = await api.post<ReportSubmitResp>('/reports/generate-vaccination-strategy', body);
   return data;
 }
 
 export async function generateImmuneBarrier(params: Record<string, unknown>) {
-  const { data } = await api.post<ReportData>('/reports/generate-immune-barrier', null, { params, timeout: 600_000 });
+  const { data } = await api.post<ReportSubmitResp>('/reports/generate-immune-barrier', null, { params });
   return data;
 }
 

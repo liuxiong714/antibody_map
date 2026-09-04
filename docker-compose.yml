@@ -85,7 +85,9 @@ services:
       # 日志/时间与宿主机一致（北京时间）
       TZ: Asia/Shanghai
       # 容器内通过服务名访问基础设施
-      DATABASE_URL: ${DATABASE_URL:?}
+      # 注意：不能沿用 .env 的 DATABASE_URL（其 host 是为 Windows 本机直连配置的
+      # localhost，容器内 localhost 是本服务自身）。这里显式覆盖为服务名 postgres:5432。
+      DATABASE_URL: postgresql+asyncpg://antibody:${POSTGRES_PASSWORD}@postgres:5432/antibody_map
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       MINIO_ENDPOINT: minio:9000
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
@@ -124,8 +126,8 @@ services:
       - ./backend/data:/app/backend/data
       - ./backend/logs:/app/backend/logs
       - ./backups:/app/backend/backups
-      # 文件夹监控目录
-      - /mnt/e/01-liuxiong/antibody_map_ref/ref:/app/monitor/ref
+      # 文件夹监控目录（宿主机路径在 .env 中 MONITORED_REF_HOST_PATH 配置）
+      - ${MONITORED_REF_HOST_PATH:-/mnt/e/01-liuxiong/antibody_map_ref/ref}:/app/monitor/ref
     networks:
       - antibody-net
 
@@ -173,8 +175,8 @@ services:
       - ./backend/logs:/app/backend/logs
       # MinerU 模型缓存持久化：挂载到宿主机，容器重建后无需重新下载模型（约 2.2G）
       - ./backend/data/mineru_cache:/root/.cache/modelscope
-      # 文件夹监控目录
-      - /mnt/e/01-liuxiong/antibody_map_ref/ref:/app/monitor/ref
+      # 文件夹监控目录（宿主机路径在 .env 中 MONITORED_REF_HOST_PATH 配置）
+      - ${MONITORED_REF_HOST_PATH:-/mnt/e/01-liuxiong/antibody_map_ref/ref}:/app/monitor/ref
     # 内存上限 8g：MinerU + torch 推理 + 2 并发 Celery worker 峰值内存可达数 GB
     deploy:
       resources:
@@ -274,7 +276,7 @@ services:
     environment:
       # 建议在 .env 中设置 GRAFANA_ADMIN_PASSWORD，避免使用默认口令
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?}
     volumes:
       - grafana_data:/var/lib/grafana
     restart: unless-stopped

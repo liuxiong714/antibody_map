@@ -1,6 +1,5 @@
 import logging
 import re
-from typing import Optional
 
 from app.config import settings
 
@@ -37,7 +36,7 @@ def detect_language(text: str) -> str:
     return "en"
 
 
-def truncate(text: str, max_chars: Optional[int] = None) -> str:
+def truncate(text: str, max_chars: int | None = None) -> str:
     """截断文本到指定字符数以内。
 
     默认使用 settings.TEXT_PREPROCESS_MAX_CHARS（600000），仅作极长文本的安全兜底；
@@ -58,10 +57,6 @@ def truncate(text: str, max_chars: Optional[int] = None) -> str:
 def extract_references(text: str) -> list[str]:
     """提取参考文献列表"""
     # 匹配参考文献常见的起始模式：[1] 1. 参考文献 (1)
-    ref_pattern = re.compile(
-        r"(?:^|\n)\s*(?:\[\d+\]|\d+[\.\)]\s*|参考文献\s*)",
-        re.MULTILINE,
-    )
     refs = []
     # 先找"参考文献"标记位置
     ref_section_match = re.search(

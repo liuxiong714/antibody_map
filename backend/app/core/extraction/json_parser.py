@@ -204,7 +204,6 @@ class JSONParserMixin:
         # 尝试逐字符检查问题
         try:
             import json as json_module
-            import traceback
             for i in range(len(content_clean)):
                 try:
                     json_module.loads(content_clean[:i+1])

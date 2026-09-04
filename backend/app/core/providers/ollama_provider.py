@@ -1,8 +1,67 @@
 """Ollama (本地 LLM) Provider"""
 from __future__ import annotations
 
+import logging
+
+import httpx
+
 from app.config import settings
 from app.core.providers.base import BaseLLMProvider, register_provider
+
+logger = logging.getLogger("uvicorn")
+
+
+def get_ollama_root() -> str:
+    """由 OLLAMA_BASE_URL 推导 Ollama 服务根地址（去掉末尾的 /v1 等子路径）。"""
+    base = settings.OLLAMA_BASE_URL.rstrip("/")
+    # 常见的 OpenAI 兼容路径为 http://host:11434/v1，/api 端点挂在根地址下
+    if base.endswith("/v1"):
+        return base[:-3]
+    return base
+
+
+async def fetch_installed_model_names(timeout: float = 3.0) -> set[str] | None:
+    """查询 Ollama 已安装（已 pull）的模型名集合。
+
+    - 走 Ollama 原生 /api/tags 接口；
+    - 成功返回小写的模型名集合；Ollama 连接失败/不可达返回 None（表示"未知"），
+      由调用方决定如何展示，避免因 Ollama 未启动导致本地模型管理页面异常。
+    """
+    url = f"{get_ollama_root()}/api/tags"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+        names = set()
+        for model in data.get("models", []):
+            name = (model.get("name") or "").strip().lower()
+            if name:
+                names.add(name)
+        return names
+    except Exception as exc:
+        logger.warning(f"[ollama_provider] 无法获取已安装模型列表 {url}: {exc}")
+        return None
+
+
+def is_model_installed(model_name: str, installed: set[str]) -> bool:
+    """判断某个本地模型配置是否已在 Ollama 下载。
+
+    规则：精确匹配；配置未带 tag（如 qwen2.5）时，
+    兼容 Ollama 默认 tag latest 及任一同名不同 tag 的模型（取冒号前缀）。
+    """
+    mn = (model_name or "").strip().lower()
+    if not mn:
+        return False
+    if not installed:
+        return False
+    if mn in installed:
+        return True
+    if ":" in mn:
+        return mn in installed
+    if f"{mn}:latest" in installed:
+        return True
+    return any(n.startswith(f"{mn}:") for n in installed)
 
 
 @register_provider
@@ -17,14 +76,14 @@ class OllamaProvider(BaseLLMProvider):
     """
 
     name = "ollama"
-    model_prefixes = [
+    model_prefixes = (
         "ollama/",
         "llama",
         "mistral",
         "gemma",
         "glm4",
         "phi",
-    ]
+    )
 
     @classmethod
     def matches(cls, model: str) -> bool:

@@ -1,8 +1,6 @@
 """Qwen (通义千问) Provider"""
 from __future__ import annotations
 
-from typing import Optional
-
 from app.config import settings
 from app.core.providers.base import BaseLLMProvider, register_provider
 
@@ -12,7 +10,7 @@ class QwenProvider(BaseLLMProvider):
     """阿里通义千问 Provider（通过 DashScope OpenAI 兼容接口）"""
 
     name = "qwen"
-    model_prefixes = ["qwen"]
+    model_prefixes = ("qwen",)
 
     @classmethod
     def matches(cls, model: str) -> bool:
@@ -37,7 +35,7 @@ class QwenProvider(BaseLLMProvider):
         return False
 
     @classmethod
-    def get_pricing(cls) -> Optional[tuple[float, float]]:
+    def get_pricing(cls) -> tuple[float, float] | None:
         """Qwen 默认定价（美元/百万 token，DashScope 参考值）。
         各子模型（turbo/plus/max）单价不同，精确计价由 LLMExtractor._MODEL_PRICING_OVERRIDES 处理。
         这里返回 turbo 作为兜底默认值。

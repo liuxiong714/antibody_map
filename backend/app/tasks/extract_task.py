@@ -1,45 +1,41 @@
-import logging
-import os
+import contextlib
 import hashlib
 import json
+import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
-from sqlalchemy import select, func, delete, update
+from sqlalchemy import delete, select, update
 
 from app.config import settings
-from app.core.llm_extractor import LLMExtractor, _classify_llm_error
 from app.core.document_parser import extract_text
-from app.core.pdf_table_parser import extract_tables_markdown
-from app.core.parse_trace import reset as trace_reset, snapshot as trace_snapshot
-from app.core.text_preprocessor import preprocess
-from app.models.base import async_session
-from app.models.data_point import DataPoint
-from app.models.literature import Literature
-from app.models.extraction_history import ExtractionHistory
-from app.models.titer_table import TiterTable
-from app.models.api_model_config import ApiModelConfig
-from app.services.quality_service import score_data_point as _score_data_point
-from app.services.crossref_service import extract_doi_from_text
-from app.tasks.celery_app import celery_app
-from app.tasks.async_runner import run_async
-from app.core.minio_client import get_minio_client
-from app.core.term_normalizer import normalize_province, CHINA_PROVINCE_NAMES
 from app.core.extraction_grounding import (
     ground_extraction,
     validate_extraction_schema,
-    validate_data_type as _validate_data_type,
-    validate_confidence as _validate_confidence,
-    validate_review_status as _validate_review_status,
-    ValidationFlags,
 )
+from app.core.llm_extractor import LLMExtractor, _classify_llm_error
+from app.core.minio_client import get_minio_client
+from app.core.parse_trace import reset as trace_reset
+from app.core.parse_trace import snapshot as trace_snapshot
+from app.core.pdf_table_parser import extract_tables_markdown
+from app.core.term_normalizer import CHINA_PROVINCE_NAMES, normalize_province
+from app.core.text_preprocessor import preprocess
+from app.models.api_model_config import ApiModelConfig
+from app.models.base import async_session
+from app.models.data_point import DataPoint
+from app.models.extraction_history import ExtractionHistory
+from app.models.literature import Literature
+from app.models.titer_table import TiterTable
+from app.services.crossref_service import extract_doi_from_text
+from app.services.quality_service import score_data_point as _score_data_point
+from app.tasks.async_runner import run_async
+from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger("celery.task")
 
 
-def _compute_age_group(age_min: Optional[int], age_max: Optional[int]) -> Optional[str]:
+def _compute_age_group(age_min: int | None, age_max: int | None) -> str | None:
     """A4：根据 age_min/age_max 生成标准年龄组标签，便于前端筛选和地图聚合。
 
     规则：
@@ -70,10 +66,8 @@ def _stop_heartbeat_for(literature_id) -> None:
     entry = _heartbeat_registry.pop(str(literature_id), None)
     if not entry:
         return
-    try:
+    with contextlib.suppress(Exception):
         entry["stop"].set()  # 循环在下一次 tick 检测到 Event 后自行退出
-    except Exception:
-        pass
 
 
 # ===== 提取结果缓存（降低 LLM API 成本，调度层实现，不侵入 LLMExtractor）=====
@@ -113,7 +107,7 @@ def _create_cache_redis():
     )
 
 
-async def _get_extraction_cache(key: str) -> Optional[dict]:
+async def _get_extraction_cache(key: str) -> dict | None:
     """读取提取结果缓存；未命中或 Redis 不可用时返回 None（不抛异常）。"""
     if not getattr(settings, "EXTRACTION_CACHE_ENABLED", True):
         return None
@@ -130,10 +124,8 @@ async def _get_extraction_cache(key: str) -> Optional[dict]:
         return None
     finally:
         if client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await client.aclose()
-            except Exception:
-                pass
 
 
 async def _set_extraction_cache(key: str, data: dict) -> None:
@@ -155,10 +147,8 @@ async def _set_extraction_cache(key: str, data: dict) -> None:
         logger.debug(f"[提取缓存] 写入失败，静默降级为不缓存: {e}")
     finally:
         if client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await client.aclose()
-            except Exception:
-                pass
 
 
 async def _load_feedback_examples(db) -> list[str]:
@@ -206,7 +196,7 @@ async def _load_feedback_examples(db) -> list[str]:
 _LOCAL_STORAGE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "pdfs"
 
 
-def _download_pdf(object_name: str, literature_id: Optional[str] = None) -> Optional[bytes]:
+def _download_pdf(object_name: str, literature_id: str | None = None) -> bytes | None:
     """从本地文件系统或 MinIO 下载 PDF 文件（多重查找策略）"""
     # 策略1: 直接作为本地路径读取
     local_path = Path(object_name)
@@ -345,7 +335,7 @@ async def _extract_result_to_datapoints(
     extract_result: dict,
     *,
     clean_text: str,
-    extractor: Optional[LLMExtractor] = None,
+    extractor: LLMExtractor | None = None,
 ) -> list[DataPoint]:
     """将 LLM 提取结果转换为 DataPoint 列表，并附加：
        1) 精确字符级溯源（grounding）
@@ -398,7 +388,7 @@ async def _extract_result_to_datapoints(
     confidence = "medium"
     reasons = flags.schema_issues
     if not grounding.is_grounded:
-        reasons = reasons + ["not_grounded"]
+        reasons = [*reasons, "not_grounded"]
     if "province_not_in_enum" in reasons:
         confidence = "low"
     if "value_out_of_range" in reasons:
@@ -490,8 +480,8 @@ async def _extract_result_to_datapoints(
 
 async def _process_literature_async(
     literature_id: str,
-    model: Optional[str] = None,
-    model_config_id: Optional[str] = None,
+    model: str | None = None,
+    model_config_id: str | None = None,
     clear_existing_data: bool = False,
     use_cache: bool = True,
 ) -> dict:
@@ -499,7 +489,7 @@ async def _process_literature_async(
     async with async_session() as db:
         # 本次 AI 提取耗时计时起点。抢占后置为 time.perf_counter()；抢占前异常时为 None，
         # 历史写入时按 0 处理，避免 NameError。
-        _run_clock_start: Optional[float] = None
+        _run_clock_start: float | None = None
         # 1. 查找文献记录
         result = await db.execute(
             select(Literature).where(Literature.id == literature_id)
@@ -587,10 +577,8 @@ async def _process_literature_async(
                 await _asyncio.wait_for(_hb_task, timeout=10)
             except (_asyncio.TimeoutError, _asyncio.CancelledError):
                 _hb_task.cancel()
-                try:
+                with contextlib.suppress(_asyncio.CancelledError, Exception):
                     await _hb_task
-                except (_asyncio.CancelledError, Exception):
-                    pass
 
         logger.info(
             f"开始处理文献 {literature_id}: title={literature.title}, "
@@ -680,9 +668,9 @@ async def _process_literature_async(
         effective_model = model or settings.LLM_MODEL
         passes = getattr(settings, "LLM_EXTRACTION_PASSES", 2)
         cache_hit = False
-        cache_key: Optional[str] = None
-        resolved_api_key: Optional[str] = None
-        resolved_base_url: Optional[str] = None
+        cache_key: str | None = None
+        resolved_api_key: str | None = None
+        resolved_base_url: str | None = None
 
         # 5a. 解析 API Key：优先从 model_config_id 读取（加密存储，需解密）
         if model_config_id:
@@ -739,7 +727,7 @@ async def _process_literature_async(
             await db.commit()
 
             logger.info(f"开始 LLM 提取: model={effective_model}, extraction_passes={passes}")
-            from app.core.metrics import record_llm_completion, observe_extraction_duration
+            from app.core.metrics import observe_extraction_duration, record_llm_completion
 
             _extract_start = time.perf_counter()
             try:
@@ -778,7 +766,7 @@ async def _process_literature_async(
 
         # P1-2：PDF 内自动识别 DOI → Crossref 回填文献级元数据。
         # 网络调用放在"不持有数据库连接"阶段（F13 方案A），失败静默降级，不影响提取。
-        crossref_meta: Optional[dict] = None
+        crossref_meta: dict | None = None
         try:
             _crossref_doi = extract_doi_from_text(clean_text)
             if not _crossref_doi and article_meta:
@@ -1114,8 +1102,8 @@ async def _process_literature_async(
         # 9. KG 知识图谱抽取（独立于主提取流程，失败不影响任何已有功能）
         if not cache_hit and getattr(settings, "ENABLE_KG_EXTRACTION", False):
             try:
-                from app.services.kg_llm_integration import run_kg_extraction
                 from app.models.base import async_session as _kg_session_factory
+                from app.services.kg_llm_integration import run_kg_extraction
 
                 async with _kg_session_factory() as _kg_db:
                     _kg_written = await run_kg_extraction(
@@ -1176,8 +1164,8 @@ async def _process_literature_async(
 def process_literature(
     self,
     literature_id: str,
-    model: Optional[str] = None,
-    model_config_id: Optional[str] = None,
+    model: str | None = None,
+    model_config_id: str | None = None,
     clear_existing_data: bool = False,
     use_cache: bool = True,
 ):
@@ -1238,8 +1226,8 @@ def process_literature(
                 lit_id, lit_model = row[0], row[1]
                 # 写入失败历史记录（错误信息带类型前缀，便于前端/日志诊断）
                 _fail_elapsed = (
-                    time.perf_counter() - _run_clock_start
-                    if _run_clock_start is not None
+                    time.perf_counter() - _run_clock_start  # noqa: F821
+                    if _run_clock_start is not None  # noqa: F821
                     else 0.0
                 )
                 try:
@@ -1259,7 +1247,7 @@ def process_literature(
         # 连接类错误重试耗尽：回退到 pending（不判死、不写 failed 历史），
         # 使该文献在模型服务恢复后可被重新提取。
         async def _reopen_pending():
-            async with async_session() as db:
+            async with async_session():
                 stmt = (
                     update(Literature)
                     .where(Literature.id == literature_id)
@@ -1282,10 +1270,8 @@ def process_literature(
         if is_conn:
             if self.request.retries >= self.max_retries:
                 # 重试耗尽：回退 pending，结束本次任务（不 raise retry）
-                try:
+                with contextlib.suppress(Exception):
                     run_async(_reopen_pending())
-                except Exception:
-                    pass
                 return
             # 连接类错误：短退避快速重试（避免 60s/120s/240s 的长时间空等）
             retry_in = 15 * (self.request.retries + 1)
@@ -1293,12 +1279,10 @@ def process_literature(
                 f"文献 {literature_id} 连接类错误，{retry_in}s 后快速重试 "
                 f"(第 {self.request.retries + 1}/{self.max_retries + 1} 次)"
             )
-            raise self.retry(exc=e, countdown=retry_in)
+            raise self.retry(exc=e, countdown=retry_in) from e
 
         # 非连接错误：与原有行为一致——立即标记 failed 后按 60/120/240s 退避重试
-        try:
+        with contextlib.suppress(Exception):
             run_async(_mark_failed())
-        except Exception:
-            pass
         retry_in = 60 * (2 ** self.request.retries)
-        raise self.retry(exc=e, countdown=retry_in)
+        raise self.retry(exc=e, countdown=retry_in) from e

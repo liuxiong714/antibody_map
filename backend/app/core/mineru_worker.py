@@ -12,6 +12,7 @@ stdout 输出结构化 Markdown；失败时 stderr 输出错误并以非 0 退�
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,26 @@ logger = logging.getLogger("mineru_worker")
 
 
 def main() -> int:
+    # worker 容器根文件系统只读（docker-compose read_only: true），MinerU/ModelScope
+    # 默认会在 /root/.modelscope、/root/mineru.json 写缓存与配置而失败。
+    # 这里把缓存与配置目录全部重定向到已挂载的可写目录 /root/.cache/modelscope，
+    # 使 MinerU 增强解析可用（模型缓存也已本地固化在该挂载点）。
+    writable_cache = "/root/.cache/modelscope"
+    # ModelScope 模型缓存目录（默认 ~/.cache/modelscope，本挂载点即默认路径）
+    os.environ.setdefault("MODELSCOPE_CACHE", writable_cache)
+    # ModelScope SDK 配置目录（默认 ~/.modelscope → /root/.modelscope 只读不可写）。
+    # 重定向到可写挂载点下的子目录，避免 CacheError: Failed to create SDK directories
+    os.environ.setdefault("MODELSCOPE_HOME", f"{writable_cache}/modelscope_home")
+    # MinerU 工具配置文件（默认 ~/mineru.json → /root/mineru.json 只读不可写）。
+    # 该变量支持绝对路径，直接指向可写挂载点
+    os.environ.setdefault("MINERU_TOOLS_CONFIG_JSON", f"{writable_cache}/mineru.json")
+    # PyTorch/Triton 编译缓存（默认 ~/.triton → /root/.triton 只读不可写）。
+    # 重定向到可写挂载点，避免 MinerU 子进程 OSError: Read-only file system
+    os.environ.setdefault("TRITON_CACHE_DIR", f"{writable_cache}/triton_cache")
+    # HuggingFace 缓存（默认 ~/.cache/huggingface），一并重定向到可写挂载点
+    os.environ.setdefault("HF_HOME", f"{writable_cache}/huggingface")
+    os.makedirs(writable_cache, exist_ok=True)
+
     if len(sys.argv) < 2:
         print("usage: python -m app.core.mineru_worker <pdf_path>", file=sys.stderr)
         return 2

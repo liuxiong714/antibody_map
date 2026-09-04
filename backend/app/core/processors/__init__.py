@@ -4,15 +4,21 @@
 新增格式只需在 processors 包下新建文件并注册到 _PARSER_REGISTRY。
 """
 from .base import BaseParser, get_parser, list_supported_exts
-from .epub_parser import EpubParser
 from .docx_parser import DocxParser
-from .pptx_parser import PptxParser
-from .xlsx_parser import XlsxParser
-from .txt_parser import TxtParser
+from .epub_parser import EpubParser
 from .html_parser import HtmlParser
+from .pptx_parser import PptxParser
+from .txt_parser import TxtParser
+from .xlsx_parser import XlsxParser
 
 __all__ = [
-    "BaseParser", "get_parser", "list_supported_exts",
-    "EpubParser", "DocxParser", "PptxParser",
-    "XlsxParser", "TxtParser", "HtmlParser",
+    "BaseParser",
+    "DocxParser",
+    "EpubParser",
+    "HtmlParser",
+    "PptxParser",
+    "TxtParser",
+    "XlsxParser",
+    "get_parser",
+    "list_supported_exts",
 ]

@@ -1,12 +1,11 @@
-from typing import List, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_current_user, require_admin
+from app.api.deps import get_current_user, get_db, require_admin
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.services import report_service
@@ -22,119 +21,107 @@ class VaccinationStrategyRequest(BaseModel):
     personnel_gender: str = ""
     personnel_age: str = ""
     personnel_vaccination_history: str = ""
-    title: Optional[str] = None
-    template_id: Optional[str] = None
-    model: Optional[str] = Field(None, description="指定 LLM 模型（模型名或远程配置 UUID），不传则使用系统默认")
+    title: str | None = None
+    template_id: str | None = None
+    model: str | None = Field(None, description="指定 LLM 模型（模型名或远程配置 UUID），不传则使用系统默认")
 
 
 class UpdateReportRequest(BaseModel):
-    title: Optional[str] = None
-    content: Optional[str] = None
+    title: str | None = None
+    content: str | None = None
 
 
 class ReportSection(BaseModel):
     title: str = Field(..., description="章节标题")
     type: str = Field(..., description="章节类型：text/chart/table/kpi")
-    content_template: Optional[str] = Field("", description="章节内容指引（text 用作文本生成提示词）")
-    order: Optional[int] = Field(0, description="章节排序")
-    analysis: Optional[str] = Field(None, description="chart 类型的分析维度：trend/region/age_curve/disease")
-    data: Optional[str] = Field(None, description="table 类型的数据表：province/year/age/disease")
-    kpi: Optional[List[str]] = Field(None, description="kpi 类型的关键指标键列表")
+    content_template: str | None = Field("", description="章节内容指引（text 用作文本生成提示词）")
+    order: int | None = Field(0, description="章节排序")
+    analysis: str | None = Field(None, description="chart 类型的分析维度：trend/region/age_curve/disease")
+    data: str | None = Field(None, description="table 类型的数据表：province/year/age/disease")
+    kpi: list[str] | None = Field(None, description="kpi 类型的关键指标键列表")
 
 
 class ReportTemplateRequest(BaseModel):
     name: str = Field(..., description="模板名称")
     report_type: str = Field("antibody_analysis", description="模板类型：antibody_analysis/vaccination_strategy")
-    sections: List[ReportSection] = Field(default_factory=list, description="章节定义数组")
+    sections: list[ReportSection] = Field(default_factory=list, description="章节定义数组")
     is_default: bool = Field(False, description="是否默认模板")
-    desc: Optional[str] = Field(None, description="模板描述")
+    desc: str | None = Field(None, description="模板描述")
 
 
 @router.post("/reports/generate", response_model=ApiResponse, summary="生成免疫学报告", description="生成免疫学参考意见报告，支持按疾病、省份、数据类型筛选，可选择语言（中文/英文）和自定义标题")
 async def generate_report(
-    disease: Optional[str] = Query(None, description="疾病 key"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    data_type: Optional[str] = Query(None, description="数据类型"),
+    disease: str | None = Query(None, description="疾病 key"),
+    province: str | None = Query(None, description="省份筛选"),
+    data_type: str | None = Query(None, description="数据类型"),
     language: str = Query("zh", description="报告语言：zh | en"),
-    title: Optional[str] = Query(None, description="自定义报告标题"),
-    model: Optional[str] = Query(None, description="LLM 模型名，默认使用 .env 配置"),
-    template_id: Optional[str] = Query(None, description="报告模板ID，缺省使用抗体分析默认模板"),
-    db: AsyncSession = Depends(get_db),
+    title: str | None = Query(None, description="自定义报告标题"),
+    model: str | None = Query(None, description="LLM 模型名，默认使用 .env 配置"),
+    template_id: str | None = Query(None, description="报告模板ID，缺省使用抗体分析默认模板"),
 ):
-    """生成免疫学参考意见报告"""
-    try:
-        data = await report_service.generate_report(
-            db=db,
-            disease=disease,
-            province=province,
-            data_type=data_type,
-            language=language,
-            title=title,
-            model=model,
-            template_id=template_id,
-        )
-        return ApiResponse(message="报告生成成功", data=data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """生成免疫学参考意见报告（后台异步：提交即返回，前端轮询 /system/active-tasks 查看进度）"""
+    return await _submit_report_task(
+        result_task_kind="antibody",
+        language=language, disease=disease, province=province, data_type=data_type,
+        title=title, model=model, template_id=template_id,
+    )
+
+
+def _submit_report_task(*, result_task_kind: str, language, disease, province, data_type, title, model, template_id):
+    """提交报告生成 Celery 任务并立即返回任务 id（kind∈{antibody,barrier}）。"""
+    from app.tasks.background_task import run_report_generation
+
+    task = run_report_generation.delay(
+        language=language,
+        disease=disease,
+        province=province,
+        data_type=data_type,
+        title=title,
+        model=model,
+        template_id=template_id,
+        kind=result_task_kind,
+    )
+    return ApiResponse(message="报告生成任务已提交", data={"task_id": str(task.id), "status": "queued"})
 
 
 @router.post("/reports/generate-vaccination-strategy", response_model=ApiResponse, summary="生成疫苗接种策略报告", description="生成疫苗接种任务的策略研判报告，根据任务类型、时间、地点、人员信息生成专业建议")
 async def generate_vaccination_strategy(
     req: VaccinationStrategyRequest,
-    db: AsyncSession = Depends(get_db),
 ):
-    """生成疫苗接种策略研判报告"""
-    try:
-        data = await report_service.generate_vaccination_strategy_report(
-            db=db,
-            task_type=req.task_type,
-            task_time=req.task_time,
-            task_location=req.task_location,
-            personnel_count=req.personnel_count,
-            personnel_gender=req.personnel_gender,
-            personnel_age=req.personnel_age,
-            personnel_vaccination_history=req.personnel_vaccination_history,
-            title=req.title,
-            template_id=req.template_id,
-            model=req.model,
-        )
-        return ApiResponse(message="疫苗接种策略报告生成成功", data=data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """生成疫苗接种策略研判报告（后台异步：提交即返回）"""
+    from app.tasks.background_task import run_vaccination_strategy
+
+    task = run_vaccination_strategy.delay(
+        task_type=req.task_type,
+        task_time=req.task_time,
+        task_location=req.task_location,
+        personnel_count=req.personnel_count,
+        personnel_gender=req.personnel_gender,
+        personnel_age=req.personnel_age,
+        personnel_vaccination_history=req.personnel_vaccination_history,
+        title=req.title,
+        template_id=req.template_id,
+        model=req.model,
+    )
+    return ApiResponse(message="疫苗接种策略报告生成任务已提交", data={"task_id": str(task.id), "status": "queued"})
 
 
 @router.post("/reports/generate-immune-barrier", response_model=ApiResponse, summary="生成免疫屏障评估报告", description="生成人群免疫屏障评估报告，按疾病/省份/数据类型筛选，评估总体/地区/时间/年龄维度的免疫屏障水平与缺口")
 async def generate_immune_barrier(
-    disease: Optional[str] = Query(None, description="疾病 key"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    data_type: Optional[str] = Query(None, description="数据类型"),
+    disease: str | None = Query(None, description="疾病 key"),
+    province: str | None = Query(None, description="省份筛选"),
+    data_type: str | None = Query(None, description="数据类型"),
     language: str = Query("zh", description="报告语言：zh | en"),
-    title: Optional[str] = Query(None, description="自定义报告标题"),
-    model: Optional[str] = Query(None, description="LLM 模型名，默认使用 .env 配置"),
-    template_id: Optional[str] = Query(None, description="报告模板ID，缺省使用免疫屏障评估默认模板"),
-    db: AsyncSession = Depends(get_db),
+    title: str | None = Query(None, description="自定义报告标题"),
+    model: str | None = Query(None, description="LLM 模型名，默认使用 .env 配置"),
+    template_id: str | None = Query(None, description="报告模板ID，缺省使用免疫屏障评估默认模板"),
 ):
-    """生成免疫屏障评估报告"""
-    try:
-        data = await report_service.generate_immune_barrier_report(
-            db=db,
-            disease=disease,
-            province=province,
-            data_type=data_type,
-            language=language,
-            title=title,
-            model=model,
-            template_id=template_id,
-        )
-        return ApiResponse(message="免疫屏障评估报告生成成功", data=data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """生成免疫屏障评估报告（后台异步：提交即返回，前端轮询 /system/active-tasks 查看进度）"""
+    return await _submit_report_task(
+        result_task_kind="barrier",
+        language=language, disease=disease, province=province, data_type=data_type,
+        title=title, model=model, template_id=template_id,
+    )
 
 
 @router.get("/reports", response_model=ApiResponse, summary="获取报告列表", description="分页获取所有已生成的报告列表")
@@ -229,7 +216,7 @@ async def delete_report(
 
 @router.get("/report/templates", response_model=ApiResponse, summary="列出报告模板", description="列出报告模板，可按类型筛选")
 async def list_templates(
-    report_type: Optional[str] = Query(None, description="模板类型：antibody_analysis/vaccination_strategy"),
+    report_type: str | None = Query(None, description="模板类型：antibody_analysis/vaccination_strategy"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
@@ -257,7 +244,7 @@ async def create_template(
         )
         return ApiResponse(message="模板创建成功", data=data)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.put("/report/templates/{template_id}", response_model=ApiResponse, summary="更新报告模板", description="更新报告模板的内容与章节（管理员）")
@@ -279,7 +266,7 @@ async def update_template(
             desc=req.desc,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not data:
         raise HTTPException(status_code=404, detail="模板不存在")
     return ApiResponse(message="模板已更新", data=data)

@@ -4,27 +4,27 @@
 `from app.core.llm_extractor import LLMExtractor` 及模块级常量仍可用。
 """
 
-from app.core.extraction import (  # noqa: F401
+from app.core.extraction import (
     EXTRACTION_JSON_SCHEMA,
-    LLMExtractor,
     PROMPT_EN,
     PROMPT_ZH,
     PROVINCE_LIST_EN,
     PROVINCE_LIST_TIP,
     SYSTEM_PROMPT_ZH,
+    LLMExtractor,
     _classify_llm_error,
     _is_connection_error,
     _parse_titer_cell,
 )
 
 __all__ = [
-    "LLMExtractor",
     "EXTRACTION_JSON_SCHEMA",
     "PROMPT_EN",
     "PROMPT_ZH",
     "PROVINCE_LIST_EN",
     "PROVINCE_LIST_TIP",
     "SYSTEM_PROMPT_ZH",
+    "LLMExtractor",
     "_classify_llm_error",
     "_is_connection_error",
     "_parse_titer_cell",

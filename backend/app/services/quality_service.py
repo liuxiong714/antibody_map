@@ -16,7 +16,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping, Optional, Sequence
+from collections.abc import Mapping
+from typing import Any
 
 from app.core.term_normalizer import METHOD_MAP
 
@@ -99,13 +100,13 @@ def _get(dp: Any, name: str, default: Any = None) -> Any:
     return getattr(dp, name, default)
 
 
-def _split_multi(value: Optional[str]) -> list[str]:
+def _split_multi(value: str | None) -> list[str]:
     if not value:
         return []
     return [v.strip() for v in re.split(r"[;,；、，]", str(value)) if v.strip()]
 
 
-def score_sample_size(n: Optional[int]) -> dict:
+def score_sample_size(n: int | None) -> dict:
     """信号 1：样本量分档（0-30 分）。"""
     n = n if isinstance(n, (int, float)) and n > 0 else 0
     for rule in SAMPLE_SIZE_RULES:
@@ -114,7 +115,7 @@ def score_sample_size(n: Optional[int]) -> dict:
     return {"score": 0, "label": SAMPLE_SIZE_RULES[-1]["label"], "max": SAMPLE_SIZE_MAX}
 
 
-def score_sampling(text: Optional[str]) -> dict:
+def score_sampling(text: str | None) -> dict:
     """信号 2：抽样方式（0-25 分）。
 
     输入为文献摘要/全文（无全文缓存时仅 title+journal），按正则命中判断：
@@ -128,7 +129,7 @@ def score_sampling(text: Optional[str]) -> dict:
     return {"score": 12, "label": "抽样方式未注明", "max": SAMPLING_MAX}
 
 
-def score_detection_method(method: Optional[str]) -> dict:
+def score_detection_method(method: str | None) -> dict:
     """信号 3：检测方法（0-15 分）。非空且在标准字典表内 → 15；非空不在表 → 8；空 → 0。"""
     if not method:
         return {"score": 0, "label": "未注明检测方法", "max": DETECTION_METHOD_MAX}
@@ -142,7 +143,7 @@ def score_detection_method(method: Optional[str]) -> dict:
     return {"score": 8, "label": f"非标准检测方法（{method}）", "max": DETECTION_METHOD_MAX}
 
 
-def score_population(population: Optional[str]) -> dict:
+def score_population(population: str | None) -> dict:
     """信号 4：人群代表性（0-15 分）。"""
     if population:
         text = str(population)
@@ -153,7 +154,7 @@ def score_population(population: Optional[str]) -> dict:
     return {"score": 8, "label": "其他/未明确人群", "max": POPULATION_MAX}
 
 
-def score_estimate_grade(province: Optional[str], city: Optional[str], sample_size: Optional[int]) -> dict:
+def score_estimate_grade(province: str | None, city: str | None, sample_size: int | None) -> dict:
     """信号 5：调查级别（0-10 分）+ estimate_grade（national/provincial/local）。
 
     启发规则：覆盖省份≥10 → national；单省多市或大样本(≥2000)单省 → provincial；其他 → local。
@@ -171,7 +172,7 @@ def score_estimate_grade(province: Optional[str], city: Optional[str], sample_si
     return {"score": 5, "label": "局部/单点调查", "max": ESTIMATE_GRADE_MAX, "estimate_grade": "local"}
 
 
-def score_confidence(confidence: Optional[str]) -> dict:
+def score_confidence(confidence: str | None) -> dict:
     """信号 6：溯源置信度（0-5 分）。high/medium/low → 5/3/1。"""
     rule = CONFIDENCE_RULES.get((confidence or "").strip().lower())
     if not rule:
@@ -187,7 +188,7 @@ def grade_for_score(score: int) -> str:
     return "C"
 
 
-def score_data_point(dp: Any, literature_text: Optional[str] = None) -> dict:
+def score_data_point(dp: Any, literature_text: str | None = None) -> dict:
     """数据点质量评分入口（纯函数）。
 
     参数：

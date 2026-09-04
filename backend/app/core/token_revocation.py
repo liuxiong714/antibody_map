@@ -6,17 +6,15 @@
 """
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
 import redis.asyncio as aioredis
-from redis.exceptions import RedisError
 
 from app.config import settings
 
 logger = logging.getLogger("uvicorn")
 
 # Redis 连接（复用 settings 中的 Redis URL）
-_redis: Optional[aioredis.Redis] = None
+_redis: aioredis.Redis | None = None
 
 
 async def _get_redis() -> aioredis.Redis:
@@ -32,7 +30,7 @@ async def _get_redis() -> aioredis.Redis:
     return _redis
 
 
-def _get_ttl(exp: Optional[int]) -> int:
+def _get_ttl(exp: int | None) -> int:
     """计算 token 剩余有效期（秒），至少 60 秒"""
     if exp is None:
         return 3600  # 默认 1 小时
@@ -40,7 +38,7 @@ def _get_ttl(exp: Optional[int]) -> int:
     return max(remaining, 60)
 
 
-async def revoke_token(jti: str, exp: Optional[int] = None) -> None:
+async def revoke_token(jti: str, exp: int | None = None) -> None:
     """将 token 加入黑名单
 
     Args:

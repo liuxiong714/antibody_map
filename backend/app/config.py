@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     # MinerU 解析超时（秒）。首次解析需下载模型，CPU/GPU 推理较慢，超时后回退 PyMuPDF
     MINERU_PARSE_TIMEOUT: int = 600
 
+    # 视觉提取（VL）单批页数：分批把扫描页图片发送给本地视觉模型，避免一次性
+    # 塞入过多图片导致超过 Ollama 上下文窗（默认 32768 token）。
+    VL_BATCH_SIZE: int = 6
+
     # AnyDoc 文档解析增强（firecrawl/anydoc：任意文档 → GFM Markdown，表格质量高）。
     # 默认关闭，保证与现有解析行为完全一致（零回归）。开启后先试 AnyDoc，
     # 失败/超时自动回退现有策略解析器（PDF 走 PyMuPDF/OCR/MinerU）。
@@ -94,6 +98,9 @@ class Settings(BaseSettings):
     # ===== 知识图谱配置 =====
     # KG 抽取开关：开启后文献提取成功时自动抽取三元组写入 kg_entity/kg_triple 表
     ENABLE_KG_EXTRACTION: bool = False
+    # 知识图谱问答是否纳入未审核数据点（默认开启，结果会标注“未审核”来源）。
+    # 关闭则只检索 review_status == "approved" 的数据点
+    KG_QA_INCLUDE_UNREVIEWED: bool = True
 
     # ===== 孤儿文件清理配置 =====
     # 是否启用后台定时清理（backend/data/pdfs 中已不在数据库的残留文件）
@@ -181,7 +188,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "production"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.22.0"
+    APP_VERSION: str = "1.23.0"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
     # 提取状态卡死阈值（分钟）：processing/queued 超过此时间未变，列表查询时自动重置为 failed

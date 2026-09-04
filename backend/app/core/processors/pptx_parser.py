@@ -1,7 +1,7 @@
 """PPTX 解析器：python-pptx 读幻灯片 → 形状文本 + 表格（表格渲染为 GFM Markdown）。"""
 import io
 
-from .base import BaseParser, register_parser, grid_to_markdown
+from .base import BaseParser, grid_to_markdown, register_parser
 
 
 @register_parser(".pptx")

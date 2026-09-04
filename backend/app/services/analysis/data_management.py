@@ -1,98 +1,31 @@
 """Submodule of app.services.analysis (split from analysis_service.py)."""
 
 
-import logging
-import math
-from datetime import date
-from typing import Optional
 
-import scipy.stats as sps
-from sqlalchemy import select, func, distinct
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.term_normalizer import normalize_disease
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
-from app.core.term_normalizer import normalize_disease, normalize_province
-from app.core.methodology import build_methodology_note
-from app.core.stats import (
-    geometric_mean_with_ci,
-    weighted_proportion_with_ci,
-    weighted_linear_trend,
-    gini,
-    coefficient_of_variation,
-    reliability_grade,
-    lowess,
-    inverse_variance_meta,
-)
-from app.core.stats_engine import (
-    gmc_ci,
-    weighted_rate_ci,
-    fit_age_curve,
-    foi_from_curve,
-    meta_proportion,
-    fit_catalytic_models,
-    cochran_armitage_trend,
-    two_proportion_test,
-    direct_standardize,
-    morans_i,
-    g_star,
-    classify_hotspot_cluster,
-    birth_cohort_analysis,
-)
-from app.core.goal_thresholds import GOAL_THRESHOLDS
-
 from app.services.analysis._common import (
-    AGE_GROUPS,
-    CHINA_POP_STD_VERSION,
     CHINA_PROVINCES,
-    DEFAULT_LIFE_EXPECTANCY,
-    NIP_COVERAGE_REFERENCE,
-    NON_ENDEMIC_LIFELONG,
-    R0_ASSUMPTION_NOTE,
-    R0_REFERENCE,
-    WHO_THRESHOLDS,
-    _CHINA_POP_2020,
-    _STD_BAND_MAP,
-    _STD_WEIGHT_BY_GROUP,
-    _barrier_status_from_rate,
-    _barrier_status_with_message,
     _build_base_query,
-    _build_catalytic_records,
-    _build_province_weights,
-    _calc_foi_from_sp,
-    _calc_gmc,
-    _calc_hit_from_r0,
-    _calc_r0_from_foi,
-    _calc_ve_from_sp,
-    _calc_weighted_positivity,
-    _catalytic_r0_hit,
-    _compute_province_asr,
-    _get_age_group_label,
-    _get_reference_coverage,
-    _implied_coverage_from_hit,
-    _load_disease_note,
-    _load_province_adjacency,
-    _load_std_pop,
-    _meta_merge_cell,
-    _midpoint_age,
-    _resolve_hit_target,
-    _split_vax_unvax,
-    logger,
 )
 
 
 async def get_approved_data_points(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
-    data_type: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
+    data_type: str | None = None,
     offset: int = 0,
     limit: int = 200,
-    sort_by: Optional[str] = None,
+    sort_by: str | None = None,
     sort_order: str = "desc",
 ) -> tuple[list[dict], int]:
     """获取所有审核通过的数据点（分页），用于数据分析模块展示"""
@@ -186,13 +119,13 @@ async def get_approved_data_points(
 
 async def get_approved_data_points_for_snapshot(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
-    data_type: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
+    data_type: str | None = None,
     limit: int = 50000,
 ) -> list[dict]:
     """P2-1：获取审核通过的数据点（含文献元数据），用于公开数据集快照导出。
@@ -262,7 +195,7 @@ async def get_approved_data_points_for_snapshot(
 
 async def get_data_gap_analysis(
     db: AsyncSession,
-    disease: Optional[str] = None,
+    disease: str | None = None,
 ) -> dict:
     """数据覆盖度分析：统计各省份/城市×各年份的数据点分布，识别需要审核和补充的数据缺口。
 
@@ -476,7 +409,7 @@ async def get_data_gap_analysis(
         approved_ab_for_prov = sum(yd["approved_ab"] for yd in year_data.values())
         # 为每个年份单元格追加 completeness_score 和 status
         years_formatted: dict[str, dict] = {}
-        for y in sorted(y for y in year_data.keys() if y is not None):
+        for y in sorted(y for y in year_data if y is not None):
             cell = year_data[y]
             years_formatted[str(y)] = {
                 **cell,
@@ -530,7 +463,7 @@ async def get_data_gap_analysis(
         approved_city = sum(yd["approved"] for yd in year_data.values())
         approved_ab_city = sum(yd["approved_ab"] for yd in year_data.values())
         years_formatted: dict[str, dict] = {}
-        for y in sorted(y for y in year_data.keys() if y is not None):
+        for y in sorted(y for y in year_data if y is not None):
             cell = year_data[y]
             years_formatted[str(y)] = {
                 **cell,

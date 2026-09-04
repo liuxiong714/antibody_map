@@ -11,8 +11,8 @@ class EpubParser(BaseParser):
 
     def extract(self, file_bytes: bytes) -> str:
         import ebooklib
-        from ebooklib import epub
         from bs4 import BeautifulSoup
+        from ebooklib import epub
 
         # 抑制 ebooklib 非致命警告
         logging.getLogger("ebooklib").setLevel(logging.ERROR)

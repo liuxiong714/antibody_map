@@ -1,16 +1,14 @@
 import logging
 import uuid
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db
 from app.models.literature import Literature
-from app.models.literature_tag import Tag, literature_tag
+from app.models.literature_tag import Tag
 from app.schemas.common import ApiResponse
 
 router = APIRouter()
@@ -19,12 +17,12 @@ logger = logging.getLogger("uvicorn")
 
 class TagCreate(BaseModel):
     name: str
-    color: Optional[str] = "#1677ff"
+    color: str | None = "#1677ff"
 
 
 class TagUpdate(BaseModel):
-    name: Optional[str] = None
-    color: Optional[str] = None
+    name: str | None = None
+    color: str | None = None
 
 
 # ── 标签 CRUD ──

@@ -7,7 +7,7 @@
 
 import logging
 import re
-from typing import Any, Optional
+from typing import Any
 
 from app.core.term_normalizer import (
     normalize_antibody_type,
@@ -19,7 +19,7 @@ from app.core.term_normalizer import (
 logger = logging.getLogger("uvicorn")
 
 
-def _parse_titer_cell(cell: Any) -> Optional[float]:
+def _parse_titer_cell(cell: Any) -> float | None:
     """把滴度矩阵单元格归一化为数值。
 
     - 数字直接返回（float）
@@ -49,7 +49,7 @@ class PostProcessorMixin:
     """后处理：字段别名归一化、数值解析、数据点标准化与滴度矩阵校验。"""
 
     @staticmethod
-    def _detect_truncation(val) -> Optional[str]:
+    def _detect_truncation(val) -> str | None:
         """F19：检测截断标记（"<"=低于检出限 / ">"=高于检出限）。
 
         截断值（如 >80、<10）表达的是区间而非精确值，直接入库会在统计中
@@ -68,14 +68,15 @@ class PostProcessorMixin:
 
     # F19：GMC 单位统一换算表（换算系数 = 目标 IU/ml 倍数）。
     # 1 IU = 1000 mIU，故 mIU/ml → IU/ml 需 ÷1000。
-    _GMC_UNIT_CONVERSION: dict[str, float] = {
+    # 类级共享常量映射，仅读取不修改。
+    _GMC_UNIT_CONVERSION: dict[str, float] = {  # noqa: RUF012
         "miu/ml": 1 / 1000.0,
         "miu/l": 1 / 1000.0,
         "miuperml": 1 / 1000.0,
     }
 
     @staticmethod
-    def _normalize_gmc_unit(unit: Optional[str]) -> Optional[str]:
+    def _normalize_gmc_unit(unit: str | None) -> str | None:
         """F19：GMC 单位统一换算，返回 (已换算值, 标准单位)。"""
         if not unit:
             return unit
@@ -86,7 +87,7 @@ class PostProcessorMixin:
         return "IU/ml"
 
     @staticmethod
-    def _parse_float_field(val) -> Optional[float]:
+    def _parse_float_field(val) -> float | None:
         """兼容本地模型（如 qwen2.5:14b）输出的多种数值格式。
 
         支持：87.3、'87.3'、'87.3%'、'87.3％'、'>80'、'<10'、'1,234'、'(87.3)' 等。
@@ -107,7 +108,7 @@ class PostProcessorMixin:
         return None
 
     @staticmethod
-    def _parse_ci_string(val) -> tuple[Optional[float], Optional[float]]:
+    def _parse_ci_string(val) -> tuple[float | None, float | None]:
         """从 CI 字符串解析 (lower, upper)。
 
         支持：'(95% CI 16.2%–19.5%)'、'95%CI: 16.2-19.5'、'[16.2, 19.5]' 等。
@@ -188,12 +189,15 @@ class PostProcessorMixin:
                 continue
             k = key.lower()
             # 复合字段名包含 positivity_rate/seroprevalence/positivity/concentration
-            if any(sub in k for sub in ("positivity_rate", "positivity", "seroprevalence", "seropositivity")):
-                if compound_rate_val is None and PostProcessorMixin._parse_float_field(val) is not None:
-                    compound_rate_val = PostProcessorMixin._parse_float_field(val)
-                    if not compound_disease:
-                        compound_disease = PostProcessorMixin._extract_disease_from_key(key)
-                        break  # 取第一个匹配
+            if (
+                any(sub in k for sub in ("positivity_rate", "positivity", "seroprevalence", "seropositivity"))
+                and compound_rate_val is None
+                and PostProcessorMixin._parse_float_field(val) is not None
+            ):
+                compound_rate_val = PostProcessorMixin._parse_float_field(val)
+                if not compound_disease:
+                    compound_disease = PostProcessorMixin._extract_disease_from_key(key)
+                    break  # 取第一个匹配
 
         if compound_rate_val is not None:
             norm["positivity_rate"] = compound_rate_val
@@ -203,7 +207,7 @@ class PostProcessorMixin:
         return norm
 
     @staticmethod
-    def _extract_disease_from_key(key: str) -> Optional[str]:
+    def _extract_disease_from_key(key: str) -> str | None:
         """从复合字段名中提取疾病名称。
 
         如 after_vaccination_positivity_rate_measles_IgG → measles
@@ -363,7 +367,7 @@ class PostProcessorMixin:
             # 逐单元格归一化数值
             n_rows = len(titers)
             n_cols = len(antisera)
-            norm_titers: list[list[Optional[float]]] = []
+            norm_titers: list[list[float | None]] = []
             valid = True
             for r in range(n_rows):
                 row = titers[r]
@@ -371,7 +375,7 @@ class PostProcessorMixin:
                     logger.warning(f"P2-tt 表格#{i+1} 第{r}行列数不匹配，跳过")
                     valid = False
                     break
-                norm_row: list[Optional[float]] = []
+                norm_row: list[float | None] = []
                 for cell in row:
                     norm_row.append(_parse_titer_cell(cell))
                 norm_titers.append(norm_row)
@@ -407,7 +411,7 @@ class PostProcessorMixin:
                 # 置信度 < 0.8 一律落人工审核
                 "review_status": "pending",
                 "needs_manual_review": confidence < 0.8,
-                "quality_score": int(round(confidence * 100)),
+                "quality_score": round(confidence * 100),
             })
 
         if tables:

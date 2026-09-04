@@ -9,11 +9,10 @@
 """
 
 import logging
-from typing import Any, Optional
 
 import numpy as np
-from sklearn.manifold import MDS
 from scipy.spatial import procrustes
+from sklearn.manifold import MDS
 
 logger = logging.getLogger("uvicorn")  # 与 llm_extractor 保持一致
 
@@ -23,7 +22,7 @@ logger = logging.getLogger("uvicorn")  # 与 llm_extractor 保持一致
 # ---------------------------------------------------------------------------
 
 def preprocess_titers(
-    titers_2d: list[list[Optional[float]]],
+    titers_2d: list[list[float | None]],
     log2_divisor: float = 10.0,
 ) -> dict:
     """预处理滴度矩阵，输出 log₂ 空间中的表格距离矩阵。
@@ -122,7 +121,7 @@ def compute_mds(
     n_components: int = 2,
     n_init: int = 20,
     max_iter: int = 1000,
-    random_state: Optional[int] = None,
+    random_state: int | None = None,
 ) -> dict:
     """在距离矩阵上执行 metric MDS，多点初值取最优。
 
@@ -184,7 +183,6 @@ def compute_mds(
     triu = np.triu_indices(n_points, k=1)
     stress_raw = float(np.sum(sq_diff[triu]))
     # 去掉 mask 后的元素数
-    n_valid = len(triu[0])
     # 每一点的应力（到其他点的距离平方和）
     stress_per_point = np.sum(sq_diff, axis=1)  # (n_points,)
 
@@ -265,8 +263,8 @@ def mds_bootstrap_ellipses(
     n_antigen: int,
     main_coords: np.ndarray,
     n_boot: int = 100,
-    seed: Optional[int] = None,
-) -> Optional[list[dict]]:
+    seed: int | None = None,
+) -> list[dict] | None:
     """对 MDS 坐标做血清 bootstrap 并在每次重采样上用 Procrustes 对齐主解。
 
     Parameters
@@ -344,13 +342,13 @@ def mds_bootstrap_ellipses(
 # ---------------------------------------------------------------------------
 
 def antigenic_map(
-    titers_2d: list[list[Optional[float]]],
-    antigen_names: Optional[list[str]] = None,
-    serum_names: Optional[list[str]] = None,
+    titers_2d: list[list[float | None]],
+    antigen_names: list[str] | None = None,
+    serum_names: list[str] | None = None,
     log2_divisor: float = 10.0,
     n_init: int = 20,
     max_iter: int = 1000,
-    random_state: Optional[int] = None,
+    random_state: int | None = None,
     bootstrap: bool = True,
     n_boot: int = 100,
     return_raw: bool = False,

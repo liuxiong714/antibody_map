@@ -8,9 +8,9 @@
 - 单次操作超时 10 秒
 - Redis 不可用 / 出错时静默降级为"不缓存"：不抛异常、不影响主流程
 """
+import contextlib
 import hashlib
 import logging
-from typing import Optional
 
 from app.config import settings
 
@@ -42,7 +42,7 @@ def _create_redis():
     )
 
 
-async def get_cache(key: str) -> Optional[str]:
+async def get_cache(key: str) -> str | None:
     """读取缓存文本；未命中或 Redis 不可用时返回 None（不抛异常）。"""
     client = None
     try:
@@ -54,10 +54,8 @@ async def get_cache(key: str) -> Optional[str]:
         return None
     finally:
         if client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await client.aclose()
-            except Exception:
-                pass
 
 
 async def set_cache(key: str, text: str) -> None:
@@ -70,7 +68,5 @@ async def set_cache(key: str, text: str) -> None:
         logger.debug(f"[解析缓存] 写入失败，静默降级为不缓存: {e}")
     finally:
         if client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await client.aclose()
-            except Exception:
-                pass

@@ -3,7 +3,6 @@
 import ipaddress
 import logging
 import socket
-from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -58,7 +57,7 @@ async def fetch_url(url: str, timeout: int = DEFAULT_TIMEOUT) -> bytes:
         return resp.content
 
 
-def guess_title_from_html(html_bytes: bytes) -> Optional[str]:
+def guess_title_from_html(html_bytes: bytes) -> str | None:
     """从 HTML 字节数据中提取 <title> 标签内容。"""
     try:
         from bs4 import BeautifulSoup

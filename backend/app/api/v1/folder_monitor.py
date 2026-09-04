@@ -10,23 +10,26 @@ from app.api.deps import get_db
 from app.models.base import async_session
 from app.schemas.common import ApiResponse
 from app.schemas.folder_monitor import (
-    MonitoredFolderCreate,
-    MonitoredFolderUpdate,
-    MonitoredFolderResponse,
     MonitoredFileResponse,
+    MonitoredFolderCreate,
+    MonitoredFolderResponse,
+    MonitoredFolderUpdate,
 )
 from app.services.folder_monitor_service import (
-    list_monitored_folders,
-    get_monitored_folder,
     create_monitored_folder,
-    update_monitored_folder,
     delete_monitored_folder,
+    get_monitored_folder,
     list_monitored_files,
+    list_monitored_folders,
     scan_folder,
+    update_monitored_folder,
 )
 
 logger = logging.getLogger("uvicorn")
 router = APIRouter()
+
+# 保存后台扫描任务的引用，防止被垃圾回收；任务完成后自动从集合移除
+_bg_scans: set[asyncio.Task] = set()
 
 
 @router.get("/folders", response_model=ApiResponse, summary="列出监控文件夹", description="获取所有配置的文件夹监控列表")
@@ -47,7 +50,7 @@ async def create_folder(
     try:
         folder = await create_monitored_folder(db, req.model_dump())
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return ApiResponse(
         message="添加成功",
         data=MonitoredFolderResponse.model_validate(folder).model_dump(),
@@ -64,7 +67,7 @@ async def update_folder(
     try:
         folder = await update_monitored_folder(db, folder_id, req.model_dump(exclude_unset=True))
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not folder:
         raise HTTPException(status_code=404, detail="文件夹不存在")
     return ApiResponse(
@@ -117,7 +120,10 @@ async def trigger_scan(
     if folder.status == "scanning":
         raise HTTPException(status_code=409, detail="该文件夹正在扫描中，请等待完成")
     # 启动后台扫描任务，立即返回
-    asyncio.create_task(_run_scan_background(folder_id))
+    # 保存引用防止任务被 GC，并在完成时从集合中移除
+    task = asyncio.create_task(_run_scan_background(folder_id))
+    _bg_scans.add(task)
+    task.add_done_callback(_bg_scans.discard)
     return ApiResponse(message="扫描已启动，请稍后在列表中查看结果")
 
 

@@ -1,52 +1,47 @@
-import logging
-import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
-from urllib.parse import quote
-
 import csv
 import io
+import logging
 import re
+import uuid
 from collections import Counter
+from datetime import datetime, timezone
+from typing import Any
+from urllib.parse import quote
 
 from docx import Document
-from docx.shared import Inches, Pt, Cm, RGBColor
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-
+from docx.shared import Pt, RGBColor
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, model_validator
-from sqlalchemy import select, update, func, case
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_current_user, require_admin
+from app.api.deps import get_current_user, get_db, require_admin
+from app.core.audit import log_audit
+from app.core.term_normalizer import CHINA_PROVINCE_NAMES
+from app.core.traceability_html import (
+    datapoint_dict_to_trace,
+    generate_traceability_html,
+)
 from app.models.data_point import DataPoint
 from app.models.extraction_history import ExtractionHistory
 from app.models.literature import Literature
 from app.models.titer_table import TiterTable
-from app.models.api_model_config import ApiModelConfig
 from app.models.user import User
 from app.schemas.common import ApiResponse, PagedResponse
-from app.services.literature_service import LOCAL_STORAGE_DIR
 from app.services.extraction_service import (
-    trigger_extraction,
-    get_extraction_status,
-    get_extraction_results,
-    get_extraction_history,
-    review_data_points,
-    get_review_stats,
     compute_data_point_conflicts,
+    get_extraction_history,
+    get_extraction_results,
+    get_extraction_status,
+    review_data_points,
+    trigger_extraction,
 )
-from app.core.traceability_html import (
-    generate_traceability_html,
-    datapoint_dict_to_trace,
-)
-from app.core.audit import log_audit
-
-from app.core.term_normalizer import CHINA_PROVINCE_NAMES
-from app.tasks.quality_task import score_data_point_task
+from app.services.literature_service import LOCAL_STORAGE_DIR
 from app.tasks.celery_app import celery_app
+from app.tasks.quality_task import score_data_point_task
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn")
@@ -84,17 +79,17 @@ _DP_CONFIDENCES = {"high", "medium", "low"}
 
 
 def _validate_datapoint_consistency(
-    data_type: Optional[str],
-    value: Optional[float],
-    ci_lower: Optional[float],
-    ci_upper: Optional[float],
-    sample_size: Optional[int],
-    age_min: Optional[float],
-    age_max: Optional[float],
-    collection_year: Optional[int],
-    confidence: Optional[str],
-    source_char_start: Optional[int],
-    source_char_end: Optional[int],
+    data_type: str | None,
+    value: float | None,
+    ci_lower: float | None,
+    ci_upper: float | None,
+    sample_size: int | None,
+    age_min: float | None,
+    age_max: float | None,
+    collection_year: int | None,
+    confidence: str | None,
+    source_char_start: int | None,
+    source_char_end: int | None,
 ) -> None:
     """P0-5：数据点字段级一致性校验，杜绝阳性率 150%、age_max<age_min、年份 9999 等脏数据入库。
 
@@ -138,30 +133,30 @@ def _validate_datapoint_consistency(
 
 class DataPointReviewItem(BaseModel):
     id: str
-    review_status: Optional[str] = None  # "approved" | "rejected" | None (仅编辑时不审核)
-    review_note: Optional[str] = None
-    review_comment: Optional[str] = None  # 审核意见
+    review_status: str | None = None  # "approved" | "rejected" | None (仅编辑时不审核)
+    review_note: str | None = None
+    review_comment: str | None = None  # 审核意见
     # 以下为可编辑的数据字段
-    disease: Optional[str] = None
-    province: Optional[str] = None
-    city: Optional[str] = None
-    data_type: Optional[str] = None
-    value: Optional[float] = None
-    unit: Optional[str] = None
-    sample_size: Optional[int] = None
-    population: Optional[str] = None
-    age_min: Optional[float] = None
-    age_max: Optional[float] = None
-    collection_year: Optional[int] = None
-    confidence: Optional[str] = None
-    method: Optional[str] = None
-    assay: Optional[str] = None
-    source_page: Optional[int] = None
-    source_context: Optional[str] = None
+    disease: str | None = None
+    province: str | None = None
+    city: str | None = None
+    data_type: str | None = None
+    value: float | None = None
+    unit: str | None = None
+    sample_size: int | None = None
+    population: str | None = None
+    age_min: float | None = None
+    age_max: float | None = None
+    collection_year: int | None = None
+    confidence: str | None = None
+    method: str | None = None
+    assay: str | None = None
+    source_page: int | None = None
+    source_context: str | None = None
     # P0 新增：精确字符级溯源
-    source_char_start: Optional[int] = None
-    source_char_end: Optional[int] = None
-    is_grounded: Optional[bool] = None
+    source_char_start: int | None = None
+    source_char_end: int | None = None
+    is_grounded: bool | None = None
 
     @model_validator(mode="after")
     def _check_consistency(self):
@@ -180,15 +175,15 @@ class UpdateDataPointsRequest(BaseModel):
 
 class BatchReviewRequest(BaseModel):
     ids: list[str]
-    note: Optional[str] = None  # 兼容历史字段
-    comment: Optional[str] = None  # 审核意见（驳回时必填）
+    note: str | None = None  # 兼容历史字段
+    comment: str | None = None  # 审核意见（驳回时必填）
 
 
 class ExtractionRequest(BaseModel):
-    model: Optional[str] = None
-    model_config_id: Optional[str] = None
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
+    model: str | None = None
+    model_config_id: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
     clear_existing_data: bool = False
     # 是否使用 Redis 提取结果缓存；False 时强制重新提取（跳过 LLM 缓存）
     use_cache: bool = True
@@ -197,10 +192,10 @@ class ExtractionRequest(BaseModel):
 class BatchExtractionRequest(BaseModel):
     """批量重新提取请求"""
     literature_ids: list[str]
-    model: Optional[str] = None
-    model_config_id: Optional[str] = None
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
+    model: str | None = None
+    model_config_id: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
     clear_existing_data: bool = False
     # 是否使用 Redis 提取结果缓存；False 时强制重新提取
     use_cache: bool = True
@@ -208,25 +203,25 @@ class BatchExtractionRequest(BaseModel):
 
 class CreateDataPointRequest(BaseModel):
     """手动新增数据点"""
-    disease: Optional[str] = None
-    province: Optional[str] = None
-    city: Optional[str] = None
-    data_type: Optional[str] = None
-    value: Optional[float] = None
-    unit: Optional[str] = None
-    sample_size: Optional[int] = None
-    population: Optional[str] = None
-    age_min: Optional[float] = None
-    age_max: Optional[float] = None
-    collection_year: Optional[int] = None
-    confidence: Optional[str] = "medium"
-    method: Optional[str] = None
-    assay: Optional[str] = None
-    source_page: Optional[int] = None
-    source_context: Optional[str] = None
+    disease: str | None = None
+    province: str | None = None
+    city: str | None = None
+    data_type: str | None = None
+    value: float | None = None
+    unit: str | None = None
+    sample_size: int | None = None
+    population: str | None = None
+    age_min: float | None = None
+    age_max: float | None = None
+    collection_year: int | None = None
+    confidence: str | None = "medium"
+    method: str | None = None
+    assay: str | None = None
+    source_page: int | None = None
+    source_context: str | None = None
     # P0 新增：精确字符级溯源
-    source_char_start: Optional[int] = None
-    source_char_end: Optional[int] = None
+    source_char_start: int | None = None
+    source_char_end: int | None = None
     is_grounded: bool = False
 
     @model_validator(mode="after")
@@ -259,7 +254,7 @@ async def start_extraction(
         result = await trigger_extraction(db, literature_id, model, api_key, base_url, model_config_id, clear_existing, use_cache)
         return ApiResponse(message="提取任务已提交", data=result)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/literatures/extraction/batch", response_model=ApiResponse, summary="批量触发AI提取", description="批量触发多篇文献的AI数据提取任务：有 PDF 走全文提取，无 PDF 但有摘要的题录文献用摘要提取；仅无 PDF 且无摘要、或正在提取中的文献会被跳过")
@@ -351,7 +346,7 @@ async def check_status(
         result = await get_extraction_status(db, literature_id)
         return ApiResponse(data=result)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.get("/literatures/{literature_id}/extraction", response_model=ApiResponse, summary="获取提取结果", description="获取指定文献的AI提取数据点列表及提取状态")
@@ -371,7 +366,7 @@ async def get_results(
             }
         )
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.get("/literatures/{literature_id}/extraction/export", summary="导出数据点CSV", description="将指定文献的所有数据点导出为CSV文件，便于查看和分析")
@@ -465,8 +460,8 @@ async def export_data_points_word(
     if total > 0:
         by_type = Counter(dp.get("data_type", "") for dp in data_points)
         by_status = Counter(dp.get("review_status", "") for dp in data_points)
-        provinces = set(dp.get("province", "") for dp in data_points if dp.get("province"))
-        diseases = set(dp.get("disease", "") for dp in data_points if dp.get("disease"))
+        provinces = {dp.get("province", "") for dp in data_points if dp.get("province")}
+        diseases = {dp.get("disease", "") for dp in data_points if dp.get("disease")}
 
         summary = doc.add_table(rows=7, cols=2, style="Light List Accent 1")
         summary.cell(0, 0).text = "统计项"
@@ -505,7 +500,6 @@ async def export_data_points_word(
 
         # 数据行
         for idx, dp in enumerate(data_points):
-            row = table.rows[idx + 1]
             age_range = ""
             if dp.get("age_min") is not None or dp.get("age_max") is not None:
                 age_min = dp.get("age_min") or ""
@@ -583,7 +577,7 @@ async def export_traceability_html(
     try:
         full_text = text_path.read_text(encoding="utf-8")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取溯源文本失败: {e}")
+        raise HTTPException(status_code=500, detail=f"读取溯源文本失败: {e}") from e
 
     # 4. 转换数据点为 TracePoint 并生成 HTML
     traces = [datapoint_dict_to_trace(dpo) for dpo in data_points]
@@ -727,7 +721,7 @@ async def update_data_points(
         "source_char_start", "source_char_end", "is_grounded",
     ]
     # 4.2：可审计字段（可编辑字段 + 审核状态 + 审核意见）
-    audit_fields = editable_fields + ["review_status", "review_comment"]
+    audit_fields = [*editable_fields, "review_status", "review_comment"]
 
     # 4.2：预取将被更新的数据点旧值，用于生成变更 diff（审计）
     ids_to_update = [uuid.UUID(item.id) for item in req.data_points]
@@ -1176,7 +1170,7 @@ async def get_history(
         history = await get_extraction_history(db, literature_id)
         return ApiResponse(data=history)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse, summary="批量重置卡住的提取（管理员）", description="管理员专用：批量重置所有卡在processing或queued状态的文献为failed，并强制终止运行中的Celery提取任务，清空队列，用于服务器重启后恢复状态")
@@ -1196,7 +1190,7 @@ async def reset_stuck_extractions(
         # 查看当前活跃的任务（timeout=5 避免默认1秒超时导致查不到任务）
         inspect = celery_app.control.inspect(timeout=5.0)
         active_tasks = inspect.active() or {}
-        for worker, tasks in active_tasks.items():
+        for _worker, tasks in active_tasks.items():
             for task in tasks:
                 task_id = task.get("id")
                 if task_id:
@@ -1290,7 +1284,7 @@ async def reset_my_extractions(
         try:
             inspect = celery_app.control.inspect(timeout=5.0)
             active_tasks = inspect.active() or {}
-            for worker, tasks in active_tasks.items():
+            for _worker, tasks in active_tasks.items():
                 for task in tasks:
                     task_name = task.get("name") or ""
                     if not task_name.endswith("process_literature"):
@@ -1421,7 +1415,7 @@ _CONFIDENCE_RANK = case(
 )
 
 
-def _serialize_review_dp(dp: DataPoint, literature_title: Optional[str], conflicts: Optional[list] = None) -> dict:
+def _serialize_review_dp(dp: DataPoint, literature_title: str | None, conflicts: list | None = None) -> dict:
     """审核队列数据点序列化（与 get_extraction_results 字段对齐，附加文献标题）。"""
     return {
         "id": str(dp.id),
@@ -1461,10 +1455,10 @@ def _serialize_review_dp(dp: DataPoint, literature_title: Optional[str], conflic
 @router.get("/extractions/review-queue", response_model=PagedResponse, summary="审核队列",
             description="跨文献列出待审核(pending)/已驳回(rejected)的数据点，按置信度（低→高）与质量分（低→高）排序，低置信低质量优先审核")
 async def get_review_queue(
-    review_status: Optional[str] = Query(None, description="pending/rejected/all；默认 pending"),
-    data_type: Optional[str] = Query(None, description="seroprevalence/gmc"),
-    disease: Optional[str] = Query(None, description="疾病关键词模糊匹配"),
-    literature_id: Optional[uuid.UUID] = Query(None, description="限定文献"),
+    review_status: str | None = Query(None, description="pending/rejected/all；默认 pending"),
+    data_type: str | None = Query(None, description="seroprevalence/gmc"),
+    disease: str | None = Query(None, description="疾病关键词模糊匹配"),
+    literature_id: uuid.UUID | None = Query(None, description="限定文献"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -1532,8 +1526,8 @@ async def get_review_queue(
 @router.get("/titer-tables/review-queue", response_model=PagedResponse, summary="滴度矩阵审核队列",
             description="跨文献列出待审核/已驳回的滴度矩阵，按置信度（低→高）排序，供人工审核")
 async def get_titer_review_queue(
-    review_status: Optional[str] = Query(None, description="pending/rejected/all；默认 pending"),
-    assay_type: Optional[str] = Query(None, description="hi/vnt/elisa"),
+    review_status: str | None = Query(None, description="pending/rejected/all；默认 pending"),
+    assay_type: str | None = Query(None, description="hi/vnt/elisa"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -1601,7 +1595,7 @@ async def get_titer_review_queue(
 
 class TiterReviewRequest(BaseModel):
     review_status: str  # approved / rejected
-    review_comment: Optional[str] = None
+    review_comment: str | None = None
 
 
 @router.put("/titer-tables/{titer_table_id}/review", response_model=ApiResponse, summary="审核滴度矩阵",

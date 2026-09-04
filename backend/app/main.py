@@ -1,11 +1,10 @@
 import asyncio
-import logging
+import contextlib
 import subprocess
 import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,12 +12,12 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.config import settings
-from app.models.base import engine, async_session
 from app.api.v1.router import router as api_v1_router
-from app.core.logging_config import setup_logging, logger
+from app.config import settings
 from app.core.exceptions import AppError
+from app.core.logging_config import logger, setup_logging
 from app.core.metrics import metrics_accessible, record_http_exception
+from app.models.base import async_session, engine
 
 # Prometheus HTTP 指标收集（依赖缺失时静默跳过，不影响应用启动）
 try:
@@ -77,13 +76,13 @@ async def lifespan(app: FastAPI):
     monitor_task = asyncio.create_task(_folder_monitor_loop())
 
     # 启动孤儿文件清理后台任务（默认每天一次，可配置 ORPHAN_CLEANUP_ENABLED 关闭）
-    cleanup_task: Optional[asyncio.Task] = None
+    cleanup_task: asyncio.Task | None = None
     if settings.ORPHAN_CLEANUP_ENABLED:
         from app.services.file_cleanup_service import _cleanup_loop
         cleanup_task = asyncio.create_task(_cleanup_loop())
 
     # 启动回收站自动清理后台任务（每天检查一次，永久删除超过30天的软删除文献）
-    trash_cleanup_task: Optional[asyncio.Task] = None
+    trash_cleanup_task: asyncio.Task | None = None
     try:
         from app.services.literature_service import _trash_cleanup_loop
         trash_cleanup_task = asyncio.create_task(_trash_cleanup_loop())
@@ -91,7 +90,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"启动回收站清理任务失败: {e}")
 
     # 启动分析快照清理后台任务（每天一次，回收超过 SNAPSHOT_TTL_DAYS 天的旧快照）
-    snapshot_cleanup_task: Optional[asyncio.Task] = None
+    snapshot_cleanup_task: asyncio.Task | None = None
     try:
         from app.services.snapshot_service import _snapshot_cleanup_loop
         snapshot_cleanup_task = asyncio.create_task(_snapshot_cleanup_loop())
@@ -99,7 +98,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"启动快照清理任务失败: {e}")
 
     # 启动过期临时模型配置清理后台任务（每小时一次，回收单次提取注入的临时凭证）
-    model_config_cleanup_task: Optional[asyncio.Task] = None
+    model_config_cleanup_task: asyncio.Task | None = None
     try:
         from app.services.extraction_service import _expired_model_config_cleanup_loop
         model_config_cleanup_task = asyncio.create_task(_expired_model_config_cleanup_loop())
@@ -117,49 +116,37 @@ async def lifespan(app: FastAPI):
     # 停止 Prometheus 指标后台采集任务
     for metrics_task in metrics_tasks:
         metrics_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await metrics_task
-        except asyncio.CancelledError:
-            pass
 
     # 停止孤儿文件清理后台任务
     if cleanup_task:
         cleanup_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await cleanup_task
-        except asyncio.CancelledError:
-            pass
 
     # 停止回收站自动清理后台任务
     if trash_cleanup_task:
         trash_cleanup_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await trash_cleanup_task
-        except asyncio.CancelledError:
-            pass
 
     # 停止分析快照清理后台任务
     if snapshot_cleanup_task:
         snapshot_cleanup_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await snapshot_cleanup_task
-        except asyncio.CancelledError:
-            pass
 
     # 停止过期临时模型配置清理后台任务
     if model_config_cleanup_task:
         model_config_cleanup_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await model_config_cleanup_task
-        except asyncio.CancelledError:
-            pass
 
     # 停止文件夹监控后台任务
     monitor_task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await monitor_task
-    except asyncio.CancelledError:
-        pass
 
     # 释放外部 HTTP 共享连接池（Crossref/OpenAlex/EuropePMC 统一连接）
     try:
@@ -230,8 +217,8 @@ def _error_response(
     *,
     code: str,
     message: str,
-    data: Optional[dict] = None,
-    request_id: Optional[str] = None,
+    data: dict | None = None,
+    request_id: str | None = None,
 ) -> dict:
     """构造统一格式的错误响应体。"""
     body = {

@@ -1,37 +1,21 @@
 import asyncio
-import csv
 import hashlib
-import io
-import json
 import logging
-import os
 import re
-import subprocess  # 打开宿主机文件夹使用
-import sys
-import uuid
-from collections import defaultdict
 from pathlib import Path
-from typing import Any, Optional
-from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, case, select, func
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.literature import Literature
 from app.models.data_point import DataPoint
-from app.models.literature_file_history import LiteratureFileHistory
-from app.schemas.literature import LiteratureCreate
-from app.config import settings
-from app.core.document_parser import get_mime_type
-from app.core.minio_client import upload_file, delete_file
-from app.services.reference_parser import parse_references
+from app.models.literature import Literature
 
 logger = logging.getLogger("uvicorn")
 
 LOCAL_STORAGE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data" / "pdfs"
 
 
-def _is_safe_local_path(file_path: str) -> Optional[Path]:
+def _is_safe_local_path(file_path: str) -> Path | None:
     """校验文件路径是否在 LOCAL_STORAGE_DIR 范围内，越界返回 None。"""
     try:
         p = Path(file_path).resolve()
@@ -49,7 +33,7 @@ def compute_pdf_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
 
-def normalize_title(title: Optional[str]) -> str:
+def normalize_title(title: str | None) -> str:
     """标题归一化：小写 + 替换连字符为空格 + 去标点 + 压缩空格"""
     if not title:
         return ""
@@ -60,7 +44,7 @@ def normalize_title(title: Optional[str]) -> str:
     return t
 
 
-def _first_author_surname(authors: Optional[str]) -> str:
+def _first_author_surname(authors: str | None) -> str:
     """取第一作者姓氏（归一化）"""
     if not authors:
         return ""
@@ -171,7 +155,7 @@ def _clean_filename_title(filename: str) -> str:
     return t if t else filename
 
 
-async def _find_existing_by_title(db: AsyncSession, clean_title: str) -> Optional[Literature]:
+async def _find_existing_by_title(db: AsyncSession, clean_title: str) -> Literature | None:
     """按归一化标题查找已存在的文献。
     先走 title_norm 生成列索引做精确匹配（避免全表扫描），
     失败时用模糊匹配（Jaccard 相似度 >= 0.7）作为回退。
@@ -213,7 +197,7 @@ async def _find_existing_by_title(db: AsyncSession, clean_title: str) -> Optiona
     return None
 
 
-def _read_literature_file_bytes(file_path: str) -> Optional[bytes]:
+def _read_literature_file_bytes(file_path: str) -> bytes | None:
     """读取文献文件字节（兼容本地路径和 MinIO 名称）。"""
     # 策略1: 直接作为本地路径读取
     p = Path(file_path)
@@ -265,7 +249,7 @@ async def create_import_log(
     skipped_count: int,
     imported_count: int,
     operator_name: str,
-    operator_id: Optional[str] = None,
+    operator_id: str | None = None,
     fmt: str = "auto",
 ) -> None:
     """记录题录导入日志"""
@@ -290,7 +274,8 @@ async def list_import_logs(
     page_size: int = 20,
 ) -> dict:
     """分页查询题录导入日志"""
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
+
     from app.models.reference_import_log import ReferenceImportLog
 
     # 总条数

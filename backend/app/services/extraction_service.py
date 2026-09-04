@@ -1,17 +1,17 @@
 import asyncio
 import logging
 import uuid
-from typing import Optional
 from datetime import datetime, timezone
 
-from sqlalchemy import select, func, update, delete as sa_delete, tuple_
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.literature import Literature
-from app.models.data_point import DataPoint
-from app.models.extraction_history import ExtractionHistory
 from app.models.api_model_config import ApiModelConfig
 from app.models.base import async_session
+from app.models.data_point import DataPoint
+from app.models.extraction_history import ExtractionHistory
+from app.models.literature import Literature
 from app.tasks.extract_task import process_literature
 
 logger = logging.getLogger("uvicorn")
@@ -36,9 +36,7 @@ def _is_conflict(data_type: str, value: float, existing_value: float) -> bool:
     rel = _relative_diff(value, existing_value)
     if rel < CONFLICT_RELATIVE_THRESHOLD:
         return False
-    if data_type == "seroprevalence" and abs(value - existing_value) < CONFLICT_ABS_THRESHOLD_SEROPREVALENCE:
-        return False
-    return True
+    return not (data_type == "seroprevalence" and abs(value - existing_value) < CONFLICT_ABS_THRESHOLD_SEROPREVALENCE)
 
 
 async def compute_data_point_conflicts(
@@ -132,10 +130,10 @@ def _metadata_quality_breakdown(dp: DataPoint) -> dict | None:
 async def trigger_extraction(
     db: AsyncSession,
     literature_id: uuid.UUID,
-    model: Optional[str] = None,
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
-    model_config_id: Optional[str] = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model_config_id: str | None = None,
     clear_existing_data: bool = False,
     use_cache: bool = True,
 ) -> dict:
@@ -202,13 +200,42 @@ async def trigger_extraction(
 
     # 提交到 Celery 队列异步执行（失败标记与重试由任务自身处理）
     lit_id_str = str(literature_id)
-    process_literature.delay(
-        literature_id=lit_id_str,
-        model=model,
-        model_config_id=resolved_model_config_id,
-        clear_existing_data=clear_existing_data,
-        use_cache=use_cache,
-    )
+    try:
+        process_literature.delay(
+            literature_id=lit_id_str,
+            model=model,
+            model_config_id=resolved_model_config_id,
+            clear_existing_data=clear_existing_data,
+            use_cache=use_cache,
+        )
+    except Exception as e:
+        # 入队失败：回滚 queued -> pending，避免僵尸占位，允许后续重提
+        try:
+            await db.execute(
+                update(Literature)
+                .where(Literature.id == literature_id)
+                .where(Literature.extraction_status == "queued")
+                .values(
+                    extraction_status="pending",
+                    extraction_started_at=None,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            await db.commit()
+        except Exception as rb_err:
+            logger.error(
+                f"[ExtractTrigger] 文献 {lit_id_str} 入队失败且回滚异常: {rb_err}，"
+                f"原始入队异常: {e}",
+                exc_info=True,
+            )
+            raise RuntimeError(
+                f"任务入队失败且回滚异常（原任务入队错误：{e}）"
+            ) from rb_err
+        logger.error(
+            f"[ExtractTrigger] 文献 {lit_id_str} 入队失败，已回滚为 pending: {e}",
+            exc_info=True,
+        )
+        raise ValueError(f"任务入队失败，请稍后重试：{e}") from e
 
     return {
         "literature_id": lit_id_str,
@@ -361,7 +388,7 @@ async def review_data_points(
     literature_id: uuid.UUID,
     ids: list[str],
     status: str,
-    comment: Optional[str],
+    comment: str | None,
     reviewer_id: uuid.UUID,
 ) -> int:
     """批量审核数据点：写入审核意见、审核人与审核时间。

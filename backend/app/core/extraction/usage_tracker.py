@@ -4,7 +4,6 @@
 """
 
 import logging
-from typing import Optional
 
 from app.config import settings
 
@@ -14,7 +13,7 @@ logger = logging.getLogger("uvicorn")
 class UsageTrackerMixin:
     """Token 用量统计与费用估算。"""
 
-    def _accumulate_usage(self, model: str, usage: Optional[dict]) -> None:
+    def _accumulate_usage(self, model: str, usage: dict | None) -> None:
         """将单次 LLM 调用的 usage 累加到实例累加器，按模型分别统计。
 
         usage 结构: {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
@@ -99,7 +98,8 @@ class UsageTrackerMixin:
     # 模型级单价覆盖表（model_substring_lower -> (input_per_1m, output_per_1m) 美元/百万 token）
     # 优先于 Provider.get_pricing() 的默认值，用于区分同一 Provider 下不同模型的单价。
     # 价格来源：各厂商官网公开定价（2026 年初参考值），可能随厂商调整而变化。
-    _MODEL_PRICING_OVERRIDES: dict[str, tuple[float, float]] = {
+    # 类级共享常量映射，仅读取不修改。
+    _MODEL_PRICING_OVERRIDES: dict[str, tuple[float, float]] = {  # noqa: RUF012
         # DeepSeek（reasoner 在 chat 之前，避免误匹配）
         "deepseek-reasoner": (0.55, 2.19),
         "deepseek-chat":     (0.14, 0.28),
@@ -121,7 +121,7 @@ class UsageTrackerMixin:
     }
 
     @classmethod
-    def _get_model_pricing(cls, model: str) -> Optional[tuple[float, float]]:
+    def _get_model_pricing(cls, model: str) -> tuple[float, float] | None:
         """查询模型单价 (input_per_1m, output_per_1m) 美元/百万 token。
 
         查找顺序：

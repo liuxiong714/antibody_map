@@ -11,13 +11,11 @@ import hashlib
 import logging
 import re
 import uuid
-from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.kg_entity import KGEntity
-from app.ontology import EntityType
 
 logger = logging.getLogger("kg")
 
@@ -45,7 +43,7 @@ def _normalize_for_dedup(name: str) -> str:
     return result.strip()
 
 
-def generate_entity_id(entity_type: str, name: str, attributes: Optional[dict] = None) -> str:
+def generate_entity_id(entity_type: str, name: str, attributes: dict | None = None) -> str:
     """生成确定性实体 ID：基于类型+标准化名称+排序属性 MD5 取前 16 位。"""
     normalized_name = _normalize_name(name)
     attr_str = ""
@@ -84,8 +82,8 @@ async def resolve_entity(
     db: AsyncSession,
     entity_type: str,
     name: str,
-    attributes: Optional[dict] = None,
-    literature_id: Optional[uuid.UUID] = None,
+    attributes: dict | None = None,
+    literature_id: uuid.UUID | None = None,
 ) -> str:
     """消歧并返回最终 entity_id。
 
@@ -155,7 +153,7 @@ async def persist_triples(
     db: AsyncSession,
     entities: list[dict],
     triples: list[dict],
-    literature_id: Optional[uuid.UUID] = None,
+    literature_id: uuid.UUID | None = None,
 ) -> int:
     """批量消歧写入实体和三元组，返回写入的三元组数。
 

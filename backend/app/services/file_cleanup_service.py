@@ -21,9 +21,8 @@ import logging
 import re
 import shutil
 import time
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -115,9 +114,7 @@ def _is_protected_by_minio(base: str, minio_names: set[str], referenced_ids: set
     if base in minio_names:
         return True
     m = _UUID_PREFIX_RE.match(base)
-    if m and m.group(1) in referenced_ids:
-        return True
-    return False
+    return bool(m and m.group(1) in referenced_ids)
 
 
 async def scan_orphan_files(db: AsyncSession) -> dict:
@@ -185,7 +182,7 @@ async def scan_orphan_files(db: AsyncSession) -> dict:
     }
 
 
-def _minio_last_modified_ts(obj) -> Optional[float]:
+def _minio_last_modified_ts(obj) -> float | None:
     """取 MinIO 对象的 last_modified 时间戳（秒）；缺失/异常返回 None。"""
     try:
         lm = getattr(obj, "last_modified", None)
@@ -331,7 +328,7 @@ async def delete_minio_orphan_objects(db: AsyncSession, dry_run: bool = False, o
     }
 
 
-def purge_trash(retention_days: Optional[int] = None) -> dict:
+def purge_trash(retention_days: int | None = None) -> dict:
     """物理删除回收目录中超过保留天数的文件，返回删除数量。"""
     retention_days = retention_days or int(getattr(settings, "ORPHAN_TRASH_RETENTION_DAYS", 30))
     trash = trash_dir()

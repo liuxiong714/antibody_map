@@ -1,104 +1,57 @@
 """Submodule of app.services.analysis (split from analysis_service.py)."""
 
 
-import logging
-import math
-from datetime import date
-from typing import Optional
 
-import scipy.stats as sps
-from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.data_point import DataPoint
-from app.models.literature import Literature
 from app.config import settings
-from app.core.term_normalizer import normalize_disease, normalize_province
-from app.core.uncertainty_quantification import (
-    barrier_probability,
-    fusion_hit,
-    sample_positivity,
-)
-from app.core.methodology import build_methodology_note
-from app.core.stats import (
-    geometric_mean_with_ci,
-    weighted_proportion_with_ci,
-    weighted_linear_trend,
-    gini,
-    coefficient_of_variation,
-    reliability_grade,
-    lowess,
-    inverse_variance_meta,
-)
 from app.core.immunity_dynamics import (
-    DEFAULT_BIRTH_COHORT_SIZE,
     DEFAULT_BARRIER_THRESHOLD,
+    DEFAULT_BIRTH_COHORT_SIZE,
     DEFAULT_PROJECTION_YEARS,
     DEFAULT_WANING_RATE,
     estimate_waning_rate,
     project_barrier,
 )
 from app.core.stats_engine import (
-    gmc_ci,
-    weighted_rate_ci,
-    fit_age_curve,
-    foi_from_curve,
-    meta_proportion,
     fit_catalytic_models,
-    cochran_armitage_trend,
-    two_proportion_test,
-    direct_standardize,
-    morans_i,
-    g_star,
-    classify_hotspot_cluster,
-    birth_cohort_analysis,
 )
-from app.services.goal_threshold_service import get_goal_threshold
-
+from app.core.term_normalizer import normalize_disease, normalize_province
+from app.core.uncertainty_quantification import (
+    barrier_probability,
+    fusion_hit,
+    sample_positivity,
+)
+from app.models.data_point import DataPoint
 from app.services.analysis._common import (
     AGE_GROUPS,
-    CHINA_POP_STD_VERSION,
-    CHINA_PROVINCES,
-    DEFAULT_LIFE_EXPECTANCY,
-    NIP_COVERAGE_REFERENCE,
-    NON_ENDEMIC_LIFELONG,
-    R0_ASSUMPTION_NOTE,
     R0_REFERENCE,
     WHO_THRESHOLDS,
-    _CHINA_POP_2020,
-    _STD_BAND_MAP,
-    _STD_WEIGHT_BY_GROUP,
     _barrier_status_from_rate,
     _barrier_status_with_message,
     _build_base_query,
     _build_catalytic_records,
-    _build_province_weights,
     _calc_foi_from_sp,
-    _calc_gmc,
     _calc_hit_from_r0,
     _calc_r0_from_foi,
     _calc_ve_from_sp,
     _calc_weighted_positivity,
     _catalytic_r0_hit,
-    _compute_province_asr,
     _get_age_group_label,
     _get_reference_coverage,
     _implied_coverage_from_hit,
-    _load_disease_note,
-    _load_province_adjacency,
-    _load_std_pop,
-    _meta_merge_cell,
     _midpoint_age,
     _resolve_hit_target,
     _split_vax_unvax,
     logger,
 )
+from app.services.goal_threshold_service import get_goal_threshold
 
 
 async def get_simulation(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
     assumed_coverage: float = 90.0,
     booster_rate: float = 0.0,
 ) -> dict:
@@ -158,7 +111,7 @@ async def get_simulation(
     # 屏障目标：优先 FOI 估计，否则 GOAL/WHO 阈值，再退到文献 R0
     hit_target = hit_from_foi or goal_threshold or who_threshold or reference_hit
 
-    def _status(sp: Optional[float], target: Optional[float]) -> str:
+    def _status(sp: float | None, target: float | None) -> str:
         if sp is None or target is None:
             return "undetermined"
         if sp >= target:
@@ -212,9 +165,11 @@ async def get_simulation(
         notes.append("无法估计 HIT（无 FOI 数据且无 GOAL/WHO/文献阈值），屏障状态为 undetermined")
     if current_status != "reached" and sim_status == "reached":
         notes.append(f"在当前假设（覆盖 {cov}% + 加强 {boost}%）下模拟可达群体免疫（≥{hit_target}%）")
-    if hit_from_foi is not None and r0_ref and estimated_r0 is not None:
-        if estimated_r0 < r0_ref[1] * 0.3 or estimated_r0 > r0_ref[2] * 2:
-            notes.append("基于 FOI 的 R0 估计超出文献参考区间，模拟结果需谨慎解读")
+    if (
+        hit_from_foi is not None and r0_ref and estimated_r0 is not None
+        and (estimated_r0 < r0_ref[1] * 0.3 or estimated_r0 > r0_ref[2] * 2)
+    ):
+        notes.append("基于 FOI 的 R0 估计超出文献参考区间，模拟结果需谨慎解读")
 
     return {
         "disease": disease,
@@ -232,8 +187,8 @@ async def get_simulation(
 async def get_immunity_projection(
     db: AsyncSession,
     disease: str,
-    province: Optional[str] = None,
-    waning_rate: Optional[float] = None,
+    province: str | None = None,
+    waning_rate: float | None = None,
     projection_years: int = DEFAULT_PROJECTION_YEARS,
     birth_cohort_size: float = DEFAULT_BIRTH_COHORT_SIZE,
     barrier_threshold: float = DEFAULT_BARRIER_THRESHOLD,
@@ -378,7 +333,7 @@ async def get_immunity_projection(
 
     # 首次跌破阈值的年份（trajectory[0] 为基线年，从未来年 i>=1 开始判定）
     threshold = max(0.0, min(1.0, float(barrier_threshold)))
-    below_offset: Optional[int] = None
+    below_offset: int | None = None
     for i, val in enumerate(trajectory[1:], start=1):
         if val < threshold:
             below_offset = i
@@ -407,15 +362,15 @@ async def get_immunity_projection(
 
 async def get_immune_barrier_assessment(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
     life_expectancy: float = 75.0,
-    seroreversion_mu: Optional[float] = None,
-    hit_source_override: Optional[str] = None,
+    seroreversion_mu: float | None = None,
+    hit_source_override: str | None = None,
 ) -> dict:
     """免疫屏障评估（复用 FOI 模块的 R0/HIT 计算）。
 
@@ -500,7 +455,7 @@ async def get_immune_barrier_assessment(
     weighted_rate_ci_lower = _wpr["ci_lower"]
     weighted_rate_ci_upper = _wpr["ci_upper"]
 
-    lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+    lit_ids = {str(r.literature_id) for r in rows if r.literature_id}
 
     # --- 2) FOI 估算（复用催化模型族 MLE 新引擎）---
     # 旧口径：单点 λ=-ln(1-SP)/age 再样本量加权（仅作催化模型失败时的回退）
@@ -726,9 +681,9 @@ async def get_immune_barrier_assessment(
 
 async def get_barrier_probability(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    n_samples: Optional[int] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    n_samples: int | None = None,
 ) -> dict:
     """免疫屏障评估的不确定性量化：输出达标概率替代二元结论。
 
@@ -842,13 +797,13 @@ async def get_barrier_probability(
 
 async def get_foi_analysis(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
     life_expectancy: float = 75.0,
-    seroreversion_mu: Optional[float] = None,
-    hit_source_override: Optional[str] = None,
+    seroreversion_mu: float | None = None,
+    hit_source_override: str | None = None,
 ) -> dict:
     """P0-1: FOI（感染力）+ 群体免疫阈值综合分析。
 
@@ -1063,7 +1018,7 @@ async def get_foi_analysis(
 
         # 如果 FOI 推出来的 R0 严重超出文献范围，给出 note
         if r0_ref and estimated_r0 is not None:
-            typical, rlow, rhigh = r0_ref
+            _typical, rlow, rhigh = r0_ref
             if estimated_r0 < rlow * 0.3:
                 notes.append(f"[{dis_key}] 基于 FOI 的 R0 估计（{estimated_r0}）显著低于文献参考区间 [{rlow}, {rhigh}]，可能是 SP 偏低或年龄覆盖不全。")
                 logger.warning(f"[FOI] [{dis_key}] R0估计({estimated_r0})显著低于文献参考[{rlow},{rhigh}]")
@@ -1246,10 +1201,10 @@ async def get_foi_analysis(
 
 async def get_vaccine_analysis(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
 ) -> dict:
     """P1: 疫苗效果 (VE) + 接种率综合分析。
 
@@ -1417,7 +1372,8 @@ async def get_vaccine_analysis(
             if pv and pu:
                 def _wsp2(group):
                     lst = [(float(r.value), r.sample_size or 1) for r in group if r.value is not None]
-                    if not lst: return None
+                    if not lst:
+                        return None
                     sw2 = sum(w for _, w in lst)
                     return round(sum(v * w for v, w in lst) / sw2, 2) if sw2 > 0 else None
                 prov_ve = _calc_ve_from_sp(_wsp2(pv), _wsp2(pu))
@@ -1461,8 +1417,8 @@ async def get_vaccine_analysis(
 
 async def get_effective_barrier(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
 ) -> dict:
     """有效免疫屏障：用年龄接触矩阵对人群阳性率加权。
 

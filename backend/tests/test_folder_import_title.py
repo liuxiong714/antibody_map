@@ -108,12 +108,16 @@ class TestScanFolderTitleParameter:
         mock_folder.folder_path = tmpdir
 
         mock_db = AsyncMock()
-        # 设置 db.execute 的 side_effect 依次返回 mock 结果
-        # 调用1: select(MonitoredFile.file_path)... → r.all() 返回空列表
-        # 调用2: select(Literature.id)... → scalar_one_or_none() 返回 None
+        # db.add 是同步方法，避免 AsyncMock 返回未 await 的协程告警
+        mock_db.add = MagicMock(return_value=None)
+        # 设置 db.execute 的 side_effect 依次返回 mock 结果（与 scan_folder 实际查询顺序一致）
+        # 调用1: update(MonitoredFolder) 原子抢占扫描锁 → rowcount=1（抢占成功）
+        # 调用2: select(MonitoredFile.file_path)... → r.all() 返回空列表
+        # 调用3: select(Literature.id)... → scalar_one_or_none() 返回 None（无重复）
         mock_all = MagicMock(return_value=[])
         mock_scalar = MagicMock(return_value=None)
         mock_db.execute.side_effect = [
+            MagicMock(rowcount=1),
             MagicMock(all=mock_all),
             MagicMock(scalar_one_or_none=mock_scalar),
         ]

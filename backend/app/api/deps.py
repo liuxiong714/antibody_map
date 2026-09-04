@@ -1,5 +1,4 @@
 import uuid
-from typing import Optional
 
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy import select
@@ -20,7 +19,7 @@ async def get_db() -> AsyncSession:
 
 
 async def get_current_user(
-    authorization: Optional[str] = Header(None),
+    authorization: str | None = Header(None),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """从 Authorization 头解析 JWT 令牌，返回当前登录用户"""

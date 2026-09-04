@@ -1,6 +1,7 @@
 import axios, { AxiosRequestConfig } from 'axios';
 import i18n from '../i18n';
 import { clearAllApiCache } from '../lib/apiCache';
+import type { BackendErrorCode } from '../types';
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -8,10 +9,15 @@ const api = axios.create({
 });
 
 // 后端标准化错误码 → i18n 文案键（轻量双语文案：后端文案不动，前端按 code 本地化）
-const CODE_I18N_KEYS: Record<string, string> = {
+// 与 backend/app/main.py 全局处理器及 app/core/exceptions.py 的 AppError.code 保持一致。
+const CODE_I18N_KEYS: Record<BackendErrorCode, string> = {
   DATABASE_ERROR: 'error.code.DATABASE_ERROR',
   VALIDATION_ERROR: 'error.code.VALIDATION_ERROR',
   METRICS_FORBIDDEN: 'error.code.METRICS_FORBIDDEN',
+  APP_ERROR: 'error.code.APP_ERROR',
+  LLM_EXTRACTION_ERROR: 'error.code.LLM_EXTRACTION_ERROR',
+  DOCUMENT_PARSE_ERROR: 'error.code.DOCUMENT_PARSE_ERROR',
+  EXTERNAL_API_ERROR: 'error.code.EXTERNAL_API_ERROR',
 };
 
 // ===== token 存取 =====
@@ -57,7 +63,10 @@ export function clearAuthStorage(): void {
 // 解析后端错误信息：优先按 code 映射到当前语言的文案，无 code 则回退后端 message/detail
 function resolveApiErrorMessage(data: any, fallback: string): string {
   const code = data?.code;
-  const key = typeof code === 'string' ? CODE_I18N_KEYS[code] : undefined;
+  const key =
+    typeof code === 'string' && code in CODE_I18N_KEYS
+      ? CODE_I18N_KEYS[code as BackendErrorCode]
+      : undefined;
   if (key) {
     const localized = i18n.t(key);
     if (localized && localized !== key) return localized;

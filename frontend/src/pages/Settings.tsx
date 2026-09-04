@@ -6,11 +6,11 @@ import {
 import {
   SettingOutlined, RobotOutlined, SafetyOutlined, FileTextOutlined, ReloadOutlined,
   SearchOutlined, DownOutlined, ClearOutlined, DesktopOutlined,
-  DatabaseOutlined, DownloadOutlined, RollbackOutlined,
+  DatabaseOutlined, DownloadOutlined, RollbackOutlined, FieldTimeOutlined,
 } from '@ant-design/icons';
 import ModelManager from '../components/ModelManager';
 import LocalModelManager from '../components/LocalModelManager';
-import { getSystemInfo, listLogFiles, getLogContent, SystemInfo, LogFile, LogEntry, listBackups, backupDatabase, buildDownloadBackupUrl, restoreBackup, BackupFile } from '../services/system';
+import { getSystemInfo, listLogFiles, getLogContent, SystemInfo, LogFile, LogEntry, listBackups, backupDatabase, buildDownloadBackupUrl, restoreBackup, BackupFile, getActiveTasks, ActiveTaskGroup, ActiveTaskItem } from '../services/system';
 import './Settings.css';
 
 const { Text } = Typography;
@@ -49,7 +49,7 @@ function formatTime(ts: number): string {
 const Settings: React.FC = () => {
   const [modelModalVisible, setModelModalVisible] = useState(false);
   const [localModelModalVisible, setLocalModelModalVisible] = useState(false);
-  const [activeTab, setActiveTab] = useState('models');
+  const [activeTab, setActiveTab] = useState('tasks');
 
   // 是否管理员（还原操作仅管理员可用）
   const isAdmin = localStorage.getItem('is_admin') === 'true' || sessionStorage.getItem('is_admin') === 'true';
@@ -259,7 +259,160 @@ const Settings: React.FC = () => {
     setAutoScroll(el.scrollHeight - el.scrollTop - el.clientHeight < 60);
   };
 
+  // ── 任务状态查看 ──
+  const [activeTasks, setActiveTasks] = useState<ActiveTaskGroup[]>([]);
+  const [tasksUpdatedAt, setTasksUpdatedAt] = useState('');
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const tasksTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const loadActiveTasks = useCallback(async () => {
+    try {
+      setTasksLoading(true);
+      const res = await getActiveTasks();
+      setActiveTasks(res.tasks || []);
+      setTasksUpdatedAt(res.updated_at || '');
+    } catch (err) {
+      // 轮询失败静默，不打断用户
+      console.error('[Settings] 获取后台任务状态失败:', err);
+    } finally {
+      setTasksLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'tasks') return;
+    void loadActiveTasks();
+    tasksTimer.current = setInterval(() => void loadActiveTasks(), 8000);
+    return () => {
+      if (tasksTimer.current) clearInterval(tasksTimer.current);
+      tasksTimer.current = null;
+    };
+  }, [activeTab, loadActiveTasks]);
+
+  const formatTaskTime = (iso: string) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+
+  const describeTaskItem = (type: string, it: ActiveTaskItem) => {
+    if (type === 'report_generation') {
+      const kind = String(it.kind || '报告生成');
+      const title = String(it.title || '');
+      const disease = String(it.disease || '');
+      const province = String(it.province || '');
+      const model = String(it.model || '');
+      const parts = [kind, title || (disease || province ? `${disease} ${province}` : '')].filter(Boolean);
+      return (
+        <span>
+          {parts.join('：')}
+          {model && <Tag style={{ marginLeft: 8 }}>模型 {model}</Tag>}
+        </span>
+      );
+    }
+    return `知识图谱抽取（${String(it.scope || '自动')}）`;
+  };
+
+  const progressTaskItem = (type: string, it: ActiveTaskItem) => {
+    if (type === 'kg_extraction') {
+      return `已处理 ${it.processed ?? 0} / ${it.total ?? 0}`;
+    }
+    return <Tag color="processing">生成中</Tag>;
+  };
+
+  const renderTaskGroup = (g: ActiveTaskGroup) => {
+    const isRunning = g.status === 'running';
+    const primary =
+      g.type === 'literature_extraction'
+        ? (g.processing ?? 0)
+        : (g.running ?? g.items?.length ?? 0);
+    return (
+      <Card key={g.type} size="small" style={{ marginBottom: 12 }}>
+        <Space wrap>
+          <Tag color={isRunning ? 'green' : 'default'} style={{ borderRadius: 4 }}>
+            {isRunning ? '运行中' : '空闲'}
+          </Tag>
+          <Text strong style={{ fontSize: 14 }}>{g.name}</Text>
+          {isRunning ? (
+            <Tag color="blue">{primary} 个任务</Tag>
+          ) : (
+            <Text type="secondary">当前无运行任务</Text>
+          )}
+        </Space>
+
+        {g.type === 'literature_extraction' && (
+          <div style={{ marginTop: 8 }}>
+            <Space wrap>
+              <Tag color="processing">正在提取：{g.processing ?? 0}</Tag>
+              <Tag color="warning">排队中：{g.queued ?? 0}</Tag>
+              {!isRunning && <Text type="secondary">无正在提取或排队的文献</Text>}
+            </Space>
+          </div>
+        )}
+
+        {(g.type === 'report_generation' || g.type === 'kg_extraction') && (g.items?.length ?? 0) > 0 && (
+          <Table
+            style={{ marginTop: 8 }}
+            size="small"
+            bordered
+            pagination={false}
+            rowKey={(r: ActiveTaskItem) => String(r.id)}
+            columns={[
+              { title: '内容', dataIndex: '_desc', key: 'desc' },
+              { title: '状态', dataIndex: '_progress', key: 'prog', width: 160 },
+              { title: '开始时间', dataIndex: '_time', key: 'time', width: 150 },
+            ]}
+            dataSource={g.items.map((it) => ({
+              ...it,
+              _desc: describeTaskItem(g.type, it),
+              _progress: progressTaskItem(g.type, it),
+              _time: formatTaskTime(String(it.started_at || '')),
+            }))}
+          />
+        )}
+      </Card>
+    );
+  };
+
   const tabItems = [
+    {
+      key: 'tasks',
+      label: (
+        <span>
+          <FieldTimeOutlined /> 任务状态查看
+        </span>
+      ),
+      children: (
+        <Card>
+          <div className="settings-section">
+            <p className="settings-desc">
+              实时展示当前后台正在执行的任务，包括文献AI信息提取、知识图谱抽取、报告生成等。
+              页面会自动每 8 秒刷新一次。
+            </p>
+            <Space wrap style={{ marginBottom: 16 }}>
+              <Button
+                type="primary"
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={tasksLoading}
+                onClick={() => void loadActiveTasks()}
+              >
+                刷新
+              </Button>
+              {tasksUpdatedAt && <Text type="secondary">更新于 {formatTaskTime(tasksUpdatedAt)}</Text>}
+            </Space>
+            {activeTasks.length === 0 && !tasksLoading ? (
+              <Empty description="暂无任务状态数据" />
+            ) : (
+              <Spin spinning={tasksLoading && activeTasks.length === 0}>
+                {activeTasks.map((g) => renderTaskGroup(g))}
+              </Spin>
+            )}
+          </div>
+        </Card>
+      ),
+    },
     {
       key: 'models',
       label: (
@@ -299,6 +452,79 @@ const Settings: React.FC = () => {
             <Button type="primary" icon={<DesktopOutlined />} onClick={() => setLocalModelModalVisible(true)}>
               管理本地模型
             </Button>
+          </div>
+        </Card>
+      ),
+    },
+    {
+      key: 'backup',
+      label: (
+        <span>
+          <DatabaseOutlined /> 数据备份与还原
+        </span>
+      ),
+      children: (
+        <Card>
+          <div className="settings-section">
+            <p className="settings-desc">
+              对数据库执行 <Text code>pg_dump</Text> 逻辑备份，备份文件保存于 <Text code>{backupDir || 'backend/backups/'}</Text> 目录。
+              可将备份文件复制到新的客户端/电脑，登录后在系统设置中上传并还原，实现数据跨设备迁移。
+              <b> 还原为高危操作，仅管理员可用</b>；还原前系统会自动备份当前库，失败自动回滚。
+            </p>
+            <Space wrap>
+              <Button type="primary" icon={<DatabaseOutlined />} loading={backingUp} onClick={handleBackupNow}>
+                立即备份
+              </Button>
+              <Tooltip title={isAdmin ? '上传 .sql 备份文件并覆盖还原数据库' : '仅管理员可还原'}>
+                <Upload
+                  accept=".sql"
+                  showUploadList={false}
+                  disabled={!isAdmin || restoring}
+                  beforeUpload={(file) => { if (isAdmin) confirmRestore(file); return false; }}
+                >
+                  <Button danger icon={<RollbackOutlined />} loading={restoring} disabled={!isAdmin || restoring}>
+                    上传备份文件并还原
+                  </Button>
+                </Upload>
+              </Tooltip>
+              {!isAdmin && <Tag color="orange">还原操作仅管理员可用</Tag>}
+            </Space>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <Table<BackupFile>
+              rowKey="filename"
+              size="small"
+              loading={backupLoading}
+              dataSource={backups}
+              locale={{ emptyText: '暂无备份文件' }}
+              pagination={false}
+              columns={[
+                { title: '备份文件', dataIndex: 'filename', key: 'filename', ellipsis: true,
+                  render: (v: string) => <Text code>{v}</Text>,
+                },
+                { title: '大小', dataIndex: 'size_mb', key: 'size_mb', width: 90,
+                  render: (v: number) => `${v} MB`,
+                },
+                { title: '创建时间', dataIndex: 'mtime', key: 'mtime', width: 170,
+                  render: (v: number) => formatTime(v),
+                },
+                { title: '操作', key: 'action', width: 200,
+                  render: (_, rec) => (
+                    <Space>
+                      <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(buildDownloadBackupUrl(rec.filename), '_blank')}>
+                        下载
+                      </Button>
+                      {isAdmin && (
+                        <Button size="small" danger icon={<RollbackOutlined />} loading={restoring} onClick={() => handleRestoreFromList(rec)}>
+                          还原
+                        </Button>
+                      )}
+                    </Space>
+                  ),
+                },
+              ]}
+            />
           </div>
         </Card>
       ),
@@ -445,79 +671,6 @@ const Settings: React.FC = () => {
                 </a>
               </span>
             </div>
-          </div>
-        </Card>
-      ),
-    },
-    {
-      key: 'backup',
-      label: (
-        <span>
-          <DatabaseOutlined /> 数据备份与还原
-        </span>
-      ),
-      children: (
-        <Card>
-          <div className="settings-section">
-            <p className="settings-desc">
-              对数据库执行 <Text code>pg_dump</Text> 逻辑备份，备份文件保存于 <Text code>{backupDir || 'backend/backups/'}</Text> 目录。
-              可将备份文件复制到新的客户端/电脑，登录后在系统设置中上传并还原，实现数据跨设备迁移。
-              <b> 还原为高危操作，仅管理员可用</b>；还原前系统会自动备份当前库，失败自动回滚。
-            </p>
-            <Space wrap>
-              <Button type="primary" icon={<DatabaseOutlined />} loading={backingUp} onClick={handleBackupNow}>
-                立即备份
-              </Button>
-              <Tooltip title={isAdmin ? '上传 .sql 备份文件并覆盖还原数据库' : '仅管理员可还原'}>
-                <Upload
-                  accept=".sql"
-                  showUploadList={false}
-                  disabled={!isAdmin || restoring}
-                  beforeUpload={(file) => { if (isAdmin) confirmRestore(file); return false; }}
-                >
-                  <Button danger icon={<RollbackOutlined />} loading={restoring} disabled={!isAdmin || restoring}>
-                    上传备份文件并还原
-                  </Button>
-                </Upload>
-              </Tooltip>
-              {!isAdmin && <Tag color="orange">还原操作仅管理员可用</Tag>}
-            </Space>
-          </div>
-
-          <div style={{ marginTop: 16 }}>
-            <Table<BackupFile>
-              rowKey="filename"
-              size="small"
-              loading={backupLoading}
-              dataSource={backups}
-              locale={{ emptyText: '暂无备份文件' }}
-              pagination={false}
-              columns={[
-                { title: '备份文件', dataIndex: 'filename', key: 'filename', ellipsis: true,
-                  render: (v: string) => <Text code>{v}</Text>,
-                },
-                { title: '大小', dataIndex: 'size_mb', key: 'size_mb', width: 90,
-                  render: (v: number) => `${v} MB`,
-                },
-                { title: '创建时间', dataIndex: 'mtime', key: 'mtime', width: 170,
-                  render: (v: number) => formatTime(v),
-                },
-                { title: '操作', key: 'action', width: 200,
-                  render: (_, rec) => (
-                    <Space>
-                      <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(buildDownloadBackupUrl(rec.filename), '_blank')}>
-                        下载
-                      </Button>
-                      {isAdmin && (
-                        <Button size="small" danger icon={<RollbackOutlined />} loading={restoring} onClick={() => handleRestoreFromList(rec)}>
-                          还原
-                        </Button>
-                      )}
-                    </Space>
-                  ),
-                },
-              ]}
-            />
           </div>
         </Card>
       ),

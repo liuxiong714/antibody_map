@@ -11,14 +11,13 @@
 - pdfplumber 不可用时安全降级返回空串，不影响原有纯文本提取流程
 - 表格提取失败不影响主流程，仅记录日志
 """
-import logging
 import io
-from typing import Optional
+import logging
+import re
 
 from app.config import settings
-from app.core.processors import anydoc_parser
-from app.core.processors import pdf_inspector_parser
 from app.core.parse_trace import record as trace_record
+from app.core.processors import anydoc_parser, pdf_inspector_parser
 
 logger = logging.getLogger("uvicorn")
 
@@ -73,7 +72,7 @@ def _table_to_markdown(table: list[list]) -> str:
         "| " + " | ".join(esc(c) for c in row) + " |"
         for row in rows[1:]
     ]
-    return "\n".join([header, separator] + body_lines)
+    return "\n".join([header, separator, *body_lines])
 
 
 def _extract_table_blocks(md: str) -> str:

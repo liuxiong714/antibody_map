@@ -3,7 +3,6 @@
 所有格式解析器继承 BaseParser 并实现 extract() 方法。
 通过 _PARSER_REGISTRY 自动注册，get_parser() 按扩展名查找。
 """
-import io
 import logging
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -49,7 +48,7 @@ def _clean_cell(cell) -> str:
     return s.strip()
 
 
-def grid_to_markdown(rows: list, title: Optional[str] = None) -> str:
+def grid_to_markdown(rows: list, title: str | None = None) -> str:
     """把二维列表渲染成 GFM 表格字符串（首行为表头）。
 
     - None/空行自动过滤（行内全空则整行丢弃）
@@ -75,7 +74,7 @@ def grid_to_markdown(rows: list, title: Optional[str] = None) -> str:
         "| " + " | ".join(esc(c) for c in row) + " |"
         for row in grid[1:]
     ]
-    table = "\n".join([header, separator] + body_lines)
+    table = "\n".join([header, separator, *body_lines])
     if title:
         return f"{title}\n\n{table}"
     return table

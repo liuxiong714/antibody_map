@@ -6,7 +6,6 @@ app.core.goal_thresholds.GOAL_THRESHOLDS 默认值种子化），管理员可通
 """
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,11 +17,11 @@ from app.models.goal_threshold_config import GoalThresholdConfig
 logger = logging.getLogger("uvicorn")
 
 
-def _norm_key(disease: Optional[str]) -> str:
+def _norm_key(disease: str | None) -> str:
     return normalize_disease(disease) or (disease or "").strip().lower()
 
 
-async def get_goal_threshold(db: AsyncSession, disease_key: str) -> Optional[float]:
+async def get_goal_threshold(db: AsyncSession, disease_key: str) -> float | None:
     """获取某疾病的保护目标阈值（%）：优先查配置表，未覆盖时回退默认值。"""
     result = await db.execute(
         select(GoalThresholdConfig.threshold_percent).where(
@@ -59,7 +58,7 @@ async def upsert_goal_threshold(
     db: AsyncSession,
     disease: str,
     threshold_percent: float,
-    updated_by: Optional[str] = None,
+    updated_by: str | None = None,
 ) -> dict:
     """新增或更新某疾病的保护目标阈值（管理员调用）。"""
     key = _norm_key(disease)

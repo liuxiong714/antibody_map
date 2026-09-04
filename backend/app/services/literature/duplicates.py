@@ -3,21 +3,20 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.literature import Literature
-from app.models.data_point import DataPoint
 from app.core.minio_client import delete_file
+from app.models.data_point import DataPoint
+from app.models.literature import Literature
 from app.services.literature._common import (
+    _dp_to_dict,
+    _first_author_surname,
+    _is_dp_conflict,
+    _title_similarity,
     logger,
     normalize_title,
-    _first_author_surname,
-    _title_similarity,
-    _is_dp_conflict,
-    _dp_to_dict,
 )
 from app.services.literature.crud import (
     get_literature,
@@ -26,12 +25,12 @@ from app.services.literature.crud import (
 
 async def check_duplicates(
     db: AsyncSession,
-    literature_id: Optional[uuid.UUID] = None,
+    literature_id: uuid.UUID | None = None,
     *,
-    title: Optional[str] = None,
-    doi: Optional[str] = None,
-    authors: Optional[str] = None,
-    pdf_hash: Optional[str] = None,
+    title: str | None = None,
+    doi: str | None = None,
+    authors: str | None = None,
+    pdf_hash: str | None = None,
 ) -> dict:
     """检查重复文献。
     两种模式：
@@ -142,7 +141,7 @@ async def scan_duplicates(db: AsyncSession) -> dict:
         )
     )
     all_lits = list(r.all())
-    parent = {l.id: l.id for l in all_lits}
+    parent = {lit.id: lit.id for lit in all_lits}
 
     def find(x):
         while parent[x] != x:
@@ -160,11 +159,11 @@ async def scan_duplicates(db: AsyncSession) -> dict:
     # 1. DOI / pdf_hash 分组
     by_doi: dict[str, list] = defaultdict(list)
     by_hash: dict[str, list] = defaultdict(list)
-    for l in all_lits:
-        if l.doi:
-            by_doi[l.doi.lower()].append(l)
-        if l.pdf_hash:
-            by_hash[l.pdf_hash].append(l)
+    for lit in all_lits:
+        if lit.doi:
+            by_doi[lit.doi.lower()].append(lit)
+        if lit.pdf_hash:
+            by_hash[lit.pdf_hash].append(lit)
     for grp in by_doi.values():
         for i in range(1, len(grp)):
             union(grp[0].id, grp[i].id)
@@ -177,10 +176,10 @@ async def scan_duplicates(db: AsyncSession) -> dict:
     # 2. 标题匹配（title_norm 复用生成列）
     # 2a. 精确标题：所有同 title_norm 的文献互连（跨作者也判为重复）
     title_bucket: dict[str, list] = defaultdict(list)
-    for l in all_lits:
-        na = l.title_norm or ""
+    for lit in all_lits:
+        na = lit.title_norm or ""
         if na:
-            title_bucket[na].append(l)
+            title_bucket[na].append(lit)
     for members in title_bucket.values():
         for i in range(1, len(members)):
             union(members[0].id, members[i].id)
@@ -188,10 +187,10 @@ async def scan_duplicates(db: AsyncSession) -> dict:
 
     # 2b. 模糊标题（Jaccard>=0.7 且首作者一致）：按首作者分组缩小比对范围
     author_bucket: dict[str, list] = defaultdict(list)
-    for l in all_lits:
-        fa = _first_author_surname(l.authors)
+    for lit in all_lits:
+        fa = _first_author_surname(lit.authors)
         if fa:
-            author_bucket[fa].append(l)
+            author_bucket[fa].append(lit)
     for members in author_bucket.values():
         n = len(members)
         for i in range(n):
@@ -210,15 +209,15 @@ async def scan_duplicates(db: AsyncSession) -> dict:
 
     # 3. 聚合
     groups_map: dict[uuid.UUID, list] = defaultdict(list)
-    for l in all_lits:
-        groups_map[find(l.id)].append(l)
+    for lit in all_lits:
+        groups_map[find(lit.id)].append(lit)
 
     groups = []
     for root, members in groups_map.items():
         if len(members) < 2:
             continue
         reasons: set[str] = set()
-        for (a, b), rs in pair_reasons.items():
+        for (a, _b), rs in pair_reasons.items():
             if find(a) == root:
                 reasons |= rs
         representative = min(members, key=lambda x: x.created_at)

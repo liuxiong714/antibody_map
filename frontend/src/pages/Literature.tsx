@@ -794,6 +794,15 @@ const LiteraturePage: React.FC = () => {
     setExtracting(true);
     try {
       let model = extractModel;
+      let modelConfigId: string | undefined;
+      // 远程 API 模型：value 形如 remote:<配置id>，据此取真实模型名与模型配置 ID，
+      // 后端据此读取对应配置的 API Key / Base URL，无需前端填写。
+      if (model && model.startsWith('remote:')) {
+        const remoteOpt = modelOptions.find((o) => o.value === model);
+        const rawId = model.substring('remote:'.length);
+        modelConfigId = remoteOpt?.model_config_id || rawId;
+        model = remoteOpt?.model_name || rawId;
+      }
       // 处理自定义 Ollama 模型名称
       if (model === 'ollama:custom') {
         if (extractCustomModel && extractCustomModel.trim()) {
@@ -823,6 +832,7 @@ const LiteraturePage: React.FC = () => {
         || (extractCustomModel ? `Ollama:${extractCustomModel}` : '默认模型');
       const options = (model && model !== '') ? {
         model,
+        modelConfigId,
         apiKey: extractApiKey || undefined,
         baseUrl: extractBaseUrl || undefined,
         clearExistingData,

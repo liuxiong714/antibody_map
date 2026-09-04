@@ -40,6 +40,10 @@ trigger*.txt
 test_output.txt
 out.txt
 
+# 根目录临时 TSV/CSV 分析输出
+/_*.tsv
+/_*.csv
+
 # 临时开发/测试脚本
 backend/check_*.py
 backend/test_*.py

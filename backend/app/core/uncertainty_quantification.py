@@ -14,10 +14,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
-
 
 # HIT 三来源优先级（FOI > WHO > 文献 R0），用于在多候选阈值中选主阈值
 _HIT_PRIORITY = ("foi", "who", "r0_lit")
@@ -26,7 +26,7 @@ _HIT_PRIORITY = ("foi", "who", "r0_lit")
 CI_LOW_Q, CI_HIGH_Q = 0.025, 0.975
 
 
-def _to_proportion(sp: Any) -> Optional[float]:
+def _to_proportion(sp: Any) -> float | None:
     """把血清阳性率（百分数 >1 或 0-1 比例）归一化为 0-1 比例。非法值返回 None。"""
     try:
         p = float(sp)
@@ -39,7 +39,7 @@ def _to_proportion(sp: Any) -> Optional[float]:
     return float(min(max(p, 0.0), 1.0))
 
 
-def _to_positive_int(n: Any) -> Optional[int]:
+def _to_positive_int(n: Any) -> int | None:
     """把样本量规整为 >0 的整数；None / 0 / 非法返回 None。"""
     try:
         n = int(n)
@@ -51,7 +51,7 @@ def _to_positive_int(n: Any) -> Optional[int]:
 def sample_positivity(
     datapoints: Sequence[Any],
     n_samples: int = 1000,
-    rng: Optional[np.random.Generator] = None,
+    rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     """对每个数据点的血清阳性率做 Beta 采样。
 
@@ -67,7 +67,7 @@ def sample_positivity(
         shape 为 (n_samples, n_groups) 的 ndarray，列对应每个有效数据点，
         值均为 0-1 比例的阳性率采样。无有效数据点时不采样。
     """
-    groups: list[Tuple[float, float]] = []  # (alpha, beta)
+    groups: list[tuple[float, float]] = []  # (alpha, beta)
     for dp in datapoints:
         if isinstance(dp, dict):
             sample_size = dp.get("sample_size")
@@ -97,7 +97,7 @@ def sample_positivity(
 def barrier_probability(
     sampled_positivity: np.ndarray,
     hit_thresholds: dict,
-    weights: Optional[Sequence[float]] = None,
+    weights: Sequence[float] | None = None,
 ) -> dict:
     """把采样矩阵与 HIT 候选阈值比较，输出达标概率。
 
@@ -121,7 +121,7 @@ def barrier_probability(
     if sampled_positivity.ndim != 2 or sampled_positivity.shape[0] == 0:
         raise ValueError("sampled_positivity 必须为非空二维数组 (n_samples, n_groups)")
 
-    n_samples, n_groups = sampled_positivity.shape
+    _n_samples, n_groups = sampled_positivity.shape
     if weights is None:
         w = np.full(n_groups, 1.0 / n_groups)
     else:
@@ -164,7 +164,7 @@ def barrier_probability(
     }
 
 
-def fusion_hit(thresholds_dict: dict) -> Tuple[float, float, float]:
+def fusion_hit(thresholds_dict: dict) -> tuple[float, float, float]:
     """把多来源 HIT 做简单融合，返回 (mean, ci_low, ci_high)。
 
     取各来源阈值的等权算术平均作为融合值，区间取 [min, max] 反映来源分歧。

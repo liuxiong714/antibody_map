@@ -8,12 +8,10 @@ import asyncio
 import json
 import logging
 import re
-from typing import Optional
 
 from openai import AsyncOpenAI
 
 from app.config import settings
-from app.core.extraction_grounding import ground_extraction
 from app.core.extraction.json_parser import JSONParserMixin, LLMJSONParseError
 from app.core.extraction.llm_client import LLMClientMixin
 from app.core.extraction.post_processor import PostProcessorMixin
@@ -24,6 +22,7 @@ from app.core.extraction.schema import (
     SYSTEM_PROMPT_ZH,
 )
 from app.core.extraction.usage_tracker import UsageTrackerMixin
+from app.core.extraction_grounding import ground_extraction
 
 logger = logging.getLogger("uvicorn")
 
@@ -33,9 +32,9 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
 
     def __init__(
         self,
-        model: Optional[str] = None,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
     ):
         self.model = model or settings.LLM_MODEL
         resolved_key, resolved_url = self._resolve_api_config(self.model)
@@ -125,7 +124,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         self,
         full_text: str,
         extract_item: dict,
-    ) -> Optional[str]:
+    ) -> str | None:
         """A3：当 grounding 失败时，让 LLM 从全文中重新定位包含该数据点的原文片段。
 
         给 LLM 一个精简 prompt：只包含数据点关键字段 + 全文片段搜索范围，
@@ -161,7 +160,8 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         try:
             content = await self._call_llm_api(prompt, system_prompt=system_prompt)
             if content:
-                snippet = content.strip().strip('"').strip("'").strip('""').strip("''")
+                # 去掉两端可能包裹的引号（按字符集去除，非去除子串）
+                snippet = content.strip().strip('"').strip("'").strip('""').strip("''")  # noqa: B005
                 if 10 <= len(snippet) <= 200:
                     logger.info(f"A3 LLM 重抽 source_context 成功: {snippet[:40]!r}")
                     return snippet
@@ -174,7 +174,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         text: str,
         chunk_size: int = 15000,
         overlap: int = 500,
-        table_boundaries: Optional[list[tuple[int, int]]] = None,
+        table_boundaries: list[tuple[int, int]] | None = None,
     ) -> list[tuple[int, str]]:
         """P2+B7：将长文本按段落边界分块，返回 [(chunk_start_char, chunk_text), ...]。
 
@@ -189,12 +189,9 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
             """检查位置 pos 是否在某个表格区间内"""
             if not table_boundaries:
                 return False
-            for ts, te in table_boundaries:
-                if ts <= pos < te:
-                    return True
-            return False
+            return any(ts <= pos < te for ts, te in table_boundaries)
 
-        def _find_table_end(pos: int) -> Optional[int]:
+        def _find_table_end(pos: int) -> int | None:
             """如果 pos 在表格内，返回表格结束位置"""
             if not table_boundaries:
                 return None
@@ -272,7 +269,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         language: str = "zh",
         title: str = "",
         journal: str = "",
-        pub_year: Optional[int] = None,
+        pub_year: int | None = None,
         tables_md: str = "",
         complement_mode: bool = False,
         table_only: bool = False,
@@ -417,7 +414,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
             return []
         boundaries: list[tuple[int, int]] = []
         # 取表格中几个特征行搜索
-        lines = [l.strip() for l in tables_md.split("\n") if l.strip().startswith("|") and len(l.strip()) > 10]
+        lines = [line.strip() for line in tables_md.split("\n") if line.strip().startswith("|") and len(line.strip()) > 10]
         for line in lines[:20]:  # 最多搜索 20 行
             # 取行的前 20 字符作为搜索特征
             snippet = line[:20].strip("|").strip()
@@ -490,7 +487,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         language: str = "zh",
         title: str = "",
         journal: str = "",
-        pub_year: Optional[int] = None,
+        pub_year: int | None = None,
         max_retries: int = 3,
         tables_md: str = "",
         extraction_passes: int = 1,
@@ -648,7 +645,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         language: str,
         title: str,
         journal: str,
-        pub_year: Optional[int],
+        pub_year: int | None,
         max_retries: int,
         tables_md: str,
         passes: int,
@@ -700,7 +697,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         language: str,
         title: str,
         journal: str,
-        pub_year: Optional[int],
+        pub_year: int | None,
         max_retries: int,
         tables_md: str,
         complement_mode: bool = False,
@@ -735,7 +732,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         language: str,
         title: str,
         journal: str,
-        pub_year: Optional[int],
+        pub_year: int | None,
         max_retries: int,
         tables_md: str = "",
         extraction_passes: int = 1,
@@ -794,7 +791,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         language: str,
         title: str,
         journal: str,
-        pub_year: Optional[int],
+        pub_year: int | None,
         tables_md: str,
     ) -> list[dict]:
         """A2：两阶段提取。

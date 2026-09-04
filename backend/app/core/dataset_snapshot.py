@@ -18,7 +18,6 @@ import io
 import logging
 import zipfile
 from datetime import datetime
-from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +163,7 @@ def _build_data_dictionary_csv() -> str:
 def _build_readme(
     total_count: int,
     filters: dict,
-    generated_at: Optional[str] = "",
+    generated_at: str | None = "",
 ) -> str:
     """构建 README.txt 内容"""
     if not generated_at:
@@ -216,8 +215,8 @@ def _build_readme(
 
 def generate_dataset_snapshot_zip(
     data_points: list[dict],
-    filters: Optional[dict] = None,
-    generated_at: Optional[str] = "",
+    filters: dict | None = None,
+    generated_at: str | None = "",
 ) -> bytes:
     """生成公开数据集快照 ZIP 包。
 

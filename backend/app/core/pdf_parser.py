@@ -1,11 +1,10 @@
 import asyncio
 import concurrent.futures
+import contextlib
 import hashlib
 import json
 import logging
-import io
 import re
-from typing import Optional
 
 try:
     import fitz  # PyMuPDF
@@ -22,26 +21,26 @@ except ImportError:
 HAS_MINERU = False
 MINERU_AVAILABLE_MSG = ""
 try:
-    import torch
-    from mineru.backend.hybrid.hybrid_analyze import doc_analyze as mineru_doc_analyze
-    from mineru.backend.pipeline.pipeline_middle_json_mkcontent import (
+    import pypdfium2 as pdfium  # noqa: F401
+    import torch  # noqa: F401
+    from mineru.backend.hybrid.hybrid_analyze import doc_analyze as mineru_doc_analyze  # noqa: F401
+    from mineru.backend.pipeline.pipeline_middle_json_mkcontent import (  # noqa: F401
         union_make as mineru_union_make,
     )
-    from mineru.data.data_reader_writer import FileBasedDataWriter
-    from mineru.utils.enum_class import MakeMode
-    from mineru.utils.pdfium_guard import (
-        open_pdfium_document,
-        get_pdfium_document_page_count,
+    from mineru.data.data_reader_writer import FileBasedDataWriter  # noqa: F401
+    from mineru.utils.enum_class import MakeMode  # noqa: F401
+    from mineru.utils.pdfium_guard import (  # noqa: F401
         close_pdfium_document,
+        get_pdfium_document_page_count,
+        open_pdfium_document,
     )
-    import pypdfium2 as pdfium
     HAS_MINERU = True
 except ImportError as e:
     MINERU_AVAILABLE_MSG = f" ({e})"
 
-from app.core.ocr_service import ocr_tesseract_with_timeout
-from app.config import settings
-from app.core.parse_cache import get_cache, set_cache
+from app.config import settings  # noqa: E402
+from app.core.ocr_service import ocr_tesseract_with_timeout  # noqa: E402
+from app.core.parse_cache import get_cache, set_cache  # noqa: E402
 
 logger = logging.getLogger("uvicorn")
 
@@ -74,7 +73,7 @@ async def _ocr_pages_async(
     concurrency = max(1, int(getattr(settings, "LLM_CONCURRENCY", 4)))
     sem = asyncio.Semaphore(concurrency)
 
-    async def _ocr_one(page_bytes: bytes) -> Optional[str]:
+    async def _ocr_one(page_bytes: bytes) -> str | None:
         async with sem:
             return await ocr_tesseract_with_timeout(page_bytes, lang=lang, timeout=timeout)
 
@@ -82,14 +81,14 @@ async def _ocr_pages_async(
     return [r for r in results if r]
 
 
-def _run_ocr_gather(page_images: list[bytes]) -> Optional[str]:
+def _run_ocr_gather(page_images: list[bytes]) -> str | None:
     """在同步的 extract_text 中执行并发 OCR，兼容有无运行中事件循环。
 
     复用 _run_cache_coro 的调度思路：无运行中循环用 asyncio.run；已处于循环内
     则另起临时线程跑独立循环。每页超时由 ocr_tesseract_with_timeout 隔离，因此
     单页卡死不会阻塞整篇。
     """
-    async def _run() -> Optional[str]:
+    async def _run() -> str | None:
         texts = await _ocr_pages_async(page_images)
         if not texts:
             return None
@@ -103,7 +102,7 @@ def _run_ocr_gather(page_images: list[bytes]) -> Optional[str]:
         return pool.submit(asyncio.run, _run()).result()
 
 
-def _extract_with_mineru(file_bytes: bytes) -> Optional[str]:
+def _extract_with_mineru(file_bytes: bytes) -> str | None:
     """使用 MinerU 增强解析 PDF，返回结构化 Markdown 文本。
 
     MinerU 在 Celery prefork（daemonic）进程中无法直接运行——内部会 spawn 子进程，
@@ -118,11 +117,11 @@ def _extract_with_mineru(file_bytes: bytes) -> Optional[str]:
     logger.info("[MinerU] 开始增强 PDF 解析（子进程隔离）...")
     tmp_path = None
     try:
+        import os as _os
+        import signal as _signal
         import subprocess
         import sys as _sys
         import tempfile
-        import os as _os
-        import signal as _signal
         from pathlib import Path as _Path
 
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
@@ -149,10 +148,8 @@ def _extract_with_mineru(file_bytes: bytes) -> Optional[str]:
             try:
                 _os.killpg(_os.getpgid(proc.pid), _signal.SIGKILL)
             except Exception:
-                try:
+                with contextlib.suppress(Exception):
                     proc.kill()
-                except Exception:
-                    pass
             proc.wait(timeout=10)
             return None
 
@@ -172,10 +169,8 @@ def _extract_with_mineru(file_bytes: bytes) -> Optional[str]:
         return None
     finally:
         if tmp_path:
-            try:
+            with contextlib.suppress(Exception):
                 _os.unlink(tmp_path)
-            except Exception:
-                pass
 
 
 def extract_text(file_bytes: bytes) -> str:
@@ -261,8 +256,8 @@ def extract_text(file_bytes: bytes) -> str:
         # （vl_extractor → llm_extractor → pdf_parser）。
         if page_images_for_vision:
             try:
-                from app.core.vl_extractor import extract_with_vision
                 from app.core.llm_extractor import EXTRACTION_JSON_SCHEMA
+                from app.core.vl_extractor import extract_with_vision
 
                 logger.info(
                     f"检测到 {len(page_images_for_vision)} 个扫描页，调用视觉提取器增强..."
@@ -303,7 +298,7 @@ def extract_text(file_bytes: bytes) -> str:
             )
             ocr_text = _run_ocr_gather(page_images_for_ocr)
             if ocr_text:
-                parts = full_text_parts + [ocr_text] if full_text_parts else [ocr_text]
+                parts = [*full_text_parts, ocr_text] if full_text_parts else [ocr_text]
                 result = "\n\n".join(parts)
                 logger.info(f"[PyMuPDF+OCR] 解析完成: {len(result)} 字符（含 OCR 兜底）")
                 return _cache_result(result)

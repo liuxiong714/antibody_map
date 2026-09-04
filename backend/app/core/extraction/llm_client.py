@@ -6,9 +6,9 @@
 """
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
 import httpx
 from openai import AsyncOpenAI
@@ -17,6 +17,35 @@ from app.config import settings
 from app.core.extraction.schema import EXTRACTION_JSON_SCHEMA
 
 logger = logging.getLogger("uvicorn")
+
+
+# ---------------------------------------------------------------------------
+# 本地 Ollama 已安装模型清单的进程级 TTL 缓存
+# ---------------------------------------------------------------------------
+_OLLAMA_INSTALLED_CACHE: tuple[float, set[str] | None] | None = None
+_OLLAMA_INSTALLED_TTL = 30.0
+
+
+async def _get_ollama_installed_cached(timeout: float = 3.0) -> set[str] | None:
+    """获取 Ollama 已安装模型名集合（带 30s TTL 缓存）。
+
+    返回 None 表示 Ollama 不可达/查询失败（"未知"），此时不触发"未安装"拦截，
+    交由正常连接重试逻辑处理，避免因 Ollama 短暂未启动而误判。
+    """
+    global _OLLAMA_INSTALLED_CACHE
+    import time as _time
+
+    now = _time.monotonic()
+    if _OLLAMA_INSTALLED_CACHE is not None and (now - _OLLAMA_INSTALLED_CACHE[0]) < _OLLAMA_INSTALLED_TTL:
+        return _OLLAMA_INSTALLED_CACHE[1]
+    try:
+        from app.core.providers.ollama_provider import fetch_installed_model_names
+
+        names = await fetch_installed_model_names(timeout=timeout)
+    except Exception:
+        names = None
+    _OLLAMA_INSTALLED_CACHE = (now, names)
+    return names
 
 
 class LLMBudgetExceeded(Exception):
@@ -28,10 +57,10 @@ class LLMBudgetExceeded(Exception):
 
 
 # F11：进程内所有提取任务共享的全局并发信号量（懒创建，绑定当前事件循环）
-_global_llm_sem: Optional[asyncio.Semaphore] = None
+_global_llm_sem: asyncio.Semaphore | None = None
 
 
-def _get_global_sem() -> Optional[asyncio.Semaphore]:
+def _get_global_sem() -> asyncio.Semaphore | None:
     """获取全局并发信号量；LLM_GLOBAL_CONCURRENCY<=0 时返回 None（不限流）。"""
     global _global_llm_sem
     cap = int(getattr(settings, "LLM_GLOBAL_CONCURRENCY", 0) or 0)
@@ -74,10 +103,8 @@ async def _consume_daily_quota(tokens: int) -> None:
         logger.warning(f"日配额检查失败（fail-open，不阻断提取）: {e}")
     finally:
         if client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await client.aclose()
-            except Exception:
-                pass
 
 
 def _classify_llm_error(exc: Exception) -> dict:
@@ -111,10 +138,10 @@ def _classify_llm_error(exc: Exception) -> dict:
     full = " | ".join(chain)
     lower_full = full.lower()
 
-    if "response_format" in lower or "json" in lower and (
+    if "response_format" in lower or ("json" in lower and (
         "json.loads" in lower or "expecting value" in lower or "invalid json" in lower
         or "json.decoder" in lower
-    ):
+    )):
         return {"type": "json_error", "message": full[:2000]}
     if "429" in full or "rate limit" in lower_full or "too many requests" in lower_full:
         return {"type": "rate_limit", "message": full[:2000]}
@@ -192,7 +219,8 @@ class LLMClientMixin:
 
     # P2-2：旧的前缀映射表保留用于向后兼容（_resolve_api_config_legacy），
     # 新代码通过 providers 注册中心自动匹配。
-    _MODEL_CONFIG_MAP = {
+    # 类级共享常量映射，仅读取不修改（各实例复用同一份，禁止原地变更）。
+    _MODEL_CONFIG_MAP = {  # noqa: RUF012
         "deepseek": "DEEPSEEK",
         "gpt-": "OPENAI",
         "o1-": "OPENAI",
@@ -257,7 +285,7 @@ class LLMClientMixin:
         model_lower = model.lower()
         return "deepseek" in model_lower or "gpt-" in model_lower
 
-    def _is_ollama_model(self, url: Optional[str] = None) -> bool:
+    def _is_ollama_model(self, url: str | None = None) -> bool:
         """判断当前是否使用 Ollama 本地模型（用于决定是否透传 think=False 等参数）。
 
         传入 url 时按该地址判定（支持候选 URL 链中的非主地址）；
@@ -318,10 +346,9 @@ class LLMClientMixin:
             ollama_cfg = (getattr(settings, "OLLAMA_BASE_URL", "") or "").strip().rstrip("/")
             if ollama_cfg and ollama_cfg not in chain:
                 candidates.append(ollama_cfg)
-            # host.docker.internal 仅在 Docker Desktop 下指向宿主
-            candidates.append("http://host.docker.internal:11434/v1")
-            # 注意：不再追加 docker 默认网桥 172.17.0.1 —— 在 WSL2(Hyper-V 直连) 环境下
-            # 该地址并非宿主，永远连不上，只会制造误导性的 "All connection attempts failed" 日志。
+            # 注意：不在 WSL2(Hyper-V 直连) 下追加 host.docker.internal (=172.17.0.1)
+            # 或 docker 默认网桥 172.17.0.1 —— 该地址并非宿主，永远连不上，只会在
+            # 兜底失败时制造误导性的 "All connection attempts failed" 日志，掩盖原始错误。
             for c in candidates:
                 if c and c not in chain:
                     chain.append(c)
@@ -338,11 +365,17 @@ class LLMClientMixin:
         return model
 
     def _build_client(self, url: str) -> AsyncOpenAI:
-        """按给定 base_url 构建 AsyncOpenAI 客户端（必须显式传 timeout）。"""
+        """按给定 base_url 构建 AsyncOpenAI 客户端（必须显式传 timeout）。
+
+        max_retries=0：禁用 SDK 内置重试。否则读超时时 SDK 会在异常抛回前
+        自行重复发送同一请求（每次又等满 LLM_REQUEST_TIMEOUT），造成双倍
+        计费与长时间空等；重试决策统一交由上层应用控制。
+        """
         return AsyncOpenAI(
             api_key=self._resolved_key,
             base_url=url,
             timeout=self._llm_timeout,
+            max_retries=0,
         )
 
     async def _chat_once(self, client: AsyncOpenAI, prompt: str, system_prompt: str) -> str:
@@ -355,13 +388,13 @@ class LLMClientMixin:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        kwargs = dict(
-            model=self._api_model,
-            messages=messages,
-            temperature=0.1,
-            max_tokens=16384,
-            timeout=self._llm_timeout,
-        )
+        kwargs = {
+            "model": self._api_model,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 16384,
+            "timeout": self._llm_timeout,
+        }
         # P2-2：通过 provider 注册中心查询是否支持 response_format
         if self._supports_response_format(self.model):
             kwargs["response_format"] = {"type": "json_object"}
@@ -403,6 +436,30 @@ class LLMClientMixin:
             logger.info(f"LLM 返回内容长度: {len(content)}")
         return content or ""
 
+    async def _assert_local_model_installed(self) -> None:
+        """本地 Ollama 场景：提取前校验模型是否已下载。
+
+        未安装直接抛确定性错误（由上层标记 failed，不触发连接重试）——因为"模型不存在"
+        是永久性错误，重试 4 次毫无意义。Ollama 不可达（查询结果为 None）时跳过校验，
+        交给正常连接重试逻辑处理，避免 Ollama 短暂未启动就被误判。
+        """
+        base_url = (self._resolved_url or "").lower()
+        if ":11434" not in base_url and "localhost" not in base_url and "127.0.0.1" not in base_url:
+            return  # 非本地 Ollama，不拦截
+        installed = await _get_ollama_installed_cached()
+        if installed is None:
+            return  # Ollama 不可达视为"未知"，交给连接重试
+        from app.core.providers.ollama_provider import is_model_installed
+
+        # 优先用当前 self.model（分级模型切换后 _api_model 可能未同步），并剥离 vendor 前缀
+        model_name = self._strip_vendor_prefix(self.model) if self.model else self._api_model
+        if not is_model_installed(model_name, installed):
+            raise RuntimeError(
+                f"[model_not_installed] 模型 '{model_name}' 未在本机 Ollama 中下载，"
+                f"请先执行 `ollama pull {model_name}`，或更换为已安装的模型"
+                f"（已安装: {', '.join(sorted(installed))}）。此错误不会自动重试。"
+            )
+
     async def _call_llm_api(self, prompt: str, system_prompt: str = "") -> str:
         """调用 LLM API 获取响应。B6：支持 system prompt 分离，启用 prompt caching。
 
@@ -415,7 +472,11 @@ class LLMClientMixin:
         返回值仍为 str（保持向后兼容）；usage 单向累加，不破坏调用方签名。
         """
         url_chain = self._url_chain or [self._resolved_url or settings.LLM_BASE_URL]
-        last_conn_exc: Optional[Exception] = None
+        last_conn_exc: Exception | None = None
+
+        # F: 本地 Ollama 场景下先校验模型是否已安装；未安装直接抛确定性错误，
+        #    避免反复重试一个永远 404 的模型（并保留明确提示）。
+        await self._assert_local_model_installed()
 
         # F11：全局并发上限。跨所有提取任务共享信号量，超限时在此排队等待，
         # 防止同一进程内大量并发任务同时打爆 LLM / 本地 Ollama。
@@ -435,7 +496,7 @@ class LLMClientMixin:
         url_chain: list[str],
         prompt: str,
         system_prompt: str,
-        last_conn_exc: Optional[Exception],
+        last_conn_exc: Exception | None,
     ) -> str:
         """持有全局并发信号量时执行实际的 LLM 调用（见 _call_llm_api）。"""
         for attempt in range(self._connect_retries + 1):
@@ -493,7 +554,8 @@ class LLMClientMixin:
         if self._supports_response_format(self.model):
             payload["response_format"] = {"type": "json_object"}
 
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
+        definitive_exc: Exception | None = None  # 确定性错误（4xx/5xx/鉴权/JSON 等，非连接类）
         for url in url_chain:
             try:
                 # 同步 Ollama 原生参数（兜底路径，num_ctx 需在嵌套 options 中）
@@ -542,8 +604,22 @@ class LLMClientMixin:
                     # F12：读响应超时不切换地址，避免同一请求双倍计费
                     logger.warning(f"HTTP 兜底调用读超时（url={url}），不再切换地址: {e}")
                     break
+                # 确定性错误（4xx/5xx/鉴权/JSON 等）：记录首个，作为最终诊断依据。
+                # 若后续兜底地址只是"连不上"，不得用连接错误覆盖它——否则"模型不存在(404)"
+                # 会被误判为 ollama_unreachable 触发无意义的连接重试。仅当所有地址均为
+                # 连接错误时才回退到 last_exc。
+                if (
+                    _classify_llm_error(e)["type"] not in ("connection_error", "ollama_unreachable")
+                    and definitive_exc is None
+                ):
+                    definitive_exc = e
                 logger.warning(f"HTTP 兜底调用失败（url={url}）: {_classify_llm_error(e)['message'][:300]}")
                 continue
 
+        # 优先抛出确定性错误（模型不存在/鉴权/限流等重试无意义的错误），
+        # 避免被最终一个连接错误覆盖而导致上游误判为可重试的连接类错误。
+        if definitive_exc is not None:
+            logger.error(f"HTTP 兜底全部地址失败，报告确定性错误: {_classify_llm_error(definitive_exc)['message'][:300]}")
+            raise definitive_exc
         logger.error(f"HTTP 兜底调用全部地址失败: {last_exc}")
         raise last_exc

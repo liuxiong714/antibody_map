@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
-import difflib
 from dataclasses import dataclass
-from typing import Optional
 
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES
 
@@ -43,10 +41,10 @@ _ALLOWED_REVIEW_STATUS = {"pending", "approved", "rejected"}
 class GroundingResult:
     """Result of trying to ground a piece of extracted context back to source."""
     is_grounded: bool = False
-    source_char_start: Optional[int] = None
-    source_char_end: Optional[int] = None
-    matched_snippet: Optional[str] = None
-    method: Optional[str] = None  # "exact" | "fuzzy" | "keyphrase" | None
+    source_char_start: int | None = None
+    source_char_end: int | None = None
+    matched_snippet: str | None = None
+    method: str | None = None  # "exact" | "fuzzy" | "keyphrase" | None
 
 
 def _normalize_for_match(s: str) -> str:
@@ -104,7 +102,7 @@ def _to_raw_span(norm_to_raw: list[int], s_norm: int, e_norm: int, raw: str) -> 
     return raw_start, raw_end, raw[raw_start:raw_end]
 
 
-def _exact_match(text_norm: str, ctx_norm: str) -> Optional[tuple[int, int]]:
+def _exact_match(text_norm: str, ctx_norm: str) -> tuple[int, int] | None:
     """Try exact match on normalized text, return (start, end) in NORMALIZED space.
 
     The returned span is in ``text_norm`` coordinates; the caller maps it back to raw
@@ -137,7 +135,7 @@ def _fuzzy_match(
     text_norm: str,
     ctx_norm: str,
     threshold: float = _DEFAULT_FUZZY_THRESHOLD,
-) -> Optional[tuple[int, int, str]]:
+) -> tuple[int, int, str] | None:
     """Fuzzy match using LCS dynamic programming alignment (P0-2 upgrade).
 
     Replaces the previous difflib.SequenceMatcher sliding-window approach with an
@@ -158,7 +156,7 @@ def _fuzzy_match(
         m = len(ctx_norm)
 
     best_ratio = 0.0
-    best_span: Optional[tuple[int, int, str]] = None
+    best_span: tuple[int, int, str] | None = None
     # 滑动窗口，窗口大小略大于 ctx 以容纳插入
     window = min(n, m + 20)
     step = max(1, m // 3)
@@ -213,7 +211,7 @@ def _lcs_coverage(text_chunk: str, ctx: str) -> float:
     return _lcs_len(text_chunk, ctx) / len(ctx)
 
 
-def _keyphrase_match(text_norm: str, ctx_norm: str, extract: dict) -> Optional[tuple[int, int, str]]:
+def _keyphrase_match(text_norm: str, ctx_norm: str, extract: dict) -> tuple[int, int, str] | None:
     """Last-resort: match by concatenated 'key phrases' from the extraction values.
 
     Keys used: positivity_rate, gmc_value, province, city, sample_size, age_min/max.
@@ -269,10 +267,7 @@ def _numeric_grounding_forms(value) -> list[str]:
         return []
     if isinstance(value, (int, float)):
         num = float(value)
-        if num != int(num):
-            s = f"{num}"
-        else:
-            s = str(int(num))
+        s = f"{num}" if num != int(num) else str(int(num))
     else:
         text = str(value).strip()
         if not text:
@@ -281,10 +276,7 @@ def _numeric_grounding_forms(value) -> list[str]:
             num = float(text)
         except (TypeError, ValueError):
             return []
-        if num != int(num):
-            s = f"{num}"
-        else:
-            s = str(int(num))
+        s = f"{num}" if num != int(num) else str(int(num))
 
     forms = [s]
     # 若含小数点，补充百分比形态（英文半角 % / 中文全角 ％ / 带空格 %）
@@ -328,10 +320,10 @@ def validate_numeric_grounding(dp: dict, text: str) -> bool:
 
 def ground_extraction(
     source_text: str,
-    source_context: Optional[str],
+    source_context: str | None,
     extract_item: dict,
     *,
-    fuzzy_threshold: Optional[float] = None,
+    fuzzy_threshold: float | None = None,
 ) -> GroundingResult:
     """Try to locate the extraction within the original source text.
 
@@ -444,7 +436,7 @@ class ValidationFlags:
         return not self.schema_issues
 
 
-def validate_province(value: Optional[str]) -> bool:
+def validate_province(value: str | None) -> bool:
     """Hard province validation against the canonical enum list."""
     if value is None:
         # Missing is allowed (could be unknown), but we still flag
@@ -454,22 +446,22 @@ def validate_province(value: Optional[str]) -> bool:
     return value.strip() in CHINA_PROVINCE_NAMES
 
 
-def validate_data_type(value: Optional[str]) -> bool:
+def validate_data_type(value: str | None) -> bool:
     return value is None or (isinstance(value, str) and value in _ALLOWED_DATA_TYPES)
 
 
-def validate_confidence(value: Optional[str]) -> bool:
+def validate_confidence(value: str | None) -> bool:
     return value is None or (isinstance(value, str) and value in _ALLOWED_CONFIDENCE)
 
 
-def validate_review_status(value: Optional[str]) -> bool:
+def validate_review_status(value: str | None) -> bool:
     return value is None or (isinstance(value, str) and value in _ALLOWED_REVIEW_STATUS)
 
 
 def validate_value_range(
-    value: Optional[float],
-    data_type: Optional[str],
-    unit: Optional[str] = None,
+    value: float | None,
+    data_type: str | None,
+    unit: str | None = None,
 ) -> bool:
     """Range validation: positivity rates must be in [0, 100]."""
     if value is None:

@@ -1,15 +1,14 @@
 import logging
-from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, delete
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_admin
-from app.config import settings
 from app.core.crypto import mask
+from app.core.providers.ollama_provider import fetch_installed_model_names, is_model_installed
 from app.models.api_model_config import ApiModelConfig
 from app.models.local_model_config import LocalModelConfig
 from app.models.user import User
@@ -17,12 +16,9 @@ from app.schemas.common import ApiResponse
 from app.schemas.model_config import (
     ApiModelConfigCreate,
     ApiModelConfigUpdate,
-    ApiModelConfigResponse,
     LocalModelConfigCreate,
-    LocalModelConfigUpdate,
     LocalModelConfigResponse,
-    ModelOption,
-    ModelsListResponse,
+    LocalModelConfigUpdate,
 )
 
 logger = logging.getLogger("uvicorn")
@@ -53,7 +49,7 @@ async def list_models(db: AsyncSession = Depends(get_db)):
     """获取可用模型列表（本地 + 远程配置）"""
     # 本地模型：优先从本地模型配置表读取启用项，表为空时回退到静态列表
     result = await db.execute(
-        select(LocalModelConfig).where(LocalModelConfig.is_active == True).order_by(LocalModelConfig.created_at)
+        select(LocalModelConfig).where(LocalModelConfig.is_active.is_(True)).order_by(LocalModelConfig.created_at)
     )
     local_rows = result.scalars().all()
     if local_rows:
@@ -66,11 +62,11 @@ async def list_models(db: AsyncSession = Depends(get_db)):
     else:
         local_list = [
             {**m, "group": "local", "is_default": (m["value"] == "")}
-            for m in [{**DEFAULT_MODEL_OPTION}] + FALLBACK_LOCAL_MODELS
+            for m in [{**DEFAULT_MODEL_OPTION}, *FALLBACK_LOCAL_MODELS]
         ]
 
     # 远程模型
-    result = await db.execute(select(ApiModelConfig).where(ApiModelConfig.is_active == True))
+    result = await db.execute(select(ApiModelConfig).where(ApiModelConfig.is_active.is_(True)))
     remote_configs = result.scalars().all()
     remote_list = [
         {"value": str(c.id), "label": c.name, "group": "remote"}
@@ -184,15 +180,20 @@ def _config_to_dict(c: ApiModelConfig) -> dict:
 
 @router.get("/models/local", response_model=ApiResponse, summary="获取本地模型配置列表", description="获取所有本地模型配置，包括名称、模型名、描述、启用状态")
 async def list_local_models(db: AsyncSession = Depends(get_db)):
-    """获取所有本地模型配置"""
+    """获取所有本地模型配置，并标记每个模型是否已在本地 Ollama 下载"""
     result = await db.execute(
         select(LocalModelConfig).order_by(LocalModelConfig.created_at)
     )
     configs = result.scalars().all()
-    items = [
-        LocalModelConfigResponse.model_validate(c).model_dump()
-        for c in configs
-    ]
+    # 一次性查询 Ollama 已安装模型；不可达时返回 None（installed 标记为"未知"）
+    installed = await fetch_installed_model_names()
+    items = []
+    for c in configs:
+        item = LocalModelConfigResponse.model_validate(c).model_dump()
+        item["installed"] = (
+            is_model_installed(c.model_name, installed) if installed is not None else None
+        )
+        items.append(item)
     return ApiResponse(data=items)
 
 
@@ -211,9 +212,9 @@ async def create_local_model(
     db.add(config)
     try:
         await db.commit()
-    except IntegrityError:
+    except IntegrityError as e:
         await db.rollback()
-        raise HTTPException(status_code=400, detail=f"模型名 {req.model_name} 已存在")
+        raise HTTPException(status_code=400, detail=f"模型名 {req.model_name} 已存在") from e
     await db.refresh(config)
     return ApiResponse(message="本地模型配置已添加", data=LocalModelConfigResponse.model_validate(config).model_dump())
 
@@ -243,9 +244,9 @@ async def update_local_model(
 
     try:
         await db.commit()
-    except IntegrityError:
+    except IntegrityError as e:
         await db.rollback()
-        raise HTTPException(status_code=400, detail=f"模型名 {req.model_name} 已存在")
+        raise HTTPException(status_code=400, detail=f"模型名 {req.model_name} 已存在") from e
     await db.refresh(config)
     return ApiResponse(message="本地模型配置已更新", data=LocalModelConfigResponse.model_validate(config).model_dump())
 

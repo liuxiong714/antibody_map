@@ -37,7 +37,7 @@ celery_app = Celery(
     "antibody_map",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
-    include=["app.tasks.extract_task", "app.tasks.quality_task"],
+    include=["app.tasks.extract_task", "app.tasks.quality_task", "app.tasks.background_task"],
 )
 
 celery_app.conf.update(

@@ -7,16 +7,15 @@
 4. 复用基础设施：继承 LLMClientMixin 使用相同的 URL 链/重试/用量统计
 """
 
-import json
+import contextlib
 import logging
 import uuid
-from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.core.extraction.llm_client import LLMClientMixin
 from app.core.extraction.json_parser import JSONParserMixin
+from app.core.extraction.llm_client import LLMClientMixin
 from app.core.extraction.usage_tracker import UsageTrackerMixin
 from app.services.kg_entity_resolver import persist_triples
 
@@ -66,9 +65,9 @@ class KGExtractor(LLMClientMixin, JSONParserMixin, UsageTrackerMixin):
 
     def __init__(
         self,
-        model: Optional[str] = None,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
     ):
         from openai import AsyncOpenAI
         self.model = model or settings.LLM_MODEL
@@ -91,7 +90,7 @@ class KGExtractor(LLMClientMixin, JSONParserMixin, UsageTrackerMixin):
         text: str,
         title: str = "",
         journal: str = "",
-        pub_year: Optional[int] = None,
+        pub_year: int | None = None,
     ) -> dict:
         """执行 KG 抽取，返回 {"entities": [...], "triples": [...]}。"""
         user_content = KG_USER_PROMPT_TEMPLATE.format(
@@ -122,7 +121,7 @@ async def run_kg_extraction(
     literature_id: uuid.UUID,
     title: str = "",
     journal: str = "",
-    pub_year: Optional[int] = None,
+    pub_year: int | None = None,
     model: str = "",
     api_key: str = "",
     base_url: str = "",
@@ -176,8 +175,6 @@ async def run_kg_extraction(
             exc_info=True,
         )
         # 确保事务回滚，不影响后续操作
-        try:
+        with contextlib.suppress(Exception):
             await db.rollback()
-        except Exception:
-            pass
         return 0

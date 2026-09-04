@@ -1,20 +1,19 @@
-from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.literature import Literature
 from app.models.data_point import DataPoint
+from app.models.literature import Literature
 
 
 async def search_literatures(
     db: AsyncSession,
-    keyword: Optional[str] = None,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    extraction_status: Optional[str] = None,
+    keyword: str | None = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    extraction_status: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[Literature], int]:
@@ -70,15 +69,15 @@ async def search_literatures(
 
 async def search_data_points(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
-    population_type: Optional[str] = None,
-    data_type: Optional[str] = None,
-    review_status: Optional[str] = "approved",
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
+    population_type: str | None = None,
+    data_type: str | None = None,
+    review_status: str | None = "approved",
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[DataPoint], int]:

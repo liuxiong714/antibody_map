@@ -14,13 +14,15 @@ import functools
 import hashlib
 import json
 import uuid
+from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Callable, Optional
+from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging_config import logger
 from app.models.analysis_snapshot import AnalysisSnapshot
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
@@ -84,10 +86,10 @@ def calculate_data_hash(rows: Any) -> str:
 # 哈希取数查询（镜像 _build_base_query 的过滤语义）
 # ---------------------------------------------------------------------------
 def _build_hash_query(filter_keys: tuple[str, ...], params: dict,
-                      data_type_override: Optional[str] = None,
-                      review_status: Optional[str] = "approved",
-                      quality_filter_key: Optional[str] = None,
-                      include_subgroups: Optional[bool] = None):
+                      data_type_override: str | None = None,
+                      review_status: str | None = "approved",
+                      quality_filter_key: str | None = None,
+                      include_subgroups: bool | None = None):
     """构造哈希取数查询：与 analysis_service._build_base_query 语义一致。
 
     - filter_keys: 参与过滤的 params 键名；
@@ -134,10 +136,10 @@ def _build_hash_query(filter_keys: tuple[str, ...], params: dict,
 
 
 async def _fetch_hash_rows(db: AsyncSession, filter_keys: tuple[str, ...], params: dict,
-                           data_type_override: Optional[str] = None,
-                           review_status: Optional[str] = "approved",
-                           quality_filter_key: Optional[str] = None,
-                           include_subgroups: Optional[bool] = None):
+                           data_type_override: str | None = None,
+                           review_status: str | None = "approved",
+                           quality_filter_key: str | None = None,
+                           include_subgroups: bool | None = None):
     if not filter_keys:
         return []
     q = _build_hash_query(filter_keys, params, data_type_override, review_status,
@@ -157,11 +159,11 @@ def _clean_params(kwargs: dict) -> dict:
 
 async def attach_snapshot(db: AsyncSession, module: str, params: dict,
                           response_data: dict, *,
-                          filter_keys: Optional[tuple[str, ...]] = None,
-                          data_type_override: Optional[str] = None,
-                          review_status: Optional[str] = "approved",
-                          quality_filter_key: Optional[str] = None,
-                          include_subgroups: Optional[bool] = None) -> str:
+                          filter_keys: tuple[str, ...] | None = None,
+                          data_type_override: str | None = None,
+                          review_status: str | None = "approved",
+                          quality_filter_key: str | None = None,
+                          include_subgroups: bool | None = None) -> str:
     """计算数据指纹 → 去重写入/复用快照 → 返回 snapshot_token（uuid str）。
 
     旁路设计：快照写入失败不影响主流程（调用方捕获）。
@@ -212,7 +214,7 @@ async def _upsert_snapshot(db: AsyncSession, module: str, params: dict,
     return str(snap.id)
 
 
-async def get_snapshot(db: AsyncSession, token: str) -> Optional[AnalysisSnapshot]:
+async def get_snapshot(db: AsyncSession, token: str) -> AnalysisSnapshot | None:
     """按 token（uuid str）取快照；非法或不存在返回 None。"""
     try:
         uid = uuid.UUID(token)
@@ -227,11 +229,11 @@ async def get_snapshot(db: AsyncSession, token: str) -> Optional[AnalysisSnapsho
 # 快照装饰器：统一为 /analysis/* GET 端点旁路写快照
 # ---------------------------------------------------------------------------
 def with_snapshot(module: str,
-                  filter_keys: Optional[tuple[str, ...]] = None,
-                  data_type_override: Optional[str] = None,
-                  review_status: Optional[str] = "approved",
-                  quality_filter_key: Optional[str] = None,
-                  include_subgroups: Optional[bool] = None) -> Callable:
+                  filter_keys: tuple[str, ...] | None = None,
+                  data_type_override: str | None = None,
+                  review_status: str | None = "approved",
+                  quality_filter_key: str | None = None,
+                  include_subgroups: bool | None = None) -> Callable:
     """FastAPI 端点装饰器：计算 data_hash、去重写快照、注入 meta.snapshot_token。
 
     依赖注入的 ``db`` 以命名参数传入端点，装饰器从 kwargs 取出。
@@ -270,7 +272,7 @@ def with_snapshot(module: str,
 # 引用文本
 # ---------------------------------------------------------------------------
 def build_citation(snapshot: AnalysisSnapshot, style: str = "gbt7714",
-                   accessed_date: Optional[str] = None) -> str:
+                   accessed_date: str | None = None) -> str:
     """生成快照引用文本。
 
     - style=gbt7714: 电子文献[EB/OL]样式（含版本号与访问日期）
@@ -310,8 +312,8 @@ def build_citation(snapshot: AnalysisSnapshot, style: str = "gbt7714",
 # ---------------------------------------------------------------------------
 async def _snapshot_cleanup_loop():
     """后台循环：定期删除超过 SNAPSHOT_TTL_DAYS 天的快照，回收 response_json 存储。"""
-    from app.models.base import async_session
     from app.config import settings as _settings
+    from app.models.base import async_session
 
     logger.info(
         "[快照] 后台清理任务已启动，每 %d 秒检查一次，保留 %d 天",

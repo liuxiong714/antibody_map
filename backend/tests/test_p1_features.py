@@ -246,7 +246,7 @@ def test_xlsx_parsing():
         _fail("单元格分隔符缺失")
 
     # 3e: 工作表标记
-    if "【工作表:" in text:
+    if "### 工作表:" in text:
         _ok("工作表标记正确")
     else:
         _fail("工作表标记缺失")
@@ -506,8 +506,8 @@ def test_upload_whitelist():
 
     # 8d: 错误消息包含 PPTX/XLSX
     import inspect
-    from app.api.v1 import literature
-    source = inspect.getsource(literature.upload)
+    from app.api.v1.literature import file as literature_file
+    source = inspect.getsource(literature_file.upload)
     if "PPTX" in source and "XLSX" in source:
         _ok("上传错误消息包含 PPTX/XLSX")
     else:

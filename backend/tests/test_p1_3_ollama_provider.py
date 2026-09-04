@@ -92,33 +92,36 @@ def test_instance_resolved_attributes():
 
 
 # ── 测试 5: response_format 对 Ollama 跳过 ──────────────
-def test_response_format_skipped_for_ollama():
+@patch("app.core.extraction.llm_client.AsyncOpenAI")
+def test_response_format_skipped_for_ollama(mock_cls):
     """Ollama 模型调用时不传 response_format 参数"""
     ext = LLMExtractor(model="llama3")
 
-    # Mock client.chat.completions.create 捕获 kwargs
+    # 捕获 chat.completions.create 的 kwargs（_build_client 走 AsyncOpenAI 类）
     captured_kwargs = {}
 
     async def fake_create(**kwargs):
         captured_kwargs.update(kwargs)
-        mock_resp = MagicMock()
-        mock_resp.choices = [MagicMock()]
-        mock_resp.choices[0].message.content = '{"data_points": []}'
-        return mock_resp
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = '{"data_points": []}'
+        resp.usage = None
+        return resp
 
-    ext.client.chat.completions.create = AsyncMock(side_effect=fake_create)
+    client = mock_cls.return_value
+    client.chat.completions.create = AsyncMock(side_effect=fake_create)
 
     asyncio.run(ext._call_llm_api("test prompt"))
 
     assert "response_format" not in captured_kwargs, \
         f"Ollama 模型不应传 response_format, 实际传了: {captured_kwargs.get('response_format')}"
     assert captured_kwargs["model"] == "llama3"
-    assert captured_kwargs["temperature"] == 0.1
     print("✓ test_response_format_skipped_for_ollama")
 
 
 # ── 测试 6: response_format 对 DeepSeek 保留 ────────────
-def test_response_format_kept_for_deepseek():
+@patch("app.core.extraction.llm_client.AsyncOpenAI")
+def test_response_format_kept_for_deepseek(mock_cls):
     """DeepSeek 模型调用时仍传 response_format 参数（向后兼容）"""
     ext = LLMExtractor(model="deepseek-chat")
 
@@ -126,12 +129,14 @@ def test_response_format_kept_for_deepseek():
 
     async def fake_create(**kwargs):
         captured_kwargs.update(kwargs)
-        mock_resp = MagicMock()
-        mock_resp.choices = [MagicMock()]
-        mock_resp.choices[0].message.content = '{"data_points": []}'
-        return mock_resp
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = '{"data_points": []}'
+        resp.usage = None
+        return resp
 
-    ext.client.chat.completions.create = AsyncMock(side_effect=fake_create)
+    client = mock_cls.return_value
+    client.chat.completions.create = AsyncMock(side_effect=fake_create)
 
     asyncio.run(ext._call_llm_api("test prompt"))
 

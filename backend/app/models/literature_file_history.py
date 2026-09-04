@@ -6,9 +6,8 @@
 """
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
-from sqlalchemy import DateTime, String, CheckConstraint
+from sqlalchemy import CheckConstraint, DateTime, String
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,14 +22,14 @@ class LiteratureFileHistory(Base):
     # 文件指纹（sha256），用于跨软删除/永久删除追踪同一文件
     pdf_hash: Mapped[str] = mapped_column(String(64), index=True)
     # 原始文件名
-    file_name: Mapped[Optional[str]] = mapped_column(String(500))
+    file_name: Mapped[str | None] = mapped_column(String(500))
     # 关联的文献记录（若仍存在）
-    literature_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID, nullable=True)
+    literature_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID, nullable=True)
     # 动作：imported=导入，deleted=移入回收站（软删除）
     action: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     # 操作人
-    operator_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID, nullable=True)
-    operator_name: Mapped[Optional[str]] = mapped_column(String(100))
+    operator_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID, nullable=True)
+    operator_name: Mapped[str | None] = mapped_column(String(100))
     # 操作时间
     operated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True

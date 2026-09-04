@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +25,8 @@ class BaseLLMProvider:
     # Provider 名称（如 "deepseek", "openai", "ollama"）
     name: str = ""
 
-    # 匹配的模型前缀列表（小写），如 ["deepseek", "deepseek-coder"]
-    model_prefixes: list[str] = []
+    # 匹配的模型前缀列表（小写），如 ("deepseek", "deepseek-coder")
+    model_prefixes: tuple[str, ...] = ()
 
     @classmethod
     def get_config(cls) -> tuple[str, str]:
@@ -42,7 +41,7 @@ class BaseLLMProvider:
         return False
 
     @classmethod
-    def get_pricing(cls) -> Optional[tuple[float, float]]:
+    def get_pricing(cls) -> tuple[float, float] | None:
         """返回模型单价 (input_per_1m, output_per_1m)，单位：美元/百万 token。
 
         默认 None（无法计价，费用记为 0）。子类可覆盖。
@@ -78,7 +77,7 @@ def register_provider(cls: type[BaseLLMProvider]) -> type[BaseLLMProvider]:
     return cls
 
 
-def get_provider_for_model(model: str) -> Optional[type[BaseLLMProvider]]:
+def get_provider_for_model(model: str) -> type[BaseLLMProvider] | None:
     """根据模型名查找匹配的 Provider 类。
 
     遍历注册表，返回第一个 matches(model) 为 True 的 Provider。

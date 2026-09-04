@@ -1,7 +1,5 @@
-import io
 import time
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -10,14 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
-from app.schemas.common import ApiResponse
-from app.schemas.analysis import EquityAnalysisResponse
-from app.services import analysis_service
-from app.services.analysis.export import build_excel_export
 from app.core.methodology import build_methodology_note
 from app.models.data_point import DataPoint
-from app.tasks.quality_task import score_data_point_task
+from app.schemas.analysis import EquityAnalysisResponse
+from app.schemas.common import ApiResponse
+from app.services import analysis_service
+from app.services.analysis.export import build_excel_export
 from app.services.snapshot_service import with_snapshot
+from app.tasks.quality_task import score_data_point_task
 
 router = APIRouter()
 
@@ -88,13 +86,13 @@ def _attach_methodology_note(data, module: str, params: dict) -> dict:
 @router.get("/analysis/trend", response_model=ApiResponse, summary="逐年趋势分析", description="获取抗体水平的逐年趋势分析数据，支持按疾病、省份、年份范围、年龄、数据类型筛选")
 @with_snapshot("trend")
 async def get_trend(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
-    age_min: Optional[int] = Query(None, description="最小年龄"),
-    age_max: Optional[int] = Query(None, description="最大年龄"),
-    data_type: Optional[str] = Query(None, description="数据类型"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
+    age_min: int | None = Query(None, description="最小年龄"),
+    age_max: int | None = Query(None, description="最大年龄"),
+    data_type: str | None = Query(None, description="数据类型"),
     db: AsyncSession = Depends(get_db),
 ):
     """逐年趋势分析"""
@@ -117,13 +115,13 @@ async def get_trend(
 @router.get("/analysis/region-compare", response_model=ApiResponse, summary="区域对比分析", description="获取不同区域之间的抗体水平对比分析数据，支持按疾病、省份、年份范围、年龄、数据类型筛选")
 @with_snapshot("region_compare")
 async def get_region_compare(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
-    age_min: Optional[int] = Query(None, description="最小年龄"),
-    age_max: Optional[int] = Query(None, description="最大年龄"),
-    data_type: Optional[str] = Query(None, description="数据类型"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
+    age_min: int | None = Query(None, description="最小年龄"),
+    age_max: int | None = Query(None, description="最大年龄"),
+    data_type: str | None = Query(None, description="数据类型"),
     db: AsyncSession = Depends(get_db),
 ):
     """区域对比分析"""
@@ -147,11 +145,11 @@ async def get_region_compare(
 @with_snapshot("equity", filter_keys=("disease", "year_start", "year_end", "age_min", "age_max"),
                data_type_override="seroprevalence")
 async def get_equity(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
-    age_min: Optional[int] = Query(None, description="最小年龄"),
-    age_max: Optional[int] = Query(None, description="最大年龄"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
+    age_min: int | None = Query(None, description="最小年龄"),
+    age_max: int | None = Query(None, description="最大年龄"),
     db: AsyncSession = Depends(get_db),
 ):
     """省间公平性分析（设计 B）"""
@@ -175,10 +173,10 @@ async def get_equity(
 @router.get("/analysis/quality", response_model=ApiResponse, summary="数据质量评估", description="评估已审核主估计的数据质量：高质量(A/B)占比、带CI比例、原文溯源(grounded)比例、单点估计省份预警（基于 reliability_grade 分级）")
 @with_snapshot("quality", filter_keys=("disease", "province", "year_start", "year_end"))
 async def get_quality(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
     db: AsyncSession = Depends(get_db),
 ):
     """数据质量评估"""
@@ -241,9 +239,9 @@ async def rescore_quality(
 @router.get("/analysis/goal-tracking", response_model=ApiResponse, summary="目标达成追踪", description="按年追踪全国抗体保护达标进度：达标省比例、全国加权阳性率、相对每病保护目标(GOAL_THRESHOLDS/HIT)的缺口百分点")
 @with_snapshot("goal_tracking", filter_keys=("disease", "year_start", "year_end"))
 async def get_goal_tracking(
-    disease: Optional[str] = Query(None, description="疾病筛选（用于匹配 GOAL_THRESHOLDS 保护目标阈值）"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
+    disease: str | None = Query(None, description="疾病筛选（用于匹配 GOAL_THRESHOLDS 保护目标阈值）"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
     db: AsyncSession = Depends(get_db),
 ):
     """目标达成追踪"""
@@ -263,9 +261,9 @@ async def get_goal_tracking(
 @with_snapshot("age_curve", filter_keys=("disease", "province", "year_start", "year_end"))
 async def get_age_curve(
     disease: str = Query(..., description="疾病筛选（必填）"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
     db: AsyncSession = Depends(get_db),
 ):
     """血清阳性率-年龄曲线（惩罚样条平滑 + 置信带 + FOI）"""
@@ -291,9 +289,9 @@ async def get_age_curve(
 @with_snapshot("birth_cohort", filter_keys=("disease", "province", "year_start", "year_end"))
 async def get_birth_cohort(
     disease: str = Query(..., description="疾病筛选（必填）"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
     db: AsyncSession = Depends(get_db),
 ):
     """出生队列分析（heatmap + 队列轨迹线）"""
@@ -314,8 +312,8 @@ async def get_birth_cohort(
 @with_snapshot("meta_merge", filter_keys=("disease", "province"),
                data_type_override="seroprevalence", quality_filter_key="include_low_quality")
 async def get_meta_merge(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选（不传则按省分组）"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选（不传则按省分组）"),
     include_low_quality: bool = Query(False, description="是否放开质量过滤（默认仅 A+B 级）"),
     db: AsyncSession = Depends(get_db),
 ):
@@ -338,12 +336,12 @@ async def get_meta_merge(
                data_type_override="seroprevalence", quality_filter_key="include_low_quality")
 async def get_meta_analysis(
     disease: str = Query(..., description="疾病筛选（必填）"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
-    age_min: Optional[int] = Query(None, description="最小年龄"),
-    age_max: Optional[int] = Query(None, description="最大年龄"),
-    group_by: Optional[str] = Query(None, description="分组字段，逗号分隔：province / year / age_group"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
+    age_min: int | None = Query(None, description="最小年龄"),
+    age_max: int | None = Query(None, description="最大年龄"),
+    group_by: str | None = Query(None, description="分组字段，逗号分隔：province / year / age_group"),
     include_low_quality: bool = Query(False, description="是否放开质量过滤（默认仅 A+B 级）"),
     db: AsyncSession = Depends(get_db),
 ):
@@ -370,8 +368,8 @@ async def get_meta_analysis(
 @with_snapshot("spatial_hotspots", filter_keys=("disease", "year_start", "year_end"))
 async def get_spatial_hotspots(
     disease: str = Query(..., description="疾病筛选（必填）"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
     level: str = Query("province", description="空间级别（当前仅支持 province，city 预留）"),
     db: AsyncSession = Depends(get_db),
 ):
@@ -402,8 +400,8 @@ async def get_spatial_hotspots(
 @router.get("/analysis/assay-heterogeneity", response_model=ApiResponse, summary="检测方法(assay)异质性", description="按 assay 分层对比各检测方法的加权阳性率与95%CI，并计算跨 assay 的 I² 异质性")
 @with_snapshot("assay_heterogeneity", filter_keys=("disease", "province"))
 async def get_assay_heterogeneity(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
     db: AsyncSession = Depends(get_db),
 ):
     """按 assay 分层的异质性对比"""
@@ -421,8 +419,8 @@ async def get_assay_heterogeneity(
 @router.get("/analysis/simulate", response_model=ApiResponse, summary="免疫屏障模拟", description="复用 FOI 催化模型反推 R0/HIT，结合假设接种覆盖与加强针比例模拟有效免疫比例，判定屏障状态并反推达标所需覆盖")
 @with_snapshot("simulate", filter_keys=("disease", "province"))
 async def get_simulation(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
     assumed_coverage: float = Query(90.0, ge=0, le=100, description="假设基础接种覆盖率(%)"),
     booster_rate: float = Query(0.0, ge=0, le=100, description="加强针比例(%)，作用于尚未免疫者"),
     db: AsyncSession = Depends(get_db),
@@ -445,13 +443,13 @@ async def get_simulation(
 @router.get("/analysis/age-stratify", response_model=ApiResponse, summary="年龄分层分析", description="获取按年龄分层的抗体水平分析数据，支持按疾病、省份、年份范围、年龄范围、数据类型筛选")
 @with_snapshot("age_stratify")
 async def get_age_stratify(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
-    age_min: Optional[int] = Query(None, description="最小年龄"),
-    age_max: Optional[int] = Query(None, description="最大年龄"),
-    data_type: Optional[str] = Query(None, description="数据类型"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
+    age_min: int | None = Query(None, description="最小年龄"),
+    age_max: int | None = Query(None, description="最大年龄"),
+    data_type: str | None = Query(None, description="数据类型"),
     db: AsyncSession = Depends(get_db),
 ):
     """年龄分层分析"""
@@ -474,13 +472,13 @@ async def get_age_stratify(
 @router.get("/analysis/summary", response_model=ApiResponse, summary="汇总统计", description="获取抗体数据的汇总统计信息，包括总数据点数、覆盖省份数、发表文献数等")
 @with_snapshot("summary")
 async def get_summary(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
-    age_min: Optional[int] = Query(None, description="最小年龄"),
-    age_max: Optional[int] = Query(None, description="最大年龄"),
-    data_type: Optional[str] = Query(None, description="数据类型"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
+    age_min: int | None = Query(None, description="最小年龄"),
+    age_max: int | None = Query(None, description="最大年龄"),
+    data_type: str | None = Query(None, description="数据类型"),
     db: AsyncSession = Depends(get_db),
 ):
     """汇总统计"""
@@ -503,15 +501,15 @@ async def get_summary(
 @router.get("/analysis/immune-barrier", response_model=ApiResponse, summary="免疫屏障评估", description="评估免疫屏障状态，分析各省份各年龄组的抗体保护水平，判断免疫缺口")
 @with_snapshot("immune_barrier")
 async def get_immune_barrier(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
-    age_min: Optional[int] = Query(None, description="最小年龄"),
-    age_max: Optional[int] = Query(None, description="最大年龄"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
+    age_min: int | None = Query(None, description="最小年龄"),
+    age_max: int | None = Query(None, description="最大年龄"),
     life_expectancy: float = Query(75.0, ge=50, le=100, description="期望寿命（年），默认75"),
-    seroreversion_mu: Optional[float] = Query(None, ge=0, le=0.2, description="血清转阴率 μ（0/0.01/0.02，留空则按数据估计）"),
-    hit_source_override: Optional[str] = Query(None, pattern="^(who|literature|foi)$", description="HIT 阈值来源覆盖（who|literature|foi）"),
+    seroreversion_mu: float | None = Query(None, ge=0, le=0.2, description="血清转阴率 μ（0/0.01/0.02，留空则按数据估计）"),
+    hit_source_override: str | None = Query(None, pattern="^(who|literature|foi)$", description="HIT 阈值来源覆盖（who|literature|foi）"),
     db: AsyncSession = Depends(get_db),
 ):
     """免疫屏障评估"""
@@ -539,8 +537,8 @@ async def get_immune_barrier(
 @with_snapshot("immunity_projection", filter_keys=("disease", "province"))
 async def get_immunity_projection(
     disease: str = Query(..., description="疾病筛选（必填）"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    waning_rate: Optional[float] = Query(None, ge=0, le=0.5, description="每年抗体转阴比例（0~0.5，留空则从多年份实测数据自动估计）"),
+    province: str | None = Query(None, description="省份筛选"),
+    waning_rate: float | None = Query(None, ge=0, le=0.5, description="每年抗体转阴比例（0~0.5，留空则从多年份实测数据自动估计）"),
     projection_years: int = Query(10, ge=1, le=50, description="预测年数（默认10）"),
     birth_cohort_size: float = Query(0.012, ge=0, le=0.5, description="每年新出生零保护人口占比（默认0.012）"),
     barrier_threshold: float = Query(0.92, gt=0, le=1, description="屏障安全阈值（默认0.92，跌破则预警）"),
@@ -567,8 +565,8 @@ async def get_immunity_projection(
 @router.get("/analysis/effective-barrier", response_model=ApiResponse, summary="有效免疫屏障", description="用年龄接触矩阵（社会接触调查）对人群阳性率加权计算有效免疫屏障，量化各年龄组传播权重与缺口，定位最薄弱年龄组。替代仅看总阳性率的粗糙评估")
 @with_snapshot("effective_barrier", filter_keys=("disease", "province"))
 async def get_effective_barrier(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
     db: AsyncSession = Depends(get_db),
 ):
     """有效免疫屏障（接触矩阵加权）"""
@@ -605,17 +603,17 @@ async def get_barrier_probability(
 @router.get("/analysis/approved-data-points", response_model=ApiResponse, summary="获取审核通过的数据点", description="分页获取所有审核通过的数据点，用于数据分析模块，支持多维度筛选和排序")
 @with_snapshot("approved_data_points")
 async def get_approved_data_points(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
-    age_min: Optional[int] = Query(None, description="最小年龄"),
-    age_max: Optional[int] = Query(None, description="最大年龄"),
-    data_type: Optional[str] = Query(None, description="数据类型"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
+    age_min: int | None = Query(None, description="最小年龄"),
+    age_max: int | None = Query(None, description="最大年龄"),
+    data_type: str | None = Query(None, description="数据类型"),
     offset: int = Query(0, ge=0, description="偏移量"),
     limit: int = Query(200, ge=1, le=1000, description="每页数量"),
-    sort_by: Optional[str] = Query(None, description="排序字段"),
-    sort_order: Optional[str] = Query("desc", description="排序方向 asc/desc"),
+    sort_by: str | None = Query(None, description="排序字段"),
+    sort_order: str | None = Query("desc", description="排序方向 asc/desc"),
     db: AsyncSession = Depends(get_db),
 ):
     """获取所有审核通过的数据点（分页），用于数据分析模块"""
@@ -643,7 +641,7 @@ async def get_approved_data_points(
 @router.get("/analysis/data-gaps", response_model=ApiResponse, summary="数据覆盖度分析", description="分析各省份各年份的数据点分布，识别需要审核和补充的数据缺口，支持按疾病筛选")
 @with_snapshot("data_gaps", filter_keys=("disease",), review_status=None)
 async def get_data_gaps(
-    disease: Optional[str] = Query(None, description="疾病筛选（不传则分析全库）"),
+    disease: str | None = Query(None, description="疾病筛选（不传则分析全库）"),
     db: AsyncSession = Depends(get_db),
 ):
     """数据覆盖度分析：统计各省份各年份的数据点分布，识别需要审核和补充的数据缺口"""
@@ -659,7 +657,7 @@ async def get_data_gaps(
 @router.get("/analysis/coverage-review", response_model=ApiResponse, summary="审核状态统计", description="按疾病维度统计数据点数、样本量、审核状态(approved/pending/rejected)与通过率，默认按待审核数降序排序")
 @with_snapshot("coverage_review", filter_keys=("disease",), review_status=None)
 async def get_coverage_review(
-    disease: Optional[str] = Query(None, description="疾病筛选（不传则统计全部疾病）"),
+    disease: str | None = Query(None, description="疾病筛选（不传则统计全部疾病）"),
     db: AsyncSession = Depends(get_db),
 ):
     """按疾病维度的审核状态统计（数据点/样本量/通过率）"""
@@ -685,20 +683,19 @@ async def get_review_stats(
 
 @router.get("/analysis/export", summary="导出分析数据Excel", description="将所有分析结果导出为Excel文件，包含多个sheet：汇总统计、年份趋势、区域对比、年龄分层、数据点明细、统计方法附录（加权率/GMC/95%CI/基尼/meta合并等算法公式）")
 async def export_analysis(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
-    age_min: Optional[int] = Query(None, description="最小年龄"),
-    age_max: Optional[int] = Query(None, description="最大年龄"),
-    data_type: Optional[str] = Query(None, description="数据类型"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
+    age_min: int | None = Query(None, description="最小年龄"),
+    age_max: int | None = Query(None, description="最大年龄"),
+    data_type: str | None = Query(None, description="数据类型"),
 ):
     """导出分析数据为 Excel 多 sheet"""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Alignment
 
     # 并行获取所有分析数据（每个任务使用独立 AsyncSession，避免共享 session 并发不安全）
     import asyncio
+
     from app.models.base import async_session
 
     async def _run(fn, **kw):
@@ -742,17 +739,18 @@ async def export_analysis(
 
 @router.get("/analysis/dataset-snapshot", summary="导出数据集快照ZIP", description="P2-1：导出公开数据集快照ZIP包，包含CSV数据文件、数据字典、README和LICENSE")
 async def export_dataset_snapshot(
-    disease: Optional[str] = Query(None, description="疾病筛选"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
-    age_min: Optional[int] = Query(None, description="最小年龄"),
-    age_max: Optional[int] = Query(None, description="最大年龄"),
-    data_type: Optional[str] = Query(None, description="数据类型"),
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
+    age_min: int | None = Query(None, description="最小年龄"),
+    age_max: int | None = Query(None, description="最大年龄"),
+    data_type: str | None = Query(None, description="数据类型"),
     db: AsyncSession = Depends(get_db),
 ):
     """P2-1：导出公开数据集快照 ZIP（CSV + 数据字典 + README + LICENSE）"""
     from urllib.parse import quote
+
     from app.core.dataset_snapshot import generate_dataset_snapshot_zip
 
     data_points = await analysis_service.get_approved_data_points_for_snapshot(
@@ -789,13 +787,13 @@ async def export_dataset_snapshot(
 @router.get("/analysis/foi-herd-immunity", response_model=ApiResponse, summary="FOI和群体免疫分析", description="P0：使用催化模型计算感染力（FOI）和群体免疫阈值，输出按省份×疾病的FOI热力矩阵与群体免疫状态")
 @with_snapshot("foi", filter_keys=("disease", "province", "year_start", "year_end"))
 async def get_foi_herd_immunity(
-    disease: Optional[str] = Query(None, description="疾病筛选（不传则全库分析）"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
+    disease: str | None = Query(None, description="疾病筛选（不传则全库分析）"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
     life_expectancy: float = Query(75.0, ge=50, le=100, description="期望寿命（年），默认75"),
-    seroreversion_mu: Optional[float] = Query(None, ge=0, le=0.2, description="血清转阴率 μ（0/0.01/0.02，留空则按数据估计）"),
-    hit_source_override: Optional[str] = Query(None, pattern="^(who|literature|foi)$", description="HIT 阈值来源覆盖（who|literature|foi）"),
+    seroreversion_mu: float | None = Query(None, ge=0, le=0.2, description="血清转阴率 μ（0/0.01/0.02，留空则按数据估计）"),
+    hit_source_override: str | None = Query(None, pattern="^(who|literature|foi)$", description="HIT 阈值来源覆盖（who|literature|foi）"),
     db: AsyncSession = Depends(get_db),
 ):
     """P0: FOI（感染力）+ 群体免疫阈值综合分析。
@@ -828,10 +826,10 @@ async def get_foi_herd_immunity(
 @with_snapshot("vaccine", filter_keys=("disease", "province", "year_start", "year_end"),
                include_subgroups=True)
 async def get_vaccine_ve_coverage(
-    disease: Optional[str] = Query(None, description="疾病筛选（不传则全库分析）"),
-    province: Optional[str] = Query(None, description="省份筛选"),
-    year_start: Optional[int] = Query(None, description="起始年份"),
-    year_end: Optional[int] = Query(None, description="结束年份"),
+    disease: str | None = Query(None, description="疾病筛选（不传则全库分析）"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
     db: AsyncSession = Depends(get_db),
 ):
     """P1: 疫苗效果 (VE / Vaccine Effectiveness) + 接种率综合分析。
@@ -904,12 +902,12 @@ async def snapshot_citation(
 @router.get("/analysis/titer-tables", response_model=ApiResponse,
             summary="滴度矩阵表列表", description="列出可制图的滴度矩阵（仅审核通过 approved）：含文献标题、检测类型、矩阵维度、质量分。可选按 assay_type 过滤。")
 async def list_titer_tables(
-    assay_type: Optional[str] = Query(None, description="检测类型过滤：hi/vnt/elisa"),
+    assay_type: str | None = Query(None, description="检测类型过滤：hi/vnt/elisa"),
     db: AsyncSession = Depends(get_db),
 ):
     """滴度矩阵列表：供前端"抗原图谱"Tab 选择矩阵。"""
-    from app.models.titer_table import TiterTable
     from app.models.literature import Literature
+    from app.models.titer_table import TiterTable
 
     stmt = (
         select(TiterTable, Literature.title)
@@ -948,8 +946,8 @@ async def get_antigenic_map(
     db: AsyncSession = Depends(get_db),
 ):
     """抗原图谱：读取 TiterTable 矩阵 → 制图引擎 → 输出坐标/应力/网格说明。"""
-    from app.models.titer_table import TiterTable
     from app.core.antigenic_cartography import antigenic_map
+    from app.models.titer_table import TiterTable
 
     tt = await db.get(TiterTable, titer_table_id)
     if tt is None:
@@ -969,7 +967,7 @@ async def get_antigenic_map(
             serum_names=[str(s) for s in (tt.ref_antisera or [])],
         )
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
     data = {
         "titer_table_id": str(tt.id),

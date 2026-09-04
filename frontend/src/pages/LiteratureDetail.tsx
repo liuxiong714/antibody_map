@@ -151,6 +151,7 @@ const LiteratureDetail: React.FC = () => {
       title: literature.title || '',
       title_en: literature.title_en || '',
       authors: literature.authors || '',
+      author_affiliations: literature.author_affiliations || '',
       journal: literature.journal || '',
       pub_year: literature.pub_year ?? null,
       doi: literature.doi || '',
@@ -408,9 +409,19 @@ const LiteratureDetail: React.FC = () => {
     setExtractModalOpen(false);
     setLastUsage(null);
     try {
-      if (extractModel && extractModel !== '') {
+      let model = extractModel;
+      let modelConfigId: string | undefined;
+      // 远程 API 模型：value 形如 remote:<配置id>，取真实模型名与配置 ID，后端据此读取 API Key/Base URL
+      if (model && model.startsWith('remote:')) {
+        const remoteOpt = modelOptions.find((o) => o.value === model);
+        const rawId = model.substring('remote:'.length);
+        modelConfigId = remoteOpt?.model_config_id || rawId;
+        model = remoteOpt?.model_name || rawId;
+      }
+      if (model && model !== '') {
         await triggerExtraction(id, {
-          model: extractModel,
+          model,
+          modelConfigId,
           apiKey: extractApiKey || undefined,
           baseUrl: extractBaseUrl || undefined,
           clearExistingData,
@@ -1020,6 +1031,10 @@ const LiteratureDetail: React.FC = () => {
                       <Input value={String(editForm.authors ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, authors: e.target.value }))} />
                     </Col>
                     <Col span={12}>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>作者单位</div>
+                      <Input value={String(editForm.author_affiliations ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, author_affiliations: e.target.value }))} />
+                    </Col>
+                    <Col span={12}>
                       <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>期刊</div>
                       <Input value={String(editForm.journal ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, journal: e.target.value }))} />
                     </Col>
@@ -1048,6 +1063,7 @@ const LiteratureDetail: React.FC = () => {
                   <>
                     <Descriptions column={2} size="small">
                       <Descriptions.Item label="作者">{literature?.authors || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="作者单位">{literature?.author_affiliations || '-'}</Descriptions.Item>
                       <Descriptions.Item label="期刊">{literature?.journal || '-'}</Descriptions.Item>
                       <Descriptions.Item label="年份">{literature?.pub_year || '-'}</Descriptions.Item>
                       <Descriptions.Item label="DOI">{literature?.doi || '-'}</Descriptions.Item>

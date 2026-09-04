@@ -5,10 +5,8 @@
 """
 import time
 from collections import defaultdict
-from typing import Optional
 
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse
 
 
 class _SlidingWindowCounter:

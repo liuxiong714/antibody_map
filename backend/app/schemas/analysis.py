@@ -1,6 +1,5 @@
 """分析模块 Pydantic 响应结构（省间公平性分析等）。"""
 
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -8,32 +7,32 @@ from pydantic import BaseModel
 class ProvinceEquityRow(BaseModel):
     """单个省份的公平性指标（Top/Bottom 排名与全量排行共用）。"""
 
-    rank: Optional[int] = None  # 优先按年龄标化阳性率降序排名；无有效数据时为 None
+    rank: int | None = None  # 优先按年龄标化阳性率降序排名；无有效数据时为 None
     province: str = ""
-    weighted_positivity: Optional[float] = None  # 加权阳性率（%，逆方差合并）
-    ci_lower: Optional[float] = None
-    ci_upper: Optional[float] = None
-    asr: Optional[float] = None  # 年龄标化阳性率（%，直接法，七普标准人口）；无有效分层时 None
-    asr_ci_lower: Optional[float] = None
-    asr_ci_upper: Optional[float] = None
+    weighted_positivity: float | None = None  # 加权阳性率（%，逆方差合并）
+    ci_lower: float | None = None
+    ci_upper: float | None = None
+    asr: float | None = None  # 年龄标化阳性率（%，直接法，七普标准人口）；无有效分层时 None
+    asr_ci_lower: float | None = None
+    asr_ci_upper: float | None = None
     is_age_standardized: bool = False  # 排名是否基于年龄标化率（True）或回落加权率（False）
     n_strata: int = 0  # 参与标化的有效年龄分层数
     total_samples: int = 0
     n_studies: int = 0
-    is_meeting_target: Optional[bool] = None  # 是否达到 WHO 免疫屏障阈值；无阈值时为 None
+    is_meeting_target: bool | None = None  # 是否达到 WHO 免疫屏障阈值；无阈值时为 None
 
 
 class EquitySummary(BaseModel):
     """省间公平性汇总指标。"""
 
-    gini: Optional[float] = None  # 省间基尼系数
-    coefficient_of_variation: Optional[float] = None  # 省间变异系数
-    best_province: Optional[str] = None
-    best_positivity: Optional[float] = None
-    worst_province: Optional[str] = None
-    worst_positivity: Optional[float] = None
-    target_threshold_percent: Optional[float] = None  # WHO 达标阈值（%）
-    meeting_ratio: Optional[float] = None  # 达标省占比（0-1）
+    gini: float | None = None  # 省间基尼系数
+    coefficient_of_variation: float | None = None  # 省间变异系数
+    best_province: str | None = None
+    best_positivity: float | None = None
+    worst_province: str | None = None
+    worst_positivity: float | None = None
+    target_threshold_percent: float | None = None  # WHO 达标阈值（%）
+    meeting_ratio: float | None = None  # 达标省占比（0-1）
     meeting_provinces_count: int = 0
     total_provinces: int = 0  # 有有效阳性率的省数
 
@@ -41,7 +40,7 @@ class EquitySummary(BaseModel):
 class EquityAnalysisResponse(BaseModel):
     """省间公平性分析响应（作为 ApiResponse.data 的载荷）。"""
 
-    disease: Optional[str] = None
+    disease: str | None = None
     n_provinces: int = 0
     n_data_points: int = 0
     summary: EquitySummary = EquitySummary()

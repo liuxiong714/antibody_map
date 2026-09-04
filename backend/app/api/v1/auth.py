@@ -3,7 +3,6 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
@@ -11,18 +10,22 @@ from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_current_user, require_admin
+from app.api.deps import get_current_user, get_db, require_admin
 from app.core.audit import log_audit
 from app.core.rate_limiter import login_rate_limit
 from app.core.security import (
-    hash_password,
-    verify_password,
     create_access_token,
     create_refresh_token,
     decode_access_token,
     decode_refresh_token,
+    hash_password,
+    verify_password,
 )
-from app.core.token_revocation import is_token_revoked, revoke_token, token_issued_before_password_change
+from app.core.token_revocation import (
+    is_token_revoked,
+    revoke_token,
+    token_issued_before_password_change,
+)
 from app.models.user import User
 from app.schemas.common import ApiResponse
 
@@ -46,7 +49,7 @@ class LoginResponse(BaseModel):
     token: str
     refresh_token: str = ""
     username: str
-    display_name: Optional[str] = None
+    display_name: str | None = None
     is_admin: bool = False
 
 
@@ -56,15 +59,15 @@ class RefreshTokenRequest(BaseModel):
 
 class CreateUserRequest(BaseModel):
     username: str
-    display_name: Optional[str] = None
+    display_name: str | None = None
     is_admin: bool = False
 
 
 class UpdateUserRequest(BaseModel):
-    display_name: Optional[str] = None
-    is_active: Optional[bool] = None
-    is_admin: Optional[bool] = None
-    password: Optional[str] = None  # 重置密码
+    display_name: str | None = None
+    is_active: bool | None = None
+    is_admin: bool | None = None
+    password: str | None = None  # 重置密码
 
 
 class ChangePasswordRequest(BaseModel):
@@ -75,7 +78,7 @@ class ChangePasswordRequest(BaseModel):
 class UserResponse(BaseModel):
     id: str
     username: str
-    display_name: Optional[str] = None
+    display_name: str | None = None
     is_admin: bool
     is_active: bool
     created_at: str
@@ -83,7 +86,7 @@ class UserResponse(BaseModel):
 
 # ── 密码校验 ──────────────────────────────────────────────
 
-def _validate_password_strength(password: str) -> Optional[str]:
+def _validate_password_strength(password: str) -> str | None:
     """校验密码强度，返回错误信息或 None"""
     if len(password) < 8:
         return "密码至少 8 个字符"
@@ -173,7 +176,7 @@ async def refresh_token(
         raise
     except RedisError as e:
         logger.warning(f"刷新令牌吊销校验失败，拒绝刷新（fail-closed）: {e}")
-        raise HTTPException(status_code=503, detail="令牌验证服务暂不可用，请稍后重试")
+        raise HTTPException(status_code=503, detail="令牌验证服务暂不可用，请稍后重试") from e
 
     user_id = payload.get("sub")
     result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))

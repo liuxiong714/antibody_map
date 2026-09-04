@@ -1,9 +1,12 @@
-import { getModels } from '../services/map';
+import { getModels, listRemoteModels } from '../services/map';
 import { MODEL_OPTIONS, ModelOption } from './constants';
 
 export interface ExtendedModelOption extends ModelOption {
   group?: 'local' | 'remote';
   is_default?: boolean;
+  // 远程 API 模型：model_config_id 为 api_model_config 表的配置 ID，model_name 为真实模型名
+  model_config_id?: string;
+  model_name?: string;
 }
 
 // 静态内置远程模型（不含本地 Ollama 项；本地统一由后端 /models 提供，保证各功能一致）
@@ -62,6 +65,28 @@ export async function buildModelOptions(): Promise<ExtendedModelOption[]> {
   } catch (err) {
     console.error('[modelOptions] 加载本地模型失败，回退到静态列表:', err);
     options.push(...FALLBACK_LOCAL_OPTIONS);
+  }
+  // 远程 API 模型（系统设置「远程模型配置」中维护的启用项）。
+  // value 用 remote:<配置id> 作为唯一标识，model_name 与 model_config_id 随选项携带，
+  // 提交提取时按 model_config_id 让后端读取对应配置的 API Key / Base URL。
+  try {
+    const remotes = await listRemoteModels();
+    const active = (remotes || []).filter((r) => r && r.is_active !== false);
+    if (active.length > 0) {
+      options.push(
+        ...active.map((r) => ({
+          value: `remote:${r.id}`,
+          label: `${r.name || r.model_name}（远程·API）`,
+          vendor: '' as const,
+          group: 'remote' as const,
+          model_config_id: r.id,
+          model_name: r.model_name,
+          description: `通过系统配置的远程 API 调用模型 ${r.model_name}，API Key 由系统设置安全存储`,
+        })),
+      );
+    }
+  } catch (err) {
+    console.error('[modelOptions] 加载远程模型配置失败:', err);
   }
   options.push({ ...CUSTOM_LOCAL_OPTION });
   return options;

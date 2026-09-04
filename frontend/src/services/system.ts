@@ -80,3 +80,36 @@ export async function restoreBackup(file: File): Promise<{ filename: string; siz
   const { data } = await api.post<{ filename: string; size: number }>('/system/restore', fd, { timeout: 360000 });
   return data;
 }
+
+export interface ActiveTaskItem {
+  id: string;
+  started_at: string;
+  updated_at: string;
+  [key: string]: unknown;
+}
+
+export interface ActiveTaskGroup {
+  type: string;
+  name: string;
+  status: 'running' | 'idle';
+  running?: number;
+  processing?: number;
+  queued?: number;
+  items: ActiveTaskItem[];
+}
+
+export interface ActiveTasks {
+  updated_at: string;
+  tasks: ActiveTaskGroup[];
+}
+
+export async function getActiveTasks(): Promise<ActiveTasks> {
+  const { data } = await api.get<ActiveTasks>('/system/active-tasks');
+  return data;
+}
+
+/** 按任务ID查询单个后台任务（报告生成/知识图谱抽取）的实时状态；任务结束后仍可读取 result（如 report_id） */
+export async function getTaskStatus(taskId: string): Promise<ActiveTaskItem> {
+  const { data } = await api.get<ActiveTaskItem>(`/system/tasks/${taskId}`);
+  return data;
+}

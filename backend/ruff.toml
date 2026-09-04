@@ -1,2 +1,7 @@
 line-length = 100
-select = ["E", "F", "I", "UP"]
+[lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
+# E501: 中文文本行长常超 100，不强制截断
+# B008: FastAPI 惯用 Depends()/Query() 作默认参数
+# RUF001/002/003: 中文文档/注释/字符串被误报为歧义 unicode
+ignore = ["E501", "B008", "RUF001", "RUF002", "RUF003"]

@@ -1,6 +1,4 @@
 import logging
-import re
-from typing import Optional
 
 logger = logging.getLogger("uvicorn")
 
@@ -171,7 +169,7 @@ DISEASE_MAP: dict[str, str] = {
 }
 
 
-def normalize_disease(name: Optional[str]) -> Optional[str]:
+def normalize_disease(name: str | None) -> str | None:
     """标准化疾病名称。
 
     匹配优先级：
@@ -196,10 +194,9 @@ def normalize_disease(name: Optional[str]) -> Optional[str]:
     best_key = None
     best_value = None
     for key, value in DISEASE_MAP.items():
-        if len(key) >= 2 and key.lower() in name_lower:
-            if best_key is None or len(key) > len(best_key):
-                best_key = key
-                best_value = value
+        if len(key) >= 2 and key.lower() in name_lower and (best_key is None or len(key) > len(best_key)):
+            best_key = key
+            best_value = value
     if best_value is not None:
         return best_value
     # 保留原文
@@ -233,7 +230,7 @@ METHOD_MAP: dict[str, str] = {
 }
 
 
-def normalize_method(method: Optional[str]) -> Optional[str]:
+def normalize_method(method: str | None) -> str | None:
     """标准化检测方法名称"""
     if not method:
         return None
@@ -262,7 +259,7 @@ ANTIBODY_TYPE_MAP: dict[str, str] = {
 }
 
 
-def normalize_antibody_type(t: Optional[str]) -> Optional[str]:
+def normalize_antibody_type(t: str | None) -> str | None:
     """标准化抗体类型"""
     if not t:
         return None
@@ -339,11 +336,11 @@ _CITY_EXCLUSION = {
     "苏州", "无锡", "佛山", "东莞", "温州", "常州", "徐州", "洛阳",
     "邯郸", "保定", "大同", "包头", "珠海", "中山", "惠州", "嘉兴",
     "绍兴", "南通", "扬州", "镇江", "台州", "金华", "宜昌", "襄阳",
-    "惠州", "柳州", "桂林", "遵义", "曲靖", "咸阳", "宝鸡", "绵阳",
+    "柳州", "桂林", "遵义", "曲靖", "咸阳", "宝鸡", "绵阳",
 }
 
 
-def normalize_province(name: Optional[str]) -> Optional[str]:
+def normalize_province(name: str | None) -> str | None:
     """标准化省份名称，将 LLM 提取的各种表述统一为省份名"""
     if not name:
         return None

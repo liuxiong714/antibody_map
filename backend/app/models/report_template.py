@@ -1,8 +1,7 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
-from sqlalchemy import JSON, Boolean, DateTime, String, Text, CheckConstraint
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -30,7 +29,7 @@ class ReportTemplate(Base):
     )
     sections: Mapped[list] = mapped_column(JSON, default=list)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
-    desc: Mapped[Optional[str]] = mapped_column(Text)
+    desc: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

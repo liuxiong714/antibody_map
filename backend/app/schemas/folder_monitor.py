@@ -1,7 +1,6 @@
 """文件夹监控相关的 Pydantic 模型。"""
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -13,11 +12,11 @@ class MonitoredFolderBase(BaseModel):
     folder_path: str = Field(..., max_length=500, description="本地文件夹绝对路径")
     enabled: bool = True
     scan_interval_seconds: int = Field(300, ge=30, le=86400, description="扫描间隔（秒）")
-    file_extensions: Optional[str] = Field(None, description="逗号分隔扩展名，如 .pdf,.caj")
+    file_extensions: str | None = Field(None, description="逗号分隔扩展名，如 .pdf,.caj")
     auto_extract: bool = True
-    extraction_model: Optional[str] = None
-    extraction_api_key: Optional[str] = None
-    extraction_base_url: Optional[str] = None
+    extraction_model: str | None = None
+    extraction_api_key: str | None = None
+    extraction_base_url: str | None = None
 
 
 class MonitoredFolderCreate(MonitoredFolderBase):
@@ -25,24 +24,24 @@ class MonitoredFolderCreate(MonitoredFolderBase):
 
 
 class MonitoredFolderUpdate(BaseModel):
-    name: Optional[str] = None
-    folder_path: Optional[str] = None
-    enabled: Optional[bool] = None
-    scan_interval_seconds: Optional[int] = Field(None, ge=30, le=86400)
-    file_extensions: Optional[str] = None
-    auto_extract: Optional[bool] = None
-    extraction_model: Optional[str] = None
-    extraction_api_key: Optional[str] = None
-    extraction_base_url: Optional[str] = None
+    name: str | None = None
+    folder_path: str | None = None
+    enabled: bool | None = None
+    scan_interval_seconds: int | None = Field(None, ge=30, le=86400)
+    file_extensions: str | None = None
+    auto_extract: bool | None = None
+    extraction_model: str | None = None
+    extraction_api_key: str | None = None
+    extraction_base_url: str | None = None
 
 
 class MonitoredFolderResponse(MonitoredFolderBase):
     id: uuid.UUID
-    last_scan_at: Optional[datetime] = None
+    last_scan_at: datetime | None = None
     last_scan_new_count: int = 0
     total_imported_count: int = 0
     status: str = "idle"
-    error_message: Optional[str] = None
+    error_message: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -51,7 +50,7 @@ class MonitoredFolderResponse(MonitoredFolderBase):
     # S4：响应不回传明文 API Key，仅返回掩码（避免任意登录用户窃取他人密钥）
     @field_validator("extraction_api_key")
     @classmethod
-    def _mask_api_key(cls, v: Optional[str]) -> Optional[str]:
+    def _mask_api_key(cls, v: str | None) -> str | None:
         return mask(v) if v else v
 
 
@@ -60,13 +59,13 @@ class MonitoredFileResponse(BaseModel):
     folder_id: uuid.UUID
     file_path: str
     file_name: str
-    file_hash: Optional[str] = None
-    file_size: Optional[int] = None
-    file_mtime: Optional[datetime] = None
+    file_hash: str | None = None
+    file_size: int | None = None
+    file_mtime: datetime | None = None
     status: str
-    literature_id: Optional[uuid.UUID] = None
-    error_message: Optional[str] = None
-    imported_at: Optional[datetime] = None
+    literature_id: uuid.UUID | None = None
+    error_message: str | None = None
+    imported_at: datetime | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

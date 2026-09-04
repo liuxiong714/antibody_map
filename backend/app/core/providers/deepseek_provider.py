@@ -1,8 +1,6 @@
 """DeepSeek Provider"""
 from __future__ import annotations
 
-from typing import Optional
-
 from app.config import settings
 from app.core.providers.base import BaseLLMProvider, register_provider
 
@@ -12,7 +10,7 @@ class DeepSeekProvider(BaseLLMProvider):
     """DeepSeek API Provider"""
 
     name = "deepseek"
-    model_prefixes = ["deepseek"]
+    model_prefixes = ("deepseek",)
 
     @classmethod
     def get_config(cls) -> tuple[str, str]:
@@ -25,7 +23,7 @@ class DeepSeekProvider(BaseLLMProvider):
         return True
 
     @classmethod
-    def get_pricing(cls) -> Optional[tuple[float, float]]:
+    def get_pricing(cls) -> tuple[float, float] | None:
         """DeepSeek 定价（美元/百万 token，2026 年初官网参考值）。
 
         - deepseek-chat: input $0.14, output $0.28（带缓存命中更低）

@@ -1,12 +1,11 @@
 from functools import lru_cache
-from typing import Optional
 
-from sqlalchemy import select, or_
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.term_normalizer import CHINA_PROVINCE_NAMES, normalize_province
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
-from app.core.term_normalizer import normalize_province, CHINA_PROVINCE_NAMES
 
 # ===== 人口分类标准化映射（合并同类别）=====
 POPULATION_MAP: dict[str, str] = {
@@ -106,9 +105,8 @@ def _normalize_population(population: str) -> str:
         return POPULATION_MAP[p]
     # 模糊匹配：p 包含某个 key 或 key 包含在 p 中
     for key, value in POPULATION_MAP.items():
-        if key and len(key) >= 2:
-            if key in p or p in key:
-                return value
+        if key and len(key) >= 2 and (key in p or p in key):
+            return value
     # 年龄范围模式匹配："x-y岁"或"≥x岁"等
     import re
     age_pattern = re.match(r'^(\d+)[-~](\d+)岁', p)
@@ -117,7 +115,6 @@ def _normalize_population(population: str) -> str:
     
     age_single = re.match(r'^(≥|>=|>)?(\d+)岁(以上|以下)?(成人|儿童|老年人)?$', p)
     if age_single:
-        suffix = age_single.group(3) or ""
         if "老年" in p or "60" in p or "65" in p:
             return "老年人"
         if "儿童" in p or "幼儿" in p:
@@ -337,7 +334,7 @@ PROVINCE_CENTERS: dict[str, tuple[float, float]] = {
 }
 
 
-def _build_occupation_filter(occupation: Optional[str]):
+def _build_occupation_filter(occupation: str | None):
     """构建多职业筛选条件（逗号分隔的 OR 逻辑）"""
     if not occupation:
         return None
@@ -350,7 +347,7 @@ def _build_occupation_filter(occupation: Optional[str]):
 
 
 @lru_cache(maxsize=1024)
-def _get_city_coords(province: str, city: str) -> tuple[Optional[float], Optional[float]]:
+def _get_city_coords(province: str, city: str) -> tuple[float | None, float | None]:
     """根据省份和城市名获取经纬度坐标，返回 (latitude, longitude)。
 
     优先精确匹配 CITY_COORDS，其次模糊匹配，最后回退到省份中心坐标。
@@ -375,7 +372,7 @@ def _get_city_coords(province: str, city: str) -> tuple[Optional[float], Optiona
     return None, None
 
 
-def _parse_provinces(raw: Optional[str]) -> list[str]:
+def _parse_provinces(raw: str | None) -> list[str]:
     """从原始省份字符串中解析出标准省份名称列表"""
     if not raw:
         return ["unknown"]
@@ -418,7 +415,7 @@ def _normalize_seroprevalence(value: float) -> float:
     return round(v, 4)
 
 
-def _calc_weighted_rate(dps: list, target_data_type: Optional[str] = None) -> tuple[Optional[float], int]:
+def _calc_weighted_rate(dps: list, target_data_type: str | None = None) -> tuple[float | None, int]:
     """计算加权平均率和总样本量。
 
     - target_data_type='seroprevalence': 仅使用阳性率数据点，值标准化到 0-100%
@@ -452,15 +449,15 @@ def _calc_weighted_rate(dps: list, target_data_type: Optional[str] = None) -> tu
 
 async def get_province_data(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    data_type: Optional[str] = None,
-    province: Optional[str] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    gender: Optional[str] = None,
-    occupation: Optional[str] = None,
+    disease: str | None = None,
+    data_type: str | None = None,
+    province: str | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    gender: str | None = None,
+    occupation: str | None = None,
 ) -> list[dict]:
     """get province aggregated data (approved only, P1-1: primary estimates by default)"""
     # F23：只投影分组/聚合所需列，避免整表加载 source_context/llm_raw_snapshot 等大字段
@@ -532,8 +529,8 @@ async def get_province_data(
 async def get_city_data(
     db: AsyncSession,
     province: str,
-    disease: Optional[str] = None,
-    data_type: Optional[str] = None,
+    disease: str | None = None,
+    data_type: str | None = None,
 ) -> list[dict]:
     """get city-level aggregated data with coordinates (P1-1: primary estimates by default)"""
     base = (
@@ -576,7 +573,7 @@ async def get_city_data(
         city_map[group_key]["literature_ids"].add(str(dp.literature_id) if dp.literature_id else "")
 
     result_list = []
-    for key, group in city_map.items():
+    for _key, group in city_map.items():
         dps = group["data_points"]
         weighted_rate, total_sample = _calc_weighted_rate(dps, data_type)
 
@@ -601,8 +598,8 @@ async def get_city_data(
 
 async def get_summary(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    data_type: Optional[str] = None,
+    disease: str | None = None,
+    data_type: str | None = None,
 ) -> dict:
     """get national summary (P1-1: primary estimates by default)
 
@@ -685,15 +682,15 @@ async def get_summary(
 
 async def get_province_yearly_data(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    data_type: Optional[str] = None,
-    province: Optional[str] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    gender: Optional[str] = None,
-    occupation: Optional[str] = None,
+    disease: str | None = None,
+    data_type: str | None = None,
+    province: str | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    gender: str | None = None,
+    occupation: str | None = None,
 ) -> list[dict]:
     """按年份分组返回各省抗体水平数据，用于时间序列动态展示 (P1-1: primary estimates by default)"""
     base = select(
@@ -756,7 +753,7 @@ async def get_province_yearly_data(
     result_list = []
     for year in sorted(year_map.keys()):
         year_data = []
-        for key, group in year_map[year].items():
+        for _, group in year_map[year].items():
             dps = group["data_points"]
             weighted_rate, total_sample = _calc_weighted_rate(dps, data_type)
 
@@ -780,7 +777,7 @@ async def get_province_yearly_data(
 
 async def get_available_years(
     db: AsyncSession,
-    disease: Optional[str] = None,
+    disease: str | None = None,
 ) -> list[int]:
     """获取可用的年份列表（去重排序, P1-1: primary estimates by default）"""
     query = select(DataPoint.collection_year).where(
@@ -800,7 +797,7 @@ async def get_available_years(
 
 async def get_population_options(
     db: AsyncSession,
-    disease: Optional[str] = None,
+    disease: str | None = None,
 ) -> list[str]:
     """获取所有已审核数据点中出现的人群分类（population 字段）。
 

@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, model_validator
 
@@ -7,7 +7,7 @@ class ApiResponse(BaseModel):
     success: bool = True
     message: str = "操作成功"
     data: Any = None
-    meta: Optional[dict] = None
+    meta: dict | None = None
 
 
 class PagedResponse(ApiResponse):

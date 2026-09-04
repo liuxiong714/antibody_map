@@ -71,11 +71,33 @@ export async function getKgStats() {
   );
 }
 
-export async function triggerKgExtraction(limit = 5) {
-  const { data } = await api.post<{ processed: number; total_written: number; remaining: number; errors: string[] }>(
+export interface KgTriggerResp {
+  task_id: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  scope: string;
+}
+
+export async function triggerKgExtraction(limit = 5, literatureIds?: string[]): Promise<KgTriggerResp> {
+  const { data } = await api.post<KgTriggerResp>(
     '/kg/extraction/trigger',
     null,
-    { params: { limit } },
+    {
+      params: {
+        limit,
+        // 定向抽取：多个 literature_id 查询参数；未提供时后端走自动批量
+        literature_id: literatureIds && literatureIds.length ? literatureIds : undefined,
+      },
+    },
+  );
+  return data;
+}
+
+export async function askKgQuestion(question: string) {
+  const { data } = await api.post<{ answer: string; template: string | null; method: string; result_count: number; slots: Record<string, string> | null }>(
+    '/kg/qa/ask',
+    { question },
+    // 未命中模板的问题会走 LLM 兜底（本地模型较慢），超时对齐后端 LLM_REQUEST_TIMEOUT(600s)，避免 120s 全局超时提前中断
+    { timeout: 600_000 },
   );
   return data;
 }

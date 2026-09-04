@@ -1,7 +1,7 @@
 """DOCX 解析器：python-docx 取段落 + 表格（表格渲染为 GFM Markdown）。"""
 import io
 
-from .base import BaseParser, register_parser, grid_to_markdown
+from .base import BaseParser, grid_to_markdown, register_parser
 
 
 @register_parser(".docx")

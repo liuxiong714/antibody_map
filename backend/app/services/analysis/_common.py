@@ -9,20 +9,18 @@ data_management / export 七个分析子模块共同导入（自 analysis_servic
 
 import logging
 import math
-from typing import Optional
 
 from sqlalchemy import select
 
-from app.models.data_point import DataPoint
-from app.models.literature import Literature
-from app.core.term_normalizer import normalize_disease
 from app.core.stats_engine import (
-    weighted_rate_ci,
+    direct_standardize,
     gmc_ci,
     meta_proportion,
-    direct_standardize,
+    weighted_rate_ci,
 )
-
+from app.core.term_normalizer import normalize_disease
+from app.models.data_point import DataPoint
+from app.models.literature import Literature
 
 logger = logging.getLogger("uvicorn")
 
@@ -38,7 +36,7 @@ def _load_std_pop() -> dict:
     _p = _os.path.join(
         _os.path.dirname(__file__), "..", "..", "core", "reference_data", "china_pop_2020.json"
     )
-    with open(_p, "r", encoding="utf-8") as _f:
+    with open(_p, encoding="utf-8") as _f:
         return _json.load(_f)
 
 
@@ -49,7 +47,7 @@ _STD_WEIGHT_BY_GROUP: dict[str, float] = {
 }
 
 
-def _load_disease_note(disease_key: Optional[str]) -> Optional[str]:
+def _load_disease_note(disease_key: str | None) -> str | None:
     """读取 reference_data/disease_notes.json 中某疾病的解读提示（无则 None）。"""
     import json as _json
     import os as _os
@@ -57,7 +55,7 @@ def _load_disease_note(disease_key: Optional[str]) -> Optional[str]:
         _os.path.dirname(__file__), "..", "..", "core", "reference_data", "disease_notes.json"
     )
     try:
-        with open(_p, "r", encoding="utf-8") as _f:
+        with open(_p, encoding="utf-8") as _f:
             data = _json.load(_f)
     except (OSError, ValueError):
         return None
@@ -102,7 +100,7 @@ WHO_THRESHOLDS = {
 
 def _build_base_query(disease, province, year_start, year_end, age_min, age_max,
                       data_type=None, review_status="approved", include_subgroups=False,
-                      quality_grades: Optional[set[str]] = None):
+                      quality_grades: set[str] | None = None):
     """构建通用数据点查询（返回未执行的 sqlalchemy select 语句对象）。
 
     P1-1：默认只查主估计（estimate_type='primary'）避免重复计算，
@@ -374,7 +372,7 @@ def _get_age_group_label(age_min, age_max):
 # 免疫屏障状态判定
 # ============================================================
 
-def _barrier_status_from_rate(rate: Optional[float], hit_target: Optional[float]) -> str:
+def _barrier_status_from_rate(rate: float | None, hit_target: float | None) -> str:
     """根据阳性率与 HIT 阈值判定免疫屏障状态。
 
     返回值与前端 STATUS_CONFIG 保持一致：
@@ -390,8 +388,8 @@ def _barrier_status_from_rate(rate: Optional[float], hit_target: Optional[float]
 
 
 def _barrier_status_with_message(
-    rate: Optional[float],
-    hit_target: Optional[float],
+    rate: float | None,
+    hit_target: float | None,
     hit_source: str,
 ) -> tuple[str, str]:
     """总体状态判定 + 文案。"""
@@ -460,7 +458,7 @@ R0_REFERENCE: dict[str, tuple[float, float]] = {
 }
 
 
-def _calc_foi_from_sp(seroprevalence: float, age_mid: float) -> Optional[float]:
+def _calc_foi_from_sp(seroprevalence: float, age_mid: float) -> float | None:
     """催化模型（Catalitic Model）：SP(a) = 1 - e^(-λ a) → λ = -ln(1 - SP) / a
 
     边界处理：
@@ -482,7 +480,7 @@ def _calc_foi_from_sp(seroprevalence: float, age_mid: float) -> Optional[float]:
     return result
 
 
-def _midpoint_age(age_min: Optional[int], age_max: Optional[int]) -> Optional[float]:
+def _midpoint_age(age_min: int | None, age_max: int | None) -> float | None:
     """计算年龄组中点年龄，用于催化模型 FOI 估算。
 
     - 区间 [a, b] → (a + b) / 2
@@ -505,7 +503,7 @@ def _midpoint_age(age_min: Optional[int], age_max: Optional[int]) -> Optional[fl
         mid = age_max / 2.0
         logger.debug(f"[FOI] _midpoint_age(仅age_max): age_max={age_max} → mid={mid}")
         return mid
-    logger.debug(f"[FOI] _midpoint_age: age_min和age_max均为None → None")
+    logger.debug("[FOI] _midpoint_age: age_min和age_max均为None → None")
     return None
 
 
@@ -519,7 +517,7 @@ def _calc_hit_from_r0(r0: float) -> float:
     return hit
 
 
-def _calc_r0_from_foi(foi_avg: float, life_exp: float = DEFAULT_LIFE_EXPECTANCY) -> Optional[float]:
+def _calc_r0_from_foi(foi_avg: float, life_exp: float = DEFAULT_LIFE_EXPECTANCY) -> float | None:
     """从平均 FOI 反推 R0 ≈ λ × L（Catalitic 模型：λ ≈ R0 / L → R0 ≈ λ·L）。
 
     仅对地方性疾病（地方性儿童期感染）合理；
@@ -561,12 +559,12 @@ def _build_catalytic_records(rows: list[DataPoint]) -> list[tuple[float, int, in
         if p > 1.0:
             p /= 100.0
         p = min(max(p, 0.0), 1.0)
-        records.append((float(mid), int(round(p * ss)), ss))
+        records.append((float(mid), round(p * ss), ss))
     return records
 
 
-def _catalytic_r0_hit(catalytic: dict, dis_key: Optional[str], life_exp: float = DEFAULT_LIFE_EXPECTANCY,
-                      mu_fixed: Optional[float] = None) -> dict:
+def _catalytic_r0_hit(catalytic: dict, dis_key: str | None, life_exp: float = DEFAULT_LIFE_EXPECTANCY,
+                      mu_fixed: float | None = None) -> dict:
     """按理论修正从催化模型结果计算 R0 / HIT 目标与来源标签。
 
     - R0 = λ·L 对 recommended_model == M1_constant 且疾病满足
@@ -587,7 +585,7 @@ def _catalytic_r0_hit(catalytic: dict, dis_key: Optional[str], life_exp: float =
 
     endemic_lifelong = dis_key not in NON_ENDEMIC_LIFELONG
     explicit_seroreversion = mu_fixed is not None and mu_fixed > 0
-    r0_to_hit: Optional[float] = None
+    r0_to_hit: float | None = None
     if endemic_lifelong and (rec_name == "M1_constant" or explicit_seroreversion):
         lam = rec_params.get("lambda")
         if lam is not None and lam > 0:
@@ -614,12 +612,12 @@ def _catalytic_r0_hit(catalytic: dict, dis_key: Optional[str], life_exp: float =
 
 
 def _resolve_hit_target(
-    foi_hit: Optional[float],
-    who_threshold: Optional[float],
-    literature_hit: Optional[float],
-    dis_key: Optional[str],
-    hit_source_override: Optional[str] = None,
-) -> tuple[Optional[float], str]:
+    foi_hit: float | None,
+    who_threshold: float | None,
+    literature_hit: float | None,
+    dis_key: str | None,
+    hit_source_override: str | None = None,
+) -> tuple[float | None, str]:
     """HIT 阈值解析：优先级链 FOI 估算 > WHO > 文献 R0（保持不变）。
 
     理论修正：对非「地方性 + 终生免疫」疾病（covid19/influenza/hfmd/rotavirus/
@@ -740,7 +738,7 @@ def _split_vax_unvax(rows: list) -> tuple[list, list]:
     return vaxxed, unvaxxed
 
 
-def _calc_ve_from_sp(sp_vax: float, sp_unvax: float) -> Optional[float]:
+def _calc_ve_from_sp(sp_vax: float, sp_unvax: float) -> float | None:
     """疫苗保护性效果（抗体阳性率维度）：VE_sero = 1 - SP_vax / SP_unvax。
 
     注意：这是「VE against seroconversion/infection」的近似值；
@@ -761,7 +759,7 @@ def _calc_ve_from_sp(sp_vax: float, sp_unvax: float) -> Optional[float]:
     return ve
 
 
-def _get_reference_coverage(disease: str, province: Optional[str]) -> Optional[float]:
+def _get_reference_coverage(disease: str, province: str | None) -> float | None:
     """查 NIP 参考接种率：优先省级别，其次国家级。"""
     if not disease:
         return None
@@ -777,7 +775,7 @@ def _get_reference_coverage(disease: str, province: Optional[str]) -> Optional[f
 
 def _implied_coverage_from_hit(
     overall_sp: float, hit_target: float,
-) -> Optional[float]:
+) -> float | None:
     """粗略反推接种率：若假设 HIT = herd immunity threshold = coverage × VE_induced，
     则 coverage_implied ≈ overall_sp / hit_target（当整体 SP 被视为疫苗诱导+自然感染的混合时，
     此近似偏保守，仅用于给出参考值）。"""
@@ -801,7 +799,7 @@ def _load_province_adjacency() -> dict:
         _os.path.dirname(__file__), "..", "..", "core", "reference_data",
         "china_province_adjacency.json",
     )
-    with open(_p, "r", encoding="utf-8") as _f:
+    with open(_p, encoding="utf-8") as _f:
         return _json.load(_f)
 
 

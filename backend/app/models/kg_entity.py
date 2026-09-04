@@ -1,9 +1,8 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
-from sqlalchemy import String, DateTime, ForeignKey, Text, Index
-from sqlalchemy.dialects.postgresql import JSON, UUID as PGUUID
+from sqlalchemy import DateTime, ForeignKey, Index, String
+from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -21,12 +20,12 @@ class KGEntity(Base):
     id: Mapped[str] = mapped_column(String(16), primary_key=True)
     entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    attributes: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
-    source_literature_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    source_literature_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("literature.id", ondelete="SET NULL"),
         index=True,
     )
-    merged_into: Mapped[Optional[str]] = mapped_column(
+    merged_into: Mapped[str | None] = mapped_column(
         String(16), ForeignKey("kg_entity.id", ondelete="SET NULL"),
         nullable=True,
     )

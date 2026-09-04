@@ -22,7 +22,6 @@ import csv
 import io
 import logging
 import re
-from typing import Optional
 
 logger = logging.getLogger("uvicorn")
 
@@ -247,7 +246,7 @@ def _parse_pubmed_record(seg: str, rec: dict) -> None:
 
     # 无空行分隔（单块）→ 简单行式解析（旧 Summary 风格）
     if len(blocks) == 1:
-        lines = [l.strip() for l in seg.splitlines() if l.strip()]
+        lines = [line.strip() for line in seg.splitlines() if line.strip()]
         if lines:
             rec["title"] = re.sub(r"^\d+\.\s*", "", lines[0])
         if len(lines) > 1:
@@ -586,7 +585,7 @@ def _parse_duxiu(text: str) -> list[dict]:
         rec_text = text[starts[idx]:starts[idx + 1]]
         rec = _empty_record("duxiu")
         try:
-            def f(label_re):
+            def f(label_re, rec_text=rec_text):  # 绑定当前循环的 rec_text，避免闭包延迟绑定
                 m = re.search(label_re, rec_text, re.M)
                 return _join_block(m.group(1)) if m else ""
 
@@ -619,9 +618,9 @@ def _parse_duxiu(text: str) -> list[dict]:
 
 # ===== 格式自动探测 =====
 
-def _detect_format(text: str) -> Optional[str]:
+def _detect_format(text: str) -> str | None:
     """按内容特征自动判断题录格式：ris / enw / wos / pubmed / pubmed_ris / woscsv / duxiu。"""
-    lines = [l for l in text.splitlines() if l.strip()]
+    lines = [line for line in text.splitlines() if line.strip()]
     first_line = lines[0].strip() if lines else ""
 
     # a) RIS（TY/ER 两字母标签，兼容单/多空格）

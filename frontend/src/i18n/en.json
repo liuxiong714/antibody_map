@@ -60,6 +60,10 @@
   "error.code.DATABASE_ERROR": "Database operation failed, please try again later",
   "error.code.VALIDATION_ERROR": "Request validation failed, please check your input",
   "error.code.METRICS_FORBIDDEN": "Access to this resource is forbidden",
+  "error.code.APP_ERROR": "Request processing failed, please try again later",
+  "error.code.LLM_EXTRACTION_ERROR": "AI extraction failed, please check the model configuration and retry",
+  "error.code.DOCUMENT_PARSE_ERROR": "Document parsing failed, possibly unsupported format or corrupted file",
+  "error.code.EXTERNAL_API_ERROR": "External service call failed, please try again later",
   "success.operation": "Operation successful",
 
   "error.title": "Something went wrong",

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Modal, Table, Button, Form, Input, Space, message, Popconfirm, Tooltip, Tag } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, RobotOutlined, KeyOutlined, LinkOutlined } from '@ant-design/icons';
 import { listRemoteModels, createRemoteModel, updateRemoteModel, deleteRemoteModel } from '../services/map';
@@ -17,6 +17,36 @@ const ModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
   const [form] = Form.useForm();
   const [formVisible, setFormVisible] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // 拖动弹窗支持：记录拖拽起始信息与两个弹窗各自的位移
+  const dragRef = useRef<{ startX: number; startY: number; dx: number; dy: number; key: 'manager' | 'form' } | null>(null);
+  const posRef = useRef<{ manager: { x: number; y: number }; form: { x: number; y: number } }>({
+    manager: { x: 0, y: 0 },
+    form: { x: 0, y: 0 },
+  });
+  const [, forceRender] = useState(0);
+
+  const beginDrag = (key: 'manager' | 'form', e: React.MouseEvent<HTMLElement>) => {
+    if (e.button !== 0) return; // 仅左键拖拽
+    const p = posRef.current[key];
+    dragRef.current = { startX: e.clientX, startY: e.clientY, dx: p.x, dy: p.y, key };
+    const onMove = (ev: MouseEvent) => {
+      const dr = dragRef.current;
+      if (!dr) return;
+      posRef.current[dr.key] = {
+        x: ev.clientX - dr.startX + dr.dx,
+        y: ev.clientY - dr.startY + dr.dy,
+      };
+      forceRender(i => i + 1);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      dragRef.current = null;
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
 
   const fetchConfigs = async () => {
     setLoading(true);
@@ -100,10 +130,23 @@ const ModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
   return (
     <>
       <Modal
-        title={<><RobotOutlined /> 远程模型管理</>}
+        title={
+          <div
+            style={{ cursor: 'move', userSelect: 'none', display: 'inline-block' }}
+            onMouseDown={e => beginDrag('manager', e)}
+          >
+            <RobotOutlined /> 远程模型管理
+          </div>
+        }
         open={visible}
         onCancel={onClose}
         width={960}
+        zIndex={1000}
+        modalRender={node => (
+          <div style={{ transform: `translate(${posRef.current.manager.x}px, ${posRef.current.manager.y}px)` }}>
+            {node}
+          </div>
+        )}
         footer={<Button onClick={onClose}>关闭</Button>}
       >
         <div style={{ marginBottom: 12 }}>
@@ -114,9 +157,22 @@ const ModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
       </Modal>
 
       <Modal
-        title={editing ? '编辑远程模型' : '添加远程模型'}
+        title={
+          <div
+            style={{ cursor: 'move', userSelect: 'none', display: 'inline-block' }}
+            onMouseDown={e => beginDrag('form', e)}
+          >
+            {editing ? '编辑远程模型' : '添加远程模型'}
+          </div>
+        }
         open={formVisible}
         forceRender
+        zIndex={1100}
+        modalRender={node => (
+          <div style={{ transform: `translate(${posRef.current.form.x}px, ${posRef.current.form.y}px)` }}>
+            {node}
+          </div>
+        )}
         onCancel={() => setFormVisible(false)}
         onOk={handleSave}
         confirmLoading={saving}

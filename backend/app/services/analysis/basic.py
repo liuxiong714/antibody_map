@@ -1,96 +1,45 @@
 """Submodule of app.services.analysis (split from analysis_service.py)."""
 
 
-import logging
-import math
-from datetime import date
-from typing import Optional
 
-import scipy.stats as sps
-from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.data_point import DataPoint
-from app.models.literature import Literature
 from app.config import settings
-from app.core.term_normalizer import normalize_disease, normalize_province
-from app.core.methodology import build_methodology_note
 from app.core.stats import (
-    geometric_mean_with_ci,
-    weighted_proportion_with_ci,
     weighted_linear_trend,
-    gini,
-    coefficient_of_variation,
-    reliability_grade,
-    lowess,
-    inverse_variance_meta,
 )
 from app.core.stats_engine import (
-    gmc_ci,
-    weighted_rate_ci,
+    birth_cohort_analysis,
+    cochran_armitage_trend,
     fit_age_curve,
     foi_from_curve,
-    meta_proportion,
-    fit_catalytic_models,
-    cochran_armitage_trend,
     two_proportion_test,
-    direct_standardize,
-    morans_i,
-    g_star,
-    classify_hotspot_cluster,
-    birth_cohort_analysis,
 )
-from app.core.goal_thresholds import GOAL_THRESHOLDS
-
+from app.core.term_normalizer import normalize_disease
+from app.models.data_point import DataPoint
 from app.services.analysis._common import (
     AGE_GROUPS,
     CHINA_POP_STD_VERSION,
-    CHINA_PROVINCES,
-    DEFAULT_LIFE_EXPECTANCY,
-    NIP_COVERAGE_REFERENCE,
-    NON_ENDEMIC_LIFELONG,
-    R0_ASSUMPTION_NOTE,
-    R0_REFERENCE,
-    WHO_THRESHOLDS,
-    _CHINA_POP_2020,
-    _STD_BAND_MAP,
-    _STD_WEIGHT_BY_GROUP,
-    _barrier_status_from_rate,
-    _barrier_status_with_message,
     _build_base_query,
-    _build_catalytic_records,
-    _build_province_weights,
-    _calc_foi_from_sp,
     _calc_gmc,
-    _calc_hit_from_r0,
-    _calc_r0_from_foi,
-    _calc_ve_from_sp,
     _calc_weighted_positivity,
-    _catalytic_r0_hit,
     _compute_province_asr,
     _get_age_group_label,
-    _get_reference_coverage,
-    _implied_coverage_from_hit,
     _load_disease_note,
-    _load_province_adjacency,
-    _load_std_pop,
     _meta_merge_cell,
     _midpoint_age,
-    _resolve_hit_target,
-    _split_vax_unvax,
-    logger,
 )
 
 
 async def get_trend(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
-    data_type: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
+    data_type: str | None = None,
 ) -> dict:
     """逐年趋势分析。
 
@@ -163,13 +112,13 @@ async def get_trend(
 
 async def get_region_compare(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
-    data_type: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
+    data_type: str | None = None,
 ) -> dict:
     """区域对比分析
 
@@ -266,10 +215,10 @@ async def get_region_compare(
 
 async def get_age_curve(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
 ) -> dict:
     """血清阳性率-年龄曲线（惩罚样条平滑 + 95% 置信带 + 年龄别 FOI）。
 
@@ -315,7 +264,7 @@ async def get_age_curve(
             p_vals.append(p)
         n_tot = sum(n_vals)
         # 样本量加权阳性数：x = Σ nᵢ·pᵢ
-        x_tot = int(round(sum(n_i * p_i for n_i, p_i in zip(n_vals, p_vals))))
+        x_tot = round(sum(n_i * p_i for n_i, p_i in zip(n_vals, p_vals, strict=False)))
         if n_tot <= 0:
             continue
         points.append({
@@ -380,9 +329,9 @@ async def get_age_curve(
 async def get_birth_cohort(
     db: AsyncSession,
     disease: str,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
 ) -> dict:
     """出生队列分析：birth_year = collection_year − age_mid，揭示代际免疫差异。
 
@@ -440,13 +389,13 @@ async def get_birth_cohort(
 
 async def get_age_stratify(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
-    data_type: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
+    data_type: str | None = None,
 ) -> list[dict]:
     """年龄分层分析"""
     query = _build_base_query(disease, province, year_start, year_end, age_min, age_max, data_type)
@@ -504,13 +453,13 @@ async def get_age_stratify(
 
 async def get_summary(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
-    age_min: Optional[int] = None,
-    age_max: Optional[int] = None,
-    data_type: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
+    data_type: str | None = None,
 ) -> dict:
     """汇总统计"""
     query = _build_base_query(disease, province, year_start, year_end, age_min, age_max, data_type)
@@ -539,7 +488,7 @@ async def get_summary(
         }
 
     sp_rows = [r for r in rows if r.data_type == "seroprevalence" and r.value is not None]
-    lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+    lit_ids = {str(r.literature_id) for r in rows if r.literature_id}
 
     wpr_info = _calc_weighted_positivity(sp_rows)
     gmc_info = _calc_gmc(rows)

@@ -152,14 +152,19 @@ class TestPdfTableParserAnyDoc:
         return patch.object(settings, "ENABLE_ANYDOC", enable)
 
     def test_table_anydoc_contains_table_used(self):
-        """AnyDoc 输出的 Markdown 含 GFM 表格 → 直接作为 tables_md 返回。"""
+        """AnyDoc 输出的 Markdown 含 GFM 表格 → 仅抽取表格块作为 tables_md 返回（不泄漏非表格内容）。"""
         md_with_table = "# title\n\n| A | B |\n|---|---|\n| 1 | 2 |\n"
         with self._patch_settings(True), \
             patch.object(anydoc_parser, "is_available", return_value=True), \
             patch.object(anydoc_parser, "supports", return_value=True), \
             patch.object(anydoc_parser, "to_markdown_bytes", return_value=md_with_table):
             out = pdf_table_parser.extract_tables_markdown(b"pdf")
-        assert out == md_with_table
+        # 表格数据被保留，且补了表格块标题
+        assert "| A | B |" in out
+        assert "| 1 | 2 |" in out
+        assert "### 表格 1" in out
+        # 非表格内容（标题行）不泄漏
+        assert "# title" not in out
 
     def test_table_anydoc_no_table_fallback(self):
         """AnyDoc 无表格 → 回退 pdfplumber（mock 无表格返回空）。"""

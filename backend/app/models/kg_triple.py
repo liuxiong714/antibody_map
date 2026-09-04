@@ -1,9 +1,7 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
-from sqlalchemy import String, DateTime, ForeignKey, Float, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy import DateTime, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -26,8 +24,8 @@ class KGTriple(Base):
         String(16), ForeignKey("kg_entity.id", ondelete="CASCADE"), nullable=False,
     )
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
-    source_context: Mapped[Optional[str]] = mapped_column(Text)
-    literature_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    source_context: Mapped[str | None] = mapped_column(Text)
+    literature_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("literature.id", ondelete="SET NULL"),
         index=True,
     )

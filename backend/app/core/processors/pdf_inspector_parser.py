@@ -20,12 +20,11 @@ import os
 import tempfile
 import threading
 from collections import OrderedDict
-from typing import Optional
 
 logger = logging.getLogger("uvicorn")
 
 _pdf_inspector_mod = None
-_available: Optional[bool] = None
+_available: bool | None = None
 
 # 进程内解析结果缓存（md5(file_bytes) -> markdown），
 # 避免同一 PDF 在一次提取任务中被 pdf-inspector 重复全量解析（全文 + 表格各一次）。
@@ -35,7 +34,7 @@ _cache: "OrderedDict[str, str]" = OrderedDict()
 _cache_lock = threading.Lock()
 
 
-def _cache_get(md5_hex: str) -> Optional[str]:
+def _cache_get(md5_hex: str) -> str | None:
     with _cache_lock:
         if md5_hex in _cache:
             _cache.move_to_end(md5_hex)  # 命中即视为最近使用
@@ -81,7 +80,7 @@ def is_available() -> bool:
     return _load_module() is not None
 
 
-def _repair_with_pymupdf(file_bytes: bytes) -> Optional[bytes]:
+def _repair_with_pymupdf(file_bytes: bytes) -> bytes | None:
     """使用 PyMuPDF 重新保存 PDF，修复损坏的尾部结构。
 
     输入损坏的 PDF 字节，用 PyMuPDF 打开并重新保存（garbage=4, deflate=True,
@@ -111,7 +110,7 @@ def _repair_with_pymupdf(file_bytes: bytes) -> Optional[bytes]:
         return None
 
 
-def to_markdown_bytes(file_bytes: bytes, timeout: Optional[int] = None) -> str:
+def to_markdown_bytes(file_bytes: bytes, timeout: int | None = None) -> str:
     """使用 pdf-inspector 将 PDF 字节转为 Markdown。
 
     解析流程：
@@ -135,7 +134,7 @@ def to_markdown_bytes(file_bytes: bytes, timeout: Optional[int] = None) -> str:
     return md
 
 
-def _parse_to_markdown(file_bytes: bytes, timeout: Optional[int]) -> str:
+def _parse_to_markdown(file_bytes: bytes, timeout: int | None) -> str:
     """pdf-inspector 实际解析逻辑（无缓存）—— 由 to_markdown_bytes 统一缓存调用。
 
     解析流程：

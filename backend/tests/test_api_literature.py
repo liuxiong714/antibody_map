@@ -1,5 +1,6 @@
 import pytest
 import httpx
+from unittest.mock import patch
 from httpx import ASGITransport
 from app.main import app
 
@@ -16,7 +17,8 @@ class TestLiteratureAPI:
             assert data["service"] == "antibody-map-api"
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_list_literatures_default(self):
+    @patch("app.api.v1.literature.crud.list_literature", return_value=([], 0))
+    async def test_list_literatures_default(self, mock_list):
         transport = ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/api/v1/literatures")
@@ -28,7 +30,8 @@ class TestLiteratureAPI:
             assert "page_size" in data
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_list_literatures_with_pagination(self):
+    @patch("app.api.v1.literature.crud.list_literature", return_value=([], 0))
+    async def test_list_literatures_with_pagination(self, mock_list):
         transport = ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/api/v1/literatures?page=1&page_size=10")
@@ -37,14 +40,16 @@ class TestLiteratureAPI:
             assert len(data["items"]) <= 10
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_list_literatures_with_keyword(self):
+    @patch("app.api.v1.literature.crud.list_literature", return_value=([], 0))
+    async def test_list_literatures_with_keyword(self, mock_list):
         transport = ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get("/api/v1/literatures?keyword=test")
             assert response.status_code == 200
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_get_nonexistent_literature(self):
+    @patch("app.api.v1.literature.crud.get_literature", return_value=None)
+    async def test_get_nonexistent_literature(self, mock_get):
         transport = ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             fake_id = "00000000-0000-0000-0000-000000000000"

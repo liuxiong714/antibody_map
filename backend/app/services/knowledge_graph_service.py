@@ -11,16 +11,15 @@
 
 import logging
 import statistics
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.term_normalizer import normalize_disease, normalize_method, normalize_province
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
-from app.core.term_normalizer import normalize_disease, normalize_province, normalize_method
-from app.services.map_service import _normalize_population, _normalize_seroprevalence
 from app.ontology import EntityType, RelationType
+from app.services.map_service import _normalize_population, _normalize_seroprevalence
 
 logger = logging.getLogger("uvicorn")
 
@@ -58,7 +57,7 @@ _MAX_INFLUENCES_PER_SURVEY = 3
 _MAX_INFLUENCES_TOTAL = 150
 
 
-def _split_provinces(raw: Optional[str]) -> list[str]:
+def _split_provinces(raw: str | None) -> list[str]:
     """将可能含分隔符的省份字段拆分为多个省份名并标准化。"""
     if not raw:
         return []
@@ -70,7 +69,7 @@ def _split_provinces(raw: Optional[str]) -> list[str]:
     return out
 
 
-def _region_of(province: str) -> Optional[str]:
+def _region_of(province: str) -> str | None:
     return REGION_MAP.get(province)
 
 
@@ -80,11 +79,11 @@ def _make_id(etype: EntityType, value: str) -> str:
 
 async def get_approved_dps(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    data_type: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    data_type: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
 ) -> list:
     """查询 approved + primary 数据点（不含已删除文献），仅投影所需列。"""
     base = select(
@@ -124,7 +123,7 @@ class _GraphBuilder:
         self._surveys: list[dict] = []
 
     # ---- 节点/边 ----
-    def _add_node(self, nid: str, etype: EntityType, label: str, props: Optional[dict] = None) -> bool:
+    def _add_node(self, nid: str, etype: EntityType, label: str, props: dict | None = None) -> bool:
         """新增节点返回 True；已存在则聚合 survey_count 并合并 props 返回 False。"""
         node = self.nodes.get(nid)
         if node is None:
@@ -137,7 +136,7 @@ class _GraphBuilder:
             node.setdefault("props", {}).update(props)
         return False
 
-    def _add_edge(self, source: str, target: str, rtype: RelationType, props: Optional[dict] = None) -> int:
+    def _add_edge(self, source: str, target: str, rtype: RelationType, props: dict | None = None) -> int:
         key = (source, target, rtype.value)
         if key in self._edge_keys:
             return -1
@@ -365,11 +364,11 @@ class _GraphBuilder:
 
 async def get_graph(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    data_type: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    data_type: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
     max_nodes: int = 600,
 ) -> dict:
     """构建知识图谱（按样本量优先，超出 max_nodes 时裁剪调查）。"""
@@ -455,7 +454,7 @@ async def get_options(db: AsyncSession) -> dict:
 async def search_computed(
     db: AsyncSession,
     q: str,
-    entity_type: Optional[str] = None,
+    entity_type: str | None = None,
     limit: int = 10,
 ) -> list[dict]:
     """在计算式维度中搜索实体（回退方案，当持久化表无结果时使用）。

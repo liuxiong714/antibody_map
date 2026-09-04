@@ -1,8 +1,7 @@
 from datetime import datetime
-from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class ApiModelConfigCreate(BaseModel):
@@ -10,18 +9,18 @@ class ApiModelConfigCreate(BaseModel):
     model_name: str
     api_key: str
     base_url: str
-    description: Optional[str] = None
-    expires_at: Optional[datetime] = None
+    description: str | None = None
+    expires_at: datetime | None = None
 
 
 class ApiModelConfigUpdate(BaseModel):
-    name: Optional[str] = None
-    model_name: Optional[str] = None
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
-    description: Optional[str] = None
-    is_active: Optional[bool] = None
-    expires_at: Optional[datetime] = None
+    name: str | None = None
+    model_name: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    description: str | None = None
+    is_active: bool | None = None
+    expires_at: datetime | None = None
 
 
 class ApiModelConfigResponse(BaseModel):
@@ -30,14 +29,13 @@ class ApiModelConfigResponse(BaseModel):
     model_name: str
     api_key: str
     base_url: str
-    description: Optional[str] = None
+    description: str | None = None
     is_active: bool
-    expires_at: Optional[datetime] = None
+    expires_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ModelOption(BaseModel):
@@ -56,27 +54,28 @@ class ModelsListResponse(BaseModel):
 class LocalModelConfigCreate(BaseModel):
     name: str
     model_name: str
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class LocalModelConfigUpdate(BaseModel):
-    name: Optional[str] = None
-    model_name: Optional[str] = None
-    description: Optional[str] = None
-    is_active: Optional[bool] = None
+    name: str | None = None
+    model_name: str | None = None
+    description: str | None = None
+    is_active: bool | None = None
 
 
 class LocalModelConfigResponse(BaseModel):
     id: str
     name: str
     model_name: str
-    description: Optional[str] = None
+    description: str | None = None
     is_active: bool
+    # 模型是否已在本地 Ollama 下载；None 表示无法确认（Ollama 未启动/不可达）
+    installed: bool | None = None
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
     @field_validator("id", mode="before")
     @classmethod

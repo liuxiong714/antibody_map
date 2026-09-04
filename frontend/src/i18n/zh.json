@@ -60,6 +60,10 @@
   "error.code.DATABASE_ERROR": "数据库操作失败，请稍后重试",
   "error.code.VALIDATION_ERROR": "请求参数校验失败，请检查输入",
   "error.code.METRICS_FORBIDDEN": "无权访问该资源",
+  "error.code.APP_ERROR": "操作处理失败，请稍后重试",
+  "error.code.LLM_EXTRACTION_ERROR": "AI 提取失败，请检查模型配置后重试",
+  "error.code.DOCUMENT_PARSE_ERROR": "文档解析失败，可能为不支持的格式或文件损坏",
+  "error.code.EXTERNAL_API_ERROR": "外部服务调用失败，请稍后重试",
   "success.operation": "操作成功",
 
   "error.title": "页面出现异常",

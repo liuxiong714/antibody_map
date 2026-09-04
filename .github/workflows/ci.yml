@@ -32,21 +32,16 @@ jobs:
       - name: Run offline backend tests
         run: |
           cd backend
-          # 说明：忽略以下文件——均依赖运行时服务（DB/Redis/OLLAMA），
-          # 无法在 CI 沙箱中离线运行，故排除以免误报。
+          # 说明：原被忽视的 4 个文件已全部 mock 化（conftest.py 注入假 DB/用户，
+          # LLM 相关 patch AsyncOpenAI），现可离网运行并纳入门禁。
           pip install pytest-cov
           python -m pytest \
-            --ignore=tests/test_api_literature.py \
-            --ignore=tests/test_api_dictionary.py \
-            --ignore=tests/test_llm_extractor.py \
-            --ignore=tests/test_p1_3_ollama_provider.py \
             -p no:cacheprovider \
             --cov=app --cov-report=term-missing \
             --cov-fail-under=60 \
             -q
 
       - name: Lint backend with ruff
-        continue-on-error: true
         run: |
           cd backend
           pip install ruff
@@ -66,7 +61,7 @@ jobs:
         run: cd frontend && npx tsc --noEmit
 
       - name: Test frontend
-        run: cd frontend && npm run test
+        run: cd frontend && npx vitest run --coverage
 
       - name: Build frontend
         run: cd frontend && npm run build

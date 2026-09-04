@@ -42,6 +42,8 @@
 | `EXTRACTION_CACHE_ENABLED` | 提取结果缓存 | `true` |
 | `EXTRACTION_CACHE_TTL_HOURS` | 缓存 TTL（小时） | `168` |
 | `ENABLE_KG_EXTRACTION` | 启用知识图谱 LLM 三元组抽取 | `false` |
+| `KG_QA_INCLUDE_UNREVIEWED` | 知识图谱问答是否纳入未审核数据点（关闭则只检索已审核） | `true` |
+| `VL_BATCH_SIZE` | 视觉提取单批页数（分批发送扫描页，避免超过 Ollama 上下文窗） | `6` |
 | `EXTRACTION_STALE_MINUTES` | 提取状态卡死回收阈值（分钟） | `30` |
 | `APP_ENV` | 运行环境 | `development` |
 

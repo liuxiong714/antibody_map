@@ -9,7 +9,6 @@
 import asyncio
 import json
 import logging
-from typing import Optional
 from urllib.parse import quote
 
 import httpx
@@ -31,7 +30,7 @@ async def _http_get(url: str, *, as_text: bool = False) -> str:
     每次请求前 sleep _REQUEST_INTERVAL 秒；失败时指数退避重试 1/2/4 秒，
     全部失败后抛最后一次异常。
     """
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES + 1):
         await asyncio.sleep(_REQUEST_INTERVAL)
         try:

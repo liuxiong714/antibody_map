@@ -8,6 +8,7 @@ export interface Literature {
   title: string;
   title_en: string | null;
   authors: string | null;
+  author_affiliations: string | null;
   journal: string | null;
   pub_year: number | null;
   doi: string | null;
@@ -23,6 +24,8 @@ export interface Literature {
   has_fulltext: boolean;
   file_format: string | null;
   extraction_status: string;
+  kg_extracted?: boolean;
+  kg_triple_count?: number;
   extracted_count: number;
   approved_count: number;
   // LLM 提取的 token 用量与费用统计
@@ -206,6 +209,24 @@ export interface ApiResponse<T = unknown> {
   meta: Record<string, unknown> | null;
 }
 
+// 后端统一错误码（与 backend/app/main.py 全局处理器 + app/core/exceptions.py 的 AppError.code 对齐）
+export type BackendErrorCode =
+  | 'DATABASE_ERROR'
+  | 'VALIDATION_ERROR'
+  | 'METRICS_FORBIDDEN'
+  | 'APP_ERROR'
+  | 'LLM_EXTRACTION_ERROR'
+  | 'DOCUMENT_PARSE_ERROR'
+  | 'EXTERNAL_API_ERROR';
+
+export interface ApiErrorResponse {
+  success: false;
+  code: BackendErrorCode | string;
+  message: string;
+  data?: unknown;
+  request_id?: string;
+}
+
 export interface PagedResponse<T> {
   items: T[];
   total: number;
@@ -301,6 +322,8 @@ export interface LocalModelConfig {
   model_name: string;
   description: string | null;
   is_active: boolean;
+  /** 模型是否已在本地 Ollama 下载；null 表示无法确认 */
+  installed?: boolean | null;
   created_at: string;
   updated_at: string;
 }

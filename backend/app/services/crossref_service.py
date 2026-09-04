@@ -7,7 +7,6 @@
 import html
 import logging
 import re
-from typing import Optional
 from urllib.parse import quote
 
 from app.core.external_http import get_json
@@ -27,7 +26,7 @@ _DOI_RE = re.compile(
 )
 
 
-def extract_doi_from_text(text: str) -> Optional[str]:
+def extract_doi_from_text(text: str) -> str | None:
     """从文本中提取第一个符合 DOI 规范的标识（P1-2）。
 
     返回规范化的 DOI（去除尾部分号/句点/右括号等常见包裹标点）；
@@ -135,7 +134,7 @@ async def search_crossref(query: str, page: int = 1, page_size: int = 20) -> dic
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
-async def fetch_crossref_by_doi(doi: str) -> Optional[dict]:
+async def fetch_crossref_by_doi(doi: str) -> dict | None:
     """按 DOI 获取 Crossref 元数据（P1-2），返回统一结构（同 search 单条）。
 
     失败或 DOI 不存在时返回 None（记录 warning，不抛异常，避免拖垮上层任务）。

@@ -1,13 +1,13 @@
 import base64
+import contextlib
 import hashlib
 import json
 import logging
-from datetime import date, datetime, timezone
-from typing import Optional
+from datetime import datetime, timezone
 from uuid import UUID
 
 from openai import AsyncOpenAI
-from sqlalchemy import select, func, distinct
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -20,7 +20,7 @@ from app.models.report_template import ReportTemplate
 logger = logging.getLogger("uvicorn")
 
 
-def _data_snapshot_hash(rows) -> Optional[str]:
+def _data_snapshot_hash(rows) -> str | None:
     """对报告所依据的审核通过数据点生成稳定指纹。
 
     取每条记录的关键字段（id/literature_id/省份/疾病/年龄段/样本量/阳性值/数据类型/审核状态），
@@ -38,7 +38,7 @@ def _data_snapshot_hash(rows) -> Optional[str]:
         )
         for r in rows
     )
-    payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 DISEASE_NAMES = {
@@ -223,7 +223,7 @@ def _calc_weighted_rate(rows: list[DataPoint]) -> tuple[float, int]:
     return round(weighted_sum / total_sample, 2), total_sample
 
 
-async def _resolve_model_name(db: AsyncSession, model: Optional[str] = None) -> str:
+async def _resolve_model_name(db: AsyncSession, model: str | None = None) -> str:
     """解析模型显示名称"""
     if not model:
         return settings.LLM_MODEL
@@ -286,7 +286,7 @@ DEFAULT_TEMPLATES = [
 # ===================== 报告模板相关 =====================
 
 
-async def list_templates(db: AsyncSession, report_type: Optional[str] = None) -> list[dict]:
+async def list_templates(db: AsyncSession, report_type: str | None = None) -> list[dict]:
     """列出报告模板"""
     query = select(ReportTemplate)
     if report_type:
@@ -307,7 +307,7 @@ async def list_templates(db: AsyncSession, report_type: Optional[str] = None) ->
     ]
 
 
-async def get_template_by_id(db: AsyncSession, template_id: str) -> Optional[ReportTemplate]:
+async def get_template_by_id(db: AsyncSession, template_id: str) -> ReportTemplate | None:
     from uuid import UUID
     try:
         uid = UUID(template_id)
@@ -316,7 +316,7 @@ async def get_template_by_id(db: AsyncSession, template_id: str) -> Optional[Rep
     return (await db.execute(select(ReportTemplate).where(ReportTemplate.id == uid))).scalar_one_or_none()
 
 
-async def get_default_template(db: AsyncSession, report_type: str) -> Optional[ReportTemplate]:
+async def get_default_template(db: AsyncSession, report_type: str) -> ReportTemplate | None:
     """获取指定类型的默认模板（优先 is_default，否则取首个）"""
     t = (await db.execute(
         select(ReportTemplate)
@@ -352,7 +352,7 @@ async def create_template(
     report_type: str,
     sections: list,
     is_default: bool = False,
-    desc: Optional[str] = None,
+    desc: str | None = None,
 ) -> dict:
     if report_type not in ("antibody_analysis", "vaccination_strategy", "immune_barrier_assessment"):
         raise ValueError("report_type 必须是 antibody_analysis、vaccination_strategy 或 immune_barrier_assessment")
@@ -377,11 +377,11 @@ async def create_template(
 async def update_template(
     db: AsyncSession,
     template_id: str,
-    name: Optional[str] = None,
-    sections: Optional[list] = None,
-    is_default: Optional[bool] = None,
-    desc: Optional[str] = None,
-) -> Optional[dict]:
+    name: str | None = None,
+    sections: list | None = None,
+    is_default: bool | None = None,
+    desc: str | None = None,
+) -> dict | None:
     t = await get_template_by_id(db, template_id)
     if not t:
         return None
@@ -434,11 +434,10 @@ def _template_to_dict(t: ReportTemplate) -> dict:
 # ===================== 模板章节渲染 =====================
 
 
-def _build_context(rows: list, disease: Optional[str] = None, language: str = "zh") -> dict:
+def _build_context(rows: list, disease: str | None = None, language: str = "zh") -> dict:
     """从审核通过数据点构建统一上下文，供各类型章节渲染使用。"""
-    import ast
 
-    lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+    lit_ids = {str(r.literature_id) for r in rows if r.literature_id}
     provinces_set = set()
     for r in rows:
         for p in (r.province or "").split(";"):
@@ -508,12 +507,6 @@ def _build_context(rows: list, disease: Optional[str] = None, language: str = "z
         avg_gmc = round(sum(r.value for r in gmc_rows) / len(gmc_rows), 2) if gmc_rows else None
         disease_rows.append((DISEASE_NAMES.get(key, key), wpr, ps, len(group), avg_gmc))
     disease_rows.sort(key=lambda x: -x[1])
-
-    disease_name = ""
-    if disease:
-        disease_name = DISEASE_NAMES.get(disease, disease)
-    else:
-        top = disease_rows[0][0] if disease_rows else "未知疾病"
 
     return {
         "disease_name": disease,
@@ -665,7 +658,7 @@ def _chart_svg(kind: str, title: str, items, lang: str = "zh") -> str:
 
     items: list[(label, value)]；value 为百分数（0-100），None 已在上游剔除。
     """
-    data = [(_xml_escape(str(l)), float(v)) for l, v in items if v is not None]
+    data = [(_xml_escape(str(label)), float(v)) for label, v in items if v is not None]
     W, H = 720, 380
     ml, mr, mt, mb = 78, 26, 52, 78
     pw, ph = W - ml - mr, H - mt - mb
@@ -757,7 +750,7 @@ async def _render_template_report(
     db: AsyncSession,
     ctx: dict,
     template: ReportTemplate,
-    model: Optional[str],
+    model: str | None,
     language: str,
 ) -> str:
     """按模板 sections 顺序渲染报告 Markdown。"""
@@ -842,13 +835,13 @@ def _build_legacy_inline_text(rows: list, language: str = "zh") -> tuple[str, st
 
 async def generate_report(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    data_type: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    data_type: str | None = None,
     language: str = "zh",
-    title: Optional[str] = None,
-    model: Optional[str] = None,
-    template_id: Optional[str] = None,
+    title: str | None = None,
+    model: str | None = None,
+    template_id: str | None = None,
 ) -> dict:
     """生成报告。
 
@@ -879,6 +872,13 @@ async def generate_report(
     if not rows:
         raise ValueError("没有找到审核通过的数据，无法生成报告")
 
+    # 释放读事务占用的数据库连接：本地 LLM 推理可能耗时数分钟，若连接一直处于
+    # idle-in-transaction，会被 PostgreSQL 的 idle_in_transaction_session_timeout
+    # （120s）强制断开，导致后续保存报告时出现
+    # "cannot call Transaction.rollback(): the underlying connection is closed"。
+    # rows 已整体加载进内存且 expire_on_commit=False，commit 后数据仍可用。
+    await db.commit()
+
     # 2. 生成疾病名称与报告标题
     disease_name = DISEASE_NAMES.get(disease or "", disease or "未知疾病")
 
@@ -901,7 +901,7 @@ async def generate_report(
 
     if content is None:
         # 使用内置 Prompt（无可用模板时的兜底路径）
-        lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+        lit_ids = {str(r.literature_id) for r in rows if r.literature_id}
         provinces_set = set()
         for r in rows:
             for p in (r.province or "").split(";"):
@@ -935,7 +935,7 @@ async def generate_report(
         content = await _call_llm(db, prompt, model=model)
 
     # 8.5 方法学小节：统一脚注（复用 build_methodology_note），拼接进报告正文
-    lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+    lit_ids = {str(r.literature_id) for r in rows if r.literature_id}
     methodology_note = build_methodology_note(
         "report",
         {"disease": disease, "province": province, "data_type": data_type},
@@ -999,13 +999,13 @@ async def generate_report(
 
 async def generate_immune_barrier_report(
     db: AsyncSession,
-    disease: Optional[str] = None,
-    province: Optional[str] = None,
-    data_type: Optional[str] = None,
+    disease: str | None = None,
+    province: str | None = None,
+    data_type: str | None = None,
     language: str = "zh",
-    title: Optional[str] = None,
-    model: Optional[str] = None,
-    template_id: Optional[str] = None,
+    title: str | None = None,
+    model: str | None = None,
+    template_id: str | None = None,
 ) -> dict:
     """生成免疫屏障评估报告。
 
@@ -1036,6 +1036,10 @@ async def generate_immune_barrier_report(
     if not rows:
         raise ValueError("没有找到审核通过的数据，无法生成报告")
 
+    # 释放读事务占用的数据库连接（同 generate_report）：本地 LLM 推理耗时数分钟，
+    # 避免连接因 idle_in_transaction_session_timeout 被断开导致保存失败。
+    await db.commit()
+
     disease_name = DISEASE_NAMES.get(disease or "", disease or "未知疾病")
 
     # 引用/编号统一固定为生成当日时间（一次性计算），避免多处 date.today() 不一致
@@ -1053,7 +1057,7 @@ async def generate_immune_barrier_report(
         ctx = _build_context(rows, disease=disease, language=language)
         content = await _render_template_report(db, ctx, template, model=model, language=language)
     else:
-        lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+        lit_ids = {str(r.literature_id) for r in rows if r.literature_id}
         provinces_set = set()
         for r in rows:
             for p in (r.province or "").split(";"):
@@ -1086,7 +1090,7 @@ async def generate_immune_barrier_report(
             )
         content = await _call_llm(db, prompt, model=model)
 
-    lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+    lit_ids = {str(r.literature_id) for r in rows if r.literature_id}
     methodology_note = build_methodology_note(
         "report",
         {"disease": disease, "province": province, "data_type": data_type},
@@ -1155,9 +1159,9 @@ async def generate_vaccination_strategy_report(
     personnel_gender: str = "",
     personnel_age: str = "",
     personnel_vaccination_history: str = "",
-    title: Optional[str] = None,
-    template_id: Optional[str] = None,
-    model: Optional[str] = None,
+    title: str | None = None,
+    template_id: str | None = None,
+    model: str | None = None,
 ) -> dict:
     """生成疫苗接种策略研判报告。template_id 缺省时使用内置 Prompt；指定时按模板 sections 渲染。"""
     # 1. 查询任务地点的传染病流行数据
@@ -1168,10 +1172,14 @@ async def generate_vaccination_strategy_report(
     result = await db.execute(query)
     rows = list(result.scalars().all())
 
+    # 释放读事务占用的数据库连接（同 generate_report）：本地 LLM 推理耗时数分钟，
+    # 避免连接因 idle_in_transaction_session_timeout 被断开导致保存失败。
+    await db.commit()
+
     # 2. 构建疫情数据汇总
     epidemic_lines = []
     if rows:
-        lit_ids = set(str(r.literature_id) for r in rows if r.literature_id)
+        lit_ids = {str(r.literature_id) for r in rows if r.literature_id}
         epidemic_lines.append(f"- 数据来源：{len(lit_ids)} 篇文献，{len(rows)} 个数据点")
 
         # 按疾病汇总
@@ -1216,13 +1224,17 @@ async def generate_vaccination_strategy_report(
         for r in rows:
             matched = False
             for label, lo, hi in AGE_GROUPS:
-                if r.age_min is not None and r.age_max is not None:
-                    if r.age_min >= lo and r.age_max <= hi:
-                        if label not in age_map:
-                            age_map[label] = []
-                        age_map[label].append(r)
-                        matched = True
-                        break
+                if (
+                    r.age_min is not None
+                    and r.age_max is not None
+                    and r.age_min >= lo
+                    and r.age_max <= hi
+                ):
+                    if label not in age_map:
+                        age_map[label] = []
+                    age_map[label].append(r)
+                    matched = True
+                    break
             if not matched:
                 if "其他" not in age_map:
                     age_map["其他"] = []
@@ -1240,10 +1252,7 @@ async def generate_vaccination_strategy_report(
     epidemic_data = "\n".join(epidemic_lines)
 
     # 3. 报告标题
-    if title:
-        report_title = title
-    else:
-        report_title = f"{task_location}任务人员疫苗接种策略研判报告"
+    report_title = title or f"{task_location}任务人员疫苗接种策略研判报告"
 
     # 3.5 若指定模板，按模板 sections 渲染
     template = None
@@ -1291,7 +1300,7 @@ async def generate_vaccination_strategy_report(
             personnel_age=personnel_age or None,
             personnel_vaccination_history=personnel_vaccination_history or None,
             data_point_count=len(rows),
-            literature_count=len(set(str(r.literature_id) for r in rows if r.literature_id)),
+            literature_count=len({str(r.literature_id) for r in rows if r.literature_id}),
             llm_model=llm_model_name,
         )
         db.add(report)
@@ -1313,14 +1322,14 @@ async def generate_vaccination_strategy_report(
         "personnel_age": personnel_age,
         "personnel_vaccination_history": personnel_vaccination_history,
         "data_point_count": len(rows),
-        "literature_count": len(set(str(r.literature_id) for r in rows if r.literature_id)),
+        "literature_count": len({str(r.literature_id) for r in rows if r.literature_id}),
         "llm_model": llm_model_name,
         "language": "zh",
         "generated_at": report.generated_at.isoformat(),
     }
 
 
-async def _call_llm(db: AsyncSession, prompt: str, model: Optional[str] = None) -> str:
+async def _call_llm(db: AsyncSession, prompt: str, model: str | None = None) -> str:
     """调用 LLM 生成报告"""
     llm_model = model or settings.LLM_MODEL
     api_key = settings.LLM_API_KEY
@@ -1360,7 +1369,7 @@ async def _call_llm(db: AsyncSession, prompt: str, model: Optional[str] = None) 
         return response.choices[0].message.content or ""
     except Exception as e:
         logger.warning(f"LLM API 调用失败 (model={llm_model}): {e}", exc_info=True)
-        raise RuntimeError(f"报告生成失败: {e}")
+        raise RuntimeError(f"报告生成失败: {e}") from e
 
 
 async def get_reports(db: AsyncSession, page: int = 1, page_size: int = 20):
@@ -1426,13 +1435,14 @@ async def get_report_by_id(db: AsyncSession, report_id):
 async def update_report(
     db: AsyncSession,
     report_id: str,
-    title: Optional[str] = None,
-    content: Optional[str] = None,
-) -> Optional[dict]:
+    title: str | None = None,
+    content: str | None = None,
+) -> dict | None:
     """更新报告标题或内容"""
-    from uuid import UUID
-    from sqlalchemy import update
     from datetime import datetime, timezone
+    from uuid import UUID
+
+    from sqlalchemy import update
 
     uid = UUID(report_id)
     values = {}
@@ -1454,6 +1464,7 @@ async def update_report(
 async def delete_report(db: AsyncSession, report_id: str) -> bool:
     """删除报告"""
     from uuid import UUID
+
     from sqlalchemy import delete
 
     uid = UUID(report_id)
@@ -1472,7 +1483,6 @@ def report_markdown_to_docx(markdown: str) -> bytes:
     from io import BytesIO
 
     from docx import Document
-    from docx.enum.text import WD_ALIGN_PARAGRAPH  # noqa: F401（保留对齐 API 语义）
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     from docx.shared import Pt
@@ -1606,14 +1616,18 @@ def report_markdown_to_pdf(markdown: str) -> bytes:
     from reportlab.lib.units import mm
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-    from reportlab.platypus import (HRFlowable, Paragraph, SimpleDocTemplate,
-                                    Spacer, Table, TableStyle)
+    from reportlab.platypus import (
+        HRFlowable,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
 
     _FONT = "STSong-Light"
-    try:
+    with contextlib.suppress(Exception):  # 字体已注册或字体表异常时不影响流程
         pdfmetrics.registerFont(UnicodeCIDFont(_FONT))
-    except Exception:  # 字体已注册或字体表异常时不影响流程
-        pass
 
     _base = getSampleStyleSheet()
     styles = {}

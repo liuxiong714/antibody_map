@@ -2,7 +2,6 @@
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import bcrypt
 import jwt
@@ -62,7 +61,7 @@ def create_refresh_token(user_id: str) -> str:
     return jwt.encode(payload, _get_secret(), algorithm=JWT_ALGORITHM)
 
 
-def decode_access_token(token: str) -> Optional[dict]:
+def decode_access_token(token: str) -> dict | None:
     """解析访问令牌，失败返回 None"""
     try:
         payload = jwt.decode(token, _get_secret(), algorithms=[JWT_ALGORITHM])
@@ -73,7 +72,7 @@ def decode_access_token(token: str) -> Optional[dict]:
         return None
 
 
-def decode_refresh_token(token: str) -> Optional[dict]:
+def decode_refresh_token(token: str) -> dict | None:
     """解析刷新令牌，失败返回 None"""
     try:
         payload = jwt.decode(token, _get_secret(), algorithms=[JWT_ALGORITHM])

@@ -1,23 +1,25 @@
-import asyncio
 import logging
 import uuid
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_, text
+from pydantic import BaseModel
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_current_user
+from app.api.deps import get_db
 from app.config import settings
 from app.models.kg_entity import KGEntity
 from app.models.kg_triple import KGTriple
-from app.models.literature import Literature
 from app.schemas.common import ApiResponse
 from app.schemas.kg_schemas import KGBatchRequest
 from app.services import knowledge_graph_service as kg
 from app.services.kg_entity_resolver import persist_triples
-from app.services.kg_llm_integration import run_kg_extraction
+from app.services.kg_qa_service import ask_question
+
+
+class QARequest(BaseModel):
+    question: str
 
 router = APIRouter(prefix="/kg", tags=["knowledge_graph"])
 logger = logging.getLogger("kg")
@@ -37,11 +39,11 @@ async def options(db: AsyncSession = Depends(get_db)):
 
 @router.get("/graph", response_model=ApiResponse, summary="知识图谱数据")
 async def graph(
-    disease: Optional[str] = Query(None),
-    province: Optional[str] = Query(None),
-    data_type: Optional[str] = Query(None),
-    year_start: Optional[int] = Query(None, ge=1900, le=2100),
-    year_end: Optional[int] = Query(None, ge=1900, le=2100),
+    disease: str | None = Query(None),
+    province: str | None = Query(None),
+    data_type: str | None = Query(None),
+    year_start: int | None = Query(None, ge=1900, le=2100),
+    year_end: int | None = Query(None, ge=1900, le=2100),
     max_nodes: int = Query(600, ge=50, le=5000),
     db: AsyncSession = Depends(get_db),
 ):
@@ -86,7 +88,7 @@ async def batch_triples(
 @router.get("/entities/search", response_model=ApiResponse, summary="模糊搜索实体")
 async def search_entities(
     q: str = Query(..., min_length=1, description="搜索关键词"),
-    type: Optional[str] = Query(None, description="实体类型过滤"),
+    type: str | None = Query(None, description="实体类型过滤"),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
@@ -177,7 +179,7 @@ async def query_path(
             continue
         for pred, neighbor_id in adj.get(current_id, []):
             if neighbor_id == to_id:
-                final_path = path + [{"id": neighbor_id, "predicate": pred}]
+                final_path = [*path, {"id": neighbor_id, "predicate": pred}]
                 # 补全路径上的实体信息
                 ent_ids = [p["id"] for p in final_path]
                 ent_stmt = select(KGEntity).where(KGEntity.id.in_(ent_ids))
@@ -195,7 +197,7 @@ async def query_path(
                 })
             if neighbor_id not in visited:
                 visited.add(neighbor_id)
-                queue.append((neighbor_id, path + [{"id": neighbor_id, "predicate": pred}]))
+                queue.append((neighbor_id, [*path, {"id": neighbor_id, "predicate": pred}]))
 
     return ApiResponse(data={"found": False, "path": [], "depth": 0})
 
@@ -290,12 +292,17 @@ async def stats(db: AsyncSession = Depends(get_db)):
 @router.post("/extraction/trigger", response_model=ApiResponse, summary="手动触发三元组抽取")
 async def trigger_kg_extraction(
     limit: int = Query(5, ge=1, le=50, description="本次处理篇数"),
-    db: AsyncSession = Depends(get_db),
+    literature_ids: list[uuid.UUID] | None = Query(
+        None,
+        alias="literature_id",
+        description="定向抽取的文献ID列表（可传多个）。提供时仅处理指定且已有缓存文本、未抽取的文献；省略时自动从全部未抽取缓存文本中取未处理的",
+    ),
 ):
     """手动触发 LLM 三元组抽取。
 
-    从缓存文本中筛选未处理文献，串行执行抽取，每篇超时 300 秒。
-    需要提前在 .env 中配置 ENABLE_KG_EXTRACTION=true。
+    - 省略 literature_id：从全部未抽取文献中顺序取前 limit 篇，串行执行抽取。
+    - 指定 literature_id：仅对指定的文献做定向抽取（幂等，已抽取的会被忽略）。
+    每篇超时 300 秒。需要提前在 .env 中配置 ENABLE_KG_EXTRACTION=true。
     """
     if not getattr(settings, "ENABLE_KG_EXTRACTION", False):
         raise HTTPException(status_code=400, detail="ENABLE_KG_EXTRACTION 未开启，请在 .env 中配置后重启容器")
@@ -304,65 +311,32 @@ async def trigger_kg_extraction(
     if not text_dir.exists():
         raise HTTPException(status_code=500, detail="缓存文本目录 /app/backend/data/pdfs 不存在")
 
-    # 已抽取的文献 ID
-    done_stmt = select(KGEntity.source_literature_id).where(KGEntity.source_literature_id.isnot(None))
-    done_result = await db.execute(done_stmt)
-    already = {str(r) for r in done_result.scalars().all()}
+    # 提交后台 Celery 异步任务，立即返回；进度可在系统设置「任务状态」页与知识图谱页查看
+    from app.tasks.background_task import run_kg_extraction
 
-    txt_ids = [p.stem for p in text_dir.glob("*.txt")]
-    todo = [i for i in txt_ids if i not in already]
+    scope = "directed" if literature_ids else "auto"
+    task = run_kg_extraction.delay(scope=scope, limit=limit, literature_ids=[str(i) for i in literature_ids] if literature_ids else None)
+    return ApiResponse(data={"task_id": str(task.id), "status": "queued", "scope": scope})
 
-    if not todo:
-        return ApiResponse(data={
-            "processed": 0, "total_written": 0, "remaining": 0,
-            "message": "所有文献已抽取完毕，无需处理",
-        })
 
-    chunk = todo[:limit]
-    processed = 0
-    total_written = 0
-    errors = []
+@router.post("/qa/ask", response_model=ApiResponse, summary="知识图谱咨询问答")
+async def qa_ask(
+    req: QARequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """知识图谱咨询问答接口。
 
-    for lit_id in chunk:
-        txt_path = text_dir / f"{lit_id}.txt"
-        clean_text = txt_path.read_text(encoding="utf-8")
-        if len(clean_text) < 100:
-            logger.debug(f"文献 {lit_id} 文本过短，跳过")
-            continue
+    支持的问题类型：
+    - 阳性率查询：如「北京麻疹阳性率是多少」
+    - GMC 查询：如「上海麻疹GMC」
+    - 地区对比：如「北京和上海麻疹阳性率对比」
+    - 机构调查：如「哈尔滨医科大学做过哪些调查」
+    - 人群查询：如「儿童麻疹抗体阳性率」
+    - 趋势分析：如「麻疹阳性率变化趋势」
+    - 未匹配问题自动降级到 LLM 回答
+    """
+    if not req.question or not req.question.strip():
+        return ApiResponse(code=1, message="问题不能为空")
 
-        row = await db.execute(
-            select(Literature.title, Literature.journal, Literature.pub_year)
-            .where(Literature.id == lit_id)
-        )
-        title, journal, pub_year = row.first() or (None, None, None)
-
-        try:
-            written = await asyncio.wait_for(
-                run_kg_extraction(
-                    db=db,
-                    text=clean_text,
-                    literature_id=lit_id,
-                    title=title or "",
-                    journal=journal or "",
-                    pub_year=pub_year,
-                    model=settings.LLM_MODEL,
-                    api_key="",
-                    base_url=settings.LLM_BASE_URL,
-                ),
-                timeout=300,
-            )
-            total_written += written
-            processed += 1
-        except asyncio.TimeoutError:
-            errors.append(f"{lit_id}: 超时")
-            logger.warning(f"文献 {lit_id} 抽取超时（300s）")
-        except Exception as e:
-            errors.append(f"{lit_id}: {type(e).__name__}")
-            logger.error(f"文献 {lit_id} 抽取失败", exc_info=True)
-
-    return ApiResponse(data={
-        "processed": processed,
-        "total_written": total_written,
-        "remaining": len(todo) - len(chunk),
-        "errors": errors,
-    })
+    result = await ask_question(req.question.strip(), db)
+    return ApiResponse(data=result)
