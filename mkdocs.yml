@@ -1,8 +1,8 @@
 site_name: Antibody Map
 site_description: 血清抗体流行病学数据管理与分析平台 — 血清抗体水平时空分布、统计分析、抗原制图与报告生成
 site_author: Antibody Map Team
-repo_url: https://github.com/liuxiong/antibody-map
-repo_name: liuxiong/antibody-map
+repo_url: https://github.com/liuxiong714/antibody_map
+repo_name: liuxiong714/antibody_map
 edit_uri: blob/main/docs/
 copyright: Copyright &copy; 2024-2026 Antibody Map Team
 
@@ -45,4 +45,4 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/liuxiong/antibody-map
+      link: https://github.com/liuxiong714/antibody_map
