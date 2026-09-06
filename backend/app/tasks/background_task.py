@@ -8,6 +8,7 @@ worker 与 backend 共享同一 Redis（Celery broker），天然跨进程可见
 """
 import logging
 import traceback
+import uuid
 from pathlib import Path
 
 from app.config import settings
@@ -194,6 +195,23 @@ async def __run_kg_extraction(task_id, scope, limit, literature_ids):
             candidates = txt_ids
 
         todo = [i for i in candidates if i not in already]
+        if not todo:
+            await bg.finish("kg_extraction", task_id, status="done",
+                            result={"processed": 0, "total_written": 0, "remaining": 0})
+            return {"processed": 0, "total_written": 0, "remaining": 0}
+
+        # 过滤已软删除文献：仅保留未删除的
+        valid_rows = await db.execute(
+            select(Literature.id).where(
+                Literature.id.in_([uuid.UUID(i) for i in todo]),
+                Literature.deleted_at.is_(None),
+            )
+        )
+        valid_ids = {str(r) for r in valid_rows.scalars().all()}
+        removed = len(todo) - len(valid_ids)
+        todo = [i for i in todo if i in valid_ids]
+        if removed:
+            logger.info(f"KG 抽取过滤了 {removed} 篇已软删除/物理删除的文献")
         if not todo:
             await bg.finish("kg_extraction", task_id, status="done",
                             result={"processed": 0, "total_written": 0, "remaining": 0})

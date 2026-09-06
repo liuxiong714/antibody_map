@@ -48,6 +48,45 @@ def _parse_titer_cell(cell: Any) -> float | None:
 class PostProcessorMixin:
     """后处理：字段别名归一化、数值解析、数据点标准化与滴度矩阵校验。"""
 
+    # C-2026-09-05：方法学/判定阈值伪数据点特征词。
+    # 本地模型常把检测判定标准段（如 "Measles: <50 IU/l (undetectable), 50–<200 IU/l (seronegative)..."）
+    # 中的 cut-off 阈值误当作数据点提取。此类伪点特征：source_context 命中方法学判定特征词，
+    # 且缺少样本量（真实研究数据点通常有样本量；方法学 cut-off 没有）。
+    METHODOLOGY_MARKERS = (
+        "undetectable", "seronegative", "equivocal", "seropositive",
+        "cut-off", "cutoff", "detection limit", "serological testing",
+        "检出限", "不可检测", "判定标准", "判定为阴性", "判定为阳性",
+    )
+
+    def _filter_methodology_pseudo_points(self, results: list[dict]) -> list[dict]:
+        """清洗方法学/判定阈值类伪数据点（cut-off、检出限分级说明）。
+
+        判定规则（保守，避免误伤真实 GMC/阳性率数据）：
+        1. source_context 命中方法学判定特征词（undetectable/seronegative/cut-off/检出限等）
+        2. 且样本量缺失（真实研究数据点通常带样本量，判定标准说明没有）
+        同时满足才丢弃；只记录日志，不抛异常。
+        """
+        kept: list[dict] = []
+        dropped = 0
+        for dp in results:
+            ctx = str(dp.get("source_context") or "").lower()
+            sample = dp.get("sample_size")
+            if sample in (None, "") and any(m in ctx for m in self.METHODOLOGY_MARKERS):
+                dropped += 1
+                logger.info(
+                    f"C-方法学伪点清洗：丢弃 cut-off/判定标准类数据点 "
+                    f"disease={dp.get('disease_name')} "
+                    f"value={dp.get('positivity_rate') or dp.get('gmc_value')} "
+                    f"ctx={ctx[:60]!r}"
+                )
+                continue
+            kept.append(dp)
+        if dropped:
+            logger.info(
+                f"C-方法学伪点清洗：过滤 {dropped} 个判定阈值类伪数据点，保留 {len(kept)} 个"
+            )
+        return kept
+
     @staticmethod
     def _detect_truncation(val) -> str | None:
         """F19：检测截断标记（"<"=低于检出限 / ">"=高于检出限）。
@@ -330,6 +369,10 @@ class PostProcessorMixin:
                     dp["gmc_unit"] = "IU/ml"
 
             results.append(dp)
+
+        # C-2026-09-05：清洗方法学/判定阈值类伪数据点（cut-off、检出限分级说明），
+        # 避免本地模型误把检测判定标准当研究结果提取（如 "<50 IU/l 为不可检测"）。
+        results = self._filter_methodology_pseudo_points(results)
 
         return results
 

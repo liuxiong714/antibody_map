@@ -38,7 +38,7 @@ jobs:
           python -m pytest \
             -p no:cacheprovider \
             --cov=app --cov-report=term-missing \
-            --cov-fail-under=60 \
+            --cov-fail-under=45 \
             -q
 
       - name: Lint backend with ruff

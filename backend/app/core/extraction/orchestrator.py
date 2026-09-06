@@ -273,6 +273,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         tables_md: str = "",
         complement_mode: bool = False,
         table_only: bool = False,
+        focus_results: bool = False,
     ) -> list[dict]:
         """从文本中提取结构化数据（返回数据点列表）
 
@@ -281,6 +282,8 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
             complement_mode: P0-2 查漏补缺模式，多趟提取的第 2+ 趟用，
                              prompt 追加指令要求重点检查遗漏的年龄组/地区/检测方法
             table_only: A1 表格优先模式，仅从表格 Markdown 提取，不注入全文
+            focus_results: C-2026-09-05 聚焦结果模式，重试耗尽仍无有效数据点时启用，
+                           指令要求只在【结果/数据】部分查找，忽略方法学/判定阈值说明
         """
         # B6：使用 system prompt（静态部分分离，启用 API 端 prompt caching）
         system_prompt = SYSTEM_PROMPT_ZH if language == "zh" else PROMPT_EN.format(
@@ -343,11 +346,37 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         # B9：审核反馈 few-shot 注入
         feedback_section = self._build_feedback_section()
 
+        # C-2026-09-05：聚焦结果模式 prompt 前缀（重试耗尽仍无有效数据点时启用）。
+        # 要求只从【结果/数据】部分查找，显式忽略检测判定阈值/方法学说明，
+        # 并允许返回空结果，避免模型为凑数而提取方法学 cut-off。
+        focus_prefix = ""
+        if focus_results:
+            if language == "zh":
+                focus_prefix = (
+                    "【聚焦提取】你对该文本的上一轮提取未能得到有效数据点。请只在文本的"
+                    "【结果/数据】部分（“结果”“阳性率”“抗体水平”“GMC”“GMT”或英文 "
+                    "Results/positivity/seroprevalence 附近）查找并提取抗体血清学数据点。\n"
+                    "忽略检测方法、实验步骤、判定阈值/检出限说明（如“<50 IU/l 为不可检测”、"
+                    "seronegative/equivocal 分级标准、cut-off 值）。\n"
+                    "若确实没有任何研究结果数据，请返回 {\"data_points\": [], \"titer_tables\": []}。\n\n"
+                )
+            else:
+                focus_prefix = (
+                    "[FOCUSED EXTRACTION] Your previous pass found no valid data points. "
+                    "Look ONLY in the Results/Data section (near 'Results', 'positivity', "
+                    "'seroprevalence', 'GMC', 'GMT') and extract antibody serological data.\n"
+                    "IGNORE assay methods, experimental procedures, and detection "
+                    "cutoff/classification criteria (e.g., '<50 IU/l is undetectable', "
+                    "seronegative/equivocal ranges).\n"
+                    "If there is genuinely no result data, return {\"data_points\": [], \"titer_tables\": []}.\n\n"
+                )
+            logger.info("C-聚焦提取模式 prompt 已注入")
+
         # A1：表格优先模式只注入表格，不注入全文
         if table_only:
-            user_content = meta + complement_prefix + tables_section + feedback_section + "（仅从上述表格中提取数据点）"
+            user_content = meta + focus_prefix + complement_prefix + tables_section + feedback_section + "（仅从上述表格中提取数据点）"
         else:
-            user_content = meta + tables_section + complement_prefix + feedback_section + text
+            user_content = meta + focus_prefix + tables_section + complement_prefix + feedback_section + text
 
         # 本地模型（不支持 response_format）在 user 内容末尾追加 JSON 强制提醒
         if not self._supports_response_format(self.model):
@@ -769,6 +798,28 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
                 logger.error(f"分块提取失败（第 {attempt + 1} 次）: {e}")
                 if attempt == max_retries - 1:
                     return last_result  # 单块失败不阻塞其他块
+
+        # C-2026-09-05：重试耗尽仍无有效数据点（含方法学伪点被清洗后为空），
+        # 改用聚焦结果模式再提取一次：只找【结果/数据】部分，忽略判定阈值/方法学说明。
+        if not self._has_key_fields(last_result):
+            logger.warning(
+                "C-聚焦重试：常规重试耗尽仍无有效数据点，改用聚焦结果模式再试一次"
+            )
+            try:
+                focused = await self.extract(
+                    chunk_text, language, title, journal, pub_year,
+                    tables_md=tables_md, focus_results=True,
+                )
+                if focused and self._has_key_fields(focused):
+                    logger.info(f"C-聚焦重试成功：获得 {len(focused)} 个数据点")
+                    return focused
+                logger.info(
+                    f"C-聚焦重试后仍无有效数据点（原始 {len(focused)} 个均无关键字段），按空结果返回"
+                )
+                return focused or last_result
+            except Exception as e:
+                logger.error(f"C-聚焦重试失败: {e}")
+                return last_result
         return last_result
 
     # ===== A2：两阶段提取（先抽骨架再填数值）=====

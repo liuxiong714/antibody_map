@@ -27,6 +27,12 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
 3. **核对数值**：阳性率通常以百分比给出（如87.3%、87.3％），GMC通常以IU/ml或μg/ml为单位
 4. **标注来源**：找到提取数据所在的原文片段和页码（如能判断）
 
+**【重要】只提取研究【结果/数据】部分的流行病学数据**，以下内容**不得**作为数据点提取：
+- 检测方法、实验步骤、试剂盒描述（如 "Serological testing"、ELISA 操作流程、样本处理）
+- 检测判定阈值/分级标准（如 "<50 IU/l 为不可检测(undetectable)"、"seronegative/equivocal/seropositive 判定范围"、cut-off/检出限说明）
+- 引言/讨论中引用的他人研究数据、参考文献
+若某数值仅用于说明"低于多少判定为阴性/不可检测"等检测判定标准，请忽略它，不要提取为数据点。
+
 ## JSON 输出格式
 {{
   "article": {{
@@ -86,6 +92,7 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
 
 ## 重要规则
 - **article 元数据**：从文献文本（标题、首页、摘要区）提取文献级元数据填入顶层 `article` 对象；文本中明确存在才填，无法确定的字段填null，**禁止编造 DOI/PMID/摘要/年份**。
+- **排除方法学/判定阈值**：检测方法、实验步骤、以及"不可检测/阴性/可疑/阳性"的判定 cut-off 阈值（如 "<50 IU/l 为不可检测"）**不是**研究结果数据，不得提取为数据点。
 - **省份必须匹配**：从上述标准列表中选取最匹配的省份名称。如文中"鲁"→"山东"，"广东省"→"广东"，"上海"→"上海"
 - **百分比处理**：87.3% → 填87.3（去掉%符号）；如果多个年份/组别有%数据，全部提取为多个数据点
 - **GMC注意**：GMC和阳性率是不同的指标。GMC通常以IU/ml、μg/ml等单位给出。文中同时有阳性率和GMC时，两者都要提取
@@ -214,6 +221,12 @@ Chinese Province Name Reference List:
 3. Verify values: Positivity rates are usually percentages (e.g., 87.3%), GMC usually in IU/ml or μg/ml
 4. Mark source: Note the page and original text snippet containing the key data
 
+**【IMPORTANT】Extract ONLY epidemiological data from the study's Results/Data section.** The following MUST NOT be extracted as data points:
+- Assay methods, experimental procedures, kit descriptions (e.g., "Serological testing", ELISA workflow, sample handling)
+- Assay cutoff / classification criteria (e.g., "<50 IU/l is undetectable", "seronegative/equivocal/seropositive ranges", detection-limit cutoffs)
+- Data cited from other studies in the Introduction/Discussion, or references
+If a value only describes a positivity/negativity judgment cutoff, ignore it and do NOT extract it.
+
 ## JSON Output Format
 {{
   "article": {{
@@ -270,6 +283,7 @@ Chinese Province Name Reference List:
 }}
 
 ## Important Rules
+- Assay methods, experimental steps, and positivity/negativity cutoff values (e.g., "<50 IU/l is undetectable") are NOT study-result data and must NOT be extracted as data points.
 - Province names must match the reference list exactly
 - Remove % sign: 87.3% → 87.3
 - GMC and positivity rate are DIFFERENT indicators. Extract both if present
@@ -317,6 +331,12 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
 2. **逐一提取每个数据点**：如果一个研究包含多个省份、城市、年龄组或检测指标，分别为每个创建独立的数据点
 3. **核对数值**：阳性率通常以百分比给出（如87.3%），GMC通常以IU/ml或μg/ml为单位
 4. **标注来源**：找到提取数据所在的原文片段和页码（如能判断）
+
+**【重要】只提取研究【结果/数据】部分的流行病学数据**，以下内容**不得**作为数据点提取：
+- 检测方法、实验步骤、试剂盒描述（如 "Serological testing"、ELISA 操作流程、样本处理）
+- 检测判定阈值/分级标准（如 "<50 IU/l 为不可检测(undetectable)"、"seronegative/equivocal/seropositive 判定范围"、cut-off/检出限说明）
+- 引言/讨论中引用的他人研究数据、参考文献
+若某数值仅用于说明"低于多少判定为阴性/不可检测"等检测判定标准，请忽略它，不要提取为数据点。
 
 ## JSON 输出格式
 {{
@@ -377,6 +397,7 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
 
 ## 重要规则
 - **article 元数据**：从文献文本（标题、首页、摘要区）提取文献级元数据填入顶层 `article` 对象；文本中明确存在才填，无法确定的字段填null，**禁止编造 DOI/PMID/摘要/年份**。
+- **排除方法学/判定阈值**：检测方法、实验步骤、以及"不可检测/阴性/可疑/阳性"的判定 cut-off 阈值（如 "<50 IU/l 为不可检测"）**不是**研究结果数据，不得提取为数据点。
 - **省份必须匹配**：从上述标准列表中选取最匹配的省份名称。如文中"鲁"→"山东"，"广东省"→"广东"，"上海"→"上海"
 - **百分比处理**：87.3% → 填87.3（去掉%符号）；如果多个年份/组别有%数据，全部提取为多个数据点
 - **GMC注意**：GMC和阳性率是不同的指标。GMC通常以IU/ml、μg/ml等单位给出。文中同时有阳性率和GMC时，两者都要提取

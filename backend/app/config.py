@@ -65,11 +65,14 @@ class Settings(BaseSettings):
     LLM_CONNECT_RETRIES: int = 2
 
     # P2：长文档分块阈值（字符数），超过此值触发分块并发提取
-    LLM_CHUNK_THRESHOLD: int = 20000
+    # 调优记录（2026-09-05）：本地 27B 模型对 15000 字符块推理常超 600s 读超时，
+    # 且大块上下文易误提取方法学/判定阈值段。阈值/块长改小、重叠加大，
+    # 每块推理更快更聚焦，降低超时与误提取（阳性率召回提升）。
+    LLM_CHUNK_THRESHOLD: int = 10000
     # P2：单块最大字符数
-    LLM_CHUNK_SIZE: int = 15000
+    LLM_CHUNK_SIZE: int = 8000
     # P2：分块重叠字符数（保持上下文连贯）
-    LLM_CHUNK_OVERLAP: int = 500
+    LLM_CHUNK_OVERLAP: int = 800
 
     # 文本预处理最大保留字符数（仅作极长文本的安全兜底，须 > LLM_CHUNK_THRESHOLD，否则分块逻辑永不触发）。
     # 分块的主导参数是 LLM_CHUNK_THRESHOLD/SIZE/OVERLAP：长文本先按块逐块交给 LLM，
