@@ -34,6 +34,27 @@ const HOTSPOT_CLUSTER_META: Record<HotspotCluster, { color: string; label: strin
 };
 const hotspotColor = (cluster: HotspotCluster): string => HOTSPOT_CLUSTER_META[cluster]?.color || '#cfcfcf';
 
+// 省（短名）→ GeoJSON adcode（用于加载市级/区级地图，资源在 frontend/public/geojson/{code}_full.json）
+const PROVINCE_ADCODE: Record<string, string> = {
+  '北京': '110000', '天津': '120000', '河北': '130000', '山西': '140000', '内蒙古': '150000',
+  '辽宁': '210000', '吉林': '220000', '黑龙江': '230000', '上海': '310000', '江苏': '320000',
+  '浙江': '330000', '安徽': '340000', '福建': '350000', '江西': '360000', '山东': '370000',
+  '河南': '410000', '湖北': '420000', '湖南': '430000', '广东': '440000', '广西': '450000',
+  '海南': '460000', '重庆': '500000', '四川': '510000', '贵州': '520000', '云南': '530000',
+  '西藏': '540000', '陕西': '610000', '甘肃': '620000', '青海': '630000', '宁夏': '640000',
+  '新疆': '650000', '台湾': '710000', '香港': '810000', '澳门': '820000',
+};
+// 直辖市（其 {adcode}_full.json 直接是区县级地图）
+const MUNICIPALITY_SET = new Set(['北京', '天津', '上海', '重庆']);
+
+// 名称归一化：匹配 GeoJSON 名称与数据中的城市/区县字段
+// "九江市"→"九江"、"北京市丰台区"→"丰台"、"丰台区"→"丰台"、"深圳市"→"深圳"
+const _normCityName = (s: string): string =>
+  (s || '')
+    .replace(/^(北京市|天津市|上海市|重庆市)/, '')
+    .replace(/[省市区县]$/, '')
+    .replace(/^市/, '');
+
 const MapOverview: React.FC = () => {
   const { disease, dataType, province, yearStart, yearEnd, ageMin, ageMax, gender, occupation,
     setDisease, setDataType, setProvince, setYearRange, setAgeRange, setGender, setOccupation, reset } = useFilterStore();
@@ -66,6 +87,12 @@ const MapOverview: React.FC = () => {
   // 地图下钻状态：drillProvince 不为空时显示该省份的城市级散点图
   const [drillProvince, setDrillProvince] = useState<string | null>(null);
   const [drillCityData, setDrillCityData] = useState<MapDataPoint[]>([]);
+
+  // 地图层级下钻：province=全国省级地图；city=省市级/直辖市区级地图
+  const [mapLevel, setMapLevel] = useState<'province' | 'city'>('province');
+  const [activeMapCode, setActiveMapCode] = useState('china');
+  const [activeCity, setActiveCity] = useState<string | null>(null);
+  const geoCacheRef = useRef<Record<string, any>>({});
 
   // 城市详情弹窗
   const [cityDetailOpen, setCityDetailOpen] = useState(false);
@@ -301,10 +328,39 @@ const MapOverview: React.FC = () => {
     };
   }, []);
 
+  // 加载并注册市级/区级 GeoJSON（缓存，重复进入不重复下载）
+  const loadCityGeoJSON = useCallback(async (provinceShort: string): Promise<boolean> => {
+    const code = PROVINCE_ADCODE[provinceShort];
+    if (!code) return false;
+    const mapName = `m_${code}`;
+    if (geoCacheRef.current[mapName]) {
+      setActiveMapCode(mapName);
+      return true;
+    }
+    try {
+      const resp = await fetch(`/geojson/${code}_full.json`);
+      if (!resp.ok) return false;
+      const data = await resp.json();
+      geoCacheRef.current[mapName] = data;
+      echarts.registerMap(mapName, data);
+      setActiveMapCode(mapName);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   // 点击地图省份，获取该省份的详细数据
   const handleProvinceClick = useCallback(async (provinceName: string) => {
     setSelectedProvince(provinceName);
     setDrillProvince(provinceName);
+    setActiveCity(null);
+    // 省级地图 → 下钻到市级/区级地图（直辖市直接显示区级）
+    if (mapLevel === 'province') {
+      const ok = await loadCityGeoJSON(provinceName);
+      if (ok) setMapLevel('city');
+      else message.warning('该省市/区级地图数据缺失，仅显示数据点');
+    }
     setProvinceDetailLoading(true);
     try {
       const baseParams: Record<string, unknown> = { province: provinceName };
@@ -333,7 +389,7 @@ const MapOverview: React.FC = () => {
     } finally {
       setProvinceDetailLoading(false);
     }
-  }, [disease, dataType, yearStart, yearEnd, ageMin, ageMax, gender, occupation]);
+  }, [disease, dataType, yearStart, yearEnd, ageMin, ageMax, gender, occupation, mapLevel, loadCityGeoJSON]);
 
   // 城市散点点击：显示详情弹窗
   const handleCityScatterClick = useCallback((cityData: MapDataPoint) => {
@@ -346,6 +402,9 @@ const MapOverview: React.FC = () => {
     setDrillProvince(null);
     setDrillCityData([]);
     setSelectedProvince(null);
+    setActiveCity(null);
+    setActiveMapCode('china');
+    setMapLevel('province');
   }, []);
 
   // 图表容器 ref
@@ -356,6 +415,10 @@ const MapOverview: React.FC = () => {
   const drillCityDataRef = useRef(drillCityData);
   const handleBackToNationalRef = useRef(handleBackToNational);
   const drillProvinceRef = useRef(drillProvince);
+  const mapLevelRef = useRef(mapLevel);
+  const activeMapCodeRef = useRef(activeMapCode);
+  const activeCityRef = useRef(activeCity);
+  const setActiveCityRef = useRef(setActiveCity);
   // 趋势图容器 ref
   const trendChartRef = useRef<HTMLDivElement | null>(null);
   const trendChartInstanceRef = useRef<echarts.ECharts | null>(null);
@@ -367,6 +430,9 @@ const MapOverview: React.FC = () => {
     drillCityDataRef.current = drillCityData;
     handleBackToNationalRef.current = handleBackToNational;
     drillProvinceRef.current = drillProvince;
+    mapLevelRef.current = mapLevel;
+    activeMapCodeRef.current = activeMapCode;
+    activeCityRef.current = activeCity;
   });
 
   // 初始化 ECharts 实例并绑定事件（仅在 mapReady 后执行一次）
@@ -399,7 +465,18 @@ const MapOverview: React.FC = () => {
         if (cityItem) handleCityScatterClickRef.current(cityItem);
         return;
       }
-      // 地图点击：省份详情
+      // 地图点击：市级/区级地图 → 选中该市/区（再点取消）；省级地图 → 省份详情
+      if (mapLevelRef.current === 'city') {
+        const geoData = geoCacheRef.current[activeMapCodeRef.current];
+        const isGeoName = geoData?.features?.some((f: any) => f.properties?.name === name);
+        if (isGeoName) {
+          setActiveCityRef.current(name === activeCityRef.current ? null : name);
+        } else {
+          handleBackToNationalRef.current();
+        }
+        return;
+      }
+      // 省级地图点击：省份详情
       const entry = Object.entries(PROVINCE_GEOJSON_NAME).find(([, geoName]) => geoName === name);
       const shortName = entry ? entry[0] : name;
       if (shortName) {
@@ -485,11 +562,25 @@ const MapOverview: React.FC = () => {
       }
     });
 
-    // 系列数据：将短名称转换为 GeoJSON 全名
-    // 热点模式：以 hotspotData.provinces 为数据源并按 cluster 上色；
-    // 阳性率模式：沿用加权阳性率连续色。
-    const seriesData: any[] = shadingMode === 'hotspot'
-      ? (hotspotData?.provinces || [])
+    // 市级/区级地图数据：按 GeoJSON 区域名（归一化）匹配该省城市数据
+    const geoData = geoCacheRef.current[activeMapCode];
+    const citySeriesData: any[] = mapLevel === 'city' && geoData?.features
+      ? geoData.features.map((f: any) => {
+          const geoName = f.properties?.name || '';
+          const item = drillCityData.find((d) => d.city && _normCityName(d.city) === _normCityName(geoName));
+          return {
+            name: geoName,
+            value: item ? Number(item.weighted_positivity) || 0 : 0,
+            _src: item || null,
+          };
+        })
+      : [];
+
+    // 系列数据：市级/区级以 drillCityData 匹配；省级沿用省份数据
+    const seriesData: any[] = mapLevel === 'city'
+      ? citySeriesData
+      : shadingMode === 'hotspot'
+        ? (hotspotData?.provinces || [])
           .filter((p) => !!PROVINCE_GEOJSON_NAME[p.name])
           .map((p) => ({
             name: PROVINCE_GEOJSON_NAME[p.name],
@@ -542,7 +633,7 @@ const MapOverview: React.FC = () => {
     const series: any[] = [
       {
         type: 'map',
-        map: 'china',
+        map: activeMapCode,
         geoIndex: 0,
         data: seriesData,
         animationDuration: 500,
@@ -610,6 +701,15 @@ const MapOverview: React.FC = () => {
         formatter: (params: { name: string; value?: number; componentType?: string }) => {
           // 散点图的 tooltip 由 scatter series 自行处理
           if (params.componentType === 'series') return undefined as any;
+          // 市级/区级地图：直接展示该市/区数据（无数据区域显示暂无数据）
+          if (mapLevel === 'city') {
+            const item = drillCityData.find((d) => d.city && _normCityName(d.city) === _normCityName(params.name));
+            if (!item) return `${params.name}<br/>暂无数据`;
+            return `<b>${params.name}</b><br/>
+              ${valueLabel}: ${item.weighted_positivity != null ? Number(item.weighted_positivity).toFixed(2) + valueUnit : '-'}<br/>
+              数据点数: ${item.point_count ?? 0}<br/>
+              总样本量: ${(item.total_sample ?? 0).toLocaleString()}`;
+          }
           const shortName = nameMap[params.name] || params.name;
           // 热点模式：展示阳性率 + Gi* Z + 置信热点中文标签
           if (shadingMode === 'hotspot') {
@@ -630,7 +730,18 @@ const MapOverview: React.FC = () => {
             总样本量: ${item.total_sample.toLocaleString()}`;
         },
       },
-      visualMap: shadingMode === 'hotspot'
+      visualMap: mapLevel === 'city'
+        ? {
+            min: 0,
+            max: maxVal,
+            seriesIndex: 0,
+            text: ['高', '低'],
+            inRange: { color: colorStops.map((s) => s.color) },
+            calculable: true,
+            left: 'left',
+            bottom: 20,
+          }
+        : shadingMode === 'hotspot'
         ? {
             type: 'piecewise',
             seriesIndex: 0,
@@ -658,23 +769,28 @@ const MapOverview: React.FC = () => {
             bottom: 20,
           },
       geo: {
-        map: 'china',
+        map: activeMapCode,
         roam: true,
         center: center as [number, number],
         zoom: zoom,
-        label: { show: !drillProvince, fontSize: 10, color: '#333' },
+        label: { show: mapLevel === 'city' ? true : !drillProvince, fontSize: mapLevel === 'city' ? 9 : 10, color: '#333' },
         // 热点模式无数据省份显示白色
         itemStyle: {
           areaColor: shadingMode === 'hotspot' ? '#ffffff' : '#f3f3f3',
           borderColor: '#ccc',
         },
         emphasis: { itemStyle: { areaColor: '#a6c84c' } },
-        regions: (shadingMode === 'hotspot'
-          ? (hotspotData?.provinces || []).filter((p) => !!PROVINCE_GEOJSON_NAME[p.name]).map((p) => PROVINCE_GEOJSON_NAME[p.name])
-          : currentData
-              .filter((d): d is MapDataPoint & { province: string } => !!d.province && !!PROVINCE_GEOJSON_NAME[d.province!])
-              .map((d) => PROVINCE_GEOJSON_NAME[d.province])
-        ).map((name) => ({ name })),
+        regions: mapLevel === 'city'
+          ? citySeriesData.filter((d) => d.value > 0).map((d) => ({
+              name: d.name,
+              itemStyle: d.name === activeCity ? { areaColor: '#a6c84c' } : undefined,
+            }))
+          : (shadingMode === 'hotspot'
+              ? (hotspotData?.provinces || []).filter((p) => !!PROVINCE_GEOJSON_NAME[p.name]).map((p) => PROVINCE_GEOJSON_NAME[p.name])
+              : currentData
+                  .filter((d): d is MapDataPoint & { province: string } => !!d.province && !!PROVINCE_GEOJSON_NAME[d.province!])
+                  .map((d) => PROVINCE_GEOJSON_NAME[d.province])
+            ).map((name) => ({ name })),
       },
       series,
     };
