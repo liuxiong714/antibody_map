@@ -92,6 +92,7 @@ def test_instance_resolved_attributes():
 
 
 # ── 测试 5: response_format 对 Ollama 跳过 ──────────────
+@patch.object(LLMExtractor, "_assert_local_model_installed", new=AsyncMock())
 @patch("app.core.extraction.llm_client.AsyncOpenAI")
 def test_response_format_skipped_for_ollama(mock_cls):
     """Ollama 模型调用时不传 response_format 参数"""
