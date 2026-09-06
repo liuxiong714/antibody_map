@@ -480,16 +480,18 @@ def validate_value_range(
 
 
 def _sanitize_unreasonable_values(item: dict) -> list[str]:
-    """S8：对提取数值做合理性净化，明显不可能的取值直接置 null。
+    """S8：对提取数值做合理性标记（保留原值，不删除数据）。
 
     目标：即使 LLM 被恶意文献诱导输出虚假/离谱数值（如阳性率 9999%），
-    也不让它进入数据库。返回检测到的问题列表（供置信度降级用）。
+    也不能让它污染统计——但**不置 null、不删除**。保留原始数值落库，
+    仅记录 issues 供置信度降级为 low，进入人工审核队列（pending）。
+    统计/KG 只消费 approved 数据，low+pending 的越界值不会进入统计。
 
     处理字段：
-    - positivity_rate：合理区间 [0, 100]（超出则置 null）
-    - positivity_ci_lower/upper：必须是 [0, 100]，且 lower <= upper（否则置 null）
-    - gmc_value：不能为负（负值无意义，置 null）
-    - sample_size / age_min / age_max：不能为负（置 null）
+    - positivity_rate：合理区间 [0, 100]（越界标记）
+    - positivity_ci_lower/upper：必须是 [0, 100]，且 lower <= upper（违反标记）
+    - gmc_value：不能为负（负值无意义，标记）
+    - sample_size / age_min / age_max：不能为负（标记）
     """
     issues: list[str] = []
 
@@ -500,11 +502,9 @@ def _sanitize_unreasonable_values(item: dict) -> list[str]:
         try:
             f = float(v)
         except (TypeError, ValueError):
-            item[key] = None
             issues.append(f"{key}_non_numeric")
             return
         if not (lo <= f <= hi):
-            item[key] = None
             issues.append(f"{key}_out_of_range")
 
     def _clamp_non_negative(key: str) -> None:
@@ -514,11 +514,9 @@ def _sanitize_unreasonable_values(item: dict) -> list[str]:
         try:
             f = float(v)
         except (TypeError, ValueError):
-            item[key] = None
             issues.append(f"{key}_non_numeric")
             return
         if f < 0:
-            item[key] = None
             issues.append(f"{key}_negative")
 
     _clamp_range("positivity_rate", 0.0, 100.0)
@@ -529,11 +527,9 @@ def _sanitize_unreasonable_values(item: dict) -> list[str]:
     _clamp_non_negative("age_min")
     _clamp_non_negative("age_max")
 
-    # CI 上下限顺序校验与净化
+    # CI 上下限顺序校验（违反仅标记，不删除，由置信度降级送人工审核）
     lo, hi = item.get("positivity_ci_lower"), item.get("positivity_ci_upper")
     if lo is not None and hi is not None and hi < lo:
-        item["positivity_ci_lower"] = None
-        item["positivity_ci_upper"] = None
         issues.append("ci_lower_greater_than_upper")
 
     return issues
