@@ -427,6 +427,39 @@ const MapOverview: React.FC = () => {
     ? yearlyData.find((y) => y.year === selectedYear)?.data || []
     : mapData;
 
+  // 阳性率/GMC 分桶筛选：null 视为不匹配
+  const _rateInBucket = (v: number | null | undefined, bucket: string, isGmc: boolean): boolean => {
+    if (v == null) return false;
+    if (isGmc) {
+      switch (bucket) {
+        case '0': return v < 0.5;
+        case '1': return v >= 0.5 && v < 1;
+        case '2': return v >= 1 && v < 2;
+        case '3': return v >= 2;
+        default: return false;
+      }
+    }
+    switch (bucket) {
+      case '0': return v < 20;
+      case '1': return v >= 20 && v < 40;
+      case '2': return v >= 40 && v < 60;
+      case '3': return v >= 60;
+      default: return false;
+    }
+  };
+
+  // 数据点分桶筛选
+  const _pointInBucket = (n: number | null | undefined, bucket: string): boolean => {
+    const v = n ?? 0;
+    switch (bucket) {
+      case '1': return v === 1;
+      case '2': return v >= 2 && v <= 5;
+      case '6': return v >= 6 && v <= 20;
+      case '21': return v > 20;
+      default: return false;
+    }
+  };
+
   const getOption = () => {
     if (!mapReady) return {};
     const colorStops = dataType === 'gmc' ? GMC_COLOR_STOPS : SERO_COLOR_STOPS;
@@ -1113,15 +1146,30 @@ const MapOverview: React.FC = () => {
                     style: { cursor: 'pointer' },
                   })}
                   columns={[
-                    { title: '省份', dataIndex: 'province', key: 'province', width: 70 },
+                    {
+                      title: '省份', dataIndex: 'province', key: 'province', width: 80,
+                      sorter: (a: MapDataPoint, b: MapDataPoint) => (a.province || '').localeCompare(b.province || ''),
+                      filters: [...new Set(currentData.map((d) => d.province).filter((p): p is string => !!p))].map((p) => ({ text: p, value: p })),
+                      onFilter: (v: unknown, r: MapDataPoint) => r.province === v,
+                    },
                     {
                       title: dataType === 'gmc' ? 'GMC' : '阳性率',
                       dataIndex: 'weighted_positivity',
                       key: 'wp',
-                      width: 80,
+                      width: 90,
                       render: (v: number | null) => (v != null ? Number(v).toFixed(2) + (dataType === 'gmc' ? ' μg/ml' : '%') : '-'),
+                      sorter: (a: MapDataPoint, b: MapDataPoint) => (a.weighted_positivity ?? -1) - (b.weighted_positivity ?? -1),
+                      filters: dataType === 'gmc'
+                        ? [{ text: '<0.5', value: '0' }, { text: '0.5-1', value: '1' }, { text: '1-2', value: '2' }, { text: '≥2', value: '3' }]
+                        : [{ text: '<20%', value: '0' }, { text: '20-40%', value: '1' }, { text: '40-60%', value: '2' }, { text: '≥60%', value: '3' }],
+                      onFilter: (v: unknown, r: MapDataPoint) => _rateInBucket(r.weighted_positivity, String(v), dataType === 'gmc'),
                     },
-                    { title: '数据点', dataIndex: 'point_count', key: 'pc', width: 60 },
+                    {
+                      title: '数据点', dataIndex: 'point_count', key: 'pc', width: 70,
+                      sorter: (a: MapDataPoint, b: MapDataPoint) => (a.point_count ?? 0) - (b.point_count ?? 0),
+                      filters: [{ text: '1', value: '1' }, { text: '2-5', value: '2' }, { text: '6-20', value: '6' }, { text: '>20', value: '21' }],
+                      onFilter: (v: unknown, r: MapDataPoint) => _pointInBucket(r.point_count, String(v)),
+                    },
                   ]}
                 />
               </>
