@@ -102,9 +102,15 @@ const LocalModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
     } finally { setSaving(false); }
   };
 
+  // 已下载排序权重：已下载 > 未知 > 未下载
+  const _installedRank = (v: boolean | null | undefined) => (v === true ? 1 : v === false ? -1 : 0);
+
   const columns = [
-    { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
-    { title: '模型名', dataIndex: 'model_name', key: 'model', width: 180, render: (v: string) => <Tag color="blue">{v}</Tag> },
+    { title: '名称', dataIndex: 'name', key: 'name', width: 180,
+      sorter: (a: LocalModelConfig, b: LocalModelConfig) => (a.name || '').localeCompare(b.name || '') },
+    { title: '模型名', dataIndex: 'model_name', key: 'model', width: 180,
+      render: (v: string) => <Tag color="blue">{v}</Tag>,
+      sorter: (a: LocalModelConfig, b: LocalModelConfig) => (a.model_name || '').localeCompare(b.model_name || '') },
     { title: '描述', dataIndex: 'description', key: 'desc', ellipsis: true, render: (v: string) => v || '-' },
     { title: '状态', dataIndex: 'is_active', key: 'active', width: 80,
       render: (v: boolean) => v ? <Tag color="green">启用</Tag> : <Tag>禁用</Tag>,
@@ -114,7 +120,7 @@ const LocalModelManager: React.FC<Props> = ({ visible, onClose, onSaved }) => {
         v === null || v === undefined ? <Tag color="orange">未知</Tag>
           : v ? <Tag color="green">已下载</Tag>
           : <Tag color="red">未下载</Tag>,
-    },
+      sorter: (a: LocalModelConfig, b: LocalModelConfig) => _installedRank(a.installed) - _installedRank(b.installed) },
     { title: '操作', key: 'action', width: 120,
       render: (_: unknown, record: LocalModelConfig) => (
         <Space>
