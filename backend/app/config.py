@@ -195,7 +195,9 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
     # 提取状态卡死阈值（分钟）：processing/queued 超过此时间未变，列表查询时自动重置为 failed
-    EXTRACTION_STALE_MINUTES: int = 30
+    # 2026-09-06 调优：本地 qwen3.8:27b 单篇提取（含重试）可达 20-40 分钟，30 分钟阈值会把
+    # 正常排队/长任务误判为卡死批量重置，导致失败率虚高。调至 180 以覆盖本地模型单篇时长。
+    EXTRACTION_STALE_MINUTES: int = 180
     # F14：worker 心跳刷新间隔（秒）。提取进行中每间隔刷新一次 worker_heartbeat，
     # 超时回收据此区分"长任务"（心跳新鲜）与"真卡死"（心跳停止）。须远小于 EXTRACTION_STALE_MINUTES。
     EXTRACTION_HEARTBEAT_INTERVAL: int = 60
