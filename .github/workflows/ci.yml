@@ -61,7 +61,17 @@ jobs:
         run: cd frontend && npx tsc --noEmit
 
       - name: Test frontend
-        run: cd frontend && npx vitest run --coverage
+        run: |
+          cd frontend
+          set +e
+          {
+            node --version
+            npx vitest run --coverage 2>&1
+            echo "=== VITEST_EXIT=$? ==="
+          } > /tmp/vitest_diag.out 2>&1
+          DETAIL=$(tail -60 /tmp/vitest_diag.out | tr '\n' ';' | cut -c1-6000)
+          echo "::error title=vitest-diag::$DETAIL"
+          exit 1
 
       - name: Build frontend
         run: cd frontend && npm run build
