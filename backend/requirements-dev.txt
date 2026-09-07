@@ -1,0 +1,5 @@
+# 测试依赖（CI 与本地开发共用，版本与本地验证一致，2026-09-07）
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+coverage==7.16.0

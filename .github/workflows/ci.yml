@@ -20,21 +20,22 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
 
       - name: Install backend dependencies
         run: |
           cd backend
-          pip install -r requirements.txt
-          # pytest 及异步测试支持未包含在 requirements.txt 中
-          pip install pytest pytest-asyncio
+          # 测试依赖（pytest/pytest-asyncio/pytest-cov/coverage）固化在 requirements-dev.txt
+          pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run offline backend tests
         run: |
           cd backend
           # 说明：原被忽视的 4 个文件已全部 mock 化（conftest.py 注入假 DB/用户，
           # LLM 相关 patch AsyncOpenAI），现可离网运行并纳入门禁。
-          pip install pytest-cov
+          # 测试依赖已由 requirements-dev.txt 安装，本 step 零网络。
           python -m pytest \
             -p no:cacheprovider \
             --cov=app --cov-report=term-missing \
