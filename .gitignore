@@ -18,6 +18,8 @@ frontend/dist/
 frontend/npm-output.txt
 frontend/tsconfig.tsbuildinfo
 frontend/coverage/
+backend/.coverage
+.coverage
 
 # 测试监控文件夹
 backend/data/test_monitor/
