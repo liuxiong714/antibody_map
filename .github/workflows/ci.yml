@@ -33,15 +33,15 @@ jobs:
       - name: Run offline backend tests
         run: |
           cd backend
-          echo "--- PYTHON/PLUGIN IMPORTS ---"
-          python --version
-          python -c "import pytest, pytest_cov, pytest_asyncio, anyio, coverage; print('imports-ok')" 2>&1
-          python -m pytest --version 2>&1
-          echo "--- PYTEST RUN ---"
-          python -m pytest -p no:cacheprovider --cov=app --cov-report=term-missing --cov-fail-under=45 -q > /tmp/pt.out 2>&1
-          echo "PYTEST_EXIT=$?"
-          tail -50 /tmp/pt.out
-          DETAIL=$(grep -E "ERROR|usage:|INTERNALERROR|Traceback|unrecognized|No module|could not load" /tmp/pt.out | head -12 | tr '\n' ';')
+          set +e
+          {
+            echo "=== PYVER ==="; python --version 2>&1
+            echo "=== IMPORTS ==="; python -c "import pytest, pytest_cov, pytest_asyncio, anyio, coverage; print('imports-ok')" 2>&1
+            echo "=== PTVER ==="; python -m pytest --version 2>&1
+            echo "=== RUN ==="; python -m pytest -p no:cacheprovider --cov=app --cov-report=term-missing --cov-fail-under=45 -q 2>&1
+            echo "=== EXIT=$? ==="
+          } > /tmp/diag.out 2>&1
+          DETAIL=$(tail -60 /tmp/diag.out | tr '\n' ';' | cut -c1-6000)
           echo "::error title=ci-diag::$DETAIL"
           exit 4
 
