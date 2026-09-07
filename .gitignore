@@ -74,6 +74,8 @@ scripts/*.sh
 scripts/*.py
 backend/scripts/*.sh
 backend/scripts/*.py
+# 例外：fix_folder_import_titles.py 被 tests/test_folder_import_title.py 依赖，需入库
+!backend/scripts/fix_folder_import_titles.py
 # 下划线前缀的临时调试脚本
 backend/data/_*.py
 backend/data/_*.sh
