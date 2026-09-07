@@ -33,14 +33,17 @@ jobs:
       - name: Run offline backend tests
         run: |
           cd backend
-          # 说明：原被忽视的 4 个文件已全部 mock 化（conftest.py 注入假 DB/用户，
-          # LLM 相关 patch AsyncOpenAI），现可离网运行并纳入门禁。
-          # 测试依赖已由 requirements-dev.txt 安装，本 step 零网络。
-          python -m pytest \
-            -p no:cacheprovider \
-            --cov=app --cov-report=term-missing \
-            --cov-fail-under=45 \
-            -q
+          echo "--- PYTHON/PLUGIN IMPORTS ---"
+          python --version
+          python -c "import pytest, pytest_cov, pytest_asyncio, anyio, coverage; print('imports-ok')" 2>&1
+          python -m pytest --version 2>&1
+          echo "--- PYTEST RUN ---"
+          python -m pytest -p no:cacheprovider --cov=app --cov-report=term-missing --cov-fail-under=45 -q > /tmp/pt.out 2>&1
+          echo "PYTEST_EXIT=$?"
+          tail -50 /tmp/pt.out
+          DETAIL=$(grep -E "ERROR|usage:|INTERNALERROR|Traceback|unrecognized|No module|could not load" /tmp/pt.out | head -12 | tr '\n' ';')
+          echo "::error title=ci-diag::$DETAIL"
+          exit 4
 
       - name: Lint backend with ruff
         run: |
