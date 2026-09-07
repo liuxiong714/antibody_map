@@ -50,7 +50,9 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         # 剥离 vendor 前缀（如 ollama:qwen3:32b → qwen3:32b），用于实际 API 调用
         self._api_model = self._strip_vendor_prefix(self.model)
         self.client = AsyncOpenAI(
-            api_key=self._resolved_key,
+            # 空 key 时用占位 key 避免 SDK 构造期抛 Missing credentials，
+            # 真实鉴权错误在调用期以 401 暴露（分类为 auth_error，不重试）
+            api_key=self._resolved_key or "missing-api-key",
             base_url=self._resolved_url,
             timeout=self._llm_timeout,
         )
@@ -563,7 +565,9 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
             self._resolved_key = self._resolved_key or resolved_key
             self._resolved_url = self._resolved_url or resolved_url
             self.client = AsyncOpenAI(
-                api_key=self._resolved_key,
+                # 空 key 时用占位 key 避免 SDK 构造期抛 Missing credentials，
+            # 真实鉴权错误在调用期以 401 暴露（分类为 auth_error，不重试）
+            api_key=self._resolved_key or "missing-api-key",
                 base_url=self._resolved_url,
                 timeout=self._llm_timeout,
             )

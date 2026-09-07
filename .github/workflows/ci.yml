@@ -39,16 +39,7 @@ jobs:
       - name: Run offline backend tests
         run: |
           cd backend
-          set +e
-          {
-            echo "=== ENV ==="; echo "SECRET_KEY_LEN=${#SECRET_KEY} APP_ENV=$APP_ENV"
-            echo "=== PYVER ==="; python --version 2>&1
-            echo "=== RUN ==="; python -m pytest -p no:cacheprovider --cov=app --cov-report=term-missing --cov-fail-under=45 -q 2>&1
-            echo "=== EXIT=$? ==="
-          } > /tmp/diag.out 2>&1
-          DETAIL=$(tail -40 /tmp/diag.out | tr '\n' ';' | cut -c1-6000)
-          echo "::error title=ci-diag::$DETAIL"
-          exit 4
+          python -m pytest -p no:cacheprovider --cov=app --cov-report=term-missing --cov-fail-under=45 -q
 
       - name: Lint backend with ruff
         run: |

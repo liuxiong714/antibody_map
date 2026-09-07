@@ -372,7 +372,9 @@ class LLMClientMixin:
         计费与长时间空等；重试决策统一交由上层应用控制。
         """
         return AsyncOpenAI(
-            api_key=self._resolved_key,
+            # 空 key 时用占位 key 避免 SDK 构造期抛 Missing credentials，
+            # 真实鉴权错误在调用期以 401 暴露（分类为 auth_error，不重试）
+            api_key=self._resolved_key or "missing-api-key",
             base_url=url,
             timeout=self._llm_timeout,
             max_retries=0,
