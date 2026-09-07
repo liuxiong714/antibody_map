@@ -10,6 +10,12 @@ jobs:
     name: Backend & Frontend
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # CI 测试环境配置：满足 app.config.Settings 启动校验。
+      # SECRET_KEY 必须 >= 32 字符；APP_ENV=development 仅用于绕过生产态口令护栏，
+      # 并非生产配置（本地运行亦通过显式 _cfg() 构造验证生产约束）。
+      SECRET_KEY: "ci-only-non-prod-secret-key-0123456789abcdef"
+      APP_ENV: "development"
 
     steps:
       - name: Checkout
