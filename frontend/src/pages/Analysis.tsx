@@ -459,6 +459,7 @@ const Analysis: React.FC = () => {
     setMetaAnalysisLoading(true);
     try {
       const params: Record<string, unknown> = { disease: appliedDisease };
+      if (appliedProvinces.length > 0) params.province = appliedProvinces.join(',');
       if (metaGroupBy) params.group_by = metaGroupBy;
       const data = await getMetaAnalysis(params);
       setMetaAnalysisData(data);
@@ -468,7 +469,7 @@ const Analysis: React.FC = () => {
     } finally {
       setMetaAnalysisLoading(false);
     }
-  }, [appliedDisease, metaGroupBy]);
+  }, [appliedDisease, appliedProvinces, metaGroupBy]);
 
   // 出生队列：birth_year = collection_year − age_mid，聚合 (十年段, 调查年)
   const fetchBirthCohort = useCallback(async () => {
@@ -2445,7 +2446,7 @@ const Analysis: React.FC = () => {
     { title: '研究数 k', dataIndex: 'k', key: 'k', width: 70 },
     { title: '固定效应合并', dataIndex: 'pooled_fixed_percent', key: 'pooled_fixed_percent', width: 100, render: (v: number | null) => v != null ? `${v.toFixed(2)}%` : '-' },
     { title: '随机效应合并', dataIndex: 'pooled_random_percent', key: 'pooled_random_percent', width: 100, render: (v: number | null) => v != null ? `${v.toFixed(2)}%` : '-' },
-    { title: 'I² (%)', dataIndex: 'i_squared_percent', key: 'i_squared_percent', width: 70, render: (v: number) => <b style={{ color: v >= 75 ? '#f5222d' : v >= 50 ? '#fa8c16' : '#52c41a' }}>{v.toFixed(1)}</b> },
+    { title: 'I² (%)', dataIndex: 'i_squared_percent', key: 'i_squared_percent', width: 70, render: (v: number | null) => v != null ? <b style={{ color: v >= 75 ? '#f5222d' : v >= 50 ? '#fa8c16' : '#52c41a' }}>{v.toFixed(1)}</b> : '-' },
     { title: 'Q', dataIndex: 'q_statistic', key: 'q_statistic', width: 70, render: (v: number | null) => v != null ? v.toFixed(2) : '-' },
     { title: 'τ²', dataIndex: 'tau_squared', key: 'tau_squared', width: 70, render: (v: number | null) => v != null ? v.toFixed(4) : '-' },
     {
@@ -2501,12 +2502,14 @@ const Analysis: React.FC = () => {
           <Card size="small" title={<Space><span>检测方法（Assay）异质性</span><Tag color="purple">跨方法对比</Tag></Space>}>
             {assayData && assayData.results.length > 0 ? (
               <>
+              {assayData.across_assay_i_squared_percent != null && (
                 <Alert
                   type={assayData.across_assay_i_squared_percent >= 75 ? 'warning' : assayData.across_assay_i_squared_percent >= 50 ? 'info' : 'success'}
                   showIcon
                   style={{ marginBottom: 12 }}
                   message={`跨 Assay I² = ${assayData.across_assay_i_squared_percent.toFixed(1)}%（Q=${assayData.across_assay_q_statistic != null ? assayData.across_assay_q_statistic.toFixed(2) : '-'}，k=${assayData.across_assay_k}）`}
                 />
+              )}
                 <Table<AssayHeterogeneityRow>
                   rowKey="assay"
                   size="small"

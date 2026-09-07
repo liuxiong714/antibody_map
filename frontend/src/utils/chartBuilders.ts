@@ -624,12 +624,12 @@ export function funnelPlotOption(
     lower.push([center - off, y]);
   }
 
-  const eggerWarn = egger != null && egger.p_value < 0.05;
+  const eggerWarn = egger != null && egger.p_value != null && egger.p_value < 0.05;
 
   return {
     title: {
-      text: eggerWarn
-        ? `漏斗图（提示可能存在发表偏倚，简化 Egger 检验 p=${egger?.p_value.toFixed(3)}）`
+      text: eggerWarn && egger?.p_value != null
+        ? `漏斗图（提示可能存在发表偏倚，简化 Egger 检验 p=${egger.p_value.toFixed(3)}）`
         : '漏斗图',
       left: 'center',
       textStyle: { fontSize: 14, color: eggerWarn ? '#cf1322' : '#333' },
@@ -638,7 +638,7 @@ export function funnelPlotOption(
       trigger: 'item',
       formatter(params: unknown) {
         const p = params as { seriesName?: string; value?: number[] };
-        if (p.seriesName === '研究' && Array.isArray(p.value)) {
+        if (p.seriesName === '研究' && Array.isArray(p.value) && p.value.length >= 2 && p.value[0] != null && p.value[1] != null) {
           return `效应量 t: ${p.value[0].toFixed(4)}<br/>√n: ${p.value[1].toFixed(2)}`;
         }
         return '';
@@ -837,7 +837,7 @@ export function birthCohortLinesOption(
     data: c.series.map((s) => (s.rate != null ? s.rate : undefined)),
   }));
   return {
-    title: { text: title, left: 'center', textStyle: { fontSize: 14 } },
+    title: { text: title, left: 'center', top: 2, textStyle: { fontSize: 14 } },
     tooltip: {
       trigger: 'axis',
       formatter(params: unknown) {
@@ -854,8 +854,9 @@ export function birthCohortLinesOption(
         return `<b>${year} 年</b><br/>${rows}`;
       },
     },
-    legend: { top: 5, type: 'scroll' },
-    grid: { left: 55, right: 20, top: 45, bottom: 35 },
+    // 图例置于标题下方一行，避免与标题重叠
+    legend: { top: 30, type: 'scroll' },
+    grid: { left: 55, right: 20, top: 70, bottom: 35 },
     xAxis: { type: 'category', name: '调查年', data: years.map(String) },
     yAxis: { type: 'value', name: '阳性率 (%)', scale: true },
     series,
@@ -902,7 +903,7 @@ export function antigenicMapOption(
   return {
     title: [
       { text: '抗原图谱', left: 'center', textStyle: { fontSize: 14 } },
-      { text: `stress = ${stress.toFixed(4)}｜${gridExplanation}`, left: 'center', top: 20, textStyle: { fontSize: 11, color: '#999' } },
+      { text: `stress = ${stress != null ? stress.toFixed(4) : '-'}｜${gridExplanation}`, left: 'center', top: 20, textStyle: { fontSize: 11, color: '#999' } },
     ],
     tooltip: {
       trigger: 'item',
