@@ -113,6 +113,18 @@ export async function getRegionCompare(params: Record<string, unknown>) {
   );
 }
 
+export async function getZoneCompare(params: Record<string, unknown>) {
+  return cachedGet(
+    async () => {
+      const { data } = await api.get('/analysis/zone-compare', { params });
+      return data;
+    },
+    '/analysis/zone-compare',
+    params,
+    CACHE_FILTER,
+  );
+}
+
 export async function getAgeStratify(params: Record<string, unknown>) {
   return cachedGet(
     async () => {

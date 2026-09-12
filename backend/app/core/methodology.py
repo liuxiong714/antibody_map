@@ -15,6 +15,7 @@ from typing import Any
 MODULE_NAMES = {
     "trend": "逐年趋势分析",
     "region_compare": "区域对比分析",
+    "zone_compare": "分区对比分析",
     "age_stratify": "年龄分层分析",
     "summary": "汇总统计",
     "equity": "省间公平性分析",

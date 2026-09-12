@@ -1,6 +1,6 @@
 import React from 'react';
 import { Select } from 'antd';
-import { PROVINCES } from '../utils/constants';
+import { PROVINCES, provinceLabel } from '../utils/constants';
 
 interface BaseProps {
   allowClear?: boolean;
@@ -41,7 +41,7 @@ const ProvinceSelector: React.FC<Props> = (props) => {
         onChange={(v) => onChange(v || [])}
         allowClear={allowClear}
         maxTagCount="responsive"
-        options={PROVINCES.map((p) => ({ value: p, label: p }))}
+        options={PROVINCES.map((p) => ({ value: p, label: provinceLabel(p) }))}
         filterOption={(input, option) => (option?.label as string)?.includes(input)}
       />
     );
@@ -56,7 +56,7 @@ const ProvinceSelector: React.FC<Props> = (props) => {
       value={value || undefined}
       onChange={(v) => onChange(v || '')}
       allowClear={allowClear}
-      options={PROVINCES.map((p) => ({ value: p, label: p }))}
+      options={PROVINCES.map((p) => ({ value: p, label: provinceLabel(p) }))}
       filterOption={(input, option) => (option?.label as string)?.includes(input)}
     />
   );

@@ -15,7 +15,8 @@ from app.core.stats_engine import (
     foi_from_curve,
     two_proportion_test,
 )
-from app.core.term_normalizer import normalize_disease
+from app.core.term_normalizer import normalize_disease, normalize_province
+from app.core.reference_data.china_provinces import REGIONS, province_region
 from app.models.data_point import DataPoint
 from app.services.analysis._common import (
     AGE_GROUPS,
@@ -148,6 +149,7 @@ async def get_region_compare(
 
         results.append({
             "province": prov,
+            "region": province_region(prov),
             "avg_positivity": meta_info["positivity"],
             "positivity_ci_lower": meta_info["ci_lower"],
             "positivity_ci_upper": meta_info["ci_upper"],
@@ -209,6 +211,78 @@ async def get_region_compare(
             comparison_test["province_b"] = r1["province"]
 
     return {"regions": results, "comparison_test": comparison_test}
+
+
+async def get_zone_compare(
+    db: AsyncSession,
+    disease: str | None = None,
+    province: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
+    age_min: int | None = None,
+    age_max: int | None = None,
+    data_type: str | None = None,
+) -> dict:
+    """分区对比分析（中部/东部/西部/北部/南部）。
+
+    复用 ``_build_base_query`` 取加权主估计，将各数据点按所属省份的「分区」归组，
+    区内全部数据点用 ``_meta_merge_cell`` / ``_calc_gmc`` 做 Meta 合并，
+    输出每区一行聚合结果（含成员省份）。此为省份级区域对比的补充汇总，纯新增、不影响省级结果。
+    """
+    query = _build_base_query(disease, province, year_start, year_end, age_min, age_max, data_type)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+
+    zone_map: dict[str, list[DataPoint]] = {}
+    for r in rows:
+        for p in (r.province or "").split(";"):
+            p = p.strip()
+            if not p:
+                continue
+            region = province_region(p)
+            if not region:
+                continue
+            zone_map.setdefault(region, []).append(r)
+
+    results = []
+    for region in REGIONS:
+        group_rows = zone_map.get(region, [])
+        if not group_rows:
+            continue
+        meta_info = _meta_merge_cell(group_rows)
+        gmc_res = _calc_gmc(group_rows)
+
+        # 该区内出现过的省份规范短名（去重、按首见排序）
+        members: list[str] = []
+        seen: set[str] = set()
+        for r in group_rows:
+            for p in (r.province or "").split(";"):
+                p = p.strip()
+                if not p:
+                    continue
+                region2 = province_region(p)
+                if region2 != region:
+                    continue
+                short = normalize_province(p)
+                if short and short not in seen:
+                    seen.add(short)
+                    members.append(short)
+
+        results.append({
+            "region": region,
+            "member_provinces": members,
+            "province_count": len(members),
+            "avg_positivity": meta_info["positivity"],
+            "positivity_ci_lower": meta_info["ci_lower"],
+            "positivity_ci_upper": meta_info["ci_upper"],
+            "avg_gmc": gmc_res["gmc"],
+            "gmc_ci_lower": gmc_res["ci_lower"],
+            "gmc_ci_upper": gmc_res["ci_upper"],
+            "point_count": len(group_rows),
+            "total_samples": meta_info["total_sample"],
+        })
+
+    return {"zones": results}
 
 
 

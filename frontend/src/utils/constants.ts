@@ -180,3 +180,50 @@ export const PROVINCE_GEOJSON_NAME: Record<string, string> = {
   '香港': '香港特别行政区',
   '澳门': '澳门特别行政区',
 };
+
+// 五大地域分区（与后端 china_provinces 保持一致）
+export const REGIONS = ['中部', '东部', '西部', '北部', '南部'];
+
+// 省份(规范短名) → { 分区, 简称 }（与后端 china_provinces 一致）
+export const PROVINCE_META: Record<string, { region: string; abbr: string }> = {
+  '北京': { region: '中部', abbr: '京' },
+  '天津': { region: '中部', abbr: '津' },
+  '上海': { region: '东部', abbr: '沪' },
+  '重庆': { region: '西部', abbr: '渝' },
+  '河北': { region: '中部', abbr: '冀' },
+  '山西': { region: '中部', abbr: '晋' },
+  '辽宁': { region: '北部', abbr: '辽' },
+  '吉林': { region: '北部', abbr: '吉' },
+  '黑龙江': { region: '北部', abbr: '黑' },
+  '江苏': { region: '东部', abbr: '苏' },
+  '浙江': { region: '东部', abbr: '浙' },
+  '安徽': { region: '东部', abbr: '皖' },
+  '福建': { region: '东部', abbr: '闽' },
+  '江西': { region: '东部', abbr: '赣' },
+  '山东': { region: '北部', abbr: '鲁' },
+  '河南': { region: '中部', abbr: '豫' },
+  '湖北': { region: '中部', abbr: '鄂' },
+  '湖南': { region: '南部', abbr: '湘' },
+  '广东': { region: '南部', abbr: '粤' },
+  '海南': { region: '南部', abbr: '琼' },
+  '四川': { region: '西部', abbr: '川' },
+  '贵州': { region: '南部', abbr: '贵' },
+  '云南': { region: '南部', abbr: '云' },
+  '陕西': { region: '中部', abbr: '陕' },
+  '甘肃': { region: '西部', abbr: '甘' },
+  '青海': { region: '西部', abbr: '青' },
+  '台湾': { region: '东部', abbr: '台' },
+  '内蒙古': { region: '北部', abbr: '蒙' },
+  '广西': { region: '南部', abbr: '桂' },
+  '西藏': { region: '西部', abbr: '藏' },
+  '宁夏': { region: '西部', abbr: '宁' },
+  '新疆': { region: '西部', abbr: '新' },
+  '香港': { region: '南部', abbr: '港' },
+  '澳门': { region: '南部', abbr: '澳' },
+};
+
+// 省份展示标签：短名（简称·分区），如「北京（京·中部）」；未知省份原样返回
+export function provinceLabel(short: string): string {
+  const meta = PROVINCE_META[short];
+  return meta ? `${short}（${meta.abbr}·${meta.region}）` : short;
+}

@@ -27,6 +27,7 @@ from app.services.analysis.basic import (
     get_region_compare,
     get_summary,
     get_trend,
+    get_zone_compare,
 )
 from app.services.analysis.data_management import (
     get_approved_data_points,
@@ -87,6 +88,7 @@ __all__ = [
     # 子模块公共函数
     "get_trend",
     "get_vaccine_analysis",
+    "get_zone_compare",
     "infectious_disease",
     "meta",
     "spatial",

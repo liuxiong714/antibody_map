@@ -18,12 +18,12 @@ import GoalTrackingChart from '../components/GoalTrackingChart';
 import SimulationPanel from '../components/SimulationPanel';
 import CoverageReviewTable from '../components/CoverageReviewTable';
 import CoverageReviewChart from '../components/CoverageReviewChart';
-import { getTrend, getRegionCompare, getAgeStratify, getApprovedDataPoints, getDataGapAnalysis, getFoiHerdImmunity, getVaccineEffectivenessCoverage, getEquityAnalysis, getQualityAssessment, getGoalTracking, getAgeCurve, getMetaMerge, getMetaAnalysis, getAssayHeterogeneity, getSimulation, getProvinceData, fetchCoverageReview, getBirthCohort, fetchReviewStats } from '../services/map';
+import { getTrend, getRegionCompare, getZoneCompare, getAgeStratify, getApprovedDataPoints, getDataGapAnalysis, getFoiHerdImmunity, getVaccineEffectivenessCoverage, getEquityAnalysis, getQualityAssessment, getGoalTracking, getAgeCurve, getMetaMerge, getMetaAnalysis, getAssayHeterogeneity, getSimulation, getProvinceData, fetchCoverageReview, getBirthCohort, fetchReviewStats } from '../services/map';
 import { useFilterStore } from '../store';
 import type { TableRowSelection } from 'antd/es/table/interface';
 import type { ColumnsType } from 'antd/es/table';
 import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, MetaMergeResponse, AssayHeterogeneityResponse, SimulationResponse, MapDataPoint, MetaMergeProvinceResult, AssayHeterogeneityRow, HeterogeneityLevel, CoverageReviewResult, ReviewStatsResult, MetaAnalysisResponse, MetaAnalysisGroup, BirthCohortResponse } from '../types';
-import { DISEASES, PROVINCE_GEOJSON_NAME } from '../utils/constants';
+import { DISEASES, PROVINCE_GEOJSON_NAME, provinceLabel } from '../utils/constants';
 import { lineWithBand, barWithError, funnelPlotOption, wilsonCi, ftTransform, birthCohortHeatmapOption, birthCohortLinesOption } from '../utils/chartBuilders';
 import ForestPlot from '../components/ForestPlot';
 import { useTheme, CANDIDATE_ACCENTS } from '../theme';
@@ -89,6 +89,7 @@ const Analysis: React.FC = () => {
   const [trendSignificance, setTrendSignificance] = useState<TrendSignificance | null>(null);
   const [trendTest, setTrendTest] = useState<TrendTest | null>(null);
   const [regionData, setRegionData] = useState<DataItem[]>([]);
+  const [zoneData, setZoneData] = useState<DataItem[]>([]);
   const [comparisonTest, setComparisonTest] = useState<ComparisonTest | null>(null);
   const [regionRateView, setRegionRateView] = useState<RegionRateView>('crude');
   const [pairModalVisible, setPairModalVisible] = useState(false);
@@ -185,10 +186,11 @@ const Analysis: React.FC = () => {
       if (appliedDataType) params.data_type = appliedDataType;
       if (appliedProvinces.length > 0) params.province = appliedProvinces.join(',');
 
-      const [trend, region, age] = await Promise.all([
+      const [trend, region, age, zone] = await Promise.all([
         getTrend(params),
         getRegionCompare(params),
         getAgeStratify(params),
+        getZoneCompare(params),
       ]);
       const trendResp = (trend as { trend: DataItem[]; trend_significance?: TrendSignificance; trend_test?: TrendTest } | null) || null;
       setTrendData(trendResp?.trend || []);
@@ -198,6 +200,8 @@ const Analysis: React.FC = () => {
       const regionList = Array.isArray(region) ? (region as DataItem[]) : (regionResp?.regions || []);
       setRegionData(regionList);
       setComparisonTest(regionResp?.comparison_test || null);
+      const zoneResp = (zone as { zones?: DataItem[] } | null) || null;
+      setZoneData(Array.isArray(zone) ? (zone as DataItem[]) : (zoneResp?.zones || []));
       const ageResp = (age as { age_groups?: DataItem[] } | null) || null;
       setAgeData((Array.isArray(age) ? (age as DataItem[]) : (ageResp?.age_groups || [])));
       // 记录各模块快照 token（供图表卡片引用/水印使用）
@@ -847,6 +851,7 @@ const Analysis: React.FC = () => {
 
   const regionCompareColumns = [
     { title: '省份', dataIndex: 'province', key: 'province', width: 80, ellipsis: true, sorter: (a: DataItem, b: DataItem) => String(a.province).localeCompare(String(b.province)) },
+    { title: '分区', dataIndex: 'region', key: 'region', width: 60, ellipsis: true, render: (_: unknown, r: DataItem) => (typeof r.region === 'string' ? r.region : '-') },
     {
       title: '粗率 (%)',
       key: 'crude',
@@ -887,6 +892,34 @@ const Analysis: React.FC = () => {
     },
     { title: '样本量', dataIndex: 'total_samples', key: 'total_samples', width: 90, sorter: (a: DataItem, b: DataItem) => Number(a.total_samples) - Number(b.total_samples) },
     { title: '数据点', dataIndex: 'point_count', key: 'point_count', width: 70, sorter: (a: DataItem, b: DataItem) => Number(a.point_count) - Number(b.point_count) },
+  ];
+
+  // 分区汇总表（中部/东部/西部/北部/南部，区级 Meta 合并）列
+  const zoneCompareColumns = [
+    { title: '分区', dataIndex: 'region', key: 'region', width: 60 },
+    { title: '成员省份', dataIndex: 'member_provinces', key: 'member_provinces', render: (_: unknown, r: DataItem) => (Array.isArray(r.member_provinces) ? (r.member_provinces as string[]).map(provinceLabel).join('、') : '-') },
+    {
+      title: '阳性率 (%)',
+      key: 'zonePos',
+      width: 110,
+      render: (_: unknown, r: DataItem) => {
+        const v = r.avg_positivity as number | null;
+        if (v == null) return '-';
+        return (
+          <span>
+            {v.toFixed(2)}
+            {r.positivity_ci_lower != null && (
+              <span style={{ color: '#999', fontSize: 11 }}>
+                <br />({Number(r.positivity_ci_lower).toFixed(1)}~{Number(r.positivity_ci_upper).toFixed(1)})
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
+    { title: 'GMC', dataIndex: 'avg_gmc', key: 'avg_gmc', width: 70, render: (_: unknown, r: DataItem) => r.avg_gmc != null ? Number(r.avg_gmc).toFixed(2) : '-' },
+    { title: '样本量', dataIndex: 'total_samples', key: 'total_samples', width: 80 },
+    { title: '数据点', dataIndex: 'point_count', key: 'point_count', width: 70 },
   ];
 
   const summaryContent = (
@@ -933,6 +966,18 @@ const Analysis: React.FC = () => {
                 pagination={false}
                 scroll={{ x: 480, y: 220 }}
                 style={{ marginTop: 12 }}
+              />
+            )}
+            {zoneData.length > 0 && (
+              <Table
+                rowKey="region"
+                title={() => <span style={{ fontWeight: 600 }}>分区汇总（中部/东部/西部/北部/南部）</span>}
+                columns={zoneCompareColumns}
+                dataSource={zoneData}
+                size="small"
+                pagination={false}
+                scroll={{ x: 520, y: 220 }}
+                style={{ marginTop: 16 }}
               />
             )}
           </ChartWithSnapshot>

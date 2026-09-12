@@ -141,6 +141,35 @@ async def get_region_compare(
     ))
 
 
+@router.get("/analysis/zone-compare", response_model=ApiResponse, summary="分区对比分析", description="将数据点按省份所属分区（中部/东部/西部/北部/南部）聚合，做区级 Meta 合并，返回每区阳性率/GMC/样本量及成员省份")
+@with_snapshot("zone_compare")
+async def get_zone_compare(
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
+    year_start: int | None = Query(None, description="起始年份"),
+    year_end: int | None = Query(None, description="结束年份"),
+    age_min: int | None = Query(None, description="最小年龄"),
+    age_max: int | None = Query(None, description="最大年龄"),
+    data_type: str | None = Query(None, description="数据类型"),
+    db: AsyncSession = Depends(get_db),
+):
+    """分区对比分析"""
+    data = await analysis_service.get_zone_compare(
+        db=db,
+        disease=disease,
+        province=province,
+        year_start=year_start,
+        year_end=year_end,
+        age_min=age_min,
+        age_max=age_max,
+        data_type=data_type,
+    )
+    return ApiResponse(data=_attach_methodology_note(
+        data, "zone_compare",
+        {"disease": disease, "province": province, "year_start": year_start, "year_end": year_end},
+    ))
+
+
 @router.get("/analysis/equity", response_model=ApiResponse, summary="省间公平性分析", description="以省为粒度分析抗体水平公平性：省间基尼系数、变异系数、最佳/最差省、达标比例（对比 WHO 阈值）、Top/Bottom 排名")
 @with_snapshot("equity", filter_keys=("disease", "year_start", "year_end", "age_min", "age_max"),
                data_type_override="seroprevalence")
