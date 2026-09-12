@@ -106,3 +106,15 @@
   flex: 1;
 }
 
+/* ── 系统设置标签栏：所有功能一次性可见（换行 + 紧凑间距），无需左右滚动 ── */
+.settings-card .ant-tabs-nav .ant-tabs-nav-wrap {
+  overflow: visible;
+}
+.settings-card .ant-tabs-nav .ant-tabs-nav-list {
+  flex-wrap: wrap;
+}
+.settings-card .ant-tabs-nav .ant-tabs-tab {
+  margin: 0 8px 8px 0;
+  padding: 8px 14px;
+}
+

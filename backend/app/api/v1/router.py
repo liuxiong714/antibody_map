@@ -13,6 +13,7 @@ from app.api.v1.model_config import router as model_config_router
 from app.api.v1.pubmed import router as pubmed_router
 from app.api.v1.report import router as report_router
 from app.api.v1.search import router as search_router
+from app.api.v1.synthetic import router as synthetic_router
 from app.api.v1.system import router as system_router
 from app.api.v1.tag import router as tag_router
 from app.config import settings
@@ -42,5 +43,6 @@ _protected.include_router(model_config_router, tags=["models"])
 _protected.include_router(pubmed_router, tags=["pubmed"])
 _protected.include_router(tag_router, tags=["tags"])
 _protected.include_router(system_router, tags=["system"])
+_protected.include_router(synthetic_router, tags=["synthetic"])
 _protected.include_router(knowledge_graph_router)
 router.include_router(_protected)

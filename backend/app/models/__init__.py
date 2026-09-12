@@ -15,6 +15,7 @@ from app.models.monitored_folder import MonitoredFile, MonitoredFolder
 from app.models.reference_import_log import ReferenceImportLog
 from app.models.report import Report
 from app.models.report_template import ReportTemplate
+from app.models.synthetic_task import SyntheticTask
 from app.models.titer_table import TiterTable
 from app.models.user import User
 
@@ -36,6 +37,7 @@ __all__ = [
     "ReferenceImportLog",
     "Report",
     "ReportTemplate",
+    "SyntheticTask",
     "Tag",
     "TiterTable",
     "User",

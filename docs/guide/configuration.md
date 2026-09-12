@@ -12,7 +12,7 @@
 | `QWEN_API_KEY` | 通义千问独立 API 密钥 | 回退到 `LLM_API_KEY` |
 | `LLM_FALLBACK_BASE_URLS` | 备用地址（逗号分隔） | - |
 | `LLM_CONNECT_RETRIES` | 连接错误快速重试次数 | `2` |
-| `LLM_REQUEST_TIMEOUT` | 请求超时（秒） | `600` |
+| `LLM_REQUEST_TIMEOUT` | 请求超时（秒） | `1200` |
 | `LLM_CONCURRENCY` | 并发提取数 | `2` |
 
 ## 数据库与存储
@@ -44,7 +44,7 @@
 | `ENABLE_KG_EXTRACTION` | 启用知识图谱 LLM 三元组抽取 | `false` |
 | `KG_QA_INCLUDE_UNREVIEWED` | 知识图谱问答是否纳入未审核数据点（关闭则只检索已审核） | `true` |
 | `VL_BATCH_SIZE` | 视觉提取单批页数（分批发送扫描页，避免超过 Ollama 上下文窗） | `6` |
-| `EXTRACTION_STALE_MINUTES` | 提取状态卡死回收阈值（分钟） | `30` |
+| `EXTRACTION_STALE_MINUTES` | 提取状态卡死回收阈值（分钟），覆盖本地模型单篇长任务 | `180` |
 | `APP_ENV` | 运行环境 | `development` |
 
 ## 本地 Ollama 模型配置

@@ -170,6 +170,17 @@ LLM 生成免疫学报告 + 疫苗接种策略报告
 | POST | `/kg/extraction/trigger` | 手动触发三元组抽取任务（自动筛选未处理文献，串行 LLM 抽取） |
 | POST | `/kg/qa/ask` | 知识图谱咨询问答（模板命中或 LLM 兜底，回答绑定数据点证据） |
 
+### AI 准确度自测（文件夹监控）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/synthetic` | 创建合成文献自测任务（生成模型 A 批量生成含已知答案+噪声的合成文献入库） |
+| POST | `/synthetic/{task_id}/extract` | 用提取模型 B 对任务内全部合成文献触发现有 AI 提取 |
+| GET | `/synthetic` | 自测任务历史列表 |
+| GET | `/synthetic/{task_id}` | 自测任务详情/进度/评估结果摘要 |
+| POST | `/synthetic/{task_id}/assess` | 提取完成后执行评估（与 ground truth 比对） |
+| GET | `/synthetic/{task_id}/export` | 导出评估明细 CSV |
+
 ### 数据分析
 
 | 方法 | 路径 | 说明 |

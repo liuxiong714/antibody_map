@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
+import SyntheticSelfTest from './SyntheticSelfTest';
 import {
   listFolders, createFolder, updateFolder, deleteFolder, scanFolder, listFolderFiles,
 } from '../services/folderMonitor';
@@ -445,6 +446,8 @@ const FolderMonitorPage: React.FC = () => {
           scroll={{ x: 1200 }}
         />
       </Card>
+
+      <SyntheticSelfTest />
 
       {/* 添加/编辑 Modal */}
       <Modal

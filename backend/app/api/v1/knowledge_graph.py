@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
 from app.config import settings
+from app.core import redis_background_tasks as bg
 from app.models.kg_entity import KGEntity
 from app.models.kg_triple import KGTriple
 from app.schemas.common import ApiResponse
@@ -316,6 +317,13 @@ async def trigger_kg_extraction(
 
     scope = "directed" if literature_ids else "auto"
     task = run_kg_extraction.delay(scope=scope, limit=limit, literature_ids=[str(i) for i in literature_ids] if literature_ids else None)
+    # 提交后立即登记任务状态，使前端立刻能按 task_id 轮询到"排队中"，避免 worker
+    # 尚未拉取执行（尤其并发=1、前面任务未结束时）导致轮询短暂 404 被误判为过期。
+    # worker 真正开始时会再次 start 覆盖为 running，随后 finish 写最终状态并清理 ids。
+    try:
+        await bg.start("kg_extraction", task_id=str(task.id), scope=scope)
+    except Exception:
+        logger.warning("登记知识图谱抽取任务状态失败（忽略）", exc_info=True)
     return ApiResponse(data={"task_id": str(task.id), "status": "queued", "scope": scope})
 
 

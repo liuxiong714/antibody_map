@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     CROSSREF_DOI_BACKFILL: bool = True
 
     # 本地大模型（如 32B/70B）推理慢，请求超时需放宽，单位：秒
-    LLM_REQUEST_TIMEOUT: int = 600
+    LLM_REQUEST_TIMEOUT: int = 1200
 
     # P2-B1：LLM 并发提取配置
     # 并发请求数上限，需与 Ollama 的 OLLAMA_NUM_PARALLEL 环境变量对齐

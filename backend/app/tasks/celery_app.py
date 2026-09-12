@@ -51,7 +51,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     # 任务时间上限：防止 LLM 长任务（本地 Ollama 推理）异常悬挂占满 worker。
     # 软限制触发 SoftTimeLimitExceeded（任务可自行捕获清理）；硬限制到点强制终止。
-    # 取值需明显大于单次 LLM 调用超时（LLM_REQUEST_TIMEOUT=600s），且覆盖本地模型整篇多步提取。
+    # 取值需明显大于单次 LLM 调用超时（LLM_REQUEST_TIMEOUT=1200s），且覆盖本地模型整篇多步提取。
     task_soft_time_limit=3600,
     task_time_limit=4200,
 )

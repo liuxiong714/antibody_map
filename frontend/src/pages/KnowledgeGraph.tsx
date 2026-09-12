@@ -92,13 +92,18 @@ const KnowledgeGraph: React.FC = () => {
   // 抽取进度提示（"点外卖"模式：提交后原地轮询，按钮显示实时进度）
   const [kgTip, setKgTip] = useState('');
   const kgTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 连续 404 计数：Celery worker 登记 Redis 有延迟，任务刚提交时前几次轮询可能返回
+  // 404（"任务不存在"），只有连续多次仍未登记才视为任务彻底过期，避免瞬时竞态误报。
+  const kgMissingCount = useRef(0);
   const stopKgPolling = () => { if (kgTimer.current) { clearInterval(kgTimer.current); kgTimer.current = null; } };
   /** 轮询知识图谱抽取任务直到结束，期间更新行内进度提示 */
   const pollKgTask = useCallback((taskId: string, doneCb: () => void, failCb: () => void) => {
     stopKgPolling();
+    kgMissingCount.current = 0;
     const tick = async () => {
       try {
         const st = await getTaskStatus(taskId);
+        kgMissingCount.current = 0;
         const status = String(st.status || 'running');
         setKgTip(`抽取中…已处理 ${st.processed ?? 0} / ${st.total ?? '-'} 篇`);
         if (status === 'done') {
@@ -119,7 +124,13 @@ const KnowledgeGraph: React.FC = () => {
           failCb();
         }
       } catch (e: any) {
-        if (e?.response?.status === 404) { stopKgPolling(); setKgTip(''); message.error('抽取任务不存在或已过期'); failCb(); }
+        if (e?.response?.status === 404) {
+          kgMissingCount.current += 1;
+          // 允许临时缺失几次（worker 登记延迟），连续多次仍 404 才当作任务过期终止
+          if (kgMissingCount.current >= 4) {
+            stopKgPolling(); setKgTip(''); message.error('抽取任务不存在或已过期'); failCb();
+          }
+        }
       }
     };
     setKgTip('已提交，正在排队...');
