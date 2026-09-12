@@ -29,6 +29,7 @@ from app.core.redis_background_tasks import active_tasks as _redis_active_tasks
 from app.core.redis_background_tasks import get_task as _redis_get_task
 from app.core.running_tasks import active as _running_active
 from app.models.literature import Literature
+from app.models.synthetic_task import SyntheticTask
 from app.schemas.common import ApiResponse
 from app.services import goal_threshold_service
 
@@ -127,6 +128,16 @@ async def system_active_tasks(_user=Depends(get_current_user), db: AsyncSession 
     report_items = await _redis_active_tasks("report_generation") or _running_active("report_generation")
     kg_items = await _redis_active_tasks("kg_extraction") or _running_active("kg_extraction")
 
+    # AI 准确度自测：FastAPI 进程内后台协程（生成/提取），以 synthetic_task 运行态计数为准
+    synthetic_running = 0
+    try:
+        synthetic_running = (await db.execute(
+            select(func.count()).select_from(SyntheticTask)
+            .where(SyntheticTask.status.in_(["generating", "extracting"]))
+        )).scalar_one()
+    except Exception:
+        logger.warning("查询自测任务状态失败", exc_info=True)
+
     tasks = [
         {
             "type": "literature_extraction",
@@ -149,6 +160,13 @@ async def system_active_tasks(_user=Depends(get_current_user), db: AsyncSession 
             "status": "running" if report_items else "idle",
             "running": len(report_items),
             "items": report_items,
+        },
+        {
+            "type": "synthetic_self_test",
+            "name": "AI准确度自测",
+            "status": "running" if synthetic_running else "idle",
+            "running": synthetic_running,
+            "items": [],
         },
     ]
     return ApiResponse(

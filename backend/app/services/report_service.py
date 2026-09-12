@@ -1334,6 +1334,9 @@ async def _call_llm(db: AsyncSession, prompt: str, model: str | None = None) -> 
     llm_model = model or settings.LLM_MODEL
     api_key = settings.LLM_API_KEY
     base_url = settings.LLM_BASE_URL
+    # 本地 Ollama 模型带 UI 前缀 "ollama:"，调用前剥离（ollama:qwen2.5:14b → qwen2.5:14b）
+    if llm_model and llm_model.startswith("ollama:"):
+        llm_model = llm_model.split(":", 1)[1]
 
     # 如果 model 是远程模型配置的 UUID，查找对应的 API 配置
     if model:
