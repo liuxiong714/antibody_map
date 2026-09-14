@@ -1,5 +1,19 @@
 # 变更日志
 
+## v1.25.0 (2026-09-14)
+
+### 新增
+
+- **AI 准确度自测多模型对比**：synthetic_task 新增 `literature_source` / `reference_model` / `models` 字段，自测任务支持两种文献来源——「生成模型模拟」（生成模型 A 批量产出含越界值/缺字段/格式变异/完全错误值四类噪声的合成文献）与「数据库已有文献」（从库中勾选真实文献，由参考模型产出 GT）；传入多个 `models` 时执行多模型对比提取，每个「模型×文献」的结果独立存入新增 `synthetic_extraction` 表，不写入 `data_point`，避免多模型互相覆盖、不污染真实数据。
+- **自测任务载体选项**：synthetic_task 新增 `output_format`（文献载体 text/pdf）与 `include_table`（是否含表格）两列，支持评估提取模型对不同载体形式与表格化数据的提取准确度。
+- **自测任务阶段时间戳**：synthetic_task 记录生成、提取、完成各阶段时间戳，报告展示「文献规模 × 点/篇」「生成/提取/总耗时」等完整指标。
+- **LLM 流式超时保护**：`llm_client` 改为流式调用，新增 `LLM_FIRST_TOKEN_TIMEOUT`（默认 60s）与 `LLM_CHUNK_GAP_TIMEOUT`（默认 120s）配置——连接挂死或无首 token 时即时判失败并安全重试，避免 worker 空等 20 分钟；流式挂死归入 `connection_error` 可安全重试，防止双倍计费。
+- **时区序列化**：新增 `backend/app/core/timeutil.py::iso_ts()`，将数据库 UTC aware 时间统一转为 Asia/Shanghai 北京时间 ISO 输出，供 synthetic / model_config / extraction / auth 等 API 使用，前端展示与本地时区一致。
+
+### 修复
+
+- **PDF 预览偶发空白页**：`PdfViewer` 渲染改为串行化——IntersectionObserver、滚动兜底、缩放变化等并发触发统一合并排队执行（`pendingRenderRef` / `requestedRangeRef`），避免同一页多个渲染任务相互 cancel 后既不重新挂载也无后续渲染，导致页面（如第 3 页）永久空白。
+
 ## v1.24.0 (2026-09-12)
 
 ### 新增

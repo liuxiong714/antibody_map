@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_admin
 from app.core.crypto import mask
+from app.core.timeutil import iso_ts
 from app.core.providers.ollama_provider import fetch_installed_model_names, is_model_installed
 from app.models.api_model_config import ApiModelConfig
 from app.models.local_model_config import LocalModelConfig
@@ -46,12 +47,21 @@ FALLBACK_LOCAL_MODELS = [
 
 @router.get("/models", response_model=ApiResponse, summary="获取可用模型列表", description="获取可用模型列表，包括本地模型（Ollama等）和远程API模型配置")
 async def list_models(db: AsyncSession = Depends(get_db)):
-    """获取可用模型列表（本地 + 远程配置）"""
-    # 本地模型：优先从本地模型配置表读取启用项，表为空时回退到静态列表
+    """获取可用模型列表（本地 + 远程配置）
+
+    本地模型：优先从本地模型配置表读取启用项，且仅保留当前已在 Ollama 实际部署
+    （已 pull）的模型，避免向抽取/报告等功能暴露未安装的"幽灵模型"；
+    仅当 Ollama 不可达（installed=None）时回退展示全部启用配置。
+    表为空时回退到静态列表。
+    """
     result = await db.execute(
         select(LocalModelConfig).where(LocalModelConfig.is_active.is_(True)).order_by(LocalModelConfig.created_at)
     )
     local_rows = result.scalars().all()
+    # 过滤为实际已安装的模型（Ollama 不可达时 installed=None，回退全部）
+    installed = await fetch_installed_model_names()
+    if installed is not None and local_rows:
+        local_rows = [m for m in local_rows if is_model_installed(m.model_name, installed)]
     if local_rows:
         local_list = [
             {**DEFAULT_MODEL_OPTION, "group": "local", "is_default": True},
@@ -170,9 +180,9 @@ def _config_to_dict(c: ApiModelConfig) -> dict:
         "base_url": c.base_url,
         "description": c.description,
         "is_active": c.is_active,
-        "expires_at": c.expires_at.isoformat() if c.expires_at else None,
-        "created_at": c.created_at.isoformat(),
-        "updated_at": c.updated_at.isoformat(),
+        "expires_at": iso_ts(c.expires_at),
+        "created_at": iso_ts(c.created_at),
+        "updated_at": iso_ts(c.updated_at),
     }
 
 

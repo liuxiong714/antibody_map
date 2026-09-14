@@ -12,6 +12,7 @@ from app.models.base import async_session
 from app.models.data_point import DataPoint
 from app.models.extraction_history import ExtractionHistory
 from app.models.literature import Literature
+from app.core.timeutil import iso_ts
 from app.tasks.extract_task import process_literature
 
 logger = logging.getLogger("uvicorn")
@@ -336,7 +337,7 @@ async def get_extraction_results(
             "review_comment": dp.review_comment,
             "reviewer_id": str(dp.reviewer_id) if dp.reviewer_id else None,
             "reviewer_name": reviewer_names.get(dp.reviewer_id) if dp.reviewer_id else None,
-            "reviewed_at": dp.reviewed_at.isoformat() if dp.reviewed_at else None,
+            "reviewed_at": iso_ts(dp.reviewed_at),
             # 质量分级（审核通过后异步打分写入；breakdown 为元数据级实时估算，用于前端 Tooltip 明细）
             "quality_score": dp.quality_score,
             "quality_grade": dp.quality_grade,
@@ -344,8 +345,8 @@ async def get_extraction_results(
             "quality_breakdown": _metadata_quality_breakdown(dp),
             # P1-6：同省同病同年已有已审核数据点冲突对比（审核页只读提示）
             "conflicts": conflicts.get(str(dp.id), []),
-            "created_at": dp.created_at.isoformat() if dp.created_at else None,
-            "updated_at": dp.updated_at.isoformat() if dp.updated_at else None,
+            "created_at": iso_ts(dp.created_at),
+            "updated_at": iso_ts(dp.updated_at),
         }
         for dp in data_points
     ]
@@ -366,7 +367,7 @@ async def get_extraction_history(
     return [
         {
             "id": str(h.id),
-            "extracted_at": h.extracted_at.isoformat() if h.extracted_at else None,
+            "extracted_at": iso_ts(h.extracted_at),
             "model": h.model,
             "status": h.status,
             "data_point_count": h.data_point_count,

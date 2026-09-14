@@ -16,6 +16,7 @@ import {
   askKgQuestion,
 } from '../services/knowledgeGraph';
 import { getTaskStatus } from '../services/system';
+import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
 import type {
   KgGraphData, KgNode, KgOverviewData, KgOptionsData,
   KgSearchResult, KgPathResult, KgStatsData,
@@ -88,6 +89,8 @@ const KnowledgeGraph: React.FC = () => {
   // 持久化统计 + 抽取
   const [kgStats, setKgStats] = useState<KgStatsData | null>(null);
   const [extracting, setExtracting] = useState(false);
+  const [kgModelOptions, setKgModelOptions] = useState<ExtendedModelOption[]>([]);
+  const [kgModel, setKgModel] = useState<string>();
   const [extractResult, setExtractResult] = useState<{ processed: number; total_written: number; remaining: number; errors: string[] } | null>(null);
   // 抽取进度提示（"点外卖"模式：提交后原地轮询，按钮显示实时进度）
   const [kgTip, setKgTip] = useState('');
@@ -172,6 +175,7 @@ const KnowledgeGraph: React.FC = () => {
     getKgOptions().then(setOptions).catch(() => message.error('加载筛选选项失败'));
     getKgOverview().then(setOverview).catch(() => message.error('加载图谱概览失败'));
     getKgStats().then(setKgStats).catch(() => message.error('加载持久化统计失败'));
+    buildModelOptions().then(setKgModelOptions).catch(() => {});
   }, []);
 
   // 筛选条件变化时重新构建图谱
@@ -216,7 +220,7 @@ const KnowledgeGraph: React.FC = () => {
     setExtracting(true);
     setExtractResult(null);
     try {
-      const resp = await triggerKgExtraction(5);
+      const resp = await triggerKgExtraction(5, undefined, kgModel);
       pollKgTask(
         resp.task_id,
         () => { setExtractResult({ processed: 0, total_written: 0, remaining: 0, errors: [] }); getKgStats().then(setKgStats).catch(() => {}); setExtracting(false); },
@@ -241,7 +245,7 @@ const KnowledgeGraph: React.FC = () => {
     setDirectLoading(true);
     setDirectResult(null);
     try {
-      const resp = await triggerKgExtraction(directLimit, unique);
+      const resp = await triggerKgExtraction(directLimit, unique, kgModel);
       pollKgTask(
         resp.task_id,
         () => { setDirectResult({ processed: 0, total_written: 0, remaining: 0, errors: [] }); getKgStats().then(setKgStats).catch(() => {}); setDirectLoading(false); },
@@ -328,7 +332,7 @@ const KnowledgeGraph: React.FC = () => {
   // 构建 ECharts 关系图 option
   const chartOption = useMemo(() => {
     if (!graphData || !graphData.nodes.length) return null;
-    const categories = TYPE_ORDER.map((t) => ({ name: ENTITY_META[t]?.label || t }));
+    const categories = TYPE_ORDER.map((t) => ({ name: ENTITY_META[t]?.label || t, itemStyle: { color: ENTITY_META[t]?.color } }));
     const nodes = graphData.nodes.map((n) => {
       const meta = ENTITY_META[n.type] || ENTITY_META.survey;
       const size = meta.dimension
@@ -579,6 +583,21 @@ const KnowledgeGraph: React.FC = () => {
 
               {/* 持久化统计 + 手动抽取 */}
               <Card style={{ marginTop: 16 }}>
+                <div style={{ marginBottom: 8 }}>
+                  <Text type="secondary">抽取模型：</Text>
+                  <Select
+                    style={{ width: '100%' }}
+                    value={kgModel}
+                    placeholder="使用后端默认配置的模型"
+                    allowClear
+                    onChange={(v) => setKgModel(v || undefined)}
+                    options={[
+                      { value: '', label: '默认配置（后端 LLM_MODEL）' },
+                      ...kgModelOptions.filter((o) => o.value !== 'ollama:custom').map((o) => ({ value: o.value, label: o.label })),
+                    ]}
+                  />
+                  <Text type="secondary" style={{ fontSize: 12 }}>手动/定向抽取使用的 LLM 模型，默认取后端配置，可在此选择本地或远程已配置模型。</Text>
+                </div>
                 <Row gutter={16} align="middle">
                   <Col span={6}>
                     <Statistic title="持久化实体" value={kgStats?.total_entities ?? 0} />

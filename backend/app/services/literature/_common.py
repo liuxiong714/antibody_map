@@ -7,6 +7,8 @@ from pathlib import Path
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timeutil import iso_ts
+
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
 
@@ -298,7 +300,7 @@ async def list_import_logs(
         items.append({
             "id": str(log.id),
             "file_name": log.file_name,
-            "imported_at": log.imported_at.isoformat() if log.imported_at else None,
+            "imported_at": iso_ts(log.imported_at),
             "total_count": log.total_count,
             "skipped_count": log.skipped_count,
             "imported_count": log.imported_count,

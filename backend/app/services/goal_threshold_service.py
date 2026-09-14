@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.goal_thresholds import GOAL_THRESHOLDS
 from app.core.term_normalizer import normalize_disease
+from app.core.timeutil import iso_ts
 from app.models.goal_threshold_config import GoalThresholdConfig
 
 logger = logging.getLogger("uvicorn")
@@ -48,7 +49,7 @@ async def list_goal_thresholds(db: AsyncSession) -> list[dict]:
             "disease": key,
             "threshold_percent": value,
             "is_default": cfg is None or value == default,
-            "updated_at": cfg.updated_at.isoformat() if cfg and cfg.updated_at else None,
+            "updated_at": iso_ts(cfg.updated_at),
             "updated_by": cfg.updated_by if cfg else None,
         })
     return items

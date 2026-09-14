@@ -150,7 +150,7 @@ services:
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
       # 本地 Ollama 模型按需并发数，须与 LLM_CONCURRENCY 保持一致
-      OLLAMA_NUM_PARALLEL: "${OLLAMA_NUM_PARALLEL:-2}"
+      OLLAMA_NUM_PARALLEL: "${OLLAMA_NUM_PARALLEL:-1}"
       # 提取状态"卡死"回收阈值（与 backend 保持一致）
       EXTRACTION_STALE_MINUTES: 180
     restart: unless-stopped
@@ -197,8 +197,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    # concurrency=1：避免同一 worker 进程内多个提取任务并发抢用 asyncpg 连接池，
-    # 引发 "cannot switch to state 15; another operation is in progress" 连接竞态。
+    # concurrency=1：单 worker 进程串行处理文献，与 LLM_CONCURRENCY=1 / OLLAMA_NUM_PARALLEL=1
+    # 对齐，保证同一时刻只有 1 篇文献处于"提取中"，确保本地模型 100% 驻留 GPU。
     command: celery -A app.tasks.celery_app worker --loglevel=info --pool=prefork --concurrency=1
     networks:
       - antibody-net

@@ -13,6 +13,7 @@ from fastapi import HTTPException  # noqa: E402
 from fastapi.responses import Response, StreamingResponse  # noqa: E402
 
 from app.core.document_parser import ALLOWED_EXTS  # noqa: E402
+from app.core.timeutil import iso_ts  # noqa: E402
 from app.services.literature._common import (  # noqa: E402
     LOCAL_STORAGE_DIR,
 )
@@ -234,7 +235,7 @@ def _format_file_history(history) -> list[dict]:
     for h in history:
         out.append({
             "operation": "imported" if h.action == "imported" else "deleted",
-            "operated_at": h.operated_at.isoformat(),
+            "operated_at": iso_ts(h.operated_at),
             "operator_name": h.operator_name or "未知",
             "file_name": h.file_name,
         })

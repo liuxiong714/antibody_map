@@ -32,13 +32,19 @@ async def reset_stale_extraction_status(db: AsyncSession) -> int:
     """
     # 卡死检测：将 processing/queued 超过阈值的记录自动重置为 failed
     # F14：心跳感知——worker 心跳持续刷新的任务视为存活，不误判；
-    #   - worker_heartbeat 非空：仅当心跳本身超过阈值才回收（worker 崩溃后心跳停止）
-    #   - worker_heartbeat 为空（历史记录/未启用心跳）：回退用 extraction_started_at 判活
-    stale_threshold = datetime.now(timezone.utc) - timedelta(minutes=settings.EXTRACTION_STALE_MINUTES)
+    # F14-修复：区分两种"卡死"判定，避免有心跳的任务挂满 180 分钟才回收：
+    #   - worker_heartbeat 非空：心跳每 60s 刷新一次；心跳停止 > EXTRACTION_HEARTBEAT_STALE_MINUTES
+    #     即代表 worker 已崩溃或任务丢失（如 worker 重启后 Celery 重新投递但抢占失败 skipped_race），
+    #     用短阈值（5 分钟）快速回收——心跳仍在刷新的长任务不受影响。
+    #   - worker_heartbeat 为空（历史记录/未启用心跳）：回退用 extraction_started_at 判活，
+    #     沿用 EXTRACTION_STALE_MINUTES（180 分钟）宽阈值。
+    now = datetime.now(timezone.utc)
+    heartbeat_threshold = now - timedelta(minutes=settings.EXTRACTION_HEARTBEAT_STALE_MINUTES)
+    stale_threshold = now - timedelta(minutes=settings.EXTRACTION_STALE_MINUTES)
     stale_cond = or_(
         and_(
             Literature.worker_heartbeat.isnot(None),
-            Literature.worker_heartbeat < stale_threshold,
+            Literature.worker_heartbeat < heartbeat_threshold,
         ),
         and_(
             Literature.worker_heartbeat.is_(None),

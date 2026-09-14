@@ -298,11 +298,14 @@ async def trigger_kg_extraction(
         alias="literature_id",
         description="定向抽取的文献ID列表（可传多个）。提供时仅处理指定且已有缓存文本、未抽取的文献；省略时自动从全部未抽取缓存文本中取未处理的",
     ),
+    model: str | None = Query(None, description="用户选择的抽取模型（本地 ollama: 前缀，或远程配置 remote:<id> /配置 UUID；空则用后端默认模型）"),
+    db: AsyncSession = Depends(get_db),
 ):
     """手动触发 LLM 三元组抽取。
 
     - 省略 literature_id：从全部未抽取文献中顺序取前 limit 篇，串行执行抽取。
     - 指定 literature_id：仅对指定的文献做定向抽取（幂等，已抽取的会被忽略）。
+    - model：允许用户指定抽取所用的模型（本地模型或系统配置的远程 API 模型）。
     每篇超时 300 秒。需要提前在 .env 中配置 ENABLE_KG_EXTRACTION=true。
     """
     if not getattr(settings, "ENABLE_KG_EXTRACTION", False):
@@ -312,11 +315,49 @@ async def trigger_kg_extraction(
     if not text_dir.exists():
         raise HTTPException(status_code=500, detail="缓存文本目录 /app/backend/data/pdfs 不存在")
 
+    # 解析用户选择的模型 → (model_name, api_key, base_url)；远程配置按 remote:<id> 或配置 UUID 查库
+    from app.core.extraction.llm_client import LLMClientMixin
+    from app.models.api_model_config import ApiModelConfig
+
+    resolved_model = ""
+    resolved_key = ""
+    resolved_url = ""
+    if model:
+        s = model.strip()
+        lookup = s
+        if s.startswith("remote:"):
+            lookup = s[len("remote:"):]
+        elif s.startswith("ollama:"):
+            s = s.split(":", 1)[1]  # 剥离前缀，交给抽取器；从调用链传原生名
+        try:
+            uid = uuid.UUID(str(lookup))
+            from sqlalchemy import select as _sel
+            row = (await db.execute(_sel(ApiModelConfig).where(ApiModelConfig.id == uid))).scalar_one_or_none()
+            if row is not None:
+                resolved_model = row.model_name
+                resolved_key = row.api_key or ""
+                resolved_url = row.base_url or ""
+                s = resolved_model
+            else:
+                s = lookup
+        except (ValueError, TypeError, AttributeError):
+            s = lookup
+        resolved_model = s
+        if not resolved_url:
+            # 本地/默认模型：交由抽取器按模型自动解析 base_url（含 Ollama 网关归一化）
+            resolved_url = LLMClientMixin._normalize_ollama_url(settings.LLM_BASE_URL or "")
+
     # 提交后台 Celery 异步任务，立即返回；进度可在系统设置「任务状态」页与知识图谱页查看
     from app.tasks.background_task import run_kg_extraction
 
     scope = "directed" if literature_ids else "auto"
-    task = run_kg_extraction.delay(scope=scope, limit=limit, literature_ids=[str(i) for i in literature_ids] if literature_ids else None)
+    task = run_kg_extraction.delay(
+        scope=scope, limit=limit,
+        literature_ids=[str(i) for i in literature_ids] if literature_ids else None,
+        model=resolved_model,
+        api_key=resolved_key,
+        base_url=resolved_url,
+    )
     # 提交后立即登记任务状态，使前端立刻能按 task_id 轮询到"排队中"，避免 worker
     # 尚未拉取执行（尤其并发=1、前面任务未结束时）导致轮询短暂 404 被误判为过期。
     # worker 真正开始时会再次 start 覆盖为 running，随后 finish 写最终状态并清理 ids。

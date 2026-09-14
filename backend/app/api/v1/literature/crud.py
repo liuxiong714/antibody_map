@@ -192,7 +192,7 @@ async def empty_trash_endpoint(
     )
 
 
-@router.get("/literatures/{literature_id}", response_model=ApiResponse, summary="获取文献详情", description="根据文献ID获取单篇文献的详细信息")
+@router.get("/literatures/{literature_id:uuid}", response_model=ApiResponse, summary="获取文献详情", description="根据文献ID获取单篇文献的详细信息")
 async def get_one(
     literature_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

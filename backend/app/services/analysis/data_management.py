@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.term_normalizer import normalize_disease
+from app.core.timeutil import iso_ts
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
 from app.services.analysis._common import (
@@ -109,7 +110,7 @@ async def get_approved_data_points(
             "collection_year": dp.collection_year,
             "confidence": dp.confidence,
             "review_status": dp.review_status,
-            "created_at": dp.created_at.isoformat() if dp.created_at else None,
+            "created_at": iso_ts(dp.created_at),
         })
 
     return items, total

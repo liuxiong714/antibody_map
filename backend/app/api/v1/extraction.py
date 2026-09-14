@@ -25,6 +25,7 @@ from app.core.traceability_html import (
     datapoint_dict_to_trace,
     generate_traceability_html,
 )
+from app.core.timeutil import iso_ts
 from app.models.data_point import DataPoint
 from app.models.extraction_history import ExtractionHistory
 from app.models.literature import Literature
@@ -1448,7 +1449,7 @@ def _serialize_review_dp(dp: DataPoint, literature_title: str | None, conflicts:
         "estimate_grade": dp.estimate_grade,
         # P1-6：同省同病同年已有已审核数据点冲突对比（审核页只读提示）
         "conflicts": conflicts or [],
-        "created_at": dp.created_at.isoformat() if dp.created_at else None,
+        "created_at": iso_ts(dp.created_at),
     }
 
 
@@ -1583,7 +1584,7 @@ async def get_titer_review_queue(
             "confidence": tt.confidence,
             "review_status": tt.review_status,
             "review_comment": tt.review_comment,
-            "created_at": tt.created_at.isoformat() if tt.created_at else None,
+            "created_at": iso_ts(tt.created_at),
         }
         for tt, title in rows
     ]

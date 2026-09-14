@@ -45,6 +45,10 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const renderTasksRef = useRef<Map<number, pdfjsLib.RenderTask>>(new Map());
   const visibleRangeRef = useRef<{ start: number; end: number }>({ start: 1, end: 1 });
   const allDimsRef = useRef<{ w: number; h: number }[]>([]);
+  // 渲染串行化锁：observer/scroll/scale 等多个触发源并发触发渲染时，排队合并执行，
+  // 避免同一页出现多个 renderTask 相互 cancel，导致被取消页既不重新挂载也无后续渲染而永久空白。
+  const pendingRenderRef = useRef(false);
+  const requestedRangeRef = useRef<{ start: number; end: number } | undefined>(undefined);
 
   // 计算适合宽度的缩放比例
   const calcFitWidthScale = useCallback(() => {
@@ -103,8 +107,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     }
   }, []);
 
-  // 渲染可见范围内的页面
-  const renderVisiblePages = useCallback(async (rangeStart: number, rangeEnd: number) => {
+  // 实际执行一次渲染（范围带 buffer 拓展）
+  const doRender = useCallback(async (rangeStart: number, rangeEnd: number) => {
     const pdf = pdfRef.current;
     if (!pdf) return;
 
@@ -149,6 +153,28 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       });
     }
   }, [scale, renderPage, mountCanvas]);
+
+  // 渲染可见范围内的页面（串行化：排空所有待渲染范围）
+  const renderVisiblePages = useCallback(async (rangeStart: number, rangeEnd: number) => {
+    // 记录最新待渲染范围（合并连续触发）
+    requestedRangeRef.current = { start: rangeStart, end: rangeEnd };
+
+    // 已有渲染循环在跑：只更新目标范围，由当前循环的 while 继续消费
+    if (pendingRenderRef.current) return;
+
+    pendingRenderRef.current = true;
+    try {
+      while (requestedRangeRef.current) {
+        const { start, end } = requestedRangeRef.current;
+        requestedRangeRef.current = undefined;
+        await doRender(start, end);
+        // 一帧内可能有多次并发触发（observer/scroll/scale），循环直至消费完
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    } finally {
+      pendingRenderRef.current = false;
+    }
+  }, [doRender]);
 
   // 设置 IntersectionObserver
   const setupObserver = useCallback(() => {
@@ -319,25 +345,37 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     const rect = container.getBoundingClientRect();
     const containerTop = rect.top + 10;
     const containerHeight = rect.height;
+    const total = pdfRef.current?.numPages ?? 1;
 
+    // 用「全部占位符」而非已渲染 canvas 计算当前页：未渲染页的占位符也有真实尺寸，
+    // 滚动到尚未渲染的页时能正确识别当前页码（避免 bestPage 停留在已渲染页上界）。
     let bestPage = 1;
     let bestRatio = 0;
-
-    canvasMapRef.current.forEach((canvas, pageNum) => {
-      const cr = canvas.getBoundingClientRect();
+    for (let p = 1; p <= total; p++) {
+      const el = document.getElementById(`pdf-placeholder-${p}`);
+      if (!el) continue;
+      const cr = el.getBoundingClientRect();
       const visibleTop = Math.max(cr.top, containerTop);
       const visibleBottom = Math.min(cr.bottom, containerTop + containerHeight);
       const visibleHeight = Math.max(0, visibleBottom - visibleTop);
       const ratio = cr.height > 0 ? visibleHeight / cr.height : 0;
-
       if (ratio > bestRatio) {
         bestRatio = ratio;
-        bestPage = pageNum;
+        bestPage = p;
       }
-    });
+    }
 
     setCurrentPage(bestPage);
-  }, []);
+
+    // 兜底渲染：IntersectionObserver 在快速滚动/触发滞后时可能未及时把新页纳入
+    // 可见范围缓存，导致滚动后新页一直空白。这里在滚动事件里直接对比当前页与
+    // observer 维护的可见范围(visibleRangeRef)，一旦超出即触发邻近页渲染。
+    // renderVisiblePages 会跳过已渲染且尺寸匹配的页，重复触发安全无副作用。
+    const vis = visibleRangeRef.current;
+    if (bestPage > vis.end || bestPage < vis.start) {
+      renderVisiblePages(bestPage, Math.min(total, bestPage + RENDER_BUFFER * 2));
+    }
+  }, [renderVisiblePages]);
 
   const handleZoomIn = () => setScale((s) => Math.min(s + SCALE_STEP, MAX_SCALE));
   const handleZoomOut = () => setScale((s) => Math.max(s - SCALE_STEP, MIN_SCALE));

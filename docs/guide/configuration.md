@@ -13,6 +13,8 @@
 | `LLM_FALLBACK_BASE_URLS` | 备用地址（逗号分隔） | - |
 | `LLM_CONNECT_RETRIES` | 连接错误快速重试次数 | `2` |
 | `LLM_REQUEST_TIMEOUT` | 请求超时（秒） | `1200` |
+| `LLM_FIRST_TOKEN_TIMEOUT` | 流式首 token 超时（秒）：连接挂死或无首 token 即时判失败 | `60` |
+| `LLM_CHUNK_GAP_TIMEOUT` | 流式相邻 chunk 间隔超时（秒）：生成中途卡死即时判失败 | `120` |
 | `LLM_CONCURRENCY` | 并发提取数 | `2` |
 
 ## 数据库与存储

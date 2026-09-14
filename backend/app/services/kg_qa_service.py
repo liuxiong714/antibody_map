@@ -259,6 +259,8 @@ class QAQueryExecutor:
         if not province or not province.strip():
             return None
         p = province.strip()
+        # 剥离末尾助词“的”（如正则把“北京的”误捕为地点槽位 → “北京”）
+        p = re.sub(r"的$", "", p).strip()
         if p in ("全国", "中国", "全国范围"):
             return None
         base = re.sub(r"(省|市|自治区|特别行政区|地区|州|区|县)$", "", p).strip()

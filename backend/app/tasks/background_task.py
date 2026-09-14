@@ -90,16 +90,20 @@ def run_kg_extraction(
     scope: str = "auto",
     limit: int = 5,
     literature_ids: list | None = None,
+    model: str = "",
+    api_key: str = "",
+    base_url: str = "",
 ):
     """后台执行 LLM 三元组抽取。
 
     scope: auto（自动批量，从全部未抽取缓存文本取前 limit 篇）或 directed（定向）。
     literature_ids: 定向抽取的目标文献 id；省略时自动批量。
+    model/api_key/base_url: 用户选择的抽取模型（可为远程配置解析结果或本地模型名，空则用后端默认）。
     """
     task_id = self.request.id
     run_async(bg.start("kg_extraction", task_id=task_id, scope=scope))
     try:
-        result = run_async(__run_kg_extraction(task_id, scope, limit, literature_ids))
+        result = run_async(__run_kg_extraction(task_id, scope, limit, literature_ids, model, api_key, base_url))
         return result
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
@@ -170,7 +174,7 @@ async def __run_vaccination_strategy(task_id, task_type, task_time, task_locatio
         return data
 
 
-async def __run_kg_extraction(task_id, scope, limit, literature_ids):
+async def __run_kg_extraction(task_id, scope, limit, literature_ids, model="", api_key="", base_url=""):
     from sqlalchemy import select
 
     from app.models.kg_entity import KGEntity
@@ -225,6 +229,11 @@ async def __run_kg_extraction(task_id, scope, limit, literature_ids):
             await bg.update("kg_extraction", task_id, status="running", processed=processed, total=len(chunk))
 
         for lit_id in chunk:
+            if task_id:
+                # 单篇提取可能耗时较长，篇前刷新进度 key，避免超过运行 TTL 被回收导致前端显示 0/0
+                await bg.update("kg_extraction", task_id, status="running",
+                                processed=processed, total=len(chunk),
+                                progress=f"正在抽取 {processed + 1}/{len(chunk)}")
             txt_path = _TEXT_DIR / f"{lit_id}.txt"
             try:
                 clean_text = txt_path.read_text(encoding="utf-8")
@@ -254,9 +263,9 @@ async def __run_kg_extraction(task_id, scope, limit, literature_ids):
                     title=title or "",
                     journal=journal or "",
                     pub_year=pub_year,
-                    model=settings.LLM_MODEL,
-                    api_key="",
-                    base_url=settings.LLM_BASE_URL,
+                    model=model or settings.LLM_MODEL,
+                    api_key=api_key,
+                    base_url=base_url,
                 )
                 total_written += written
                 processed += 1

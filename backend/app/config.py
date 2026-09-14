@@ -44,10 +44,30 @@ class Settings(BaseSettings):
     # 本地大模型（如 32B/70B）推理慢，请求超时需放宽，单位：秒
     LLM_REQUEST_TIMEOUT: int = 1200
 
+    # 流式调用首 token 超时（秒）。请求发出后若在此时长内未收到首个 token，
+    # 视为连接层挂死（Ollama 端可能已丢弃请求），立即报错进入重试，避免空等
+    # LLM_REQUEST_TIMEOUT 导致单篇阻塞队列 20 分钟。
+    LLM_FIRST_TOKEN_TIMEOUT: int = 60
+
+    # 流式调用相邻 chunk 间隔超时（秒）。生成中途若长时间无新 token（连接半开），
+    # 按此值快速失败；正常推理 token 是持续返回的，不会误触发。
+    LLM_CHUNK_GAP_TIMEOUT: int = 120
+
+    # 提取时 LLM 的上下文窗口与单次最大输出 token。
+    # num_ctx 必须不小于 (prompt 长度 + 期望输出)，否则即使 num_predict 调大，
+    # 总生成长度仍会被 context 卡住导致 JSON 被硬截断。
+    # 注意：Ollama 实际分配的 CONTEXT = LLM_CTX_TOKENS × LLM_CONCURRENCY（每并发各一份）。
+    # 当前批次文献最长文本约 1 万字，16384 token 足以覆盖。
+    # 为让 20GB 权重(24GB 卡)100% 常驻显存，将总 KV 压至 ~3.1GB：并发降到 1 + num_ctx=16384。
+    # 代价：单次只处理一篇文献，吞吐降低；换取全量 GPU 推理、杜绝 CPU 卸载。
+    LLM_CTX_TOKENS: int = 16384
+    LLM_MAX_TOKENS: int = 16384
+
     # P2-B1：LLM 并发提取配置
     # 并发请求数上限，需与 Ollama 的 OLLAMA_NUM_PARALLEL 环境变量对齐
-    # RTX 4090/5090 实测 4 并发为吞吐与延迟最优拐点（参考 2026 基准测试）
-    LLM_CONCURRENCY: int = 4
+    # 为让 27B 权重全量常驻 24GB 显存，单并发（1）。每并发各申请一份 num_ctx，
+    # 并发越高 KV 缓存越大越易挤占显存导致 CPU 卸载。
+    LLM_CONCURRENCY: int = 1
 
     # F11：单任务 token 预算 / 日配额熔断 / 全局并发上限（0 = 关闭对应限制）
     # - LLM_MAX_TOKENS_PER_TASK: 单篇文献提取累计 token 超过后中止（防异常长文档失控计费）
@@ -191,7 +211,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "production"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.23.0"
+    APP_VERSION: str = "1.24.0"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
     # 提取状态卡死阈值（分钟）：processing/queued 超过此时间未变，列表查询时自动重置为 failed
@@ -201,6 +221,11 @@ class Settings(BaseSettings):
     # F14：worker 心跳刷新间隔（秒）。提取进行中每间隔刷新一次 worker_heartbeat，
     # 超时回收据此区分"长任务"（心跳新鲜）与"真卡死"（心跳停止）。须远小于 EXTRACTION_STALE_MINUTES。
     EXTRACTION_HEARTBEAT_INTERVAL: int = 60
+    # F14-修复：有心跳记录但心跳停止超过此分钟数的 processing/queued 记录直接回收。
+    # 心跳每 EXTRACTION_HEARTBEAT_INTERVAL(60s) 刷新一次；心跳停止即代表 worker 已崩溃或
+    # 任务丢失（如 worker 重启后 Celery 重新投递但抢占失败），无需等待 EXTRACTION_STALE_MINUTES
+    # （180 分钟）——那只会让"提取中"假状态挂 3 小时。须显著大于心跳间隔（防抖动）。
+    EXTRACTION_HEARTBEAT_STALE_MINUTES: int = 5
 
     # ===== 分析快照 =====
     # 快照行保留天数，超过后由后台循环清理（回收 response_json 占用的存储）

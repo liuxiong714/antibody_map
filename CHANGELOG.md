@@ -1,5 +1,19 @@
 # 变更日志
 
+## v1.25.0 (2026-09-14)
+
+### 新增
+
+- **AI 准确度自测多模型对比**：synthetic_task 新增 `literature_source` / `reference_model` / `models` 字段，支持两种文献来源——「生成模型模拟」（生成模型 A 批量产出含四类噪声的合成文献）与「数据库已有文献」（从库中选择真实文献，用参考模型产出 GT）；多模型对比时逐「模型×文献」提取结果独立存入新增 `synthetic_extraction` 表，不污染真实文献 data_point
+- **自测任务载体选项**：synthetic_task 新增 `output_format`（文献载体：text/pdf）与 `include_table`（是否含表格）两列，评估提取模型对不同载体与表格形式的准确度
+- **自测任务阶段时间戳**：synthetic_task 记录生成 / 提取 / 完成的各阶段耗时时间戳，报告展示「文献规模 × 点/篇」「生成/提取/总耗时」等完整指标
+- **LLM 流式超时保护**：llm_client 改为流式调用，新增 `LLM_FIRST_TOKEN_TIMEOUT`（默认 60s）与 `LLM_CHUNK_GAP_TIMEOUT`（默认 120s）配置，连接挂死或无首 token 即时判失败并安全重试，避免 worker 空等超时
+- **时区序列化**：新增 `timeutil.iso_ts()`，将数据库 UTC 时间统一转为 Asia/Shanghai 北京时间输出，前端展示时间与本地产地一致
+
+### 修复
+
+- **PDF 预览偶发空白页**：PdfViewer 渲染改为串行化——将 IntersectionObserver、滚动、缩放等并发触发合并排队执行，避免同一页多个渲染任务相互取消导致页面（如第 3 页）永久空白
+
 ## v1.24.0 (2026-09-12)
 
 - 省份分区/简称元数据：新增中国 34 个省级行政区（省/自治区/直辖市/特别行政区）的分区（中部/东部/西部/北部/南部）与简称（京、沪……）权威元数据模块，`/dictionary/provinces` 每个省级元素追加 `region`、`abbr` 字段

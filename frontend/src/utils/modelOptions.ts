@@ -9,11 +9,6 @@ export interface ExtendedModelOption extends ModelOption {
   model_name?: string;
 }
 
-// 静态内置远程模型（不含本地 Ollama 项；本地统一由后端 /models 提供，保证各功能一致）
-const STATIC_REMOTE_OPTIONS: ModelOption[] = MODEL_OPTIONS.filter(
-  (o) => o.value !== '' && o.vendor !== 'ollama'
-);
-
 // 静态本地回退模型（后端 /models 拉取失败时兜底，保证原有功能不受影响）
 const FALLBACK_LOCAL_OPTIONS: ModelOption[] = MODEL_OPTIONS.filter(
   (o) => o.vendor === 'ollama' && o.value !== 'ollama:custom'
@@ -34,16 +29,17 @@ const CUSTOM_LOCAL_OPTION: ModelOption = {
 };
 
 /**
- * 构建统一的模型选择候选项（默认配置 + 静态远程 + 动态本地 + 自定义本地）。
+ * 构建统一的模型选择候选项（默认配置 + 动态本地 + 动态远程 + 自定义本地）。
  *
  * 本地模型统一来自后端 /models（在系统设置「本地模型配置」中维护），
- * 因此文献提取、报告生成等各功能模块的本地模型候选项始终一致。
+ * 远程模型统一来自系统设置「远程模型配置」中启用的配置项；
+ * 因此文献提取、知识图谱、报告生成等各功能模块的本地/远程模型候选项
+ * 始终与系统设置中的模型配置保持一致。
  * 本地模型值统一带 ollama: 前缀，与文献模块原有的 vendor 判定逻辑兼容。
  */
 export async function buildModelOptions(): Promise<ExtendedModelOption[]> {
   const options: ExtendedModelOption[] = [
     { ...DEFAULT_OPTION },
-    ...STATIC_REMOTE_OPTIONS,
   ];
   try {
     const data = await getModels();

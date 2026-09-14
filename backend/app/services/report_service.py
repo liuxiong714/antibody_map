@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.methodology import build_methodology_note
+from app.core.timeutil import iso_ts
 from app.models.api_model_config import ApiModelConfig
 from app.models.data_point import DataPoint
 from app.models.report import Report
@@ -300,8 +301,8 @@ async def list_templates(db: AsyncSession, report_type: str | None = None) -> li
             "sections": t.sections or [],
             "is_default": t.is_default,
             "desc": t.desc,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-            "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+            "created_at": iso_ts(t.created_at),
+            "updated_at": iso_ts(t.updated_at),
         }
         for t in templates
     ]
@@ -426,8 +427,8 @@ def _template_to_dict(t: ReportTemplate) -> dict:
         "sections": t.sections or [],
         "is_default": t.is_default,
         "desc": t.desc,
-        "created_at": t.created_at.isoformat() if t.created_at else None,
-        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        "created_at": iso_ts(t.created_at),
+        "updated_at": iso_ts(t.updated_at),
     }
 
 
@@ -993,7 +994,7 @@ async def generate_report(
         "data_point_count": len(rows),
         "language": language,
         "llm_model": report.llm_model,
-        "generated_at": report.generated_at.isoformat(),
+        "generated_at": iso_ts(report.generated_at),
     }
 
 
@@ -1146,7 +1147,7 @@ async def generate_immune_barrier_report(
         "data_point_count": len(rows),
         "language": language,
         "llm_model": report.llm_model,
-        "generated_at": report.generated_at.isoformat(),
+        "generated_at": iso_ts(report.generated_at),
     }
 
 
@@ -1325,7 +1326,7 @@ async def generate_vaccination_strategy_report(
         "literature_count": len({str(r.literature_id) for r in rows if r.literature_id}),
         "llm_model": llm_model_name,
         "language": "zh",
-        "generated_at": report.generated_at.isoformat(),
+        "generated_at": iso_ts(report.generated_at),
     }
 
 
@@ -1399,7 +1400,7 @@ async def get_reports(db: AsyncSession, page: int = 1, page_size: int = 20):
             "task_time": r.task_time,
             "task_location": r.task_location,
             "personnel_count": r.personnel_count,
-            "generated_at": r.generated_at.isoformat(),
+            "generated_at": iso_ts(r.generated_at),
         })
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
@@ -1431,7 +1432,7 @@ async def get_report_by_id(db: AsyncSession, report_id):
         "personnel_age": r.personnel_age,
         "personnel_vaccination_history": r.personnel_vaccination_history,
         "data_snapshot_hash": r.data_snapshot_hash,
-        "generated_at": r.generated_at.isoformat(),
+        "generated_at": iso_ts(r.generated_at),
     }
 
 

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.document_parser import get_mime_type
 from app.core.minio_client import upload_file
+from app.core.timeutil import iso_ts
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
 from app.schemas.literature import LiteratureCreate
@@ -862,7 +863,7 @@ async def build_literatures_export(
 
         export_data = {
             "export_version": "1.0",
-            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "exported_at": iso_ts(datetime.now(timezone.utc)),
             "include_data_points": include_data_points,
             "literature_count": len(literatures_json),
             "data_point_count": sum(len(dps) for dps in dp_map.values()) if include_data_points else 0,

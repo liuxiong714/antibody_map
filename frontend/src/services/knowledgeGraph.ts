@@ -77,16 +77,20 @@ export interface KgTriggerResp {
   scope: string;
 }
 
-export async function triggerKgExtraction(limit = 5, literatureIds?: string[]): Promise<KgTriggerResp> {
+export async function triggerKgExtraction(limit = 5, literatureIds?: string[], model?: string): Promise<KgTriggerResp> {
   const { data } = await api.post<KgTriggerResp>(
     '/kg/extraction/trigger',
     null,
     {
       params: {
         limit,
+        model: model || undefined,
         // 定向抽取：多个 literature_id 查询参数；未提供时后端走自动批量
         literature_id: literatureIds && literatureIds.length ? literatureIds : undefined,
       },
+      // axios 默认把数组序列化成 literature_id[]=a&...，与后端 Query(alias="literature_id")
+      // 不匹配导致定向文献 ID 全丢、退化为自动批量；indexes:null 改为重复键 literature_id=a&literature_id=b
+      paramsSerializer: { indexes: null },
     },
   );
   return data;

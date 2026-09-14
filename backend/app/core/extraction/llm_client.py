@@ -149,6 +149,12 @@ def _classify_llm_error(exc: Exception) -> dict:
         return {"type": "auth_error", "message": full[:2000]}
     if "404" in full:
         return {"type": "http_4xx", "message": full[:2000]}
+    # 流式调用连接层挂死（首 token 超时 / chunk 间隔超时，见 _chat_once）。
+    # 请求可能根本未被 Ollama 处理（或已丢弃），未开始生成、未消耗 token，
+    # 归类为 connection_error 可安全重试/切换 URL——不同于 read_timeout
+    # （请求已发出且可能在生成，禁止重试避免双倍计费）。
+    if "流式响应无数据" in full:
+        return {"type": "connection_error", "message": full[:2000]}
     # F12：读响应超时单独归类。请求已发出、可能已消耗 token，若再切换 URL/重试
     # 会导致同一请求双倍计费。本地 Ollama 推理慢，读超时多属正常慢而非故障，
     # 直接透传为 read_timeout（交由上层决定是否重试），不触发 URL 切换。
@@ -384,6 +390,11 @@ class LLMClientMixin:
         """对指定客户端执行一次 chat.completions 调用并累加 token 用量。
 
         B6：支持 system prompt 分离，启用 prompt caching。返回值仍为 str。
+
+        流式模式（方案 B）：
+        - 请求发出后等待首 token，超过 LLM_FIRST_TOKEN_TIMEOUT 即报错重试，
+          避免 Ollama 端连接层挂死时空等 LLM_REQUEST_TIMEOUT（20 分钟）阻塞队列；
+        - 生成中途相邻 chunk 间隔超过 LLM_CHUNK_GAP_TIMEOUT 同样快速失败。
         """
         messages = []
         if system_prompt:
@@ -394,8 +405,9 @@ class LLMClientMixin:
             "model": self._api_model,
             "messages": messages,
             "temperature": 0.1,
-            "max_tokens": 16384,
+            "max_tokens": settings.LLM_MAX_TOKENS,
             "timeout": self._llm_timeout,
+            "stream": True,
         }
         # P2-2：通过 provider 注册中心查询是否支持 response_format
         if self._supports_response_format(self.model):
@@ -407,29 +419,60 @@ class LLMClientMixin:
         if self._is_ollama_model(str(_raw_url)):
             kwargs["extra_body"] = {
                 "options": {
-                    "num_ctx": 16384,
-                    "num_predict": 16384,
+                    "num_ctx": settings.LLM_CTX_TOKENS,
+                    "num_predict": settings.LLM_MAX_TOKENS,
                     "think": False,
                 },
                 # P2-3：Ollama 原生 JSON Schema 结构化输出强约束（顶层字段）
                 "format": EXTRACTION_JSON_SCHEMA,
             }
-            kwargs["max_tokens"] = 16384
+            kwargs["max_tokens"] = settings.LLM_MAX_TOKENS
             kwargs["temperature"] = 0.05
 
-        response = await client.chat.completions.create(**kwargs)
-        content = response.choices[0].message.content
-        # 捕获 token 用量并累加（response.usage 可能为 None，如某些 ollama 部署）
-        usage_dict = None
-        if getattr(response, "usage", None):
-            u = response.usage
-            usage_dict = {
-                "prompt_tokens": getattr(u, "prompt_tokens", 0) or 0,
-                "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
-                "total_tokens": getattr(u, "total_tokens", 0) or 0,
-            }
-        # 优先用 response.model（实际使用的模型，可能与请求不同，如自动路由）
-        actual_model = getattr(response, "model", None) or self.model
+        # ---- 流式读取（方案 B：首 token / chunk 间隔超时快速失败）----
+        first_timeout = float(getattr(settings, "LLM_FIRST_TOKEN_TIMEOUT", 60) or 60)
+        gap_timeout = float(getattr(settings, "LLM_CHUNK_GAP_TIMEOUT", 120) or 120)
+
+        stream = await client.chat.completions.create(**kwargs)
+        content_parts: list[str] = []
+        usage_dict: dict | None = None
+        actual_model: str | None = None
+        try:
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        stream.__anext__(), timeout=first_timeout if not content_parts else gap_timeout
+                    )
+                except asyncio.TimeoutError:
+                    raise TimeoutError(
+                        "LLM 流式响应无数据（"
+                        + ("首 token" if not content_parts else "chunk 间隔")
+                        + f"超时 {first_timeout if not content_parts else gap_timeout}s），"
+                        "连接可能挂死，已快速失败"
+                    ) from None
+                except StopAsyncIteration:
+                    break
+                # 捕获 usage（Ollama/OpenAI 流式通常在最后一个 chunk 携带）
+                if getattr(chunk, "usage", None):
+                    u = chunk.usage
+                    usage_dict = {
+                        "prompt_tokens": getattr(u, "prompt_tokens", 0) or 0,
+                        "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
+                        "total_tokens": getattr(u, "total_tokens", 0) or 0,
+                    }
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                    content_parts.append(chunk.choices[0].delta.content)
+                if getattr(chunk, "model", None):
+                    actual_model = chunk.model
+        finally:
+            # 显式关闭流，释放连接（中断时同样需要，避免连接泄漏）
+            with contextlib.suppress(Exception):
+                await stream.close()
+
+        content = "".join(content_parts)
+        # 优先用 chunk.model（实际使用的模型，可能与请求不同，如自动路由）
+        if not actual_model:
+            actual_model = getattr(stream, "model", None) or self.model
         self._accumulate_usage(actual_model, usage_dict)
         # F11：日配额熔断。响应已返回（已实际消耗 token），按本次用量计数并检查日配额。
         if usage_dict:
@@ -539,6 +582,8 @@ class LLMClientMixin:
         """HTTP 兜底调用（不依赖 OpenAI SDK）。B6：支持 system prompt。
 
         连接容错增强：按候选 URL 链逐个尝试，首个成功的地址返回。
+        流式模式（方案 B）：与 _chat_once 一致，采用 SSE 流式读取，
+        首 token / chunk 间隔超时快速失败，避免连接层挂死空等。
         """
         url_chain = self._url_chain or [self._resolved_url or settings.LLM_BASE_URL]
         api_key = self._resolved_key or settings.LLM_API_KEY
@@ -550,11 +595,15 @@ class LLMClientMixin:
             "model": self._api_model,
             "messages": messages,
             "temperature": 0.1,
-            "max_tokens": 16384,
+            "max_tokens": settings.LLM_MAX_TOKENS,
+            "stream": True,
         }
         # P2-2：通过 provider 注册中心查询是否支持 response_format
         if self._supports_response_format(self.model):
             payload["response_format"] = {"type": "json_object"}
+
+        first_timeout = float(getattr(settings, "LLM_FIRST_TOKEN_TIMEOUT", 60) or 60)
+        gap_timeout = float(getattr(settings, "LLM_CHUNK_GAP_TIMEOUT", 120) or 120)
 
         last_exc: Exception | None = None
         definitive_exc: Exception | None = None  # 确定性错误（4xx/5xx/鉴权/JSON 等，非连接类）
@@ -563,43 +612,82 @@ class LLMClientMixin:
                 # 同步 Ollama 原生参数（兜底路径，num_ctx 需在嵌套 options 中）
                 p = dict(payload)
                 if self._is_ollama_model(url):
-                    p["max_tokens"] = 16384
+                    p["max_tokens"] = settings.LLM_MAX_TOKENS
                     p["temperature"] = 0.05
                     p["options"] = {
-                        "num_ctx": 16384,
-                        "num_predict": 16384,
+                        "num_ctx": settings.LLM_CTX_TOKENS,
+                        "num_predict": settings.LLM_MAX_TOKENS,
                         "think": False,
                     }
                     # P2-3：Ollama 原生 JSON Schema 结构化输出强约束（顶层字段，不放 options 里）
                     p["format"] = EXTRACTION_JSON_SCHEMA
 
                 async with httpx.AsyncClient(timeout=self._llm_timeout) as client:
-                    resp = await client.post(
+                    async with client.stream(
+                        "POST",
                         f"{url}/chat/completions",
                         headers={
                             "Authorization": f"Bearer {api_key}",
                             "Content-Type": "application/json",
                         },
                         json=p,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
+                    ) as resp:
+                        resp.raise_for_status()
+                        # ---- SSE 流式读取（方案 B：快速失败）----
+                        content_parts: list[str] = []
+                        usage_dict: dict | None = None
+                        resp_model: str | None = None
+                        it = resp.aiter_lines()
+                        while True:
+                            try:
+                                line = await asyncio.wait_for(
+                                    it.__anext__(), timeout=first_timeout if not content_parts else gap_timeout
+                                )
+                            except asyncio.TimeoutError:
+                                raise TimeoutError(
+                                    "LLM 流式响应无数据（"
+                                    + ("首 token" if not content_parts else "chunk 间隔")
+                                    + f"超时 {first_timeout if not content_parts else gap_timeout}s），"
+                                    "连接可能挂死，已快速失败"
+                                ) from None
+                            except StopAsyncIteration:
+                                break
+                            if not line or line.startswith(":"):
+                                continue
+                            if line.startswith("data: "):
+                                data_str = line[6:].strip()
+                                if data_str == "[DONE]":
+                                    break
+                                try:
+                                    data = json.loads(data_str)
+                                except Exception:
+                                    continue
+                                # 捕获 usage（流式通常在最后事件携带）
+                                if data.get("usage") and isinstance(data["usage"], dict):
+                                    usage_dict = data["usage"]
+                                if data.get("model"):
+                                    resp_model = data["model"]
+                                choices = data.get("choices") or []
+                                if choices:
+                                    delta = (choices[0].get("delta") or {}).get("content")
+                                    if delta:
+                                        content_parts.append(delta)
+                    content = "".join(content_parts)
                     # 捕获 usage 并累加
-                    usage_raw = data.get("usage")
-                    if usage_raw and isinstance(usage_raw, dict):
+                    if usage_dict:
                         self._accumulate_usage(
-                            data.get("model") or self.model,
+                            resp_model or self.model,
                             {
-                                "prompt_tokens": usage_raw.get("prompt_tokens", 0) or 0,
-                                "completion_tokens": usage_raw.get("completion_tokens", 0) or 0,
-                                "total_tokens": usage_raw.get("total_tokens", 0) or 0,
+                                "prompt_tokens": usage_dict.get("prompt_tokens", 0) or 0,
+                                "completion_tokens": usage_dict.get("completion_tokens", 0) or 0,
+                                "total_tokens": usage_dict.get("total_tokens", 0) or 0,
                             },
                         )
                         # F11：日配额熔断（HTTP 兜底路径同样计数）
                         await _consume_daily_quota(
-                            int(usage_raw.get("total_tokens", 0) or 0)
+                            int(usage_dict.get("total_tokens", 0) or 0)
                         )
-                    return data["choices"][0]["message"]["content"]
+                    return content
             except Exception as e:
                 last_exc = e
                 if _classify_llm_error(e)["type"] == "read_timeout":

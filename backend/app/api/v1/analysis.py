@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
 from app.core.methodology import build_methodology_note
+from app.core.timeutil import iso_ts
 from app.models.data_point import DataPoint
 from app.schemas.analysis import EquityAnalysisResponse
 from app.schemas.common import ApiResponse
@@ -903,9 +904,7 @@ async def replay_snapshot(
     meta["snapshot_token"] = str(snap.id)
     meta["snapshot_module"] = snap.module
     meta["snapshot_data_hash"] = snap.data_hash
-    meta["snapshot_created_at"] = (
-        snap.created_at.isoformat() if snap.created_at else None
-    )
+    meta["snapshot_created_at"] = iso_ts(snap.created_at)
     return ApiResponse(data=data)
 
 
@@ -962,7 +961,7 @@ async def list_titer_tables(
             "n_sera": n_cols,
             "quality_score": tt.quality_score,
             "confidence": tt.confidence,
-            "created_at": tt.created_at.isoformat() if tt.created_at else None,
+            "created_at": iso_ts(tt.created_at),
         })
     return ApiResponse(data={"items": items, "total": len(items)})
 

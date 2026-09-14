@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db, require_admin
 from app.core.audit import log_audit
+from app.core.timeutil import iso_ts
 from app.core.rate_limiter import login_rate_limit
 from app.core.security import (
     create_access_token,
@@ -235,7 +236,7 @@ async def get_me(user: User = Depends(get_current_user)):
             display_name=user.display_name,
             is_admin=user.is_admin,
             is_active=user.is_active,
-            created_at=user.created_at.isoformat() if user.created_at else None,
+            created_at=iso_ts(user.created_at),
         ),
     )
 
@@ -281,7 +282,7 @@ async def list_users(
                 display_name=u.display_name,
                 is_admin=u.is_admin,
                 is_active=u.is_active,
-                created_at=u.created_at.isoformat() if u.created_at else None,
+                created_at=iso_ts(u.created_at),
             )
             for u in users
         ],
@@ -320,7 +321,7 @@ async def create_user(
             display_name=user.display_name,
             is_admin=user.is_admin,
             is_active=user.is_active,
-            created_at=user.created_at.isoformat() if user.created_at else None,
+            created_at=iso_ts(user.created_at),
         ),
     )
 

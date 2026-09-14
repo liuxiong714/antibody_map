@@ -3,6 +3,8 @@ import uuid
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timeutil import iso_ts
+
 from app.models.literature import Literature
 from app.services.literature._common import (
     logger,
@@ -57,7 +59,7 @@ async def cleanup_empty_literatures(
         {
             "id": str(lit.id),
             "title": lit.title or "",
-            "created_at": lit.created_at.isoformat() if lit.created_at else None,
+            "created_at": iso_ts(lit.created_at),
         }
         for lit in lits
     ]

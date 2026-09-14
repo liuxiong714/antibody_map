@@ -22,8 +22,8 @@ from app.config import settings
 logger = logging.getLogger("uvicorn")
 
 _PREFIX = "bg_task"
-# 进行中的任务（保持运行）TTL：须大于最长任务（本地模型报告/KG 可达数分钟）
-_RUNNING_TTL = 3600
+# 进行中的任务（保持运行）TTL：须大于最长任务（本地模型报告/KG 可达数十分钟至小时）
+_RUNNING_TTL = 7200
 # 完成/失败任务保留时长，供前端读取一次完成状态后再清理
 _FINISHED_TTL = 600
 

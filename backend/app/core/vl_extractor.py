@@ -74,7 +74,7 @@ async def _call_single_batch(
             }
         ],
         temperature=0.1,
-        max_tokens=16384,
+        max_tokens=settings.LLM_MAX_TOKENS,
     )
     text: str | None = response.choices[0].message.content
     if not text:
