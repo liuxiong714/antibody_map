@@ -36,7 +36,11 @@ const FilePreview: React.FC<FilePreviewProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isPdf = ext === 'pdf' || ext === 'caj';
-  const isTextLike = ['txt', 'html', 'htm'].includes(ext);
+  // HTML/HTM: 使用 iframe srcdoc 渲染原始排版（保留 <table>/<img>/样式），
+  // 通过 fetch 带 token header 绕开 iframe 不支持鉴权 header 的问题；
+  // sandbox 隔离与主应用 DOM，防止外部 HTML 污染 React 界面。
+  const isHtmlLike = ['html', 'htm'].includes(ext);
+  const isTextLike = ['txt'].includes(ext);
   const isOfficeLike = ['docx', 'pptx', 'xlsx', 'epub'].includes(ext);
   const hasFile = !!filePath;
 
@@ -70,7 +74,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({
   }, []);
 
   const fetchTextContent = useCallback(async () => {
-    if (!literatureId || (!isTextLike && !isOfficeLike)) return;
+    if (!literatureId || (!isHtmlLike && !isTextLike && !isOfficeLike)) return;
     setTextLoading(true);
     try {
       const resp = await authFetch(`/api/v1/literatures/${literatureId}/source-text`);
@@ -85,7 +89,8 @@ const FilePreview: React.FC<FilePreviewProps> = ({
           return;
         }
       }
-      if (isTextLike) {
+      // HTML/TXT 直接拉原文件（HTML 用于 srcdoc 渲染；TXT 用于 <pre> 展示）
+      if (isHtmlLike || isTextLike) {
         const fileResp = await authFetch(`/api/v1/literatures/${literatureId}/file`);
         if (fileResp.ok) {
           const text = await fileResp.text();
@@ -100,13 +105,13 @@ const FilePreview: React.FC<FilePreviewProps> = ({
     } finally {
       setTextLoading(false);
     }
-  }, [literatureId, isTextLike, isOfficeLike, authFetch]);
+  }, [literatureId, isHtmlLike, isTextLike, isOfficeLike, authFetch]);
 
   useEffect(() => {
-    if (isTextLike || isOfficeLike) {
+    if (isHtmlLike || isTextLike || isOfficeLike) {
       fetchTextContent();
     }
-  }, [fetchTextContent, isTextLike, isOfficeLike]);
+  }, [fetchTextContent, isHtmlLike, isTextLike, isOfficeLike]);
 
   // 通用的"导入关联文件"按钮
   const renderImportButton = (label: string) => (
@@ -140,7 +145,77 @@ const FilePreview: React.FC<FilePreviewProps> = ({
     );
   }
 
-  // TXT/HTML/DOCX/PPTX/XLSX/EPUB: 显示文本内容
+  // HTML/HTM: 使用 iframe srcdoc 渲染原始 HTML（保留排版、表格、图片）
+  if (isHtmlLike) {
+    if (textLoading) {
+      return (
+        <div style={{ textAlign: 'center', padding: '60px 0' }}>
+          <Spin tip="加载 HTML 内容中...">
+            <div style={{ height: 80 }} />
+          </Spin>
+        </div>
+      );
+    }
+    if (textContent) {
+      return (
+        <div
+          style={{
+            height: '100%',
+            width: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            background: '#fff',
+          }}
+        >
+          <div
+            style={{
+              padding: '6px 12px',
+              borderBottom: '1px solid #e8e8e8',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              background: '#fafafa',
+              fontSize: 12,
+              color: '#888',
+            }}
+          >
+            <Space size={8}>
+              <FileTextOutlined style={{ color: '#1890ff' }} />
+              <span>{ext.toUpperCase()} 格式 — 原始 HTML 渲染</span>
+            </Space>
+            <Button
+              size="small"
+              icon={<DownloadOutlined />}
+              href={`/api/v1/literatures/${literatureId}/download`}
+            >
+              下载原文件
+            </Button>
+          </div>
+          <iframe
+            title="文献预览"
+            srcDoc={textContent}
+            // sandbox 隔离: 允许同源脚本（大部分 HTML 报告），允许表单，
+            // 允许新开窗口（target=_blank 链接），但禁止访问顶层 DOM / cookie
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+            style={{
+              flex: 1,
+              width: '100%',
+              border: 'none',
+              background: '#fff',
+            }}
+          />
+        </div>
+      );
+    }
+    return (
+      <div style={{ textAlign: 'center', padding: '60px 0' }}>
+        <Empty description="HTML 内容暂不可用（可能尚未提取）" />
+        {renderImportButton('导入关联文件')}
+      </div>
+    );
+  }
+
+  // TXT/DOCX/PPTX/XLSX/EPUB: 显示文本内容
   if (isTextLike || isOfficeLike) {
     if (textLoading) {
       return (
