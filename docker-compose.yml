@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f
     container_name: antibody-postgres
     ports:
       # 仅绑定回环地址，禁止暴露到公网
@@ -26,7 +26,7 @@ services:
       - antibody-net
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
     container_name: antibody-redis
     command: redis-server --requirepass ${REDIS_PASSWORD:?}
     environment:
@@ -47,7 +47,7 @@ services:
       - antibody-net
 
   minio:
-    image: minio/minio
+    image: minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     container_name: antibody-minio
     ports:
       # 仅绑定回环地址，禁止暴露到公网
@@ -250,7 +250,7 @@ services:
   # 或客户端 IP 命中 METRICS_ALLOW_IPS 白名单时开放；生产环境需在 .env 中
   # 将 prometheus 容器网关 IP 加入 METRICS_ALLOW_IPS 才能抓取成功。
   prometheus:
-    image: prom/prometheus:v2.53.0
+    image: prom/prometheus:v2.53.0@sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc
     container_name: antibody-prometheus
     ports:
       - "127.0.0.1:9090:9090"
@@ -269,7 +269,7 @@ services:
       - antibody-net
 
   grafana:
-    image: grafana/grafana:11.1.0
+    image: grafana/grafana:11.1.0@sha256:079600c9517b678c10cda6006b4487d3174512fd4c6cface37df7822756ed7a5
     container_name: antibody-grafana
     ports:
       - "127.0.0.1:3000:3000"

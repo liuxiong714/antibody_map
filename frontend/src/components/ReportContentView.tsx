@@ -3,7 +3,24 @@ import { Button, Input, Space, message } from 'antd';
 import { EditOutlined, SaveOutlined, CloseOutlined, MenuOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { updateReport } from '../services/map';
+
+// rehype-sanitize 默认 schema 已屏蔽 script/iframe/事件处理器/javascript URL 等危险向量，
+// 这里仅扩展 markdown 富渲染常用的 div/span/table/img 等安全标签的 style/class 属性，
+// 让 LLM 生成的 <div class=...><table><figure><img> 等原生 HTML 能正常展示。
+const sanitizeSchema = {
+  ...defaultSchema,
+  attributes: {
+    ...(defaultSchema.attributes || {}),
+    '*': [...(defaultSchema.attributes?.['*'] || []), 'style', 'class'],
+    a: [...(defaultSchema.attributes?.a || []), 'target', 'rel'],
+    img: [...(defaultSchema.attributes?.img || []), 'loading', 'width', 'height', 'align'],
+    td: [...(defaultSchema.attributes?.td || []), 'colspan', 'rowspan', 'align'],
+    th: [...(defaultSchema.attributes?.th || []), 'colspan', 'rowspan', 'align'],
+  },
+};
 
 interface TocItem {
   id: string;
@@ -131,6 +148,7 @@ const ReportContentView: React.FC<Props> = ({ content, editable = false, reportI
           <div className="markdown-preview" style={markdownStyle}>
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeRaw, [rehypeSanitize, sanitizeSchema]]}
               components={{
                 h2: ({ children, ...props }) => {
                   const text = String(children);
