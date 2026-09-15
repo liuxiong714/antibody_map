@@ -30,7 +30,7 @@ const PdfPreviewModal: React.FC<PdfPreviewModalProps> = ({
       style={{ top: 20 }}
       destroyOnHidden
       centered={false}
-      styles={{ body: { padding: 8, minHeight: 400, maxHeight: '80vh', overflow: 'auto' } }}
+      styles={{ body: { padding: 8, height: 'calc(80vh - 100px)', overflow: 'hidden', display: 'flex', flexDirection: 'column' } }}
     >
       {literatureId && (
         <FilePreview
