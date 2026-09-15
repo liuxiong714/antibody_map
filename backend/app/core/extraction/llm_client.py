@@ -88,6 +88,10 @@ async def _consume_daily_quota(tokens: int) -> None:
             decode_responses=True,
             socket_connect_timeout=3,
             socket_timeout=3,
+            max_connections=50,
+            retry_on_timeout=True,
+            socket_keepalive=True,
+            health_check_interval=30,
         )
         key = "llm:daily_tokens:" + datetime.now(timezone.utc).strftime("%Y%m%d")
         used = await client.incrby(key, tokens)

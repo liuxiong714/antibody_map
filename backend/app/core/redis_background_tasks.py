@@ -1,4 +1,4 @@
-"""Redis-backed 后台长任务状态注册表。
+﻿"""Redis-backed 后台长任务状态注册表。
 
 用于「报告生成」与「知识图谱抽取」这类从 FastAPI HTTP 同步长协程改造为
 Celery 后台异步任务后的运行状态登记。Worker 在后台执行任务时写入 Redis，
@@ -39,8 +39,10 @@ def _client() -> Any:
     return aioredis.from_url(
         settings.REDIS_URL,
         decode_responses=True,
-        socket_connect_timeout=3,
-        socket_timeout=3,
+        max_connections=50,
+        retry_on_timeout=True,
+        socket_keepalive=True,
+        health_check_interval=30,
     )
 
 

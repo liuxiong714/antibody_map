@@ -1,4 +1,4 @@
-import contextlib
+﻿import contextlib
 import hashlib
 import json
 import logging
@@ -102,8 +102,10 @@ def _create_cache_redis():
     return Redis.from_url(
         settings.REDIS_URL,
         decode_responses=True,
-        socket_connect_timeout=_CACHE_TIMEOUT,
-        socket_timeout=_CACHE_TIMEOUT,
+        max_connections=50,
+        retry_on_timeout=True,
+        socket_keepalive=True,
+        health_check_interval=30,
     )
 
 

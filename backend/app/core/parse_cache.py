@@ -1,4 +1,4 @@
-"""PDF 解析结果缓存模块。
+﻿"""PDF 解析结果缓存模块。
 
 以文件字节的 sha256 摘要作为 key，将 PDF 解析（MinerU / PyMuPDF / OCR 等耗时
 操作）得到的文本缓存到 Redis，避免失败重试、多次提取时重复跑最慢的解析与 OCR。
@@ -37,8 +37,10 @@ def _create_redis():
     return Redis.from_url(
         settings.REDIS_URL,
         decode_responses=True,
-        socket_connect_timeout=CACHE_TIMEOUT,
-        socket_timeout=CACHE_TIMEOUT,
+        max_connections=50,
+        retry_on_timeout=True,
+        socket_keepalive=True,
+        health_check_interval=30,
     )
 
 

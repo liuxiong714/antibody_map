@@ -1,4 +1,4 @@
-"""Prometheus 业务指标定义与后台采集循环。
+﻿"""Prometheus 业务指标定义与后台采集循环。
 
 分工说明：
 - HTTP 请求量 / 延迟直方图（http_requests_total、http_request_duration_*_seconds）
@@ -236,8 +236,10 @@ async def _update_celery_queue_depth() -> None:
     client = Redis.from_url(
         settings.CELERY_BROKER_URL,
         decode_responses=True,
-        socket_connect_timeout=5,
-        socket_timeout=5,
+        max_connections=50,
+        retry_on_timeout=True,
+        socket_keepalive=True,
+        health_check_interval=30,
     )
     try:
         # Celery 默认队列名为 "celery"；如需追踪更多队列可在此扩展

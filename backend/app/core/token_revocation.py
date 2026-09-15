@@ -1,4 +1,4 @@
-"""Token 吊销服务
+﻿"""Token 吊销服务
 
 使用 Redis 存储已吊销的 JWT jti（黑名单），支持：
 - 吊销 token（添加 jti 到黑名单，有效期与 token 自身过期时间一致）
@@ -24,8 +24,10 @@ async def _get_redis() -> aioredis.Redis:
         _redis = aioredis.from_url(
             settings.REDIS_URL,
             decode_responses=True,
-            socket_connect_timeout=3,
-            socket_timeout=3,
+            max_connections=50,
+            retry_on_timeout=True,
+            socket_keepalive=True,
+            health_check_interval=30,
         )
     return _redis
 
