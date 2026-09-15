@@ -236,6 +236,7 @@ const LiteraturePage: React.FC = () => {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLitId, setPreviewLitId] = useState<string | null>(null);
   const [previewLitTitle, setPreviewLitTitle] = useState('');
+  const [previewLitFilePath, setPreviewLitFilePath] = useState<string | null>(null);
 
   // 查重与合并
   const [dupWarningOpen, setDupWarningOpen] = useState(false);
@@ -1183,16 +1184,12 @@ const LiteraturePage: React.FC = () => {
           URL: <GlobalOutlined />,
         };
         const icon = formatIconMap[fmt!] || <FileOutlined />;
-        // 点击预览：HTML 直接新标签页打开，其它格式走内部预览弹窗
+        // 点击预览：全部格式统一走 FilePreview（内含 PDF / HTML / TXT / Office 分支）
         const handlePreview = () => {
-          const ext = (r.file_path || '').split('.').pop()?.toLowerCase();
-          if (ext === 'html' || ext === 'htm') {
-            window.open(`/api/v1/literatures/${r.id}/file`, '_blank');
-          } else {
-            setPreviewLitId(r.id);
-            setPreviewLitTitle(r.title);
-            setPreviewOpen(true);
-          }
+          setPreviewLitId(r.id);
+          setPreviewLitTitle(r.title);
+          setPreviewLitFilePath(r.file_path || null);
+          setPreviewOpen(true);
         };
         return (
           <Tooltip title={`点击预览 ${fmt!} 文档`}>
@@ -1448,15 +1445,11 @@ const LiteraturePage: React.FC = () => {
               size="small"
               icon={<EyeOutlined />}
               onClick={() => {
-                // HTML 文件直接在浏览器新标签页打开（浏览器原生渲染）
-                const ext = r.file_path ? r.file_path.split('.').pop()?.toLowerCase() : '';
-                if (ext === 'html' || ext === 'htm') {
-                  window.open(`/api/v1/literatures/${r.id}/file`, '_blank');
-                } else {
-                  setPreviewLitId(r.id);
-                  setPreviewLitTitle(r.title);
-                  setPreviewOpen(true);
-                }
+                // 统一走 FilePreview Modal
+                setPreviewLitId(r.id);
+                setPreviewLitTitle(r.title);
+                setPreviewLitFilePath(r.file_path || null);
+                setPreviewOpen(true);
               }}
             />
           </Tooltip>
@@ -2556,6 +2549,7 @@ const LiteraturePage: React.FC = () => {
         open={previewOpen}
         literatureId={previewLitId}
         literatureTitle={previewLitTitle}
+        filePath={previewLitFilePath}
         onClose={() => setPreviewOpen(false)}
       />
 
