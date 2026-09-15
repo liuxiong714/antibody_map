@@ -190,9 +190,29 @@ async def list_literature(
             query = query.where(Literature.extracted_count == 0)
             count_query = count_query.where(Literature.extracted_count == 0)
         elif review_status == "pending":
-            # 未审核：有数据但 approved_count == 0
-            query = query.where(Literature.extracted_count > 0, Literature.approved_count == 0)
-            count_query = count_query.where(Literature.extracted_count > 0, Literature.approved_count == 0)
+            # 未审核：有数据，且无通过也无驳回
+            query = query.where(
+                Literature.extracted_count > 0,
+                Literature.approved_count == 0,
+                Literature.rejected_count == 0,
+            )
+            count_query = count_query.where(
+                Literature.extracted_count > 0,
+                Literature.approved_count == 0,
+                Literature.rejected_count == 0,
+            )
+        elif review_status == "rejected":
+            # 已驳回：有数据，无通过，但存在驳回
+            query = query.where(
+                Literature.extracted_count > 0,
+                Literature.approved_count == 0,
+                Literature.rejected_count > 0,
+            )
+            count_query = count_query.where(
+                Literature.extracted_count > 0,
+                Literature.approved_count == 0,
+                Literature.rejected_count > 0,
+            )
         elif review_status == "partial":
             # 部分审核：0 < approved_count < extracted_count
             query = query.where(Literature.approved_count > 0, Literature.approved_count < Literature.extracted_count)

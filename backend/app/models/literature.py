@@ -57,6 +57,7 @@ class Literature(Base):
     extraction_status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     extracted_count: Mapped[int] = mapped_column(Integer, default=0)
     approved_count: Mapped[int] = mapped_column(Integer, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, default=0)
     # LLM 提取的 token 用量与费用统计（AI 提取完成时写入）
     llm_model_used: Mapped[str | None] = mapped_column(String(100))
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)

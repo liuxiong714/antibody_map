@@ -68,6 +68,7 @@ class LiteratureResponse(BaseModel):
     extraction_status: str
     extracted_count: int
     approved_count: int
+    rejected_count: int = 0
     # LLM 提取的 token 用量与费用统计
     llm_model_used: str | None = None
     prompt_tokens: int = 0

@@ -28,6 +28,7 @@ export interface Literature {
   kg_triple_count?: number;
   extracted_count: number;
   approved_count: number;
+  rejected_count: number;
   // LLM 提取的 token 用量与费用统计
   llm_model_used?: string | null;
   prompt_tokens?: number;

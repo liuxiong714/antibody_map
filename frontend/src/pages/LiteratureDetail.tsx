@@ -652,6 +652,10 @@ const LiteratureDetail: React.FC = () => {
         ),
     },
     {
+      title: '人群', key: 'population', width: 140,
+      render: (_: unknown, r: DataPoint) => r.population || '-',
+    },
+    {
       title: '数据类型', dataIndex: 'data_type', key: 'dt', width: 100,
       sorter: (a, b) => (a.data_type || '').localeCompare(b.data_type || ''),
       render: (v: string, r: DataPoint) =>

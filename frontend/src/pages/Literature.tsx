@@ -1304,6 +1304,7 @@ const LiteraturePage: React.FC = () => {
       sortOrder: sortInfo.field === 'review_status' ? sortInfo.order : null,
       filters: [
         { text: '未审核', value: 'pending' },
+        { text: '已驳回', value: 'rejected' },
         { text: '部分审核', value: 'partial' },
         { text: '已完成', value: 'approved' },
         { text: '无数据', value: 'none' },
@@ -1313,6 +1314,7 @@ const LiteraturePage: React.FC = () => {
       render: (_: unknown, r: Literature) => {
         const total = r.extracted_count || 0;
         const approved = Math.max(0, r.approved_count || 0);
+        const rejected = Math.max(0, r.rejected_count || 0);
         if (total === 0) {
           return <Tag color="default">无数据</Tag>;
         }
@@ -1337,6 +1339,15 @@ const LiteraturePage: React.FC = () => {
           );
         }
         if (approved === 0) {
+          // approved === 0：区分「全部被驳回」与「未审核」
+          if (rejected > 0 && rejected === total) {
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Tag color="magenta">已驳回</Tag>
+                <span style={{ fontSize: 12 }}>{rejected}/{total}</span>
+              </div>
+            );
+          }
           return (
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <Tag color="red">未审核</Tag>

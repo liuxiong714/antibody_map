@@ -907,18 +907,23 @@ async def batch_dispute(
 
 
 async def _sync_approved_count(db: AsyncSession, literature_id: uuid.UUID):
-    """同步文献表中 approved_count"""
+    """同步文献表中的 approved_count 与 rejected_count"""
     count_result = await db.execute(
-        select(func.count(DataPoint.id))
-        .where(DataPoint.literature_id == literature_id)
-        .where(DataPoint.review_status == "approved")
+        select(
+            func.count(DataPoint.id).filter(DataPoint.review_status == "approved"),
+            func.count(DataPoint.id).filter(DataPoint.review_status == "rejected"),
+        ).where(DataPoint.literature_id == literature_id)
     )
-    approved = count_result.scalar() or 0
+    approved, rejected = count_result.one()
 
     await db.execute(
         update(Literature)
         .where(Literature.id == literature_id)
-        .values(approved_count=approved, updated_at=datetime.now(timezone.utc))
+        .values(
+            approved_count=approved,
+            rejected_count=rejected,
+            updated_at=datetime.now(timezone.utc),
+        )
     )
 
 
