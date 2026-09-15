@@ -15,6 +15,33 @@ interface FilePreviewProps {
 }
 
 /**
+ * 给 iframe srcdoc 渲染用的 HTML 做安全/可用性预处理：
+ * - 去掉 href/src 以 `/` 开头的绝对路径 link/script（srcdoc 下无法解析到宿主域名，
+ *   会被 Chrome 自动取消触发大量 ERR_ABORTED 噪音，且 script 缺失还会造成后续
+ *   内联 JS ReferenceError 连带报错）
+ * - 去掉依赖外部资源的 <script src="...">（同上）
+ * - 保留内联 <style>/<script> 块和正文 HTML，文档主体渲染不受影响
+ */
+function sanitizeForSrcdoc(raw: string): string {
+  if (!raw) return raw;
+  let s = raw;
+  const before = s.length;
+  // 1. 去掉 <link href="..."> — 任何外部样式表（srcdoc 下根路径和 http 绝对路径都没用）
+  s = s.replace(/<link\b[^>]*\bhref\s*=\s*["'][^"']+["'][^>]*>/gi, '');
+  // 2. 去掉 <script src="..."> — 任何外部脚本
+  s = s.replace(/<script\b[^>]*\bsrc\s*=\s*["'][^"']+["'][^>]*>\s*<\/script>/gi, '');
+  // 3. 去掉 <img src="/..."> — 根路径图片
+  s = s.replace(/<img\b[^>]*\bsrc\s*=\s*["']\/[^"']+["'][^>]*>/gi, '');
+  // 4. 去掉调用未定义全局函数的 inline script：createHeader/pageTop/pageBottom/subContent/btnTool/createFooter
+  //    原始 HTML 依赖已删掉的外部 js 提供这些全局，调用必 ReferenceError 且会污染 console
+  s = s.replace(
+    /<script\b[^>]*>(?:(?!<\/script)[\s\S])*\b(?:createHeader|createFooter|pageTop|pageBottom|btnTool|subContent)\b(?:(?!<\/script)[\s\S])*<\/script>/gi,
+    '<script>/* removed broken inline script */</script>',
+  );
+  return s;
+}
+
+/**
  * 通用文件预览组件：
  * - PDF: 使用 PdfViewer 渲染
  * - TXT/HTML: 直接渲染文本内容
@@ -193,7 +220,7 @@ const FilePreview: React.FC<FilePreviewProps> = ({
           </div>
           <iframe
             title="文献预览"
-            srcDoc={textContent}
+            srcDoc={sanitizeForSrcdoc(textContent)}
             // sandbox 隔离: 允许同源脚本（大部分 HTML 报告），允许表单，
             // 允许新开窗口（target=_blank 链接），但禁止访问顶层 DOM / cookie
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
