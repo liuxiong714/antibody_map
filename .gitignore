@@ -65,7 +65,15 @@ site/
 /_*.cjs
 /_browser_work/
 /_sr_npm/
+/_tmp/
 /import_*.py
+# 根目录临时/误建产物（大小写无下划线前缀，易漏过 /_* 规则）
+/0
+/1
+/verify_format.py
+/_tmp
+/backups
+/xlsx_in/
 
 # backend 下划线前缀临时调试脚本
 backend/_*.py

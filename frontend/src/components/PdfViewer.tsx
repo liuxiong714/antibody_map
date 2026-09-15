@@ -9,10 +9,24 @@ import {
 import * as pdfjsLib from 'pdfjs-dist';
 import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline';
 
+// 注意：下方文本层依赖 pdfjs-dist 内部约定（--scale-factor 与 calc(var(--scale-factor)*…px)、
+// textLayer.divs、setLayerDimensions 的 calc 尺寸逻辑），故 package.json 中 pdfjs-dist 已锁定为
+// 精确版本 4.10.38（非 ^）。升级 pdfjs-dist 前请先用本组件实测多页中文 PDF 的文本对齐与选中，
+// 防止静默出现文本错位/重叠（历史 bug）。
+
 // 使用内联 worker（离线可用、不依赖运行时 module fetch，规避 nginx MIME/浏览器缓存/CSP 导致的
 // "Failed to fetch dynamically imported module" 加载失败），本地 cmaps
 pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker();
 const CMAP_URL = '/cmaps/';
+
+// 一次性注入文本层选中高亮样式（span 本身为透明文字，选中时以反蓝背景呈现，便于用户分辨已选范围）
+(function injectTextLayerStyle() {
+  if (typeof document === 'undefined' || document.getElementById('pdfjs-text-layer-selection-style')) return;
+  const st = document.createElement('style');
+  st.id = 'pdfjs-text-layer-selection-style';
+  st.textContent = '.pdfjs-text-layer ::selection{ background:rgba(0,122,255,0.30); }';
+  (document.head || document.documentElement).appendChild(st);
+})();
 
 interface PdfViewerProps {
   literatureId: string | null;
@@ -95,15 +109,68 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     }
     renderTasksRef.current.delete(pageNum);
 
-    return canvas;
+    // 叠加文本层：在 canvas 之上渲染透明文字 span，使 PDF 内容可选中、可复制。
+    // 文本层使用 CSS 像素 viewport（scale 而非 scale*pixelRatio），与 canvas 展示尺寸完全对齐。
+    let textLayerDiv: HTMLDivElement | null = null;
+    try {
+      const textViewport = pdfPage.getViewport({ scale: currentScale });
+      const div = document.createElement('div');
+      div.className = 'pdfjs-text-layer';
+      // 关键：用 JS 内联样式（而非依赖外部/内嵌 class），确保文本层绝对定位覆盖在 canvas 之上。
+      // TextLayer 内部只设置 left/top/fontSize（用 calc(var(--scale-factor)*...px)）以及容器宽高，
+      // 不设置定位/颜色，因此这些必须在此显式声明，否则 span 会堆叠重叠且无法选中。
+      Object.assign(div.style, {
+        position: 'absolute',
+        top: '0',
+        left: '0',
+        overflow: 'hidden',
+        lineHeight: '1',
+        color: 'transparent',
+        textAlign: 'initial',
+        caretColor: 'CanvasText',
+        userSelect: 'text',
+        cursor: 'text',
+        zIndex: '1',
+      });
+      // TextLayer 用 calc(var(--scale-factor)*...px) 定位/缩放 span，必须显式设置
+      // 该 CSS 变量为其对齐到与 canvas 相同的 CSS 像素坐标（参考 pdf_viewer 的做法）。
+      div.style.setProperty('--scale-factor', String(currentScale));
+      div.addEventListener('pointerdown', () => div.classList.add('selecting'));
+      div.addEventListener('pointerup', () => div.classList.remove('selecting'));
+      const textLayer = new pdfjsLib.TextLayer({
+        textContentSource: pdfPage.streamTextContent({ includeMarkedContent: true, disableNormalization: true }),
+        container: div,
+        viewport: textViewport,
+      });
+      await textLayer.render();
+      // 逐 span 设内联定位/透明，保证叠加层排版正确（不依赖 class 是否全局生效）
+      const spanStyle = {
+        position: 'absolute',
+        whiteSpace: 'pre',
+        color: 'transparent',
+        cursor: 'text',
+        transformOrigin: '0px 0%',
+      };
+      textLayer.textDivs.forEach((sp) => Object.assign(sp.style, spanStyle));
+      const endOfContent = document.createElement('div');
+      endOfContent.style.cssText = 'display:block;position:absolute;inset:100% 0 0;z-index:0;cursor:default;user-select:none;';
+      div.append(endOfContent);
+      textLayerDiv = div;
+    } catch (textErr) {
+      console.error(`[PdfViewer] 文本层渲染失败: page=${pageNum}, scale=${currentScale}`, textErr);
+      textLayerDiv = null;
+    }
+
+    return { canvas, textLayerDiv };
   }, []);
 
-  // 挂载 canvas 到对应的 placeholder
-  const mountCanvas = useCallback((pageNum: number, canvas: HTMLCanvasElement) => {
+  // 挂载 canvas 与文本层到对应的 placeholder
+  const mountCanvas = useCallback((pageNum: number, rendered: { canvas: HTMLCanvasElement; textLayerDiv: HTMLDivElement | null }) => {
     const placeholder = document.getElementById(`pdf-placeholder-${pageNum}`);
-    if (placeholder && placeholder.firstChild !== canvas) {
+    if (placeholder) {
       placeholder.innerHTML = '';
-      placeholder.appendChild(canvas);
+      placeholder.appendChild(rendered.canvas);
+      if (rendered.textLayerDiv) placeholder.appendChild(rendered.textLayerDiv);
     }
   }, []);
 
@@ -467,11 +534,12 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                 data-page={pageNum}
                 style={{
                   width: `${displayW}px`,
-                  height: `${displayH}px`,
+                  minHeight: `${displayH}px`,
                   marginBottom: 8,
                   backgroundColor: '#fff',
                   boxShadow: '0 2px 12px rgba(0,0,0,0.12)',
                   lineHeight: 0,
+                  position: 'relative',
                   overflow: 'hidden',
                 }}
               />

@@ -10,9 +10,15 @@
 - **LLM 流式超时保护**：`llm_client` 改为流式调用，新增 `LLM_FIRST_TOKEN_TIMEOUT`（默认 60s）与 `LLM_CHUNK_GAP_TIMEOUT`（默认 120s）配置——连接挂死或无首 token 时即时判失败并安全重试，避免 worker 空等 20 分钟；流式挂死归入 `connection_error` 可安全重试，防止双倍计费。
 - **时区序列化**：新增 `backend/app/core/timeutil.py::iso_ts()`，将数据库 UTC aware 时间统一转为 Asia/Shanghai 北京时间 ISO 输出，供 synthetic / model_config / extraction / auth 等 API 使用，前端展示与本地时区一致。
 
+### 新增
+
+- **PDF 预览文本可选可复制**：`PdfViewer` 在 canvas 之上叠加 pdf.js 文本层——透明 `span` 覆盖于对应文字位置，配合显式内联定位与 `--scale-factor`，支持鼠标框选、复制 PDF 内容，选中时以反蓝背景高亮。
+
 ### 修复
 
 - **PDF 预览偶发空白页**：`PdfViewer` 渲染改为串行化——IntersectionObserver、滚动兜底、缩放变化等并发触发统一合并排队执行（`pendingRenderRef` / `requestedRangeRef`），避免同一页多个渲染任务相互 cancel 后既不重新挂载也无后续渲染，导致页面（如第 3 页）永久空白。
+- **PDF 预览二页文本错乱重叠**：修正文本层未显式设置 `--scale-factor` 导致 span 定位与 canvas 坐标系错位、第二页文字堆叠重叠的缺陷；现每页按当前缩放设置 `--scale-factor`，文本与页面精确对齐。
+- **前端入口 HTML 禁止缓存**：nginx 对 `/index.html` 返回 `Cache-Control: no-cache, must-revalidate`。Vite 产物为内容哈希文件名，浏览器只要拿到最新 index.html 即自动加载新 bundle，避免缓存旧 HTML 后一直引用旧 JS（如 PdfViewer 修复后刷新仍显示旧版）。
 
 ## v1.24.0 (2026-09-12)
 
