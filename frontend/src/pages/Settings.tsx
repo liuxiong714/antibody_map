@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+﻿import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Card, Tabs, Button, Space, Tag, Select, Input, Alert, Typography, Empty, Spin, Tooltip,
   Table, Upload, Modal, message, Switch,
@@ -655,7 +655,7 @@ const Settings: React.FC = () => {
                     <Space wrap>
                       {sysInfo.features.map((f) => {
                         // O9: 对应 feature_flags enabled=false 时灰显
-                        const flagKey: Record<string, string> = { '知识图谱': 'kg_extraction' };
+                        const flagKey: Record<string, string> = { '知识图谱': 'kg_extraction', '数据质量评分': 'kg_qa_unreviewed' };
                         const k = flagKey[f];
                         const enabled = !k || sysInfo?.feature_flags?.[k] !== false;
                         return enabled
@@ -737,3 +737,4 @@ const Settings: React.FC = () => {
 };
 
 export default Settings;
+

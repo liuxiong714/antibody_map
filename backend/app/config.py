@@ -53,6 +53,9 @@ def _get_runtime_feature_flags() -> dict:
     return flags
 
 
+
+# Redis 同步 key：FastAPI 和 Worker 跨进程共享 feature flag overrides
+_FLAG_REDIS_KEY = 'antibody:feature_flags:overrides'
 # ---- In-memory feature flag overrides (admin toggles) ----
 _FLAG_OVERRIDES: dict = {}
 
@@ -63,6 +66,13 @@ def _set_feature_flag(name: str, enabled: bool) -> None:
         raise ValueError(f'Unknown flag {name!r}. Allowed: {sorted(allowed)}')
     _FLAG_OVERRIDES[name] = bool(enabled)
     _FLAG_CACHE = {'flags': None, 'mtime': 0.0}
+    # 同步到 Redis（跨进程共享，worker 也能读到）
+    try:
+        import json as _json, redis as _redis
+        _r = _redis.Redis.from_url(settings.REDIS_URL or 'redis://localhost:6379/0', socket_connect_timeout=1)
+        _r.set(_FLAG_REDIS_KEY, _json.dumps(_FLAG_OVERRIDES), ex=3600)
+    except Exception:
+        pass  # Redis 不可用时仅内存生效
 
 def _get_runtime_feature_flags() -> dict:
     import time
@@ -76,6 +86,17 @@ def _get_runtime_feature_flags() -> dict:
         'kg_qa_unreviewed': bool(settings.KG_QA_INCLUDE_UNREVIEWED),
         'proxy_headers': True,
     }
+    # 优先从 Redis 读最新 overrides（worker 也可能写入）
+    try:
+        import json as _json, redis as _redis
+        _r = _redis.Redis.from_url(settings.REDIS_URL or 'redis://localhost:6379/0', socket_connect_timeout=1)
+        _raw = _r.get(_FLAG_REDIS_KEY)
+        if _raw:
+            _d = _json.loads(_raw)
+            if isinstance(_d, dict):
+                _FLAG_OVERRIDES.update(_d)
+    except Exception:
+        pass
     for k, v in _FLAG_OVERRIDES.items():
         flags[k] = v
     cache['flags'] = flags
