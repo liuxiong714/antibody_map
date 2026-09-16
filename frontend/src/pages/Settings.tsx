@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Card, Tabs, Button, Space, Tag, Select, Input, Alert, Typography, Empty, Spin, Tooltip,
   Table, Upload, Modal, message, Switch,
@@ -627,74 +627,73 @@ const Settings: React.FC = () => {
         </span>
       ),
       children: (
-        <Card>
-          <div className="system-info">
-            <div className="system-info-item">
-              <span className="label">项目名称</span>
-              <span className="value">{sysInfo?.name || 'Antibody Map'}</span>
+        <>
+          <Card>
+            <div className="system-info">
+              <div className="system-info-item">
+                <span className="label">项目名称</span>
+                <span className="value">{sysInfo?.name || 'Antibody Map'}</span>
+              </div>
+              <div className="system-info-item">
+                <span className="label">版本</span>
+                <span className="value">
+                  {sysLoading ? <Spin size="small" /> : <Tag color="blue">v{sysInfo?.version || '...'}</Tag>}
+                </span>
+              </div>
+              <div className="system-info-item">
+                <span className="label">运行环境</span>
+                <span className="value">
+                  <Tag color={sysInfo?.environment === 'production' ? 'red' : 'orange'}>
+                    {sysInfo?.environment || '...'}
+                  </Tag>
+                </span>
+              </div>
+              <div className="system-info-item">
+                <span className="label">功能特性</span>
+                <div className="value">
+                  {sysInfo?.features?.length ? (
+                    <Space wrap>
+                      {sysInfo.features.map((f) => <Tag color="green" key={f}>{f}</Tag>)}
+                    </Space>
+                  ) : (
+                    <Spin size="small" />
+                  )}
+                </div>
+              </div>
+              <div className="system-info-item">
+                <span className="label">日志目录</span>
+                <span className="value"><Text code>{sysInfo?.log_dir || '...'}</Text></span>
+              </div>
+              <div className="system-info-item">
+                <span className="label">项目地址</span>
+                <span className="value">
+                  <a href={sysInfo?.repo_url || 'https://github.com/liuxiong714/antibody_map'} target="_blank" rel="noopener noreferrer">
+                    {sysInfo?.repo_url || 'github.com/liuxiong714/antibody_map'}
+                  </a>
+                </span>
+              </div>
             </div>
-            <div className="system-info-item">
-              <span className="label">版本</span>
-              <span className="value">
-                {sysLoading ? <Spin size="small" /> : <Tag color="blue">v{sysInfo?.version || '...'}</Tag>}
-              </span>
-            </div>
-            <div className="system-info-item">
-              <span className="label">运行环境</span>
-              <span className="value">
-                <Tag color={sysInfo?.environment === 'production' ? 'red' : 'orange'}>
-                  {sysInfo?.environment || '...'}
-                </Tag>
-              </span>
-            </div>
-            <div className="system-info-item">
+          </Card>
 
-          <Card size='small' style={{ marginBottom: 12 }} title='特性开关（管理员）'>
-            <Space direction='vertical' style={{ width: '100%' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>知识图谱 LLM 自动抽取</span>
+          <Card size="small" title="特性开关" style={{ marginTop: 12 }}>
+            <div className="system-info-item">
+              <span className="label">知识图谱自动抽取</span>
+              <div className="value" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <Switch
                   checked={!!sysInfo?.feature_flags?.kg_extraction}
                   onChange={async (val) => {
-                    try {
-                      await patchFeatureFlags({ kg_extraction: val });
-                      message.success('特性已更新');
-                      loadSystemInfo();
-                    } catch (e: any) { message.error(e?.response?.data?.detail || '更新失败'); }
+                    try { await patchFeatureFlags({ kg_extraction: val }); message.success('特性已更新'); loadSystemInfo(); }
+                    catch (e: any) { message.error(e?.response?.data?.detail || '更新失败'); }
                   }}
                 />
+                <Typography.Text type="secondary">
+                  开启后文献 AI 提取时自动触发知识图谱三元组抽取（额外 LLM 调用）。关闭时此 API 返回 400。
+                  如需影响 worker 后台任务，重启 worker 进程使开关生效。
+                </Typography.Text>
               </div>
-              <Typography.Text type='secondary'>
-                开启后文献 AI 提取成功时自动触发三元组抽取（额外 LLM 调用）。关闭时此 API 返回 400。
-                重启 worker 进程使开关在后台任务中生效。
-              </Typography.Text>
-            </Space>
+            </div>
           </Card>
-              <span className="label">功能特性</span>
-              <div className="value">
-                {sysInfo?.features?.length ? (
-                  <Space wrap>
-                    {sysInfo.features.map((f) => <Tag color="green" key={f}>{f}</Tag>)}
-                  </Space>
-                ) : (
-                  <Spin size="small" />
-                )}
-              </div>
-            </div>
-            <div className="system-info-item">
-              <span className="label">日志目录</span>
-              <span className="value"><Text code>{sysInfo?.log_dir || '...'}</Text></span>
-            </div>
-            <div className="system-info-item">
-              <span className="label">项目地址</span>
-              <span className="value">
-                <a href={sysInfo?.repo_url || 'https://github.com/liuxiong714/antibody_map'} target="_blank" rel="noopener noreferrer">
-                  {sysInfo?.repo_url || 'github.com/liuxiong714/antibody_map'}
-                </a>
-              </span>
-            </div>
-          </div>
-        </Card>
+        </>
       ),
     },
   ];
