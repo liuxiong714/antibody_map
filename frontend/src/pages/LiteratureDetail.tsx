@@ -1264,6 +1264,34 @@ const LiteratureDetail: React.FC = () => {
                                     : '-',
                               },
                               {
+                                title: '错误分类',
+                                key: 'err_category',
+                                width: 160,
+                                render: (_: unknown, r: ExtractionHistoryItem) => {
+                                  const m = r.error_message?.match(/^\[([^\]]+)\]/);
+                                  if (!m) return r.status === 'failed' ? <Tag color="red">未知错误</Tag> : '-';
+                                  const code = m[1];
+                                  const COLOR: Record<string, string> = {
+                                    ollama_unreachable: 'volcano',
+                                    connection_error: 'orange',
+                                    api_key_invalid: 'red', api_key_expired: 'red',
+                                    llm_timeout: 'gold', llm_parse_error: 'purple',
+                                    schema_validation: 'geekblue', pdf_parse_error: 'cyan',
+                                  };
+                                  const LABEL: Record<string, string> = {
+                                    ollama_unreachable: 'Ollama 连不上',
+                                    connection_error: '网络连接失败',
+                                    api_key_invalid: 'API Key 无效',
+                                    api_key_expired: 'API Key 过期',
+                                    llm_timeout: 'LLM 超时',
+                                    llm_parse_error: 'LLM 响应解析失败',
+                                    schema_validation: 'Schema 校验未通过',
+                                    pdf_parse_error: 'PDF 解析失败',
+                                  };
+                                  return <Tag color={COLOR[code] || 'default'}>{LABEL[code] || code}</Tag>;
+                                },
+                              },
+                              {
                                 title: '错误信息',
                                 dataIndex: 'error_message',
                                 key: 'error',

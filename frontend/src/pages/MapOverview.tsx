@@ -159,9 +159,18 @@ const MapOverview: React.FC = () => {
     }
   }, [disease, dataType, province, yearStart, yearEnd, ageMin, ageMax, gender, occupation]);
 
-  // F-5：筛选变化即触发查询（fetchData 的 useCallback 依赖已包括 disease 等筛选字段，
-  // 这里用 [fetchData] 触发——避免手动列一堆筛选字段）
-  useEffect(() => { fetchData(); }, [fetchData]);
+  // O8：debounce 300ms，避免连续切换筛选时触发多次请求
+  const _debounceTimer = useRef<number | null>(null);
+  useEffect(() => {
+    if (_debounceTimer.current) clearTimeout(_debounceTimer.current);
+    _debounceTimer.current = window.setTimeout(() => { fetchData(); }, 300);
+    return () => { if (_debounceTimer.current) clearTimeout(_debounceTimer.current); };
+  }, [fetchData]);
+
+  // 卸载时确保 debounce timer 不泄漏
+  useEffect(() => () => {
+    if (_debounceTimer.current) clearTimeout(_debounceTimer.current);
+  }, []);
 
   // 着色模式切换时加载热点数据
   const fetchHotspotData = useCallback(async () => {

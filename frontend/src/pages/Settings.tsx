@@ -653,7 +653,15 @@ const Settings: React.FC = () => {
                 <div className="value">
                   {sysInfo?.features?.length ? (
                     <Space wrap>
-                      {sysInfo.features.map((f) => <Tag color="green" key={f}>{f}</Tag>)}
+                      {sysInfo.features.map((f) => {
+                        // O9: 对应 feature_flags enabled=false 时灰显
+                        const flagKey: Record<string, string> = { '知识图谱': 'kg_extraction' };
+                        const k = flagKey[f];
+                        const enabled = !k || sysInfo?.feature_flags?.[k] !== false;
+                        return enabled
+                          ? <Tag color="green" key={f}>{f}</Tag>
+                          : <Tag color="default" key={f} style={{ opacity: 0.55 }}>{f} (关闭)</Tag>;
+                      })}
                     </Space>
                   ) : (
                     <Spin size="small" />
