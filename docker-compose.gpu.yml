@@ -1,0 +1,13 @@
+﻿# GPU 加速覆盖文件：为 worker 追加 NVIDIA GPU 设备请求。
+# 用法（RTX 5090 等有 NVIDIA Container Toolkit 的机器）：
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# 无 NVIDIA 机器勿追加，否则会报 "could not select device driver nvidia"。
+services:
+  worker:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

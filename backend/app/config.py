@@ -1,9 +1,48 @@
 import os
+import subprocess
 import warnings
 from pathlib import Path
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _detect_version() -> str:
+    """???????????????????
+
+    1. docs/changelog.md ????????? "## v1.25.0 (2026-09-14)"?
+       ? ?? changelog ???????????????"????"?
+       ??? git tag????????? changelog ??????? tag?
+    2. git describe --tags --always??????? .git ????
+    3. fallback?changelog.md ??????? "0.0.0-unknown"
+    """
+    import re
+
+    # ??? 1?? changelog.md ??
+    changelog = _PROJECT_ROOT / "docs" / "changelog.md"
+    try:
+        if changelog.exists():
+            text = changelog.read_text(encoding="utf-8")
+            # ?? "## vX.Y.Z" ? "## X.Y.Z" ??????????
+            m = re.search(r"^##\s+v?(\d+\.\d+\.\d+)", text, re.MULTILINE)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+
+    # ??? 2?git describe????
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            capture_output=True, text=True, cwd=str(_PROJECT_ROOT), timeout=3,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().lstrip("v")
+    except Exception:
+        pass
+
+    return "0.0.0-unknown"
+
 
 # .env 文件位于项目根目录（backend/ 的父目录）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -98,6 +137,13 @@ class Settings(BaseSettings):
     # 分块的主导参数是 LLM_CHUNK_THRESHOLD/SIZE/OVERLAP：长文本先按块逐块交给 LLM，
     # 默认 600000 可覆盖绝大多数综述/长文，避免超 6 万字符时尾部数据在进入 LLM 前被丢弃。
     TEXT_PREPROCESS_MAX_CHARS: int = 600000
+
+    # LLM 单次输出 token 上限（max_tokens / num_predict）。
+    # 本地 CPU/无 GPU 推理百亿级模型很慢，过大的输出上限会让单次请求远超超时；
+    # 调低后可显著降低每次调用耗时，文献提取 JSON 通常用不到超大输出。
+    LLM_MAX_OUTPUT_TOKENS: int = 4096
+    # LLM 上下文窗口（num_ctx）。需 >= 输入正文 + 输出，避免正文被截断导致"提取无数据"。
+    LLM_NUM_CTX: int = 16384
 
     # MinerU 增强 PDF 解析（需安装 PyTorch + mineru 包，首次使用会自动下载模型约 2-3GB）
     ENABLE_MINERU_PDF_PARSER: bool = False
@@ -211,7 +257,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "production"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
-    APP_VERSION: str = "1.24.0"
+    APP_VERSION: str = _detect_version()
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     MAX_UPLOAD_SIZE: int = 52428800
     # 提取状态卡死阈值（分钟）：processing/queued 超过此时间未变，列表查询时自动重置为 failed

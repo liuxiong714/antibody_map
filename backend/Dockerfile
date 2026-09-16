@@ -49,16 +49,31 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # CAJ 转换工具（知网 .caj → PDF）：caj2pdf 不在 PyPI，从 GitHub 拉取源码与预编译共享库。
 # 依赖 mutool（mupdf-tools，已在上面安装）；共享库 libjbig*.so 通过相对路径 ./libjbig*.so 加载，
 # 因此运行时通过包装脚本 scripts/caj2pdf-wrapper 切换到 /opt/caj2pdf 再执行。
-# 使用本地缓存目录（backend/caj2pdf_cache/）避免构建时 GitHub 下载不稳定。
+# 优先使用本地缓存目录（backend/caj2pdf_cache/）；无缓存时在线拉取（国内源、尽力而为，失败不阻断构建）。
 COPY backend/caj2pdf_cache/ /tmp/caj2pdf_cache/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    mkdir -p /opt/caj2pdf \
-    && tar -xzf /tmp/caj2pdf_cache/caj2pdf.tar.gz --strip-components=1 -C /opt/caj2pdf \
-    && cp /tmp/caj2pdf_cache/libjbigdec.so /opt/caj2pdf/libjbigdec.so \
-    && cp /tmp/caj2pdf_cache/libjbig2codec.so /opt/caj2pdf/libjbig2codec.so \
-    && chmod +x /opt/caj2pdf/caj2pdf \
-    && python -m pip install --no-index --find-links=/wheels PyPDF2==2.2.0 imagesize==1.3.0 \
-    && rm -rf /tmp/caj2pdf_cache
+    if [ -n "$(find /tmp/caj2pdf_cache -name 'caj2pdf.tar.gz' -print -quit 2>/dev/null)" ]; then \
+        echo ">>> 使用本地缓存安装 caj2pdf"; \
+        mkdir -p /opt/caj2pdf \
+        && tar -xzf /tmp/caj2pdf_cache/caj2pdf.tar.gz --strip-components=1 -C /opt/caj2pdf \
+        && cp /tmp/caj2pdf_cache/libjbigdec.so /opt/caj2pdf/libjbigdec.so \
+        && cp /tmp/caj2pdf_cache/libjbig2codec.so /opt/caj2pdf/libjbig2codec.so \
+        && chmod +x /opt/caj2pdf/caj2pdf \
+        && python -m pip install PyPDF2==2.2.0 imagesize==1.3.0 \
+        && rm -rf /tmp/caj2pdf_cache; \
+    else \
+        echo ">>> 在线安装 caj2pdf（国内源，尽力而为）"; \
+        apt-get update && apt-get install -y --no-install-recommends git jbig2dec libjbig-dev \
+        && rm -rf /var/lib/apt/lists/*; \
+        mkdir -p /opt/caj2pdf; \
+        git clone --depth 1 https://gh-proxy.com/https://github.com/caj2pdf/caj2pdf.git /tmp/caj2pdf-src 2>/dev/null \
+        && cp -rf /tmp/caj2pdf-src/. /opt/caj2pdf/ 2>/dev/null || true; \
+        cp /usr/lib/x86_64-linux-gnu/libjbig.so.0 /opt/caj2pdf/libjbigdec.so 2>/dev/null || true; \
+        cp /usr/lib/x86_64-linux-gnu/libjbig2dec.so.0 /opt/caj2pdf/libjbig2codec.so 2>/dev/null || true; \
+        python -m pip install PyPDF2==2.2.0 imagesize==1.3.0 2>/dev/null || true; \
+        chmod +x /opt/caj2pdf/caj2pdf 2>/dev/null || true; \
+        rm -rf /tmp/caj2pdf-src || true; \
+    fi
 
 # MinerU 可选依赖（仅 INSTALL_MINERU=true 时安装）
 COPY backend/requirements-mineru.txt ./requirements-mineru.txt
@@ -84,6 +99,8 @@ RUN if [ "$INSTALL_MINERU" = "true" ]; then \
 
 # 复制后端代码
 COPY backend/ ./backend/
+# 复制 docs/（包含 changelog.md，_detect_version() 从这里解析真实版本号）
+COPY docs/ ./docs/
 # caj2pdf 包装脚本（切换工作目录后执行，确保相对路径共享库可加载）
 COPY backend/scripts/caj2pdf-wrapper /usr/local/bin/caj2pdf
 RUN chmod +x /usr/local/bin/caj2pdf

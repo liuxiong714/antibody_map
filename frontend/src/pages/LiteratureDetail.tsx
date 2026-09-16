@@ -9,7 +9,7 @@ import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
 import QualityBadge from '../components/QualityBadge';
 import {
-  getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText, confirmDataPoints, disputeDataPoints, deleteLiterature,
+  getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText, confirmDataPoints, disputeDataPoints, deleteLiterature, listLiterature,
 } from '../services/literature';
 import PdfViewer from '../components/PdfViewer';
 import FilePreview from '../components/FilePreview';
@@ -72,6 +72,9 @@ const LiteratureDetail: React.FC = () => {
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<Record<string, string | number | null>>({});
   const [saving, setSaving] = useState(false);
+
+  // 下一篇：与文献列表（列表页离开时保存的排序/筛选）保持一致，取当前文献的下一条 id
+  const [nextId, setNextId] = useState<string | null>(null);
 
   // 数据点行内编辑状态
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
@@ -267,6 +270,23 @@ const LiteratureDetail: React.FC = () => {
     }
   };
 
+  // 解析“下一篇”：复用列表页进入详情前保存的排序/筛选，拉取有序 id 序列，
+  // 找到当前文献的下一条。无列表上下文时按默认排序（created desc）拉取。
+  // ??"???"???????created desc???????????????
+  // ???????????????? id ????? findIndex=-1????????
+  // page_size ?????? le=100???????????????
+  const resolveNextId = useCallback(async (currentId: string) => {
+    try {
+      const resp = await listLiterature({ page: 1, page_size: 100 });
+      const idx = resp.items.findIndex((it) => it.id === currentId);
+      const next = idx >= 0 && idx + 1 < resp.items.length ? resp.items[idx + 1].id : null;
+      setNextId(next);
+    } catch (err) {
+      console.error('[LiteratureDetail] resolveNextId failed:', err);
+      setNextId(null);
+    }
+  }, []);
+
   const fetchData = useCallback(async () => {
     if (!id) return;
     setLoading(true);
@@ -274,6 +294,7 @@ const LiteratureDetail: React.FC = () => {
       const [lit, ext] = await Promise.all([
         getLiterature(id),
         getExtractionResults(id),
+        resolveNextId(id),
       ]);
       setLiterature(lit);
       setDataPoints((ext as { data_points?: DataPoint[] })?.data_points || []);
@@ -283,7 +304,7 @@ const LiteratureDetail: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, resolveNextId]);
 
   // 排查页码丢失问题：记录进入详情页时的来源上下文
   useEffect(() => {
@@ -1014,6 +1035,12 @@ const LiteratureDetail: React.FC = () => {
                     </Space>
                   ) : (
                     <Space>
+                      <Button
+                        size="small"
+                        icon={<RightOutlined />}
+                        disabled={!nextId}
+                        onClick={() => nextId && navigate(`/literature/${nextId}`)}
+                      >下一篇</Button>
                       <Button size="small" icon={<EditOutlined />} onClick={handleStartEdit}>编辑</Button>
                       <Button size="small" danger icon={<DeleteOutlined />} onClick={handleDelete}>删除</Button>
                     </Space>

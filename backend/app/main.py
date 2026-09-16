@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.models.base import Base, engine
+import app.models  # noqa: F401  # 确保所有模型注册到 Base.metadata（供 create_all 兜底建表）
 from app.api.v1.router import router as api_v1_router
 from app.config import settings
 from app.core.exceptions import AppError
@@ -52,6 +54,42 @@ def _run_migrations():
     logger.info("Database migrations applied successfully")
 
 
+async def _ensure_tables():
+    """兜底建表：以 SQLAlchemy 模型为准补齐缺失的表。
+
+    Alembic 迁移链可能未覆盖部分模型（如 user、audit_log），
+    用 metadata.create_all 幂等地补建缺失表，不影响已存在的表。
+    """
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Database tables ensured (create_all fallback)")
+
+
+async def _seed_admin_user():
+    """确保默认管理员账号存在（admin / 默认密码）。
+
+    首次启动时 user 表可能为空，导致无账号可登录；这里幂等插入管理员。
+    """
+    from sqlalchemy import select
+    from app.api.v1.auth import DEFAULT_PASSWORD
+    from app.core.security import hash_password
+    from app.models.base import async_session
+    from app.models.user import User
+
+    async with async_session() as session:
+        existing = await session.execute(select(User).where(User.username == "admin"))
+        if existing.scalar_one_or_none() is None:
+            session.add(User(
+                username="admin",
+                display_name="管理员",
+                is_admin=True,
+                is_active=True,
+                hashed_password=hash_password(DEFAULT_PASSWORD),
+            ))
+            await session.commit()
+            logger.info("Default admin user created (username=admin)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动时运行数据库迁移（在独立线程中执行，避免 asyncio.run() 嵌套）
@@ -60,6 +98,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Database migration failed: {e}")
         raise
+
+    # 兜底补齐迁移链未覆盖的表（如 user、audit_log）
+    await _ensure_tables()
+
+    # 确保默认管理员账号存在
+    await _seed_admin_user()
 
     # 初始化默认报告模板（仅当库中无任何模板时写入）
     try:
