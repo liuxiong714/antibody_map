@@ -7,20 +7,46 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import get_current_user, get_db, require_admin
 from app.config import settings
 from app.core import redis_background_tasks as bg
 from app.models.kg_entity import KGEntity
+from app.models.kg_qa_log import KgQaLog
 from app.models.kg_triple import KGTriple
+from app.models.literature import Literature
+from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.schemas.kg_schemas import KGBatchRequest
 from app.services import knowledge_graph_service as kg
-from app.services.kg_entity_resolver import persist_triples
+from app.services.kg_entity_resolver import (
+    persist_triples,
+    _normalize_for_dedup,
+    _edit_distance_similarity,
+)
 from app.services.kg_qa_service import ask_question
 
 
 class QARequest(BaseModel):
     question: str
+    prev_slots: dict[str, str] | None = None
+
+
+class EntityMergeRequest(BaseModel):
+    keep_id: str
+    merge_ids: list[str]
+
+
+class QaFeedbackRequest(BaseModel):
+    feedback: str  # up / down
+
+
+class TripleReviewRequest(BaseModel):
+    ids: list[str]
+    status: str  # approved / rejected
+
+
+class TripleDeleteRequest(BaseModel):
+    ids: list[str]
 
 router = APIRouter(prefix="/kg", tags=["knowledge_graph"])
 logger = logging.getLogger("kg")
@@ -86,6 +112,81 @@ async def batch_triples(
     })
 
 
+@router.get("/triples/review-sample", response_model=ApiResponse, summary="抽取质量评估：抽样待校验三元组")
+async def triples_review_sample(
+    limit: int = Query(20, ge=1, le=100, description="抽样数量"),
+    min_confidence: float | None = Query(None, ge=0, le=1, description="最低置信度过滤"),
+    db: AsyncSession = Depends(get_db),
+):
+    """抽样返回待人工校验的三元组（含实体名、来源文献标题与抽取上下文）。"""
+    stmt = (
+        select(KGTriple, KGEntity, KGEntity, Literature.title)
+        .join(KGEntity, KGTriple.subject_id == KGEntity.id)
+        .join(KGEntity, KGTriple.object_id == KGEntity.id)
+        .outerjoin(Literature, KGTriple.literature_id == Literature.id)
+        .where(KGTriple.review_status == "pending")
+        .order_by(KGTriple.confidence.asc(), KGTriple.created_at.asc())
+        .limit(limit)
+    )
+    if min_confidence is not None:
+        stmt = stmt.where(KGTriple.confidence >= min_confidence)
+    rows = (await db.execute(stmt)).all()
+    items = [
+        {
+            "id": t.id,
+            "subject": s.name,
+            "subject_type": s.entity_type,
+            "predicate": t.predicate,
+            "object": o.name,
+            "object_type": o.entity_type,
+            "confidence": t.confidence,
+            "source_context": t.source_context,
+            "literature_id": str(t.literature_id) if t.literature_id else None,
+            "literature_title": title,
+        }
+        for t, s, o, title in rows
+    ]
+    return ApiResponse(data=items)
+
+
+@router.post("/triples/review", response_model=ApiResponse, summary="标记三元组校验结果（管理员）")
+async def triples_review(
+    req: "TripleReviewRequest",
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """将抽样三元组标记为 approved / rejected。"""
+    if req.status not in ("approved", "rejected"):
+        return ApiResponse(code=1, message="status 仅支持 approved/rejected")
+    ids = [i for i in req.ids if i]
+    if not ids:
+        return ApiResponse(code=1, message="ids 不能为空")
+    result = await db.execute(select(KGTriple).where(KGTriple.id.in_(ids)))
+    rows = result.scalars().all()
+    for t in rows:
+        t.review_status = req.status
+    await db.commit()
+    return ApiResponse(data={"updated": len(rows), "status": req.status})
+
+
+@router.post("/triples/batch-delete", response_model=ApiResponse, summary="批量删除错误三元组（管理员）")
+async def triples_batch_delete(
+    req: "TripleDeleteRequest",
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """批量删除人工确认的错误三元组（连同悬空实体一起清理由 CASCADE 处理）。"""
+    ids = [i for i in req.ids if i]
+    if not ids:
+        return ApiResponse(code=1, message="ids 不能为空")
+    result = await db.execute(select(KGTriple).where(KGTriple.id.in_(ids)))
+    rows = result.scalars().all()
+    for t in rows:
+        await db.delete(t)
+    await db.commit()
+    return ApiResponse(data={"deleted": len(rows)})
+
+
 @router.get("/entities/search", response_model=ApiResponse, summary="模糊搜索实体")
 async def search_entities(
     q: str = Query(..., min_length=1, description="搜索关键词"),
@@ -127,6 +228,150 @@ async def search_entities(
         results.extend(computed)
 
     return ApiResponse(data=results[:limit])
+
+
+def _ent_payload(ent: KGEntity, subj_counts: dict, obj_counts: dict) -> dict:
+    """实体负载（含三元组计数）。"""
+    return {
+        "id": ent.id,
+        "entity_type": ent.entity_type,
+        "name": ent.name,
+        "attributes": ent.attributes or {},
+        "source_literature_id": str(ent.source_literature_id) if ent.source_literature_id else None,
+        "triple_count": (subj_counts.get(ent.id, 0) or 0) + (obj_counts.get(ent.id, 0) or 0),
+    }
+
+
+@router.get("/entities/merge-candidates", response_model=ApiResponse, summary="实体合并候选（相似度聚类）")
+async def merge_candidates(
+    limit: int = Query(30, ge=1, le=100, description="最多返回候选组数"),
+    db: AsyncSession = Depends(get_db),
+):
+    """发现疑似重复实体（同名 / 归一化后相似度 ≥ 85%），供管理员合并。"""
+    stmt = select(KGEntity).where(KGEntity.merged_into.is_(None))
+    rows = await db.execute(stmt)
+    entities = list(rows.scalars().all())
+
+    # 预统计三元组计数
+    subj_counts = dict(
+        (await db.execute(select(KGTriple.subject_id, func.count()).group_by(KGTriple.subject_id))).all()
+    )
+    obj_counts = dict(
+        (await db.execute(select(KGTriple.object_id, func.count()).group_by(KGTriple.object_id))).all()
+    )
+
+    # 按实体类型分组
+    by_type: dict[str, list[KGEntity]] = {}
+    for e in entities:
+        by_type.setdefault(e.entity_type, []).append(e)
+
+    groups: list[dict] = []
+    seen_pairs: set[tuple[str, str]] = set()
+
+    for etype, items in by_type.items():
+        # 1) 归一化后完全同名的桶 → 直接成组
+        buckets: dict[str, list[KGEntity]] = {}
+        for e in items:
+            buckets.setdefault(_normalize_for_dedup(e.name), []).append(e)
+        for key, bucket in buckets.items():
+            if len(bucket) >= 2:
+                groups.append({
+                    "entity_type": etype,
+                    "reason": "同名",
+                    "members": [_ent_payload(e, subj_counts, obj_counts) for e in bucket],
+                })
+                if len(groups) >= limit:
+                    return ApiResponse(data=groups)
+        # 2) 相似度 ≥ 0.85 的两两候选
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                a, b = items[i], items[j]
+                if a.id == b.id:
+                    continue
+                na, nb = _normalize_for_dedup(a.name), _normalize_for_dedup(b.name)
+                if na == nb:
+                    continue
+                sim = _edit_distance_similarity(na, nb)
+                if sim >= 0.85:
+                    pair = tuple(sorted((str(a.id), str(b.id))))
+                    if pair in seen_pairs:
+                        continue
+                    seen_pairs.add(pair)
+                    groups.append({
+                        "entity_type": etype,
+                        "reason": f"相似度 {sim:.0%}",
+                        "members": [
+                            _ent_payload(a, subj_counts, obj_counts),
+                            _ent_payload(b, subj_counts, obj_counts),
+                        ],
+                    })
+                    if len(groups) >= limit:
+                        return ApiResponse(data=groups)
+
+    return ApiResponse(data=groups)
+
+
+@router.post("/entities/merge", response_model=ApiResponse, summary="合并实体（管理员）")
+async def merge_entities(
+    req: EntityMergeRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """将 merge_ids 指向的实体合并到 keep_id：
+    1. 重定向涉及的三元组（subject/object → keep_id），自环与重复边删除
+    2. 被合并实体标记 merged_into=keep_id（软合并，查询层自动隐藏）
+    """
+    if not req.merge_ids:
+        return ApiResponse(code=1, message="merge_ids 不能为空")
+    if req.keep_id in req.merge_ids:
+        return ApiResponse(code=1, message="keep_id 不能出现在 merge_ids 中")
+
+    keep = await db.get(KGEntity, req.keep_id)
+    if not keep or keep.merged_into:
+        return ApiResponse(code=1, message="保留实体不存在或已被合并")
+
+    merge_set = set(req.merge_ids)
+    for mid in merge_set:
+        ent = await db.get(KGEntity, mid)
+        if not ent or ent.merged_into:
+            return ApiResponse(code=1, message=f"实体 {mid} 不存在或已被合并")
+        if ent.entity_type != keep.entity_type:
+            return ApiResponse(code=1, message="仅支持合并同类型实体")
+
+    # 重定向三元组
+    tri_stmt = select(KGTriple).where(
+        or_(KGTriple.subject_id.in_(merge_set), KGTriple.object_id.in_(merge_set))
+    )
+    tri_rows = (await db.execute(tri_stmt)).scalars().all()
+    moved = 0
+    for t in tri_rows:
+        new_subj = keep.id if str(t.subject_id) in merge_set else t.subject_id
+        new_obj = keep.id if str(t.object_id) in merge_set else t.object_id
+        if new_subj == new_obj:
+            await db.delete(t)
+            continue
+        dup = await db.execute(select(KGTriple.id).where(
+            KGTriple.subject_id == new_subj,
+            KGTriple.predicate == t.predicate,
+            KGTriple.object_id == new_obj,
+            KGTriple.literature_id == t.literature_id,
+            KGTriple.id != t.id,
+        ))
+        if dup.scalar_one_or_none():
+            await db.delete(t)
+        else:
+            t.subject_id = new_subj
+            t.object_id = new_obj
+            moved += 1
+
+    # 软合并
+    for mid in merge_set:
+        ent = await db.get(KGEntity, mid)
+        ent.merged_into = keep.id
+
+    await db.commit()
+    logger.info(f"实体合并: keep={keep.id}({keep.name}), merged={len(merge_set)}, moved_triples={moved}")
+    return ApiResponse(data={"merged": len(merge_set), "moved_triples": moved})
 
 
 @router.get("/query/direct", response_model=ApiResponse, summary="查询两个实体的直接关系")
@@ -372,6 +617,7 @@ async def trigger_kg_extraction(
 async def qa_ask(
     req: QARequest,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """知识图谱咨询问答接口。
 
@@ -383,9 +629,50 @@ async def qa_ask(
     - 人群查询：如「儿童麻疹抗体阳性率」
     - 趋势分析：如「麻疹阳性率变化趋势」
     - 未匹配问题自动降级到 LLM 回答
+
+    同时写入问答日志（P3-⑩），供质量分析与反馈统计。
     """
     if not req.question or not req.question.strip():
         return ApiResponse(code=1, message="问题不能为空")
 
-    result = await ask_question(req.question.strip(), db)
+    result = await ask_question(req.question.strip(), db, prev_slots=req.prev_slots)
+    # 记录问答日志（P3-⑩）：失败不影响主流程；log_id 回传给前端用于点赞/点踩
+    try:
+        log = KgQaLog(
+            question=req.question.strip(),
+            answer=result.get("answer") or "",
+            method=result.get("method"),
+            result_count=int(result.get("result_count") or 0),
+            user_id=user.id if user else None,
+        )
+        db.add(log)
+        await db.flush()
+        await db.commit()
+        result["log_id"] = str(log.id)
+    except Exception:
+        logger.warning("写入问答日志失败（忽略）", exc_info=True)
     return ApiResponse(data=result)
+
+
+@router.post("/qa/log/{log_id}/feedback", response_model=ApiResponse, summary="问答反馈（点赞/点踩）")
+async def qa_feedback(
+    log_id: str,
+    req: QaFeedbackRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """用户对一次问答给出 up/down 反馈，供后续质量分析。"""
+    if req.feedback not in ("up", "down"):
+        return ApiResponse(code=1, message="feedback 仅支持 up/down")
+    try:
+        uid = uuid.UUID(log_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="日志不存在")
+    result = await db.execute(select(KgQaLog).where(KgQaLog.id == uid))
+    log = result.scalar_one_or_none()
+    if not log:
+        raise HTTPException(status_code=404, detail="日志不存在")
+    log.feedback = req.feedback
+    log.user_id = user.id if user else log.user_id
+    await db.commit()
+    return ApiResponse(data={"id": str(log.id), "feedback": log.feedback})

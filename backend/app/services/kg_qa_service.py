@@ -171,6 +171,23 @@ TEMPLATES = [
         priority=7,
     ),
     QATemplate(
+        name="gmc_by_population",
+        patterns=[
+            r"(?P<population>" + _POP + r")\s*(?:的)?\s*(?P<disease>" + _disease_non_greedy() + r")\s*(?:GMC|几何平均滴度|GMT)\s*(?:是多少|如何|怎样)?",
+            r"(?P<disease>" + _disease_non_greedy() + r")\s*(?:GMC|几何平均滴度|GMT)\s*(?:在|于)?\s*(?P<population>" + _POP + r")(?:中|里|人群)?",
+        ],
+        priority=12,
+    ),
+    QATemplate(
+        name="age_stratified",
+        patterns=[
+            r"(?P<disease>" + _disease_non_greedy() + r")\s*(?:抗体\s*)?(?:阳性率|水平)\s*(?:的|按)?\s*(?:年龄|年龄段|年龄组|年龄分层|各年龄)\s*(?:分布|情况|如何|怎样)?",
+            r"(?P<disease>" + _disease_non_greedy() + r")\s*分\s*年龄组?\s*(?:抗体\s*)?(?:阳性率|水平)",
+            r"各年龄段\s*(?P<disease>[^\s,，。]+)\s*(?:抗体\s*)?(?:阳性率|水平)",
+        ],
+        priority=8,
+    ),
+    QATemplate(
         name="population_query",
         patterns=[
             r"(?P<population>儿童|成人|青少年|老年人|学生|孕妇|婴幼儿|新生儿|流动人口|医务|接种)\s*(?:的)?\s*(?P<disease>[^\s,，，]+)\s*(?:抗体\s*)?(?:阳性率|水平|GMC)",
@@ -178,6 +195,14 @@ TEMPLATES = [
             r"(?P<population>儿童|成人|青少年|老年人|孕妇|婴幼儿|中小学生)\s*(?:麻疹|乙肝|新冠|流感|腮腺炎)\s*(?:抗体\s*)?阳性率",
         ],
         priority=7,
+    ),
+    QATemplate(
+        name="vaccine_effectiveness",
+        patterns=[
+            r"(?P<province>" + _PROV + r")?(?:省|市|区|自治区)?\s*(?P<vaccine>[^\s,，。]+疫苗)\s*(?:的|后|之后)?\s*(?:抗体\s*)?(?:保护效力|效力|保护率|保护效果|免疫效果)\s*(?:如何|怎样|是多少|高低)?",
+            r"接种\s*(?P<vaccine>[^\s,，。]+疫苗)\s*(?:后|之后)?\s*(?:保护效力|效力|保护率|保护效果)\s*(?:如何|怎样|是多少)?",
+        ],
+        priority=10,
     ),
     QATemplate(
         name="vaccine_query",
@@ -193,6 +218,7 @@ TEMPLATES = [
             r"(?P<disease>" + _disease_non_greedy() + r")\s*(?:抗体\s*)?(?:阳性率|水平)\s*(?:变化|趋势|走势)\s*(?:在|于)?\s*(?P<province>" + _PROV + r")?",
             r"(?P<province>" + _PROV + r")(?:省|市|区|自治区)?\s*(?P<disease>" + _disease_non_greedy() + r")\s*(?:阳性率|抗体)\s*变化趋势",
             r"(?P<disease>" + _disease_non_greedy() + r")\s*(?:抗体\s*)?阳性率\s*(?:随时间|逐年)?\s*(?:变化|趋势)",
+            r"(?P<disease>" + _disease_non_greedy() + r")\s*(?:GMC|几何平均滴度|GMT)\s*(?:变化|趋势|走势)\s*(?:在|于)?\s*(?P<province>" + _PROV + r")?",
         ],
         priority=5,
     ),
@@ -293,7 +319,7 @@ class QAQueryExecutor:
     ) -> list[dict]:
         """查询抗体阳性率数据"""
         stmt = select(
-            DataPoint.disease, DataPoint.province, DataPoint.city,
+            DataPoint.id, DataPoint.disease, DataPoint.province, DataPoint.city,
             DataPoint.population,
             DataPoint.value, DataPoint.ci_lower, DataPoint.ci_upper,
             DataPoint.sample_size, DataPoint.collection_year,
@@ -324,6 +350,7 @@ class QAQueryExecutor:
         results = []
         for row in rows:
             results.append({
+                "data_point_id": str(row.id),
                 "disease": row.disease, "province": row.province,
                 "city": row.city,
                 "population": row.population, "value": float(row.value) if row.value else None,
@@ -343,7 +370,7 @@ class QAQueryExecutor:
     ) -> list[dict]:
         """查询 GMC 数据"""
         stmt = select(
-            DataPoint.disease, DataPoint.province, DataPoint.city,
+            DataPoint.id, DataPoint.disease, DataPoint.province, DataPoint.city,
             DataPoint.population,
             DataPoint.value, DataPoint.ci_lower, DataPoint.ci_upper,
             DataPoint.sample_size, DataPoint.collection_year, DataPoint.unit,
@@ -366,6 +393,7 @@ class QAQueryExecutor:
         results = []
         for row in rows:
             results.append({
+                "data_point_id": str(row.id),
                 "disease": row.disease, "province": row.province,
                 "city": row.city,
                 "population": row.population, "value": float(row.value) if row.value else None,
@@ -475,10 +503,11 @@ class QAQueryExecutor:
     ) -> list[dict]:
         """按人群查询"""
         stmt = select(
-            DataPoint.disease, DataPoint.province, DataPoint.population,
+            DataPoint.id, DataPoint.disease, DataPoint.province, DataPoint.population,
             DataPoint.value, DataPoint.ci_lower, DataPoint.ci_upper,
             DataPoint.sample_size, DataPoint.collection_year,
-            DataPoint.data_type, DataPoint.unit, DataPoint.review_status,
+            DataPoint.data_type, DataPoint.unit, DataPoint.literature_id,
+            DataPoint.review_status,
         ).where(
             or_(
                 func.lower(DataPoint.population).contains(population.lower()),
@@ -496,6 +525,7 @@ class QAQueryExecutor:
         results = []
         for row in rows:
             results.append({
+                "data_point_id": str(row.id),
                 "disease": row.disease, "province": row.province,
                 "population": row.population,
                 "value": float(row.value) if row.value else None,
@@ -504,6 +534,7 @@ class QAQueryExecutor:
                 "sample_size": row.sample_size,
                 "collection_year": row.collection_year,
                 "data_type": row.data_type, "unit": row.unit,
+                "literature_id": str(row.literature_id) if row.literature_id else None,
                 "review_status": row.review_status,
             })
         return results
@@ -522,8 +553,9 @@ class QAQueryExecutor:
 
     async def query_trend(
         self, disease: str, province: str | None = None,
+        data_type: str = "seroprevalence",
     ) -> list[dict]:
-        """查询年度趋势"""
+        """查询年度趋势（支持 seroprevalence / gmc）"""
         dc = self._disease_cond(disease) if disease else None
         stmt = select(
             DataPoint.collection_year,
@@ -532,7 +564,7 @@ class QAQueryExecutor:
             func.min(DataPoint.value).label("min_val"),
             func.max(DataPoint.value).label("max_val"),
         ).where(
-            DataPoint.data_type == "seroprevalence",
+            DataPoint.data_type == data_type,
             DataPoint.collection_year.isnot(None),
         )
         if dc is not None:
@@ -732,6 +764,33 @@ class QAAnswerFormatter:
         return "\n".join(lines)
 
     @staticmethod
+    def format_age_stratified_answer(
+        disease: str, results: list[dict],
+    ) -> str:
+        """年龄分层：按 age_group 分组汇总阳性率。"""
+        if not results:
+            return f"暂未找到「{disease}」按年龄分层的抗体数据。"
+        note = QAAnswerFormatter._unreviewed_note(results)
+        by_age: dict[str, list[dict]] = {}
+        for r in results:
+            key = (r.get("age_group") or "未知年龄组").strip() or "未知年龄组"
+            by_age.setdefault(key, []).append(r)
+        lines = [f"## {disease} 各年龄段抗体阳性率"]
+        lines.append(f"共 **{len(results)}** 项调查，覆盖 **{len(by_age)}** 个年龄组：")
+        for age, items in sorted(by_age.items(), key=lambda kv: -len(kv[1])):
+            vals = [i["value"] for i in items if i["value"] is not None]
+            if not vals:
+                continue
+            avg = sum(vals) / len(vals)
+            years = [i["collection_year"] for i in items if i["collection_year"]]
+            yr = f"{min(years)}-{max(years)}" if years else "未知年份"
+            prov = items[0].get("province") or "全国"
+            lines.append(f"- **{age}**：{avg:.1f}%（{len(items)} 项调查，{prov}，{yr}年）")
+        if note:
+            lines.append(note)
+        return "\n".join(lines)
+
+    @staticmethod
     def format_vaccine_answer(data: dict) -> str:
         """疫苗类问题答案：疫苗 → 对应病原体的抗体阳性率。"""
         vaccine = data["vaccine"]
@@ -841,10 +900,11 @@ class QAAnswerFormatter:
 
 async def _retrieve_qa_evidence(
     question: str, db: AsyncSession,
-) -> str:
+) -> tuple[str, list[dict]]:
     """RAG-lite：从问题中识别已收录的疾病/地区，真检索数据点，返回紧凑证据块。
 
     让 LLM 兜底回答基于真实数据库，而不是泛泛而谈。
+    返回 (证据文本, 结构化证据列表)，后者供前端证据溯源卡片使用。
     """
     try:
         executor = QAQueryExecutor(db)
@@ -875,14 +935,16 @@ async def _retrieve_qa_evidence(
         hit_pop = next((p for p in populations if p and p.lower() in ql), None)
 
         if not hit_disease and not hit_province and not hit_pop:
-            return ""
+            return "", []
 
         lines = []
+        evidence: list[dict] = []
         # 作者类问题：检索该地区该疾病相关文献的作者
         if "作者" in question and hit_disease:
             try:
                 author_rows = await executor.query_by_author(hit_disease, province=hit_province)
                 if author_rows:
+                    evidence.extend(await _build_evidence(db, author_rows))
                     author_set: list[str] = []
                     seen: set[str] = set()
                     for r in author_rows:
@@ -898,6 +960,7 @@ async def _retrieve_qa_evidence(
             rows = await executor.query_seroprevalence(
                 hit_disease, province=hit_province, population=hit_pop)
             if rows:
+                evidence.extend(await _build_evidence(db, rows))
                 lines.append(f"### 已检索到的「{hit_disease}」数据（共 {len(rows)} 条）：")
                 for r in rows[:15]:
                     loc = r.get("city") or r.get("province") or "全国"
@@ -909,6 +972,7 @@ async def _retrieve_qa_evidence(
                         f"- {loc} {year}年 {pop}：阳性率 {val}%（样本量 {r.get('sample_size') or '未知'}）{flag}")
             gmc_rows = await executor.query_gmc(hit_disease, province=hit_province)
             if gmc_rows:
+                evidence.extend(await _build_evidence(db, gmc_rows))
                 lines.append(f"### 已检索到的「{hit_disease}」GMC 数据：")
                 for r in gmc_rows[:8]:
                     loc = r.get("city") or r.get("province") or "全国"
@@ -920,27 +984,29 @@ async def _retrieve_qa_evidence(
             if hit_province:
                 rows = await executor.query_seroprevalence("", province=hit_province)
                 if rows:
+                    evidence.extend(await _build_evidence(db, rows))
                     lines.append(f"### 已检索到的「{hit_province}」数据（共 {len(rows)} 条）：")
                     for r in rows[:12]:
                         val = f"{r['value']:.1f}" if r.get("value") is not None else "无"
                         lines.append(f"- {r.get('disease','未知疾病')} {r.get('population','')}：阳性率 {val}%")
-        return "\n".join(lines)
+        return "\n".join(lines), evidence
     except Exception as e:
         logger.warning(f"RAG 检索失败: {e}")
-        return ""
+        return "", []
 
 
 async def llm_fallback_answer(
     question: str, db: AsyncSession,
-) -> str:
+) -> dict[str, Any]:
     """模板未匹配时，用 LLM 生成问答。
 
     先做真实数据检索（RAG-lite），把检索结果连同 KG 概览一并喂给 LLM，
-    让兜底回答有数据支撑。
+    让兜底回答有数据支撑。返回 {answer, evidence}，evidence 为确定性证据
+    （来自真实检索行，非 LLM 生成），供前端证据溯源卡片展示。
     """
     try:
         # 真实数据证据（RAG）
-        rag_evidence = await _retrieve_qa_evidence(question, db)
+        rag_evidence, evidence_list = await _retrieve_qa_evidence(question, db)
 
         # 获取 KG 上下文
         ent_count = await db.execute(select(func.count()).select_from(KGEntity).where(KGEntity.merged_into.is_(None)))
@@ -989,27 +1055,97 @@ async def llm_fallback_answer(
             temperature=0.3,
             max_tokens=1000,
         )
-        return response.choices[0].message.content or "抱歉，暂时无法回答该问题。"
+        return {
+            "answer": response.choices[0].message.content or "抱歉，暂时无法回答该问题。",
+            "evidence": evidence_list,
+        }
 
     except Exception as e:
         logger.warning(f"LLM fallback 失败: {e}")
-        return (
-            "抱歉，当前问题未能匹配到知识图谱中的模板，且 LLM 服务暂时不可用。\n\n"
-            "请尝试以下问题类型：\n"
-            '- 查询某地区某疾病的抗体阳性率（如"北京麻疹阳性率是多少"）\n'
-            '- 对比两个地区（如"北京和上海麻疹阳性率对比"）\n'
-            '- 查询某机构调查（如"哈尔滨医科大学做过哪些调查"）\n'
-            '- 查询某人群抗体水平（如"儿童麻疹抗体阳性率"）\n'
-            '- 查询年度趋势（如"麻疹阳性率变化趋势"）\n'
-        )
+        return {
+            "answer": (
+                "抱歉，当前问题未能匹配到知识图谱中的模板，且 LLM 服务暂时不可用。\n\n"
+                "请尝试以下问题类型：\n"
+                '- 查询某地区某疾病的抗体阳性率（如"北京麻疹阳性率是多少"）\n'
+                '- 对比两个地区（如"北京和上海麻疹阳性率对比"）\n'
+                '- 查询某机构调查（如"哈尔滨医科大学做过哪些调查"）\n'
+                '- 查询某人群抗体水平（如"儿童麻疹抗体阳性率"）\n'
+                '- 查询年度趋势（如"麻疹阳性率变化趋势"）\n'
+            ),
+            "evidence": [],
+        }
+
+
+# ===== 证据构造 =====
+
+async def _build_evidence(
+    db: AsyncSession, results: list[dict],
+) -> list[dict]:
+    """从查询结果行构造证据列表（去重、批量补齐文献标题）。
+
+    每条证据：{literature_id, title, year, province, city, value, unit,
+    population, data_point_id}。用于前端「证据溯源」卡片 + 文献跳转。
+    """
+    if not results:
+        return []
+    seen: set[tuple[str, str]] = set()
+    evidence: list[dict] = []
+    lit_ids: set[str] = set()
+    for r in results:
+        pid = r.get("data_point_id")
+        lid = r.get("literature_id")
+        if not pid and not lid:
+            continue
+        key = (str(pid or ""), str(lid or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append({
+            "literature_id": str(lid) if lid else None,
+            "title": r.get("title"),
+            "year": r.get("collection_year") or r.get("pub_year"),
+            "province": r.get("province"),
+            "city": r.get("city"),
+            "value": r.get("value"),
+            "unit": r.get("unit"),
+            "population": r.get("population"),
+            "data_point_id": str(pid) if pid else None,
+        })
+        if lid:
+            lit_ids.add(str(lid))
+    # 批量补齐缺失的文献标题
+    missing = [ev for ev in evidence if not ev["title"] and ev["literature_id"]]
+    if missing:
+        import uuid
+        ids = [uuid.UUID(x) for x in lit_ids if _is_uuid(x)]
+        if ids:
+            t_stmt = select(Literature.id, Literature.title).where(Literature.id.in_(ids))
+            title_map = {str(i): t for i, t in await db.execute(t_stmt)}
+            for ev in evidence:
+                if not ev["title"] and ev["literature_id"] in title_map:
+                    ev["title"] = title_map[ev["literature_id"]]
+    return evidence
+
+
+def _is_uuid(x: str) -> bool:
+    import uuid
+    try:
+        uuid.UUID(x)
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
 # ===== 主入口 =====
 
 async def ask_question(
-    question: str, db: AsyncSession,
+    question: str, db: AsyncSession, prev_slots: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """问答主入口：模板匹配 → 查询执行 → 答案格式化 → LLM 降级"""
+    """问答主入口：模板匹配 → 查询执行 → 答案格式化 → LLM 降级
+
+    prev_slots：上一轮问答解析出的槽位（前端传入），用于多轮对话中
+    省略疾病/地区等指代时自动补全（如「北京麻疹阳性率→上海呢」）。
+    """
 
     # 1. 模板匹配
     matched_template = None
@@ -1020,6 +1156,13 @@ async def ask_question(
             matched_template = tmpl
             matched_slots = slots
             break
+
+    # 用上一轮槽位补全本轮缺失槽位（当前轮优先）
+    if matched_slots and prev_slots:
+        for k, v in prev_slots.items():
+            if k == "province" or k == "disease" or k == "population":
+                if matched_slots.get(k) is None and v:
+                    matched_slots[k] = v
 
     executor = QAQueryExecutor(db)
     formatter = QAAnswerFormatter()
@@ -1039,6 +1182,7 @@ async def ask_question(
                     "template": template_name,
                     "method": "template",
                     "result_count": len(results),
+                    "evidence": await _build_evidence(db, results),
                     "slots": matched_slots,
                 }
 
@@ -1053,6 +1197,22 @@ async def ask_question(
                     "template": template_name,
                     "method": "template",
                     "result_count": len(results),
+                    "evidence": await _build_evidence(db, results),
+                    "slots": matched_slots,
+                }
+
+            elif template_name == "gmc_by_population":
+                population = matched_slots.get("population", "")
+                disease = matched_slots.get("disease", "")
+                rows = await executor.query_by_population(population, disease)
+                gmc_rows = [r for r in rows if r.get("data_type") == "gmc"]
+                answer = formatter.format_gmc_answer(disease, None, gmc_rows)
+                return {
+                    "answer": answer,
+                    "template": template_name,
+                    "method": "template",
+                    "result_count": len(gmc_rows),
+                    "evidence": await _build_evidence(db, gmc_rows),
                     "slots": matched_slots,
                 }
 
@@ -1066,6 +1226,7 @@ async def ask_question(
                     "template": template_name,
                     "method": "template",
                     "result_count": len(results),
+                    "evidence": await _build_evidence(db, results),
                     "slots": matched_slots,
                 }
 
@@ -1081,6 +1242,7 @@ async def ask_question(
                     "template": template_name,
                     "method": "template",
                     "result_count": len(data["data1"]) + len(data["data2"]),
+                    "evidence": await _build_evidence(db, data["data1"] + data["data2"]),
                     "slots": matched_slots,
                 }
 
@@ -1093,6 +1255,7 @@ async def ask_question(
                     "template": template_name,
                     "method": "template",
                     "result_count": len(results),
+                    "evidence": await _build_evidence(db, results),
                     "slots": matched_slots,
                 }
 
@@ -1106,6 +1269,37 @@ async def ask_question(
                     "template": template_name,
                     "method": "template",
                     "result_count": len(results),
+                    "evidence": await _build_evidence(db, results),
+                    "slots": matched_slots,
+                }
+
+            elif template_name == "age_stratified":
+                disease = matched_slots.get("disease", "")
+                rows = await executor.query_seroprevalence(disease)
+                age_rows = [r for r in rows if (r.get("age_group") or "").strip()]
+                answer = formatter.format_age_stratified_answer(disease, age_rows)
+                return {
+                    "answer": answer,
+                    "template": template_name,
+                    "method": "template",
+                    "result_count": len(age_rows),
+                    "evidence": await _build_evidence(db, age_rows),
+                    "slots": matched_slots,
+                }
+
+            elif template_name == "vaccine_effectiveness":
+                vaccine = matched_slots.get("vaccine", "")
+                province = matched_slots.get("province")
+                data = await executor.query_vaccine(vaccine, province)
+                answer = formatter.format_vaccine_answer(data)
+                if data["seroprevalence"]:
+                    answer += "\n> ℹ️ 疫苗效力以接种人群抗体阳性率为代理指标（精确保护效力需原始临床试验数据）。"
+                return {
+                    "answer": answer,
+                    "template": template_name,
+                    "method": "template",
+                    "result_count": len(data["seroprevalence"]),
+                    "evidence": await _build_evidence(db, data["seroprevalence"]),
                     "slots": matched_slots,
                 }
 
@@ -1119,19 +1313,23 @@ async def ask_question(
                     "template": template_name,
                     "method": "template",
                     "result_count": len(data["seroprevalence"]),
+                    "evidence": await _build_evidence(db, data["seroprevalence"]),
                     "slots": matched_slots,
                 }
 
             elif template_name == "trend_query":
                 disease = matched_slots.get("disease", "")
                 province = matched_slots.get("province")
-                results = await executor.query_trend(disease, province)
+                q_lower = question.lower()
+                d_type = "gmc" if ("gmc" in q_lower or "几何平均" in question or "gmt" in q_lower) else "seroprevalence"
+                results = await executor.query_trend(disease, province, data_type=d_type)
                 answer = formatter.format_trend_answer(results)
                 return {
                     "answer": answer,
                     "template": template_name,
                     "method": "template",
                     "result_count": len(results),
+                    "evidence": await _build_evidence(db, results),
                     "slots": matched_slots,
                 }
 
@@ -1153,6 +1351,7 @@ async def ask_question(
                     "template": template_name,
                     "method": "template",
                     "result_count": len(results),
+                    "evidence": await _build_evidence(db, results),
                     "slots": matched_slots,
                 }
 
@@ -1172,6 +1371,7 @@ async def ask_question(
                     "template": template_name,
                     "method": "template",
                     "result_count": len(results) + len(lit_results),
+                    "evidence": await _build_evidence(db, lit_results),
                     "slots": matched_slots,
                 }
 
@@ -1181,9 +1381,11 @@ async def ask_question(
             with contextlib.suppress(Exception):
                 await db.rollback()
             # 降级到 LLM
-            answer = await llm_fallback_answer(question, db)
+            fb = await llm_fallback_answer(question, db)
+            answer = fb["answer"]
             return {
                 "answer": answer,
+                "evidence": fb.get("evidence", []),
                 "template": template_name,
                 "method": "llm_fallback",
                 "result_count": 0,
@@ -1191,9 +1393,11 @@ async def ask_question(
             }
 
     # 3. 未匹配 → LLM 降级
-    answer = await llm_fallback_answer(question, db)
+    fb = await llm_fallback_answer(question, db)
+    answer = fb["answer"]
     return {
         "answer": answer,
+        "evidence": fb.get("evidence", []),
         "template": None,
         "method": "llm",
         "result_count": 0,

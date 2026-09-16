@@ -1,28 +1,39 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Card, Row, Col, Select, Slider, Button, Spin, Empty, Alert, Drawer, Descriptions,
   Tag, Statistic, Space, Divider, message, Input, Tabs, List, Typography, Steps,
-  Modal, InputNumber,
+  Modal, InputNumber, Switch, Checkbox,
 } from 'antd';
 import {
   ReloadOutlined, ApartmentOutlined, SearchOutlined, NodeIndexOutlined,
-  ThunderboltOutlined, MessageOutlined, NumberOutlined,
+  ThunderboltOutlined, MessageOutlined, NumberOutlined, MergeOutlined,
+  DownloadOutlined, ShareAltOutlined, AuditOutlined,
 } from '@ant-design/icons';
 import EChart from '../components/EChart';
 import LiteraturePicker from '../components/LiteraturePicker';
 import {
   getKgOverview, getKgOptions, getKgGraph,
   searchKgEntities, queryKgPath, getKgStats, triggerKgExtraction,
-  askKgQuestion,
+  askKgQuestion, getKgMergeCandidates, mergeKgEntities, feedbackKgQa,
+  getKgReviewSample, reviewKgTriples, deleteKgTriples,
+  type KgTripleReviewItem,
 } from '../services/knowledgeGraph';
 import { getTaskStatus } from '../services/system';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
 import type {
   KgGraphData, KgNode, KgOverviewData, KgOptionsData,
-  KgSearchResult, KgPathResult, KgStatsData,
+  KgSearchResult, KgPathResult, KgStatsData, KgEvidence,
 } from '../types';
 
 const { Text, Link: TextLink } = Typography;
+
+// 多轮对话：判断问题是否已自带疾病/指标词，避免重复拼装
+const DISEASE_TERM_HINTS = [
+  '麻疹', '风疹', '水痘', '腮腺炎', '乙肝', '甲肝', '丙肝', '破伤风', '白喉',
+  '百日咳', '脊灰', '脊髓灰质炎', '新冠', '流感', '脑膜炎', '手足口', '乙脑',
+  '疫苗', 'gmc', 'gmt', '几何平均', '抗体', '阳性率',
+];
 
 // ===== 实体类型元信息（颜色/分类标签/是否为主要维度节点）=====
 const ENTITY_META: Record<string, { type: string; label: string; color: string; dimension: boolean }> = {
@@ -72,6 +83,7 @@ const TYPE_ORDER = [
 ];
 
 const KnowledgeGraph: React.FC = () => {
+  const navigate = useNavigate();
   // 筛选项
   const [options, setOptions] = useState<KgOptionsData | null>(null);
   const [disease, setDisease] = useState<string | undefined>(undefined);
@@ -84,7 +96,14 @@ const KnowledgeGraph: React.FC = () => {
   const [overview, setOverview] = useState<KgOverviewData | null>(null);
   const [graphData, setGraphData] = useState<KgGraphData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [detailNode, setDetailNode] = useState<KgNode | null>(null);
+  // 分层聚焦：默认仅主维度节点；showAll 显示全部
+  const [showAll, setShowAll] = useState(false);
+  const [focusNode, setFocusNode] = useState<KgNode | null>(null);
+  // 统计下钻：实体/关系列表抽屉
+  const [drillOpen, setDrillOpen] = useState(false);
+  const [drillTitle, setDrillTitle] = useState('');
+  const [drillKind, setDrillKind] = useState<'entities' | 'edges'>('entities');
+  const [drillSource, setDrillSource] = useState<'all' | 'view'>('view');
 
   // 持久化统计 + 抽取
   const [kgStats, setKgStats] = useState<KgStatsData | null>(null);
@@ -167,8 +186,22 @@ const KnowledgeGraph: React.FC = () => {
   // 咨询问答状态
   const [qaQuestion, setQaQuestion] = useState('');
   const [qaLoading, setQaLoading] = useState(false);
-  const [qaHistory, setQaHistory] = useState<Array<{ question: string; answer: string; method: string; result_count: number }>>([]);
+  const [qaHistory, setQaHistory] = useState<Array<{ question: string; answer: string; method: string; result_count: number; evidence: KgEvidence[]; slots: Record<string, string> | null; log_id: string | null; feedback: 'up' | 'down' | null }>>([]);
   const [qaMethod, setQaMethod] = useState<string>('');
+
+  // 实体合并工作流（管理员）
+  const [mergeCandidates, setMergeCandidates] = useState<Array<{
+    entity_type: string; reason: string;
+    members: Array<{ id: string; name: string; entity_type: string; attributes: Record<string, unknown>; source_literature_id: string | null; triple_count: number }>;
+  }>>([]);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeLoading, setMergeLoading] = useState(false);
+
+  // 抽取质量评估（管理员）
+  const [qualityOpen, setQualityOpen] = useState(false);
+  const [qualityItems, setQualityItems] = useState<KgTripleReviewItem[]>([]);
+  const [qualityLoading, setQualityLoading] = useState(false);
+  const [qualitySelected, setQualitySelected] = useState<string[]>([]);
 
   // 加载筛选选项 + 概览 + 持久化统计
   useEffect(() => {
@@ -176,6 +209,21 @@ const KnowledgeGraph: React.FC = () => {
     getKgOverview().then(setOverview).catch(() => message.error('加载图谱概览失败'));
     getKgStats().then(setKgStats).catch(() => message.error('加载持久化统计失败'));
     buildModelOptions().then(setKgModelOptions).catch(() => {});
+  }, []);
+
+  // 分享链接：从 URL 参数恢复筛选条件
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const num = (k: string) => {
+      const v = Number(p.get(k));
+      return Number.isFinite(v) && v > 0 ? v : undefined;
+    };
+    if (p.get('disease')) setDisease(p.get('disease')!);
+    if (p.get('province')) setProvince(p.get('province')!);
+    if (p.get('data_type')) setDataType(p.get('data_type')!);
+    if (num('year_start')) setYearStart(num('year_start'));
+    if (num('year_end')) setYearEnd(num('year_end'));
+    if (num('max_nodes')) setMaxNodes(num('max_nodes')!);
   }, []);
 
   // 筛选条件变化时重新构建图谱
@@ -303,14 +351,25 @@ const KnowledgeGraph: React.FC = () => {
     setQaLoading(true);
     setQaMethod('');
     try {
-      const result = await askKgQuestion(qaQuestion.trim());
-      setQaHistory((prev) => [
-        ...prev,
+      // 多轮对话：省略疾病/地区时用上一轮槽位补全（如「北京麻疹阳性率→上海呢」）
+      const prev = qaHistory.length ? qaHistory[qaHistory.length - 1] : null;
+      let q = qaQuestion.trim();
+      const hasDiseaseTerm = DISEASE_TERM_HINTS.some((t) => q.toLowerCase().includes(t.toLowerCase()));
+      if (!hasDiseaseTerm && prev?.slots?.disease) {
+        q = `${q.replace(/[呢吗啊]?\s*$/, '')} ${prev.slots.disease}阳性率是多少`;
+      }
+      const result = await askKgQuestion(q, prev?.slots ?? null);
+      setQaHistory((prevHist) => [
+        ...prevHist,
         {
-          question: qaQuestion.trim(),
+          question: q,
           answer: result.answer,
           method: result.method,
           result_count: result.result_count,
+          evidence: result.evidence || [],
+          slots: result.slots || null,
+          log_id: result.log_id || null,
+          feedback: null,
         },
       ]);
       setQaMethod(result.method);
@@ -318,6 +377,91 @@ const KnowledgeGraph: React.FC = () => {
       message.error('问答请求失败，请检查后端服务');
     } finally {
       setQaLoading(false);
+    }
+  };
+
+  // 问答反馈（点赞/点踩）
+  const handleQaFeedback = async (idx: number, fb: 'up' | 'down') => {
+    const item = qaHistory[idx];
+    if (!item || !item.log_id) {
+      message.info('该问答暂无反馈记录');
+      return;
+    }
+    try {
+      await feedbackKgQa(item.log_id, fb);
+      setQaHistory((prev) => prev.map((it, i) => (i === idx ? { ...it, feedback: fb } : it)));
+      message.success(fb === 'up' ? '已点赞' : '已点踩，感谢反馈');
+    } catch {
+      message.error('提交反馈失败');
+    }
+  };
+
+  // 抽取质量评估：抽样加载与批量处理
+  const loadQualitySample = async () => {
+    setQualityLoading(true);
+    setQualitySelected([]);
+    try {
+      const items = await getKgReviewSample(30);
+      setQualityItems(items || []);
+      setQualityOpen(true);
+    } catch {
+      message.error('加载校验样本失败（需管理员权限）');
+    } finally {
+      setQualityLoading(false);
+    }
+  };
+  const handleQualityReview = async (status: 'approved' | 'rejected') => {
+    if (!qualitySelected.length) {
+      message.warning('请先勾选要校验的三元组');
+      return;
+    }
+    try {
+      const res = await reviewKgTriples(qualitySelected, status);
+      setQualityItems((prev) => prev.filter((t) => !qualitySelected.includes(t.id)));
+      setQualitySelected([]);
+      message.success(`已标记 ${res.updated} 条为${status === 'approved' ? '正确' : '错误'}`);
+    } catch {
+      message.error('标记失败（需管理员权限）');
+    }
+  };
+  const handleQualityDelete = async () => {
+    if (!qualitySelected.length) {
+      message.warning('请先勾选要删除的三元组');
+      return;
+    }
+    try {
+      const res = await deleteKgTriples(qualitySelected);
+      setQualityItems((prev) => prev.filter((t) => !qualitySelected.includes(t.id)));
+      setQualitySelected([]);
+      message.success(`已删除 ${res.deleted} 条错误三元组`);
+    } catch {
+      message.error('删除失败（需管理员权限）');
+    }
+  };
+
+  // 实体合并候选加载与执行
+  const loadMergeCandidates = async () => {
+    setMergeLoading(true);
+    try {
+      const data = await getKgMergeCandidates(30);
+      setMergeCandidates(data || []);
+      setMergeOpen(true);
+    } catch {
+      message.error('加载合并候选失败（需管理员权限）');
+    } finally {
+      setMergeLoading(false);
+    }
+  };
+
+  const handleMergeGroup = async (group: typeof mergeCandidates[number]) => {
+    const keep = group.members[0];
+    const mergeIds = group.members.slice(1).map((m) => m.id);
+    try {
+      const res = await mergeKgEntities(keep.id, mergeIds);
+      message.success(`已合并 ${res.merged} 个实体，迁移 ${res.moved_triples} 条关系`);
+      setMergeCandidates((prev) => prev.filter((g) => g !== group));
+    } catch {
+      message.error('合并失败（需管理员权限）');
     }
   };
 
@@ -329,11 +473,41 @@ const KnowledgeGraph: React.FC = () => {
     }));
   }, [searchResults]);
 
+  // 分层聚焦：默认只保留主维度节点（及其两端均在的边），showAll 时显示全部
+  const filteredGraph = useMemo(() => {
+    if (!graphData || !graphData.nodes.length) return null;
+    if (showAll) return graphData;
+    const keep = new Set(
+      graphData.nodes.filter((n) => ENTITY_META[n.type]?.dimension).map((n) => n.id),
+    );
+    return {
+      nodes: graphData.nodes.filter((n) => keep.has(n.id)),
+      edges: graphData.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
+    };
+  }, [graphData, showAll]);
+
+  // 中心节点的一跳邻居（含主维度节点本身），用于展开查看
+  const neighborsOf = useMemo(() => {
+    if (!graphData || !focusNode) return null;
+    const nids = new Set([focusNode.id]);
+    const edges = graphData.edges.filter(
+      (e) => e.source === focusNode.id || e.target === focusNode.id,
+    );
+    edges.forEach((e) => {
+      nids.add(e.source);
+      nids.add(e.target);
+    });
+    return {
+      nodes: graphData.nodes.filter((n) => nids.has(n.id)),
+      edges,
+    };
+  }, [graphData, focusNode]);
+
   // 构建 ECharts 关系图 option
   const chartOption = useMemo(() => {
-    if (!graphData || !graphData.nodes.length) return null;
+    if (!filteredGraph || !filteredGraph.nodes.length) return null;
     const categories = TYPE_ORDER.map((t) => ({ name: ENTITY_META[t]?.label || t, itemStyle: { color: ENTITY_META[t]?.color } }));
-    const nodes = graphData.nodes.map((n) => {
+    const nodes = filteredGraph.nodes.map((n) => {
       const meta = ENTITY_META[n.type] || ENTITY_META.survey;
       const size = meta.dimension
         ? Math.min(14 + Math.log2((n.survey_count || 1) + 1) * 4, 30)
@@ -351,7 +525,7 @@ const KnowledgeGraph: React.FC = () => {
         raw: n,
       };
     });
-    const edges = graphData.edges.map((e) => {
+    const edges = filteredGraph.edges.map((e) => {
       const em = RELATION_META[e.type] || { color: '#bfbfbf', width: 1 };
       return {
         source: e.source,
@@ -421,16 +595,73 @@ const KnowledgeGraph: React.FC = () => {
         },
       ],
     };
-  }, [graphData]);
+  }, [filteredGraph]);
+
+  // 子图导出与分享（P2-⑧）
+  const chartRef = useRef<any>(null);
+  const exportGraphImage = () => {
+    const inst = chartRef.current?.getEchartsInstance?.();
+    if (!inst) { message.warning('图表尚未就绪，请稍后再试'); return; }
+    const url = inst.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#fff' });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `knowledge-graph-${Date.now()}.png`;
+    a.click();
+  };
+  const exportGraphJson = () => {
+    const data = filteredGraph;
+    if (!data) return;
+    const blob = new Blob(
+      [JSON.stringify({ nodes: data.nodes, edges: data.edges, exported_at: new Date().toISOString() }, null, 2)],
+      { type: 'application/json' },
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `knowledge-graph-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const shareGraph = async () => {
+    const p = new URLSearchParams();
+    if (disease) p.set('disease', disease);
+    if (province) p.set('province', province);
+    if (dataType) p.set('data_type', dataType);
+    if (yearStart != null) p.set('year_start', String(yearStart));
+    if (yearEnd != null) p.set('year_end', String(yearEnd));
+    p.set('max_nodes', String(maxNodes));
+    const url = `${window.location.origin}${window.location.pathname}?${p.toString()}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      message.success('分享链接已复制到剪贴板');
+    } catch {
+      message.info(url);
+    }
+  };
 
   const handleChartClick = (params: unknown) => {
     const p = params as { dataType?: string; data?: { raw?: KgNode } };
     if (p?.dataType === 'node' && p.data?.raw) {
-      setDetailNode(p.data.raw);
+      const node = p.data.raw;
+      // 主维度视图：点击主维度节点 → 打开邻居展开 Modal
+      if (!showAll && ENTITY_META[node.type]?.dimension) {
+        setFocusNode(node);
+        return;
+      }
+      const props = (node.props || {}) as Record<string, unknown>;
+      if (props.literature_id) {
+        navigate(`/literature/${props.literature_id}`);
+      } else {
+        const info = [
+          props.disease ? `疾病：${props.disease}` : '',
+          props.year ? `${props.year}年` : '',
+          props.province ? `地区：${props.province}` : '',
+          props.sample_size ? `样本量：${props.sample_size}` : '',
+        ].filter(Boolean).join('；');
+        message.info(`${node.label}${info ? `（${info}）` : ''}`);
+      }
     }
   };
-
-  const selectedNodeType = detailNode ? ENTITY_META[detailNode.type]?.label : '';
 
   // 路径推理结果渲染
   const pathSteps = useMemo(() => {
@@ -445,6 +676,7 @@ const KnowledgeGraph: React.FC = () => {
   }, [pathResult]);
 
   return (
+    <>
     <Tabs
       defaultActiveKey="graph"
       items={[
@@ -530,6 +762,17 @@ const KnowledgeGraph: React.FC = () => {
                       <Tag color="blue">{maxNodes}</Tag>
                     </Space>
                   </Col>
+                  <Col>
+                    <Space>
+                      <span>显示全部节点</span>
+                      <Switch
+                        checked={showAll}
+                        onChange={(v) => setShowAll(v)}
+                        checkedChildren="全部"
+                        unCheckedChildren="主维度"
+                      />
+                    </Space>
+                  </Col>
                 </Row>
                 {graphData && graphData.trimmed_nodes > 0 && (
                   <Alert
@@ -544,13 +787,30 @@ const KnowledgeGraph: React.FC = () => {
               {/* 概览卡片 */}
               <Row gutter={16} style={{ marginBottom: 16 }}>
                 <Col span={6}>
-                  <Card><Statistic title="调查总数" value={graphData?.survey_count ?? overview?.survey_count ?? 0} /></Card>
+                  <Card hoverable style={{ cursor: 'pointer' }} onClick={() => {
+                    if (!graphData?.nodes.length) return;
+                    setDrillKind('entities');
+                    setDrillSource('all');
+                    setDrillTitle(`调查实体（${graphData.nodes.length}）`);
+                    setDrillOpen(true);
+                  }}><Statistic title="调查总数" value={graphData?.survey_count ?? overview?.survey_count ?? 0} /></Card>
                 </Col>
                 <Col span={6}>
-                  <Card><Statistic title="图谱节点" value={graphData?.nodes.length ?? 0} /></Card>
+                  <Card hoverable style={{ cursor: 'pointer' }} onClick={() => {
+                    if (!filteredGraph?.nodes.length) return;
+                    setDrillKind('entities');
+                    setDrillSource('view');
+                    setDrillTitle(`当前视图实体（${filteredGraph.nodes.length}）`);
+                    setDrillOpen(true);
+                  }}><Statistic title="图谱节点" value={graphData?.nodes.length ?? 0} /></Card>
                 </Col>
                 <Col span={6}>
-                  <Card><Statistic title="关系边" value={graphData?.edges.length ?? 0} /></Card>
+                  <Card hoverable style={{ cursor: 'pointer' }} onClick={() => {
+                    if (!filteredGraph?.edges.length) return;
+                    setDrillKind('edges');
+                    setDrillTitle(`当前视图关系（${filteredGraph.edges.length}）`);
+                    setDrillOpen(true);
+                  }}><Statistic title="关系边" value={graphData?.edges.length ?? 0} /></Card>
                 </Col>
                 <Col span={6}>
                   <Card><Statistic title="关系类型" value={overview ? Object.values(overview.relation_counts).filter((v) => v > 0).length : 0} /></Card>
@@ -566,6 +826,10 @@ const KnowledgeGraph: React.FC = () => {
                       <Tag color="#fa541c">— 高于</Tag>
                       <Tag color="#722ed1">- - 隶属于</Tag>
                       <Tag color="#fa8c16">— 影响</Tag>
+                      <Divider type="vertical" />
+                      <Button size="small" icon={<DownloadOutlined />} onClick={exportGraphImage}>导出图片</Button>
+                      <Button size="small" icon={<NumberOutlined />} onClick={exportGraphJson}>导出JSON</Button>
+                      <Button size="small" icon={<ShareAltOutlined />} onClick={shareGraph}>分享</Button>
                     </Space>
                   }
                 >
@@ -573,6 +837,7 @@ const KnowledgeGraph: React.FC = () => {
                     <Empty description="暂无图谱数据（请调整筛选条件或等待审核通过的数据点）" />
                   ) : (
                     <EChart
+                      ref={chartRef}
                       option={chartOption}
                       style={{ height: 640 }}
                       onEvents={{ click: handleChartClick }}
@@ -580,6 +845,105 @@ const KnowledgeGraph: React.FC = () => {
                   )}
                 </Card>
               </Spin>
+
+              {/* 分层聚焦：中心节点邻居展开 */}
+              <Modal
+                open={!!focusNode}
+                title={focusNode ? `「${focusNode.label}」的关联节点` : ''}
+                footer={null}
+                width={560}
+                onCancel={() => setFocusNode(null)}
+              >
+                {focusNode && (
+                  <List
+                    size="small"
+                    dataSource={neighborsOf?.nodes ?? []}
+                    renderItem={(n) => {
+                      const meta = ENTITY_META[n.type] || ENTITY_META.survey;
+                      const props = (n.props || {}) as Record<string, unknown>;
+                      return (
+                        <List.Item
+                          actions={[
+                            props.literature_id ? (
+                              <TextLink
+                                key="lit"
+                                onClick={() => { setFocusNode(null); navigate(`/literature/${props.literature_id}`); }}
+                              >
+                                查看文献
+                              </TextLink>
+                            ) : null,
+                          ].filter(Boolean)}
+                        >
+                          <Tag color={meta.color}>{meta.label}</Tag>
+                          <span style={{ fontWeight: n.id === focusNode.id ? 600 : 400 }}>{n.label}</span>
+                          <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                            {props.year ? `${props.year}年` : ''}
+                            {props.disease ? ` · ${props.disease}` : ''}
+                            {props.value != null ? ` · ${props.value}${props.unit || ''}` : ''}
+                          </Text>
+                        </List.Item>
+                      );
+                    }}
+                  />
+                )}
+              </Modal>
+
+              {/* 统计下钻：实体/关系列表抽屉 */}
+              <Drawer
+                open={drillOpen}
+                title={drillTitle}
+                width={480}
+                onClose={() => setDrillOpen(false)}
+              >
+                {drillKind === 'entities' ? (
+                  <List
+                    size="small"
+                    dataSource={(drillSource === 'all' ? graphData?.nodes : filteredGraph?.nodes) ?? []}
+                    renderItem={(n) => {
+                      const meta = ENTITY_META[n.type] || ENTITY_META.survey;
+                      const props = (n.props || {}) as Record<string, unknown>;
+                      return (
+                        <List.Item
+                          actions={[
+                            props.literature_id ? (
+                              <TextLink key="lit" onClick={() => { setDrillOpen(false); navigate(`/literature/${props.literature_id}`); }}>
+                                查看文献
+                              </TextLink>
+                            ) : null,
+                          ].filter(Boolean)}
+                        >
+                          <Tag color={meta.color}>{meta.label}</Tag>
+                          <span>{n.label}</span>
+                          <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                            {n.survey_count ? `关联 ${n.survey_count} 项调查` : ''}
+                            {props.year ? ` · ${props.year}年` : ''}
+                            {props.disease ? ` · ${props.disease}` : ''}
+                            {props.value != null ? ` · ${props.value}${props.unit || ''}` : ''}
+                          </Text>
+                        </List.Item>
+                      );
+                    }}
+                  />
+                ) : (
+                  <List
+                    size="small"
+                    dataSource={filteredGraph?.edges ?? []}
+                    renderItem={(e) => {
+                      const src = filteredGraph?.nodes.find((n) => n.id === e.source);
+                      const tgt = filteredGraph?.nodes.find((n) => n.id === e.target);
+                      const em = RELATION_META[e.type] || { color: '#bfbfbf' };
+                      return (
+                        <List.Item>
+                          <Tag color={em.color}>{e.type}</Tag>
+                          <Text>{src?.label ?? e.source}</Text>
+                          <Text type="secondary" style={{ margin: '0 6px' }}>→</Text>
+                          <Text>{tgt?.label ?? e.target}</Text>
+                        </List.Item>
+                      );
+                    }}
+                  />
+                )}
+              </Drawer>
 
               {/* 持久化统计 + 手动抽取 */}
               <Card style={{ marginTop: 16 }}>
@@ -753,6 +1117,8 @@ const KnowledgeGraph: React.FC = () => {
                   prefix={<SearchOutlined />}
                 />
                 <Button type="primary" onClick={handleSearch} loading={searchLoading}>搜索</Button>
+                <Button icon={<MergeOutlined />} onClick={loadMergeCandidates} loading={mergeLoading}>合并候选</Button>
+                <Button icon={<AuditOutlined />} onClick={loadQualitySample} loading={qualityLoading}>质量评估</Button>
               </Space>
 
               <Spin spinning={searchLoading}>
@@ -948,7 +1314,51 @@ const KnowledgeGraph: React.FC = () => {
                           <Space size="small">
                             <Tag color={item.method === 'template' ? 'green' : 'blue'}>{item.method === 'template' ? '模板匹配' : 'AI 回答'}</Tag>
                             {item.result_count > 0 && <Text type="secondary">{item.result_count} 条数据</Text>}
+                            <Divider type="vertical" />
+                            <Button
+                              size="small"
+                              type={item.feedback === 'up' ? 'primary' : 'text'}
+                              disabled={!!item.feedback}
+                              onClick={() => handleQaFeedback(idx, 'up')}
+                            >
+                              有用
+                            </Button>
+                            <Button
+                              size="small"
+                              type={item.feedback === 'down' ? 'primary' : 'text'}
+                              danger={item.feedback === 'down'}
+                              disabled={!!item.feedback}
+                              onClick={() => handleQaFeedback(idx, 'down')}
+                            >
+                              没用
+                            </Button>
                           </Space>
+                          {item.evidence.length > 0 && (
+                            <div style={{ marginTop: 8 }}>
+                              <Text type="secondary" style={{ fontSize: 12 }}>证据溯源（{item.evidence.length} 条）</Text>
+                              <div style={{ maxHeight: 180, overflow: 'auto', marginTop: 4 }}>
+                                {item.evidence.map((ev, i) => (
+                                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '4px 0', borderBottom: '1px dashed #f0f0f0' }}>
+                                    <Text style={{ fontSize: 12, flex: 1 }}>
+                                      {ev.title || (ev.province ? `${ev.province}${ev.city ? ev.city : ''}` : '未知来源')}
+                                      {ev.year ? `（${ev.year}年）` : ''}
+                                    </Text>
+                                    <Space size={4} style={{ flexShrink: 0 }}>
+                                      {ev.value != null && <Text type="secondary" style={{ fontSize: 12 }}>{ev.value}{ev.unit || '%'}</Text>}
+                                      {ev.literature_id && (
+                                        <TextLink
+                                          style={{ fontSize: 12 }}
+                                          onClick={(e) => { e.stopPropagation(); navigate(`/literature/${ev.literature_id}`); }}
+                                        >
+                                          查看文献
+                                        </TextLink>
+                                      )}
+                                    </Space>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </Card>
                       </div>
                     ))}
@@ -961,6 +1371,111 @@ const KnowledgeGraph: React.FC = () => {
       ]}
     >
     </Tabs>
+
+      <Modal
+        title="实体合并候选"
+        open={mergeOpen}
+        onCancel={() => setMergeOpen(false)}
+        footer={null}
+        width={720}
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          疑似重复实体（同名 / 高相似度）。每组保留第一个（蓝色）实体，其余合并到它名下（关系一并迁移）。合并需管理员权限。
+        </Typography.Paragraph>
+        {mergeCandidates.length === 0 ? (
+          <Empty description="暂无疑似重复实体" />
+        ) : (
+          <List
+            dataSource={mergeCandidates}
+            renderItem={(g) => (
+              <List.Item
+                actions={[
+                  g.members.length > 1 && (
+                    <Button key="merge" size="small" type="primary" onClick={() => handleMergeGroup(g)}>合并</Button>
+                  ),
+                ]}
+              >
+                <div>
+                  <Space size={8}>
+                    <Tag color={ENTITY_META[g.entity_type]?.color}>{ENTITY_META[g.entity_type]?.label || g.entity_type}</Tag>
+                    <Text type="secondary">{g.reason}</Text>
+                  </Space>
+                  <div style={{ marginTop: 4 }}>
+                    {g.members.map((m, i) => (
+                      <Tag key={m.id} color={i === 0 ? 'blue' : 'default'}>{m.name}（{m.triple_count} 边）</Tag>
+                    ))}
+                  </div>
+                </div>
+              </List.Item>
+            )}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        title="抽取质量评估（抽样待校验三元组）"
+        open={qualityOpen}
+        onCancel={() => setQualityOpen(false)}
+        footer={null}
+        width={860}
+      >
+        <Space style={{ marginBottom: 12 }} wrap>
+          <Text type="secondary">
+            勾选后批量标记：正确 → 记入通过样本；错误 → 记入剔除样本；删除 → 直接从图谱移除。
+          </Text>
+          <Button size="small" type="primary" onClick={() => handleQualityReview('approved')}>标记为正确</Button>
+          <Button size="small" danger onClick={() => handleQualityReview('rejected')}>标记为错误</Button>
+          <Button size="small" type="primary" danger onClick={handleQualityDelete}>删除选中</Button>
+        </Space>
+        {qualityItems.length === 0 ? (
+          <Empty description="暂无待校验的三元组（可先触发抽取生成数据）" />
+        ) : (
+          <List
+            size="small"
+            dataSource={qualityItems}
+            renderItem={(t) => {
+              const checked = qualitySelected.includes(t.id);
+              const toggle = () => setQualitySelected((prev) => (checked ? prev.filter((x) => x !== t.id) : [...prev, t.id]));
+              return (
+                <List.Item
+                  onClick={toggle}
+                  style={{ cursor: 'pointer', paddingLeft: 4 }}
+                  extra={<Checkbox checked={checked} onClick={(e) => e.stopPropagation()} onChange={toggle} />}
+                >
+                  <div style={{ flex: 1 }}>
+                    <Space size={4} wrap>
+                      <Tag color={ENTITY_META[t.subject_type]?.color || 'default'}>{t.subject}</Tag>
+                      <Text type="secondary">—{t.predicate}→</Text>
+                      <Tag color={ENTITY_META[t.object_type]?.color || 'default'}>{t.object}</Tag>
+                      <Tag>{t.confidence < 0.8 ? `低置信 ${t.confidence.toFixed(2)}` : `置信 ${t.confidence.toFixed(2)}`}</Tag>
+                    </Space>
+                    <div style={{ marginTop: 2 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        来源：{t.literature_title || '未知'}
+                        {t.literature_id && (
+                          <TextLink style={{ marginLeft: 8 }} onClick={(e) => { e.stopPropagation(); navigate(`/literature/${t.literature_id}`); }}>
+                            查看文献
+                          </TextLink>
+                        )}
+                      </Text>
+                    </div>
+                    {t.source_context && (
+                      <Typography.Paragraph
+                        type="secondary"
+                        style={{ fontSize: 12, margin: '2px 0 0', maxHeight: 44, overflow: 'hidden' }}
+                        ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}
+                      >
+                        {t.source_context}
+                      </Typography.Paragraph>
+                    )}
+                  </div>
+                </List.Item>
+              );
+            }}
+          />
+        )}
+      </Modal>
+    </>
   );
 };
 

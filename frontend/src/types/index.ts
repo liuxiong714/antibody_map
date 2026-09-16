@@ -1242,3 +1242,15 @@ export interface KgStatsData {
   relation_counts: Record<string, number>;
 }
 
+export interface KgEvidence {
+  literature_id: string | null;
+  title: string | null;
+  year: number | null;
+  province: string | null;
+  city: string | null;
+  value: number | null;
+  unit: string | null;
+  population: string | null;
+  data_point_id: string | null;
+}
+

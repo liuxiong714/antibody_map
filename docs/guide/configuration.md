@@ -49,6 +49,8 @@
 | `EXTRACTION_STALE_MINUTES` | 提取状态卡死回收阈值（分钟），覆盖本地模型单篇长任务 | `180` |
 | `APP_ENV` | 运行环境 | `development` |
 
+> `ENABLE_KG_EXTRACTION` 也可不修改 .env：管理员可在「系统设置 → 系统信息 → 特性开关」中运行时切换（内存级，默认立即生效，worker 后台任务需重启 worker 使开关同步），二者任一开启即可。
+
 ## 本地 Ollama 模型配置
 
 ### 显卡显存与推荐配置

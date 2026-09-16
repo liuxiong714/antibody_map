@@ -119,25 +119,25 @@ async def login(
     # F5：统一判定，避免向攻击者泄露"用户名是否存在"
     if not user or not verify_password(req.password, user.hashed_password):
         failed_username = req.username
-        await log_audit(
-            db, "login_failed", username=failed_username,
-            client_ip=client_ip, detail={"reason": "invalid_credentials"},
+        log_audit(
+            "login_failed", username=failed_username,
+            result="fail", ip=client_ip, detail={"reason": "invalid_credentials"},
         )
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
     if not user.is_active:
-        await log_audit(
-            db, "login_failed", user_id=str(user.id), username=req.username,
-            client_ip=client_ip, detail={"reason": "inactive"},
+        log_audit(
+            "login_failed", user_id=str(user.id), username=req.username,
+            result="fail", ip=client_ip, detail={"reason": "inactive"},
         )
         raise HTTPException(status_code=403, detail="账号已被禁用")
 
     token = create_access_token(str(user.id), user.username, user.is_admin)
     refresh_token = create_refresh_token(str(user.id))
 
-    await log_audit(
-        db, "login", user_id=str(user.id), username=user.username,
-        client_ip=client_ip,
+    log_audit(
+        "login", user_id=str(user.id), username=user.username,
+        ip=client_ip,
     )
 
     return ApiResponse(
@@ -222,7 +222,7 @@ async def logout(
                 # 登出吊销为尽力而为：Redis 不可用时记录并继续，不让登出硬失败。
                 # （验证路径已 fail-closed，登出本身不构成安全放行窗口。）
                 logger.warning(f"登出吊销访问令牌失败: {e}")
-    await log_audit(db, "logout", user_id=str(user.id), username=user.username)
+    log_audit("logout", user_id=str(user.id), username=user.username)
     return ApiResponse(message="退出登录成功")
 
 
@@ -260,7 +260,7 @@ async def change_password(
     user.hashed_password = hash_password(req.new_password)
     user.password_changed_at = datetime.now(timezone.utc)  # F3：改密后吊销所有旧令牌
     await db.commit()
-    await log_audit(db, "change_password", user_id=str(user.id), username=user.username)
+    log_audit("change_password", user_id=str(user.id), username=user.username)
     return ApiResponse(message="密码修改成功")
 
 
@@ -309,8 +309,8 @@ async def create_user(
     )
     db.add(user)
     await db.commit()
-    await log_audit(
-        db, "create_user", user_id=str(admin.id), username=admin.username,
+    log_audit(
+        "create_user", user_id=str(admin.id), username=admin.username,
         target=req.username, detail={"is_admin": req.is_admin},
     )
     return ApiResponse(
@@ -353,8 +353,8 @@ async def update_user(
         user.password_changed_at = datetime.now(timezone.utc)  # F3：重置密码后吊销该用户所有旧令牌
 
     await db.commit()
-    await log_audit(
-        db, "update_user", user_id=str(admin.id), username=admin.username,
+    log_audit(
+        "update_user", user_id=str(admin.id), username=admin.username,
         target=user.username,
         detail={"is_active": req.is_active, "is_admin": req.is_admin, "password_reset": bool(req.password)},
     )
@@ -379,8 +379,8 @@ async def delete_user(
     target_username = user.username
     await db.delete(user)
     await db.commit()
-    await log_audit(
-        db, "delete_user", user_id=str(admin.id), username=admin.username,
+    log_audit(
+        "delete_user", user_id=str(admin.id), username=admin.username,
         target=target_username,
     )
     return ApiResponse(message="用户删除成功")

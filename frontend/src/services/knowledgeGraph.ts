@@ -2,7 +2,7 @@ import api from './api';
 import { cachedGet } from '../lib/apiCache';
 import type {
   KgGraphData, KgOptionsData, KgOverviewData,
-  KgSearchResult, KgPathResult, KgStatsData,
+  KgSearchResult, KgPathResult, KgStatsData, KgEvidence,
 } from '../types';
 
 // 静态/低频变化数据用较长 TTL；依赖筛选条件的图谱数据用短 TTL
@@ -96,12 +96,76 @@ export async function triggerKgExtraction(limit = 5, literatureIds?: string[], m
   return data;
 }
 
-export async function askKgQuestion(question: string) {
-  const { data } = await api.post<{ answer: string; template: string | null; method: string; result_count: number; slots: Record<string, string> | null }>(
+export async function getKgMergeCandidates(limit = 30) {
+  const { data } = await api.get<Array<{
+    entity_type: string; reason: string;
+    members: Array<{ id: string; name: string; entity_type: string; attributes: Record<string, unknown>; source_literature_id: string | null; triple_count: number }>;
+  }>>('/kg/entities/merge-candidates', { params: { limit } });
+  return data;
+}
+
+export async function mergeKgEntities(keepId: string, mergeIds: string[]) {
+  const { data } = await api.post<{ merged: number; moved_triples: number }>(
+    '/kg/entities/merge',
+    { keep_id: keepId, merge_ids: mergeIds },
+  );
+  return data;
+}
+
+export async function askKgQuestion(question: string, prevSlots?: Record<string, string> | null) {
+  const { data } = await api.post<{
+    answer: string; template: string | null; method: string; result_count: number;
+    slots: Record<string, string> | null; evidence?: KgEvidence[]; log_id?: string;
+  }>(
     '/kg/qa/ask',
-    { question },
+    { question, prev_slots: prevSlots || null },
     // 未命中模板的问题会走 LLM 兜底（本地模型较慢），超时对齐后端 LLM_REQUEST_TIMEOUT(600s)，避免 120s 全局超时提前中断
     { timeout: 600_000 },
   );
+  return data;
+}
+
+/** 问答反馈（点赞/点踩），log_id 来自 askKgQuestion 返回 */
+export async function feedbackKgQa(logId: string, feedback: 'up' | 'down') {
+  const { data } = await api.post<{ id: string; feedback: string }>(
+    `/kg/qa/log/${logId}/feedback`,
+    { feedback },
+  );
+  return data;
+}
+
+export interface KgTripleReviewItem {
+  id: string;
+  subject: string;
+  subject_type: string;
+  predicate: string;
+  object: string;
+  object_type: string;
+  confidence: number;
+  source_context: string | null;
+  literature_id: string | null;
+  literature_title: string | null;
+}
+
+/** 抽取质量评估：抽样待校验三元组 */
+export async function getKgReviewSample(limit = 20, minConfidence?: number) {
+  const { data } = await api.get<KgTripleReviewItem[]>('/kg/triples/review-sample', {
+    params: { limit, ...(minConfidence != null ? { min_confidence: minConfidence } : {}) },
+  });
+  return data;
+}
+
+/** 标记三元组校验结果（管理员） */
+export async function reviewKgTriples(ids: string[], status: 'approved' | 'rejected') {
+  const { data } = await api.post<{ updated: number; status: string }>(
+    '/kg/triples/review',
+    { ids, status },
+  );
+  return data;
+}
+
+/** 批量删除错误三元组（管理员） */
+export async function deleteKgTriples(ids: string[]) {
+  const { data } = await api.post<{ deleted: number }>('/kg/triples/batch-delete', { ids });
   return data;
 }

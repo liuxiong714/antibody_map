@@ -70,7 +70,7 @@ Write-Host "=== downloading apt packages (python:3.11-slim, aliyun source) ==="
 wsl -d Ubuntu-22.04 -- docker run --rm `
     -v "${TmpAptWsl}:/apt_cache" `
     -v "${tmpWsl}:/dl.sh" `
-    python:3.11-slim bash /dl.sh
+    docker.m.daocloud.io/library/python:3.11-slim bash /dl.sh
 
 if ($LASTEXITCODE -ne 0) {
     throw "apt package download failed, check network and retry"

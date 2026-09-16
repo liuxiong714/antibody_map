@@ -7,6 +7,7 @@ from app.models.disease_dict import DiseaseDict
 from app.models.extraction_history import ExtractionHistory
 from app.models.goal_threshold_config import GoalThresholdConfig
 from app.models.kg_entity import KGEntity
+from app.models.kg_qa_log import KgQaLog
 from app.models.kg_triple import KGTriple
 from app.models.literature import Literature
 from app.models.literature_tag import Tag, literature_tag
@@ -29,6 +30,7 @@ __all__ = [
     "ExtractionHistory",
     "GoalThresholdConfig",
     "KGEntity",
+    "KgQaLog",
     "KGTriple",
     "Literature",
     "LocalModelConfig",

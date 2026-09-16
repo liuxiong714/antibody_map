@@ -9,6 +9,7 @@ import {
   BarChartOutlined,
   RadarChartOutlined,
   FileTextOutlined,
+  ExperimentOutlined,
   FolderOpenOutlined,
   SearchOutlined,
   UserOutlined,
@@ -68,6 +69,7 @@ const MainLayout: React.FC = () => {
     { key: '/antigenic-map', icon: <RadarChartOutlined />, label: t('nav.antigenicMap') },
     { key: '/knowledge-graph', icon: <ApartmentOutlined />, label: t('nav.knowledgeGraph') },
     { key: '/report', icon: <FileTextOutlined />, label: t('nav.report') },
+    { key: '/self-test', icon: <ExperimentOutlined />, label: t('nav.selfTest') },
     { key: '/folders', icon: <FolderOpenOutlined />, label: t('nav.folders') },
     { key: '/pubmed', icon: <SearchOutlined />, label: t('nav.pubmed') },
   ];

@@ -1,83 +1,56 @@
-"""4.2：审计日志实体列写入测试（纯单测，mock 会话，无需真实 DB/Redis）。"""
-import asyncio
+"""审计日志模块单测（同步结构化输出，纯单测无需 DB/Redis）。
+
+log_audit 为同步函数，直接向 uvicorn.audit logger 输出 [AUDIT] 结构化行。
+"""
 import json
+import logging
 
 import pytest
 
 from app.core import audit as audit_module
-from app.models.audit_log import AuditLog
 
 
-class _FakeSession:
-    def __init__(self):
-        self.log = None
-
-    def add(self, obj):
-        self.log = obj
-
-    async def commit(self):
-        return None
+@pytest.fixture(autouse=True)
+def _audit_caplog(caplog):
+    with caplog.at_level(logging.INFO, logger="uvicorn.audit"):
+        yield caplog
 
 
-class _FakeCM:
-    def __init__(self):
-        self.session = _FakeSession()
+def test_log_audit_outputs_structured_line(_audit_caplog):
+    audit_module.log_audit(
+        "data_point_update",
+        target="literature/lit1",
+        user_id="u1",
+        username="zhangsan",
+        detail={"review_status": "approved"},
+    )
 
-    async def __aenter__(self):
-        return self.session
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return None
-
-
-def _run(coro):
-    return asyncio.run(coro)
-
-
-def test_log_audit_persists_entity_columns(monkeypatch):
-    """log_audit 应把 entity_type/entity_id/old_value/new_value 落库到 AuditLog。"""
-    cm = _FakeCM()
-    monkeypatch.setattr(audit_module, "async_session", lambda: cm)
-
-    async def _do():
-        # 空会话传入仅作兼容占位
-        await audit_module.log_audit(
-            None,
-            "data_point_update",
-            user_id="u1",
-            username="zhangsan",
-            target="literature/lit1",
-            entity_type="data_point",
-            entity_id="dp1",
-            old_value={"value": 1.0},
-            new_value={"value": 2.5},
-            detail={"review_status": "approved"},
-        )
-
-    _run(_do())
-
-    log = cm.session.log
-    assert isinstance(log, AuditLog)
-    assert log.action == "data_point_update"
-    assert log.entity_type == "data_point"
-    assert log.entity_id == "dp1"
-    assert json.loads(log.old_value) == {"value": 1.0}
-    assert json.loads(log.new_value) == {"value": 2.5}
-    assert json.loads(log.detail) == {"review_status": "approved"}
+    assert len(_audit_caplog.records) == 1
+    msg = _audit_caplog.records[0].message
+    assert msg.startswith("[AUDIT] ")
+    assert "action=data_point_update" in msg
+    assert "target=literature/lit1" in msg
+    assert "user_id=u1" in msg
+    assert "username=zhangsan" in msg
+    assert "result=success" in msg
+    assert json.loads(msg.split("detail=", 1)[1].split(" ip=", 1)[0]) == {
+        "review_status": "approved"
+    }
 
 
-def test_log_audit_without_entity_columns(monkeypatch):
-    """仅登录类操作不传 entity 字段时，实体列为空不报错（向后兼容）。"""
-    cm = _FakeCM()
-    monkeypatch.setattr(audit_module, "async_session", lambda: cm)
+def test_log_audit_fail_uses_warning_level(_audit_caplog):
+    audit_module.log_audit("login_failed", username="u1", result="fail")
 
-    async def _do():
-        await audit_module.log_audit(None, "login", user_id="u1", username="zhangsan")
+    assert len(_audit_caplog.records) == 1
+    assert _audit_caplog.records[0].levelno == logging.WARNING
+    assert "result=fail" in _audit_caplog.records[0].message
 
-    _run(_do())
 
-    log = cm.session.log
-    assert log.entity_type is None
-    assert log.entity_id is None
-    assert log.old_value is None
-    assert log.new_value is None
+def test_log_audit_minimal_call(_audit_caplog):
+    audit_module.log_audit("login")
+
+    assert len(_audit_caplog.records) == 1
+    msg = _audit_caplog.records[0].message
+    assert "action=login" in msg
+    assert "user_id=" in msg
+    assert "detail=" in msg

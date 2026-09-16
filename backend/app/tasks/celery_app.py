@@ -1,4 +1,4 @@
-from celery import Celery, signals
+﻿from celery import Celery, signals
 
 from app.config import settings
 from app.core.logging_config import setup_logging
@@ -54,4 +54,14 @@ celery_app.conf.update(
     # 取值需明显大于单次 LLM 调用超时（LLM_REQUEST_TIMEOUT=1200s），且覆盖本地模型整篇多步提取。
     task_soft_time_limit=3600,
     task_time_limit=4200,
+    # 自动重试：遇到可重试异常（网络/Redis/DB 瞬时故障）按指数退避重试 3 次。
+    task_annotations={
+        "*": {
+            "autoretry_for": (ConnectionError, TimeoutError),
+            "retry_backoff": True,          # 指数退避（2**retry_count 秒）
+            "retry_kwargs": {"max_retries": 3},
+        },
+    },
+    # 显式指定 task_reject_on_worker_lost：默认 False，worker 重启后任务会被重新消费
+    task_reject_on_worker_lost=True,
 )

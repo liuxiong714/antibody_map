@@ -16,8 +16,8 @@ $WheelDir = "$ProjectRoot\backend\wheels"
 New-Item -ItemType Directory -Force -Path $WheelDir | Out-Null
 
 Write-Host "=== 下载 requirements.txt wheels ==="
-docker run --rm -v "${ProjectRoot}\backend:/backend" python:3.11-slim `
-    pip download --no-cache-dir -r /backend/requirements.txt --dest /backend/wheels/
+docker run --rm -v "${ProjectRoot}\backend:/backend" docker.m.daocloud.io/library/python:3.11-slim `
+    pip download --no-cache-dir --index-url https://pypi.tuna.tsinghua.edu.cn/simple --timeout 100 --retries 8 -r /backend/requirements.txt --dest /backend/wheels/
 
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "部分 wheel 下载失败，可重试"
@@ -25,8 +25,8 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($WithMineru) {
     Write-Host "=== 下载 requirements-mineru.txt wheels（含 torch ~2GB）==="
-    docker run --rm -v "${ProjectRoot}\backend:/backend" python:3.11-slim `
-        pip download --no-cache-dir -r /backend/requirements-mineru.txt --dest /backend/wheels/
+    docker run --rm -v "${ProjectRoot}\backend:/backend" docker.m.daocloud.io/library/python:3.11-slim `
+        pip download --no-cache-dir --index-url https://pypi.tuna.tsinghua.edu.cn/simple --timeout 100 --retries 8 -r /backend/requirements-mineru.txt --dest /backend/wheels/
 
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "MinerU 部分 wheel 下载失败"

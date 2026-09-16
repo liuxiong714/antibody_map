@@ -43,6 +43,53 @@ def _normalize_for_dedup(name: str) -> str:
     return result.strip()
 
 
+# 省级行政区枚举（geo_area 实体校验/标准化）
+PROVINCE_NAMES = {
+    "北京", "上海", "天津", "重庆", "河北", "山西", "辽宁", "吉林", "黑龙江",
+    "江苏", "浙江", "安徽", "福建", "江西", "山东", "河南", "湖北", "湖南",
+    "广东", "海南", "四川", "贵州", "云南", "陕西", "甘肃", "青海", "台湾",
+    "内蒙古", "广西", "西藏", "宁夏", "新疆", "香港", "澳门",
+}
+# 常见地理大区（含 "region:" 前缀的内部标记）
+REGION_NAMES = {"华东", "华北", "华南", "华中", "西南", "西北", "东北"}
+
+_YEAR_RE = re.compile(r"(20\d{2}|19\d{2})")
+_YEAR_RANGE_RE = re.compile(r"(20\d{2}|19\d{2})\s*[-~–至到]\s*(20\d{2}|19\d{2})")
+
+
+def normalize_entity(
+    entity_type: str, name: str, attributes: dict | None = None,
+) -> tuple[str, dict]:
+    """按实体类型做归一化：时间→年份规范化，地区→省级枚举校验。
+
+    返回 (归一化后的 name, 补全后的 attributes)。
+    """
+    name = _normalize_name(name)
+    attrs = dict(attributes or {})
+    if entity_type == "time_period":
+        # 年份规范化：名称统一为 "YYYY年"，attributes.year 存整数
+        rm = _YEAR_RANGE_RE.search(name)
+        m = rm or _YEAR_RE.search(name)
+        if m:
+            year = int(m.group(1))
+            attrs["year"] = year
+            name = f"{year}年"
+    elif entity_type == "geo_area":
+        base = name
+        if base.startswith("region:"):
+            region = base[len("region:"):]
+            attrs["region"] = region
+            return f"region:{region}", attrs
+        base = re.sub(r"(省|市|自治区|特别行政区|地区|州|区|县)$", "", base)
+        if base in PROVINCE_NAMES:
+            # 省级行政区：统一不带行政后缀，记录 province 属性
+            attrs["province"] = base
+            name = base
+        elif base in REGION_NAMES:
+            attrs["region"] = base
+    return name, attrs
+
+
 def generate_entity_id(entity_type: str, name: str, attributes: dict | None = None) -> str:
     """生成确定性实体 ID：基于类型+标准化名称+排序属性 MD5 取前 16 位。"""
     normalized_name = _normalize_name(name)
@@ -94,16 +141,19 @@ async def resolve_entity(
     if not normalized:
         raise ValueError(f"实体名称不能为空: {name}")
 
+    # 类型化归一化（时间→年份规范化，地区→省级枚举校验）
+    normalized, attrs = normalize_entity(entity_type, normalized, attributes)
+
     dedup_key = _normalize_for_dedup(normalized)
-    entity_id = generate_entity_id(entity_type, normalized, attributes)
+    entity_id = generate_entity_id(entity_type, normalized, attrs)
 
     # 1. 精确匹配（按 ID）
     existing = await db.get(KGEntity, entity_id)
     if existing and not existing.merged_into:
         # 已存在且未被合并，更新属性
-        if attributes:
+        if attrs:
             existing_attrs = existing.attributes or {}
-            existing_attrs.update(attributes)
+            existing_attrs.update(attrs)
             existing.attributes = existing_attrs
         return entity_id
 
@@ -127,7 +177,7 @@ async def resolve_entity(
                 id=entity_id,
                 entity_type=entity_type,
                 name=normalized,
-                attributes=attributes or {},
+                attributes=attrs,
                 source_literature_id=literature_id,
                 merged_into=candidate.id,
             )
@@ -141,7 +191,7 @@ async def resolve_entity(
         id=entity_id,
         entity_type=entity_type,
         name=normalized,
-        attributes=attributes or {},
+        attributes=attrs,
         source_literature_id=literature_id,
     )
     db.add(new_entity)

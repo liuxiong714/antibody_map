@@ -172,6 +172,23 @@ api.interceptors.response.use(
       handleAuthFailure();
     }
 
+    // 5xx / 网络错误 / ECONNABORTED → 指数退避重试（最多 2 次）
+    const isServerError = status >= 500 && status < 600;
+    const isNetworkError = !status || error.code === 'ERR_NETWORK' || error.code === 'ECONNABORTED';
+    const retryable = original as AxiosRequestConfig & { _retry?: boolean; __retryCount?: number };
+    if ((isServerError || isNetworkError) && !retryable._retry) {
+      retryable._retry = true;
+      const attempt = (retryable.__retryCount ?? 0) + 1;
+      if (attempt <= 2) {
+        retryable.__retryCount = attempt;
+        const delay = 1000 * Math.pow(2, attempt - 1);
+        console.warn(
+          `[API Retry ${attempt}/2] ${isServerError ? status : 'network'} ${error.config?.url ?? ''} (wait ${delay}ms)`
+        );
+        return new Promise((resolve) => setTimeout(resolve, delay)).then(() => api(retryable));
+      }
+    }
+
     // 请求被取消（AbortController / 页面切换）：正常行为，不打 error 日志
     if (error.code === 'ERR_CANCELED' || axios.isCancel(error)) {
       return Promise.reject(error);

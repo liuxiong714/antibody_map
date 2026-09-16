@@ -290,10 +290,9 @@ async def delete_minio_orphan_objects(db: AsyncSession, dry_run: bool = False, o
             "dry_run": True,
         }
 
-    # 删除前审计留痕（审计内部自建会话提交，不影响主事务）
+    # 删除前审计留痕（失败不影响主流程）
     try:
-        await log_audit(
-            db,
+        log_audit(
             "cleanup_minio_orphan_objects",
             username=operator,
             target=settings.MINIO_BUCKET_LITERATURE,
@@ -378,10 +377,9 @@ async def cleanup_orphan_files(db: AsyncSession, dry_run: bool = False, operator
         logger.error(f"创建回收目录失败: {trash}, {e}")
         return {"scanned": scanned, "orphan_count": len(orphan_files), "moved": 0, "failed": len(orphan_files), "cooldown_files": scan["cooldown"]}
 
-    # 移动前审计留痕（审计内部自建会话提交，不影响主事务）
+    # 移动前审计留痕（失败不影响主流程）
     try:
-        await log_audit(
-            db,
+        log_audit(
             "cleanup_orphan_files",
             username=operator,
             target="backend/data/pdfs",

@@ -1,5 +1,5 @@
-# 后端镜像
-FROM python:3.11-slim
+# 后端镜像（基础镜像走 DaoCloud 国内加速源，避免 Docker Hub 拉取慢）
+FROM docker.m.daocloud.io/library/python:3.11.9-slim
 
 # 设置工作目录与环境变量
 # 不再强制 PIP_NO_CACHE_DIR=1：配合 BuildKit 缓存挂载（--mount=type=cache,target=/root/.cache/pip）
@@ -31,8 +31,10 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖
-# PyPI 默认源国内访问慢，统一切到阿里云镜像（TUNA 偶发不通，改用阿里源）
-RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple
+# PyPI 默认源国内访问慢，切到 TUNA 清华源；加大超时与重试，避免弱网下读取超时中断构建
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    && pip config set global.timeout 100 \
+    && pip config set global.retries 8
 # 本地 wheel 仓库（离线安装用，由 scripts/download_wheels.ps1 生成）
 # 有 .whl 文件时优先离线安装，否则回退到 PyPI 在线下载
 COPY backend/wheels/ /wheels/

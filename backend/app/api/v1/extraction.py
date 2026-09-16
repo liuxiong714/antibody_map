@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db, require_admin
 from app.core.audit import log_audit
+from app.core.rate_limiter import extraction_rate_limit
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES
 from app.core.traceability_html import (
     datapoint_dict_to_trace,
@@ -243,6 +244,7 @@ async def start_extraction(
     literature_id: uuid.UUID,
     req: ExtractionRequest = None,
     db: AsyncSession = Depends(get_db),
+    _rate_limit: None = Depends(extraction_rate_limit),
 ):
     """触发文献 AI 数据提取任务"""
     try:
@@ -263,6 +265,7 @@ async def start_batch_extraction(
     req: BatchExtractionRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(extraction_rate_limit),
 ):
     """批量触发文献 AI 数据提取任务"""
     if not req.literature_ids:
@@ -279,6 +282,18 @@ async def start_batch_extraction(
     submitted: list[dict] = []
     skipped: list[dict] = []
     errors: list[dict] = []
+
+    # 同批次 literature_id 去重（保留顺序），避免同一文献被重复入队
+    seen_lit: set[str] = set()
+    dedup_ids: list[str] = []
+    for _id in req.literature_ids:
+        if _id not in seen_lit:
+            seen_lit.add(_id)
+            dedup_ids.append(_id)
+    dup_count = len(req.literature_ids) - len(dedup_ids)
+    if dup_count:
+        logger.info(f"[BatchExtract] 同批次去重移除 {dup_count} 个重复 literature_id")
+    req.literature_ids = dedup_ids
 
     for lit_id_str in req.literature_ids:
         try:
@@ -671,29 +686,31 @@ async def create_data_point(
 
     await db.commit()
 
-    # 4.2：记录数据点新增审计（独立会话自行提交，失败不影响主流程）
-    await log_audit(
-        db,
+    # 4.2：记录数据点新增审计（失败不影响主流程）
+    log_audit(
         "data_point_create",
         user_id=str(current_user.id),
         username=current_user.username,
         target=f"literature/{literature_id}",
-        detail={"literature_id": str(literature_id), "disease": req.disease, "value": req.value},
-        entity_type="data_point",
-        entity_id=str(dp.id),
-        new_value={
-            "disease": dp.disease,
-            "province": dp.province,
-            "city": dp.city,
-            "data_type": dp.data_type,
-            "value": dp.value,
-            "unit": dp.unit,
-            "sample_size": dp.sample_size,
-            "population": dp.population,
-            "confidence": dp.confidence,
-            "method": dp.method,
-            "assay": dp.assay,
-            "collection_year": dp.collection_year,
+        detail={
+            "data_point_id": str(dp.id),
+            "literature_id": str(literature_id),
+            "disease": req.disease,
+            "value": req.value,
+            "new_value": {
+                "disease": dp.disease,
+                "province": dp.province,
+                "city": dp.city,
+                "data_type": dp.data_type,
+                "value": dp.value,
+                "unit": dp.unit,
+                "sample_size": dp.sample_size,
+                "population": dp.population,
+                "confidence": dp.confidence,
+                "method": dp.method,
+                "assay": dp.assay,
+                "collection_year": dp.collection_year,
+            },
         },
     )
 
@@ -809,18 +826,18 @@ async def update_data_points(
 
     await db.commit()
 
-    # 4.2：数据点变更审计（独立会话，失败降级不影响主流程）
+    # 4.2：数据点变更审计（失败不影响主流程）
     for entry in audit_entries:
-        await log_audit(
-            db,
+        log_audit(
             entry["action"],
             user_id=str(current_user.id),
             username=current_user.username,
             target=f"literature/{literature_id}",
-            entity_type="data_point",
-            entity_id=entry["entity_id"],
-            old_value=entry["old_diff"],
-            new_value=entry["new_diff"],
+            detail={
+                "data_point_id": entry["entity_id"],
+                "old_value": entry["old_diff"],
+                "new_value": entry["new_diff"],
+            },
         )
 
     # 审核通过后异步质量打分（幂等，全文可用后精打覆盖）
@@ -851,16 +868,16 @@ async def batch_confirm(
 
     # 4.2：批量审核通过审计
     for dp_id in req.ids:
-        await log_audit(
-            db,
+        log_audit(
             "data_point_review",
             user_id=str(current_user.id),
             username=current_user.username,
             target=f"literature/{literature_id}",
-            detail={"review_status": "approved", "review_comment": comment},
-            entity_type="data_point",
-            entity_id=str(dp_id),
-            new_value={"review_status": "approved", "review_comment": comment},
+            detail={
+                "data_point_id": str(dp_id),
+                "review_status": "approved",
+                "review_comment": comment,
+            },
         )
 
     # 审核通过后异步质量打分（幂等，全文可用后精打覆盖）
@@ -891,16 +908,16 @@ async def batch_dispute(
 
     # 4.2：批量驳回审计
     for dp_id in req.ids:
-        await log_audit(
-            db,
+        log_audit(
             "data_point_review",
             user_id=str(current_user.id),
             username=current_user.username,
             target=f"literature/{literature_id}",
-            detail={"review_status": "rejected", "review_comment": comment},
-            entity_type="data_point",
-            entity_id=str(dp_id),
-            new_value={"review_status": "rejected", "review_comment": comment},
+            detail={
+                "data_point_id": str(dp_id),
+                "review_status": "rejected",
+                "review_comment": comment,
+            },
         )
 
     return ApiResponse(message=f"已批量驳回 {result} 个数据点", data={"note": comment})
@@ -1627,12 +1644,14 @@ async def review_titer_table(
     await db.commit()
 
     try:
-        await log_audit(
-            db, "titer_table_review",
+        log_audit(
+            "titer_table_review",
             user_id=str(current_user.id),
-            entity_type="titer_table", entity_id=str(tt.id),
-            old_value={"review_status": old_status},
-            new_value={"review_status": req.review_status, "review_comment": req.review_comment},
+            target=f"titer_table/{tt.id}",
+            detail={
+                "old_value": {"review_status": old_status},
+                "new_value": {"review_status": req.review_status, "review_comment": req.review_comment},
+            },
         )
     except Exception as e:
         logger.warning(f"滴度矩阵审核审计日志写入失败: {e}")

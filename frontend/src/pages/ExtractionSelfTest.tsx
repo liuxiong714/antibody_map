@@ -35,7 +35,7 @@ const NOISE_LABEL: Record<string, string> = {
   wrong_value: '完全错误值',
 };
 
-const SyntheticSelfTest: React.FC = () => {
+const ExtractionSelfTest: React.FC = () => {
   const [form] = Form.useForm();
   const [tasks, setTasks] = useState<SyntheticTask[]>([]);
   const [loading, setLoading] = useState(false);
@@ -931,4 +931,4 @@ const SyntheticSelfTest: React.FC = () => {
   );
 };
 
-export default SyntheticSelfTest;
+export default ExtractionSelfTest;

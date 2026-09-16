@@ -150,6 +150,18 @@ class _GraphBuilder:
         }
         if props:
             edge["props"] = props
+        # 双向联动：从端点节点收集关联数据点 ID（survey/indicator 节点承载）
+        dp_ids: list[str] = []
+        for nid in (source, target):
+            node = self.nodes.get(nid)
+            if not node:
+                continue
+            p = node.get("props") or {}
+            pid = p.get("data_point_id") or p.get("survey_id")
+            if pid and str(pid) not in dp_ids:
+                dp_ids.append(str(pid))
+        if dp_ids:
+            edge["data_point_ids"] = dp_ids
         self.edges.append(edge)
         return len(self.edges) - 1
 
@@ -182,6 +194,7 @@ class _GraphBuilder:
             "unit": unit,
             "sample_size": sample_size,
             "literature_id": str(dp.literature_id) if dp.literature_id else None,
+            "data_point_id": str(dp.id),
         }
         self._add_node(survey_id, EntityType.SURVEY, f"调查#{self._seq}", survey_props)
 

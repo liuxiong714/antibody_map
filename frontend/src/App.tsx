@@ -17,6 +17,7 @@ const Assessment = React.lazy(() => import('./pages/Assessment'));
 const AntigenicMap = React.lazy(() => import('./pages/AntigenicMap'));
 const Analysis = React.lazy(() => import('./pages/Analysis'));
 const Report = React.lazy(() => import('./pages/Report'));
+const ExtractionSelfTest = React.lazy(() => import('./pages/ExtractionSelfTest'));
 const FolderMonitor = React.lazy(() => import('./pages/FolderMonitor'));
 const PubmedSearch = React.lazy(() => import('./pages/PubmedSearch'));
 const KnowledgeGraph = React.lazy(() => import('./pages/KnowledgeGraph'));
@@ -81,6 +82,7 @@ const App: React.FC = () => {
               <Route path="/antigenic-map" element={<PageBoundary><AntigenicMap /></PageBoundary>} />
               <Route path="/analysis" element={<PageBoundary><Analysis /></PageBoundary>} />
               <Route path="/report" element={<PageBoundary><Report /></PageBoundary>} />
+              <Route path="/self-test" element={<PageBoundary><ExtractionSelfTest /></PageBoundary>} />
               <Route path="/folders" element={<PageBoundary><FolderMonitor /></PageBoundary>} />
               <Route path="/pubmed" element={<PageBoundary><PubmedSearch /></PageBoundary>} />
               <Route path="/knowledge-graph" element={<PageBoundary><KnowledgeGraph /></PageBoundary>} />

@@ -1,4 +1,4 @@
-﻿"""Prometheus 业务指标定义与后台采集循环。
+"""Prometheus 业务指标定义与后台采集循环。
 
 分工说明：
 - HTTP 请求量 / 延迟直方图（http_requests_total、http_request_duration_*_seconds）
@@ -84,6 +84,17 @@ def _init_metrics() -> dict:
             "orphan_cleanup_orphan_total",
             "Number of orphan files/objects detected by cleanup scan, by storage.",
             ["storage"],
+        ),
+        # P1-1：worker 心跳可观测性
+        "worker_heartbeat_age_seconds": Gauge(
+            "worker_heartbeat_age_seconds",
+            "Age in seconds of the oldest worker heartbeat among processing extractions. "
+            "Large values indicate stalled/killed worker.",
+        ),
+        "extraction_status_count": Gauge(
+            "extraction_status_count",
+            "Number of literatures by extraction status.",
+            ["status"],
         ),
     }
     _METRICS.update(metrics)
@@ -252,6 +263,43 @@ async def _update_celery_queue_depth() -> None:
             await client.aclose()
 
 
+async def _update_extraction_gauges() -> None:
+    """刷新 worker 心跳年龄 + 各状态文献数（P1-1）。"""
+    m_hb = _metric("worker_heartbeat_age_seconds")
+    m_status = _metric("extraction_status_count")
+    if m_hb is None and m_status is None:
+        return
+    from datetime import datetime, timezone
+    from app.models.literature import Literature
+
+    async with async_session() as db:
+        # 按 extraction_status 分组计数
+        result = await db.execute(
+            select(
+                Literature.extraction_status,
+                func.count(Literature.id),
+            ).group_by(Literature.extraction_status)
+        )
+        if m_status is not None:
+            for status, count in result.all():
+                m_status.labels(status=status or "unknown").set(count)
+
+        # processing 状态的文献 → 最大心跳年龄
+        if m_hb is not None:
+            now = datetime.now(timezone.utc)
+            hb_result = await db.execute(
+                select(Literature.worker_heartbeat)
+                .where(Literature.extraction_status == "processing")
+                .where(Literature.worker_heartbeat.isnot(None))
+            )
+            oldest_age = 0.0
+            for (hb,) in hb_result.all():
+                age = (now - hb).total_seconds()
+                if age > oldest_age:
+                    oldest_age = age
+            m_hb.set(oldest_age)
+
+
 async def metrics_loop(interval: int = 60) -> None:
     """后台循环：按固定间隔刷新 Gauge 指标，单个失败不影响整体。"""
     await asyncio.sleep(20)  # 启动留出表结构就绪时间
@@ -264,6 +312,10 @@ async def metrics_loop(interval: int = 60) -> None:
             await _update_celery_queue_depth()
         except Exception as e:
             logger.warning(f"[metrics] 刷新 celery_task_queue_depth 失败: {e}")
+        try:
+            await _update_extraction_gauges()
+        except Exception as e:
+            logger.warning(f"[metrics] 刷新 extraction gauges 失败: {e}")
         await asyncio.sleep(interval)
 
 

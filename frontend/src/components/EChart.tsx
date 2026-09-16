@@ -20,16 +20,18 @@ interface EChartProps {
   onEvents?: Record<string, (params: unknown) => void>;
 }
 
-const EChart: React.FC<EChartProps> = ({
+/** 转发 ref，暴露 echarts-for-react 实例（可调用 getEchartsInstance() 导出图片等） */
+const EChart = React.forwardRef<ReactEChartsCore, EChartProps>(({
   option,
   style,
   className,
   notMerge,
   lazyUpdate,
   onEvents,
-}) => {
+}, ref) => {
   return (
     <ReactEChartsCore
+      ref={ref}
       echarts={echarts}
       option={option}
       style={style}
@@ -39,6 +41,8 @@ const EChart: React.FC<EChartProps> = ({
       onEvents={onEvents}
     />
   );
-};
+});
+
+EChart.displayName = 'EChart';
 
 export default EChart;

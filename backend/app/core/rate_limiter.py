@@ -6,13 +6,16 @@
   - IP 提取优先 X-Forwarded-For 首个 IP（nginx 透传链最左端），回退 request.client.host。
 
 Key 模式：
-  登录限流：ratelimit:login:{ip}  窗口 60s，max 5 次
+  登录限流：ratelimit:login:{ip}     窗口 60s，max 5 次
+  提取触发：ratelimit:extract:{ip}   窗口 60s，max 20 次（防刷 LLM token）
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
 
@@ -67,20 +70,17 @@ class _SlidingWindowCounter:
         return True
 
 
-# 登录速率限制：每 IP 每分钟最多 5 次
-_LOGIN_MAX = 5
-_LOGIN_WINDOW = 60
-
-# 内存 fallback（Redis 停用时使用）
-_login_mem = _SlidingWindowCounter(_LOGIN_MAX, _LOGIN_WINDOW)
-
-
 # ============================================================
 # Redis 后端（分布式 / 多进程安全）
 # ============================================================
 
-async def _redis_login_allowed(ip: str) -> bool | None:
-    """Redis 滑动窗口。返回 True/False/None（None 表示 Redis 不可用）。"""
+async def _redis_sliding_window_check(
+    key: str, max_requests: int, window_seconds: int
+) -> bool | None:
+    """通用 Redis 滑动窗口检查。
+
+    返回 True=允许 / False=拒绝 / None=Redis 不可用（需降级内存）。
+    """
     try:
         from redis.asyncio import Redis
         from app.config import settings
@@ -97,32 +97,75 @@ async def _redis_login_allowed(ip: str) -> bool | None:
             socket_connect_timeout=2,
         )
 
-        key = f"ratelimit:login:{ip}"
         now = time.time()
-        window_start = now - _LOGIN_WINDOW
+        window_start = now - window_seconds
 
         # ZADD 当前时间戳（score=time）
         await client.zadd(key, {f"{now}": now})
         # 清理过期
         await client.zremrangebyscore(key, "-inf", window_start)
-        # 设置窗口 TTL（登录限流用完就扔）
-        await client.expire(key, _LOGIN_WINDOW)
+        # 设置窗口 TTL
+        await client.expire(key, window_seconds)
         # 计数
         count = await client.zcard(key)
-        return count is not None and count <= _LOGIN_MAX
+        return count is not None and count <= max_requests
     except Exception as e:
-        logger.debug(f"[rate_limiter] Redis 登录限流失败，降级内存: {e}")
+        logger.debug(f"[rate_limiter] Redis 限流失败，降级内存: {e}")
         return None
     finally:
         if client is not None:
-            with contextlib_suppress():
+            with contextlib.suppress(Exception):
                 await client.aclose()
 
 
-def contextlib_suppress():
-    """导入一次 contextlib.suppress 的便捷函数（避免在模块顶部 import）。"""
-    import contextlib
-    return contextlib.suppress(Exception)
+# ============================================================
+# 限流配置注册表
+# ============================================================
+
+@dataclass
+class _LimitConfig:
+    """单个限流规则的运行时配置。"""
+    name: str              # 名称（用于日志）
+    key_prefix: str        # Redis key 前缀：ratelimit:{prefix}:{ip}
+    max_requests: int
+    window_seconds: int
+    message: str           # 429 响应消息
+    _mem_counter: _SlidingWindowCounter | None = None
+
+
+# 登录限流：每 IP 每分钟最多 20 次（开发环境 nginx 健康检查 + 浏览器重试可能触发）
+_login_cfg = _LimitConfig(
+    name="login",
+    key_prefix="login",
+    max_requests=20,
+    window_seconds=60,
+    message="登录请求过于频繁，请 1 分钟后再试",
+    _mem_counter=_SlidingWindowCounter(20, 60),
+)
+
+# 提取触发限流：每 IP 每分钟最多 20 次（批量提取算 1 次请求，但会入队多个任务）
+_extract_cfg = _LimitConfig(
+    name="extract",
+    key_prefix="extract",
+    max_requests=20,
+    window_seconds=60,
+    message="提取请求过于频繁，请稍后再试（每分钟最多 20 次）",
+    _mem_counter=_SlidingWindowCounter(20, 60),
+)
+
+
+async def _check_limit(cfg: _LimitConfig, ip: str) -> None:
+    """通用限流检查：Redis 优先，降级内存；超限抛 429。"""
+    key = f"ratelimit:{cfg.key_prefix}:{ip}"
+    redis_result = await _redis_sliding_window_check(
+        key, cfg.max_requests, cfg.window_seconds
+    )
+    if redis_result is None:
+        # Redis 不可用 → 降级内存
+        if cfg._mem_counter is not None and not cfg._mem_counter.is_allowed(ip):
+            raise HTTPException(status_code=429, detail=cfg.message)
+    elif not redis_result:
+        raise HTTPException(status_code=429, detail=cfg.message)
 
 
 # ============================================================
@@ -130,20 +173,12 @@ def contextlib_suppress():
 # ============================================================
 
 async def login_rate_limit(request: Request) -> None:
-    """登录接口速率限制依赖（Redis 优先 + X-Forwarded-For IP + 内存降级）。"""
+    """登录接口速率限制依赖。"""
     ip = _extract_client_ip(request)
+    await _check_limit(_login_cfg, ip)
 
-    # 先试 Redis
-    redis_result = await _redis_login_allowed(ip)
-    if redis_result is None:
-        # Redis 不可用 → 降级内存
-        if not _login_mem.is_allowed(ip):
-            raise HTTPException(
-                status_code=429,
-                detail="登录请求过于频繁，请 1 分钟后再试",
-            )
-    elif not redis_result:
-        raise HTTPException(
-            status_code=429,
-            detail="登录请求过于频繁，请 1 分钟后再试",
-        )
+
+async def extraction_rate_limit(request: Request) -> None:
+    """AI 提取触发速率限制依赖（单篇 + 批量端点共用）。"""
+    ip = _extract_client_ip(request)
+    await _check_limit(_extract_cfg, ip)

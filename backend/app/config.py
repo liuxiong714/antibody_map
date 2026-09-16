@@ -36,24 +36,6 @@ def _detect_version_runtime() -> str:
     return APP_VERSION_FALLBACK
 
 
-def _get_runtime_feature_flags() -> dict:
-    import time
-    global _FLAG_CACHE
-    now = time.time()
-    cache = _FLAG_CACHE
-    if cache["flags"] and (now - cache["mtime"]) < _CACHE_TTL:
-        return cache["flags"]
-    flags = {
-        "kg_extraction": bool(settings.ENABLE_KG_EXTRACTION),
-        "kg_qa_unreviewed": bool(settings.KG_QA_INCLUDE_UNREVIEWED),
-        "proxy_headers": True,
-    }
-    cache["flags"] = flags
-    cache["mtime"] = now
-    return flags
-
-
-
 # Redis 同步 key：FastAPI 和 Worker 跨进程共享 feature flag overrides
 _FLAG_REDIS_KEY = 'antibody:feature_flags:overrides'
 # ---- In-memory feature flag overrides (admin toggles) ----
@@ -102,30 +84,26 @@ def _get_runtime_feature_flags() -> dict:
     cache['flags'] = flags
     cache['mtime'] = now
     return flags
-def _detect_version() -> str:
-    """???????????????????
 
-    1. docs/changelog.md ????????? "## v1.25.0 (2026-09-14)"?
-       ? ?? changelog ???????????????"????"?
-       ??? git tag????????? changelog ??????? tag?
-    2. git describe --tags --always??????? .git ????
-    3. fallback?changelog.md ??????? "0.0.0-unknown"
-    """
+
+# .env 文件位于项目根目录（backend/ 的父目录）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _detect_version() -> str:
+    """从 docs/changelog.md 检测版本号，回退 git describe。"""
     import re
 
-    # ??? 1?? changelog.md ??
     changelog = _PROJECT_ROOT / "docs" / "changelog.md"
     try:
         if changelog.exists():
             text = changelog.read_text(encoding="utf-8")
-            # ?? "## vX.Y.Z" ? "## X.Y.Z" ??????????
             m = re.search(r"^##\s+v?(\d+\.\d+\.\d+)", text, re.MULTILINE)
             if m:
                 return m.group(1)
     except Exception:
         pass
 
-    # ??? 2?git describe????
     try:
         result = subprocess.run(
             ["git", "describe", "--tags", "--always", "--dirty"],
@@ -137,10 +115,6 @@ def _detect_version() -> str:
         pass
 
     return "0.0.0-unknown"
-
-
-# .env 文件位于项目根目录（backend/ 的父目录）
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):

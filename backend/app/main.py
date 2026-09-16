@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import contextlib
 import subprocess
 import sys
@@ -6,7 +6,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -39,8 +39,22 @@ def _run_migrations():
     在 uvicorn 的事件循环中通过 asyncio.to_thread 调用 alembic 时，
     alembic env.py 内部的 asyncio.run() 会与主事件循环产生冲突导致死锁。
     使用 subprocess 在独立进程中运行可彻底避免此问题。
+
+    额外校验迁移链分叉（多个 head）：只记 warning 不阻塞启动——历史上项目
+    已存在多个 head（非 bug），真实升级由 Alembic 自己处理。
     """
     backend_dir = Path(__file__).resolve().parent.parent
+
+    heads = subprocess.run(
+        [sys.executable, "-m", "alembic", "heads", "--verbose"],
+        cwd=str(backend_dir), capture_output=True, text=True, timeout=30,
+    )
+    if heads.returncode == 0:
+        head_lines = [l for l in heads.stdout.strip().splitlines() if l.strip() and not l.startswith('INFO') and not l.startswith('TRACE')]
+        real_heads = [l for l in head_lines if ' (revision ' in l or not l.startswith('  ')]
+        if len(real_heads) > 1:
+            logger.warning(f"Alembic migration chain has {len(real_heads)} heads (possible fork). Alembic will attempt to merge during upgrade. Heads: {real_heads}")
+
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=str(backend_dir),
@@ -57,11 +71,23 @@ def _run_migrations():
 async def _ensure_tables():
     """兜底建表：以 SQLAlchemy 模型为准补齐缺失的表。
 
-    Alembic 迁移链可能未覆盖部分模型（如 user、audit_log），
+    Alembic 迁移链可能未覆盖部分模型（如 user、audit_log、kg_qa_log），
     用 metadata.create_all 幂等地补建缺失表，不影响已存在的表。
+
+    额外执行少量幂等 ALTER TABLE（ADD COLUMN IF NOT EXISTS）补齐新列。
     """
+    from sqlalchemy import text
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 补齐 kg_triple.review_status（幂等）
+        try:
+            await conn.execute(text(
+                "ALTER TABLE kg_triple ADD COLUMN IF NOT EXISTS review_status VARCHAR(16) NOT NULL DEFAULT 'pending'"
+            ))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_kg_triple_review_status ON kg_triple (review_status)"))
+        except Exception as e:
+            logger.warning(f"补齐 kg_triple.review_status 失败（忽略）: {e}")
     logger.info("Database tables ensured (create_all fallback)")
 
 
@@ -322,6 +348,30 @@ async def validation_error_handler(request: Request, exc: ValidationError):
             data=details,
         ),
     )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """FastAPI/Starlette 的 HTTPException 统一转成 ApiResponse 格式，避免 detail 裸出。"""
+    record_http_exception(exc.status_code)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_error_response(
+            code=f"HTTP_{exc.status_code}",
+            message=str(exc.detail) if exc.detail else "请求失败",
+        ),
+    )
+
+
+@app.middleware("http")
+async def inject_trace_id(request: Request, call_next):
+    """注入请求级 trace_id：从 X-Request-Id 读或生成；记录到 request.state 并写入响应头。"""
+    import uuid as _uuid
+    trace_id = request.headers.get("x-request-id") or _uuid.uuid4().hex[:16]
+    request.state.trace_id = trace_id
+    response = await call_next(request)
+    response.headers["X-Request-Id"] = trace_id
+    return response
 
 
 @app.middleware("http")
