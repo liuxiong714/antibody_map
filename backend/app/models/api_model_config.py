@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -7,6 +8,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.crypto import decrypt, encrypt
 from app.models.base import Base
+
+logger = logging.getLogger(__name__)
 
 
 class ApiModelConfig(Base):
@@ -46,15 +49,21 @@ class ApiModelConfig(Base):
 
     @hybrid_property
     def api_key(self) -> str:
-        """读取时自动解密为明文（供业务调用 LLM 使用）
+        """读取时自动解密为明文。
 
-        类级别访问（如 ApiModelConfig.api_key）返回原始密文列表达式，
-        不支持在 SQL 查询中按 api_key 过滤（密文不可比较）。
+        S-4：解密失败（SECRET_KEY 变更/密文损坏）不再返回密文原值，
+        记 error 日志后返回空字符串——让下游调用方走"缺 key"路径
+        （否则密文会被当作 API Key 外发造成安全事故）。
         """
         if isinstance(self, ApiModelConfig):
-            # 实例访问：解密返回明文
-            return decrypt(self._api_key_enc)
-        # 类级别访问：返回原始列（避免触发 SQL 表达式布尔判断）
+            try:
+                return decrypt(self._api_key_enc)
+            except ValueError:
+                logger.error(
+                    f"API Key 解密失败（config id={self.id}, name={self.name}), "
+                    f"SECRET_KEY 可能已变更，请重新录入模型配置"
+                )
+                return ""
         return self._api_key_enc
 
     @api_key.setter
@@ -64,10 +73,16 @@ class ApiModelConfig(Base):
 
     @hybrid_property
     def base_url(self) -> str:
-        """读取时自动解密为明文（供业务调用 LLM 使用）"""
+        """读取时自动解密为明文（供业务调用 LLM 使用）。S-4：解密失败返回空串。"""
         if isinstance(self, ApiModelConfig):
-            return decrypt(self._base_url_enc)
-        # 类级别访问：返回原始列
+            try:
+                return decrypt(self._base_url_enc)
+            except ValueError:
+                logger.error(
+                    f"base_url 解密失败（config id={self.id}, name={self.name}), "
+                    f"SECRET_KEY 可能已变更"
+                )
+                return ""
         return self._base_url_enc
 
     @base_url.setter

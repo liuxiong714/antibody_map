@@ -1,4 +1,4 @@
-﻿import contextlib
+import contextlib
 import hashlib
 import json
 import logging
@@ -18,6 +18,11 @@ from app.core.llm_extractor import LLMExtractor, _classify_llm_error
 from app.core.minio_client import get_minio_client
 from app.core.parse_trace import reset as trace_reset
 from app.core.parse_trace import snapshot as trace_snapshot
+from app.core.metadata_validator import (
+    is_valid_doi,
+    is_valid_pmid,
+    is_valid_pub_year,
+)
 from app.core.pdf_table_parser import extract_tables_markdown
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES, normalize_province
 from app.core.text_preprocessor import preprocess
@@ -394,6 +399,8 @@ async def _extract_result_to_datapoints(
     if "province_not_in_enum" in reasons:
         confidence = "low"
     if "value_out_of_range" in reasons:
+        confidence = "low"
+    if "suspected_fraction" in reasons:
         confidence = "low"
     if "not_grounded" in reasons and confidence != "low":
         # 非 grounding 单独仅降为 medium（保留人工判断空间），如果还有其他问题 -> low
@@ -773,6 +780,12 @@ async def _process_literature_async(
             _crossref_doi = extract_doi_from_text(clean_text)
             if not _crossref_doi and article_meta:
                 _crossref_doi = (article_meta.get("doi") or "").strip() or None
+            # P0-5：DOI 格式校验——LLM 可能编造 "11.1234/x" 等非法值
+            if _crossref_doi and not is_valid_doi(_crossref_doi):
+                logger.warning(
+                    f"P0-5 Crossref DOI 格式无效，跳过 Crossref 查询: {_crossref_doi!r}"
+                )
+                _crossref_doi = None
             if _crossref_doi and getattr(settings, "CROSSREF_DOI_BACKFILL", True):
                 from app.services.crossref_service import fetch_crossref_by_doi
                 crossref_meta = await fetch_crossref_by_doi(_crossref_doi)
@@ -943,14 +956,42 @@ async def _process_literature_async(
             for _field in ("title_en", "abstract", "doi", "pmid",
                            "authors", "author_affiliations", "journal"):
                 _v = article_meta.get(_field)
-                if _v and not getattr(literature, _field, None):
-                    setattr(literature, _field, str(_v).strip())
-                    _backfilled.append(_field)
+                if not _v or getattr(literature, _field, None):
+                    continue
+                _v_str = str(_v).strip()
+                # P0-5：标识符格式校验
+                if _field == "doi":
+                    if not is_valid_doi(_v_str):
+                        logger.warning(
+                            f"P0-5 article_meta doi 格式无效，跳过回填: {_v_str!r}"
+                        )
+                        continue
+                elif _field == "pmid":
+                    if not is_valid_pmid(_v_str):
+                        logger.warning(
+                            f"P0-5 article_meta pmid 格式无效，跳过回填: {_v_str!r}"
+                        )
+                        continue
+                # abstract 长度截断防护（LLM 可能编造超长摘要）
+                if _field == "abstract" and len(_v_str) > 5000:
+                    _v_str = _v_str[:5000]
+                    logger.warning(
+                        f"P0-5 article_meta abstract 超长，截断至 5000 字符"
+                    )
+                setattr(literature, _field, _v_str)
+                _backfilled.append(_field)
             _py = article_meta.get("pub_year")
             if _py and not literature.pub_year:
                 try:
-                    literature.pub_year = int(_py)
-                    _backfilled.append("pub_year")
+                    _py_int = int(str(_py).strip())
+                    # P0-5：年份范围校验
+                    if not is_valid_pub_year(_py_int):
+                        logger.warning(
+                            f"P0-5 article_meta pub_year 超出范围，跳过回填: {_py!r}"
+                        )
+                    else:
+                        literature.pub_year = _py_int
+                        _backfilled.append("pub_year")
                 except (TypeError, ValueError):
                     pass
             if _backfilled:

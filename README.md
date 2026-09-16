@@ -11,7 +11,7 @@
 ## 核心功能
 
 - **文献管理** — 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献，URL 导入，题录批量导入（RIS/EndNote/PubMed/WoS/读秀超星），元数据管理，**PDF 在线预览**（pdf.js 内联 Worker 流式加载，离线/反向代理环境可用，文本层支持框选、复制），重复检测与合并，回收站软删除，**导入历史追踪**（基于 pdf_hash 文件指纹识别重复导入）
-- **AI 数据提取** — LLM 自动提取血清阳性率/GMC 等数据点，支持 DeepSeek/OpenAI/Qwen/本地 Ollama，长文档分块并行提取，精确字符级溯源，强 Schema 校验；管线加固（API Key 加密存储、提示注入防护、token 预算/日配额/并发上限、幂等写库、状态超时自动回收）；「提取状态」弹窗与列表查询统计口径统一，区分「已完成/完成（无数据）/失败」三终局；文献详情页内联展示「历次 AI 提取历史」（含耗时/模型/Token/费用，支持一键重新提取）
+- **AI 数据提取** — LLM 自动提取血清阳性率/GMC 等数据点，支持 DeepSeek/OpenAI/Qwen/本地 Ollama，长文档分块并行提取，精确字符级溯源，强 Schema 校验；管线加固（API Key 加密存储、提示注入防护、token 预算/日配额/并发上限、幂等写库、状态超时自动回收）；「提取状态」弹窗与列表查询统计口径统一，区分「已完成/完成（无数据）/失败」三终局；文献详情页内联展示「历次 AI 提取历史」（含耗时/模型/Token/费用，支持一键重新提取），批量重新提取时模型/API Key/缓存复用一键切换；API Key 支持系统级（.env 环境变量）与数据库加密存储（ApiModelConfig）两种来源，后者支持远程模型凭据安全传递
 - **数据审核** — 人工审核（通过/驳回），审核意见留痕，行内编辑，手动新增数据点；审核队列按置信度与质量分排序（低置信低质量优先），滴度矩阵审核衔接，「LLM 原始输出 vs 人工修改」diff 留痕
 - **地图可视化** — 全国/省级/市级交互式抗体热力地图，时间序列动画
 - **数据分析** — 逐年趋势、区域对比、**分区对比（中部/东部/西部/北部/南部）**、年龄分层、FOI 感染力分析、VE 疫苗效果、Meta 分析（森林图/漏斗图）、空间热点/冷点（Moran's I + Getis-Ord Gi*）、免疫屏障模拟、免疫屏障达标概率（Monte Carlo 不确定性量化）、出生队列分析、省间公平性；省份按权威分区分组，选择器与分析表格展示「简称·分区」（如「北京（京·中部）」）
@@ -59,11 +59,12 @@ cp .env.example .env       # Windows: copy .env.example .env
 # 一键启动（自动探测 GPU，有 GPU 则加速，无 GPU 则 CPU）
 bash docker-start.sh
 
-# 或手动启动
-# 有 GPU 时（默认）：
+# 或手动启动 — CPU（默认）：
 docker compose up -d
-# 无 GPU 时：
-docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+# GPU（追加 overlay）：
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# 已有数据卷复用（本地开发保留 postgres 数据）：
+docker compose -f docker-compose.yml -f docker-compose.reuse.yml up -d
 ```
 
 启动后访问 `http://localhost:8080` 即可进入登录页面。

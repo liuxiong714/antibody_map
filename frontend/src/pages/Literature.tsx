@@ -116,10 +116,10 @@ const LiteraturePage: React.FC = () => {
       const raw = sessionStorage.getItem(LIST_STATE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
-        console.log('[文献列表] 读取备份状态:', parsed);
+        if (import.meta.env.DEV) console.debug('[文献列表] 读取备份状态:', parsed);
         return parsed;
       }
-      console.log('[文献列表] sessionStorage 无备份状态（非详情页返回，按默认值加载）');
+      if (import.meta.env.DEV) console.debug('[文献列表] sessionStorage 无备份状态（非详情页返回，按默认值加载）');
     } catch (e) {
       console.warn('[文献列表] 读取备份状态失败:', e);
     }
@@ -185,10 +185,10 @@ const LiteraturePage: React.FC = () => {
   const [form] = Form.useForm();
   const navigate = useNavigate();
 
-  // 清除备份状态（成功挂载后不再需要）
   useEffect(() => {
-    console.log('[文献列表] 列表页挂载完成，本次恢复: 页码=', page, '每页=', pageSize, '排序=', sortBy, sortOrder, '筛选=', { keyword, disease, province, yearStart, yearEnd, journal, reviewStatus });
+    if (import.meta.env.DEV) console.debug('[文献列表] 列表页挂载完成，本次恢复: 页码=', page, '每页=', pageSize, '排序=', sortBy, sortOrder, '筛选=', { keyword, disease, province, yearStart, yearEnd, journal, reviewStatus });
     sessionStorage.removeItem(LIST_STATE_KEY);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** 跳转到文献详情前，保存当前列表状态，以便返回时恢复 */
@@ -198,7 +198,7 @@ const LiteraturePage: React.FC = () => {
       keyword, disease, province, yearStart, yearEnd, journal, reviewStatus, extractionStatus, fileFormat,
       titleFilter, authorsFilter, createdStart, createdEnd, hasAbstract,
     };
-    console.log('[文献列表] 进入详情页前保存状态:', payload);
+    if (import.meta.env.DEV) console.debug('[文献列表] 进入详情页前保存状态:', payload);
     try {
       sessionStorage.setItem(LIST_STATE_KEY, JSON.stringify(payload));
     } catch (err) { console.error('[Literature] 保存列表状态失败:', err); /* ignore */ }

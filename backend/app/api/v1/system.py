@@ -273,7 +273,7 @@ async def read_log_content(
 
 
 @router.post("/backup", response_model=ApiResponse, summary="数据库备份", description="对 PostgreSQL 执行 pg_dump 逻辑备份，导出带时间戳的 SQL 文件到项目 backups/ 目录；单次超时 300 秒")
-async def backup_database(_user=Depends(get_current_user)):
+async def backup_database(_user=Depends(require_admin)):
     """对数据库执行 pg_dump 备份，返回备份文件信息。"""
     async with _backup_lock:
         url = make_url(settings.DATABASE_URL)
@@ -375,7 +375,7 @@ def _safe_backup_path(filename: str) -> Path:
 
 
 @router.get("/backups", response_model=ApiResponse, summary="备份文件列表", description="列出备份目录下已有的 .sql 备份文件（名称、大小、修改时间）")
-async def list_backups(_user=Depends(get_current_user)):
+async def list_backups(_user=Depends(require_admin)):
     backup_dir = Path(settings.BACKUP_DIR)
     files = []
     with contextlib.suppress(OSError):
@@ -395,7 +395,7 @@ async def list_backups(_user=Depends(get_current_user)):
 
 
 @router.get("/backup/download/{filename}", summary="下载备份文件", description="下载指定的数据库备份 .sql 文件")
-async def download_backup(filename: str, _user=Depends(get_current_user)):
+async def download_backup(filename: str, _user=Depends(require_admin)):
     p = _safe_backup_path(filename)
     if not p.is_file():
         raise HTTPException(status_code=404, detail="备份文件不存在")

@@ -6,7 +6,7 @@ import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import MapSelector from '../components/MapSelector';
 import { useFilterStore } from '../store';
-import { getProvinceData, getYearlyProvinceData, getAvailableYears, getCityData, getPopulationOptions, getSummary, getSpatialHotspots } from '../services/map';
+import { getProvinceData, getYearlyProvinceData, getAvailableYears, getCityData, getPopulationOptions, getSummary, getSpatialHotspots, exportDataPointsCsv } from '../services/map';
 import { MapDataPoint, YearlyMapData, SpatialHotspotsResponse, SpatialHotspotProvince, HotspotCluster } from '../types';
 import { SERO_COLOR_STOPS, GMC_COLOR_STOPS, GENDER_OPTIONS, PROVINCE_GEOJSON_NAME, DISEASES } from '../utils/constants';
 
@@ -159,7 +159,9 @@ const MapOverview: React.FC = () => {
     }
   }, [disease, dataType, province, yearStart, yearEnd, ageMin, ageMax, gender, occupation]);
 
-  useEffect(() => { fetchData(); }, []);
+  // F-5：筛选变化即触发查询（fetchData 的 useCallback 依赖已包括 disease 等筛选字段，
+  // 这里用 [fetchData] 触发——避免手动列一堆筛选字段）
+  useEffect(() => { fetchData(); }, [fetchData]);
 
   // 着色模式切换时加载热点数据
   const fetchHotspotData = useCallback(async () => {
@@ -568,10 +570,20 @@ const MapOverview: React.FC = () => {
       ? geoData.features.map((f: any) => {
           const geoName = f.properties?.name || '';
           const item = drillCityData.find((d) => d.city && _normCityName(d.city) === _normCityName(geoName));
+          const hasData = !!item && item.weighted_positivity != null;
           return {
             name: geoName,
-            value: item ? Number(item.weighted_positivity) || 0 : 0,
+            // F-5：无数据城市用 '-' 作为 ECharts 空值标记（不参与 visualMap 色阶，避免被着色为最深色）
+            value: hasData ? Number(item.weighted_positivity) || 0 : '-',
             _src: item || null,
+            // 无数据时显式给灰色 itemStyle（ECharts 遇到 '-' 空值会跳过 visualMap 自动用 fallback style，
+            // 但我们显式设灰色更可控，hover 也能保持灰色）
+            itemStyle: hasData
+              ? undefined
+              : { areaColor: '#e8e8e8', borderColor: '#ccc', opacity: 0.6 },
+            emphasis: hasData
+              ? undefined
+              : { itemStyle: { areaColor: '#e8e8e8', borderColor: '#bbb' } },
           };
         })
       : [];
@@ -949,18 +961,28 @@ const MapOverview: React.FC = () => {
             <Button icon={<ReloadOutlined />} onClick={() => { stopPlay(); yearRangeAutoRef.current = false; reset(); dynamicMode === 'timeline' ? fetchYearlyData() : fetchData(); }}>重置</Button>
           </Col>
           <Col>
-            <Button icon={<DownloadOutlined />} onClick={() => {
-              const params = new URLSearchParams();
-              if (disease) params.set('disease', disease);
-              if (dataType) params.set('data_type', dataType);
-              if (province) params.set('province', province);
-              if (yearStart) params.set('year_start', String(yearStart));
-              if (yearEnd) params.set('year_end', String(yearEnd));
-              if (ageMin != null) params.set('age_min', String(ageMin));
-              if (ageMax != null) params.set('age_max', String(ageMax));
-              if (gender) params.set('gender', gender);
-              if (occupation.length > 0) params.set('occupation', occupation.join(','));
-              window.open(`/api/v1/map/export-data-points?${params.toString()}`);
+            <Button icon={<DownloadOutlined />} onClick={async () => {
+              const hide = message.loading('正在生成 CSV...', 0);
+              try {
+                const params = new URLSearchParams();
+                if (disease) params.set('disease', disease);
+                if (dataType) params.set('data_type', dataType);
+                if (province) params.set('province', province);
+                if (yearStart) params.set('year_start', String(yearStart));
+                if (yearEnd) params.set('year_end', String(yearEnd));
+                if (ageMin != null) params.set('age_min', String(ageMin));
+                if (ageMax != null) params.set('age_max', String(ageMax));
+                if (gender) params.set('gender', gender);
+                if (occupation.length > 0) params.set('occupation', occupation.join(','));
+                const obj: Record<string, unknown> = {};
+                params.forEach((v, k) => (obj[k] = v));
+                await exportDataPointsCsv(obj);
+                message.success('CSV 已下载');
+              } catch (e: any) {
+                message.error(e?.response?.status === 401 ? '登录已过期，请重新登录' : 'CSV 导出失败');
+              } finally {
+                hide();
+              }
             }}>
               导出 CSV
             </Button>

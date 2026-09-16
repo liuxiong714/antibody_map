@@ -255,9 +255,11 @@ def _keyphrase_match(text_norm: str, ctx_norm: str, extract: dict) -> tuple[int,
 
 
 def _numeric_grounding_forms(value) -> list[str]:
-    """把单个数值格式化为多种可定位的字符串形态（用于 in 匹配）。
+    """把单个数值格式化为多种可定位的字符串形态（用于边界感知匹配）。
 
-    - 整数（如 sample_size=215）→ ["215"]
+    P0-4：追加千分位支持 + 边界感知（由调用方用正则做 (?<![0-9.]) / (?![0-9]) 包裹）。
+
+    - 整数（如 sample_size=1234）→ ["1234", "1,234"]
     - 小数（如 84.3）→ ["84.3", "84.3%", "84.3％", "84.3 %"]
     - 不可解析的非数值（None / 空 / 非数字）→ 返回空列表（视为无需回验）
     """
@@ -267,7 +269,8 @@ def _numeric_grounding_forms(value) -> list[str]:
         return []
     if isinstance(value, (int, float)):
         num = float(value)
-        s = f"{num}" if num != int(num) else str(int(num))
+        is_int = num == int(num)
+        s = str(int(num)) if is_int else f"{num}"
     else:
         text = str(value).strip()
         if not text:
@@ -276,24 +279,38 @@ def _numeric_grounding_forms(value) -> list[str]:
             num = float(text)
         except (TypeError, ValueError):
             return []
-        s = f"{num}" if num != int(num) else str(int(num))
+        is_int = num == int(num)
+        s = str(int(num)) if is_int else f"{num}"
 
     forms = [s]
+    # P0-4：整数追加千分位形态，支持 "1,234" 写法
+    if is_int and len(s) >= 4:
+        try:
+            forms.append(f"{int(s):,}")
+        except (ValueError, OverflowError):
+            pass
     # 若含小数点，补充百分比形态（英文半角 % / 中文全角 ％ / 带空格 %）
     if "." in s:
         forms += [f"{s}%", f"{s}％", f"{s} %"]
     return forms
 
 
-def validate_numeric_grounding(dp: dict, text: str) -> bool:
+def validate_numeric_grounding(dp: dict, text: str, extra_values: list | None = None) -> bool:
     """数值回验：提取出的关键数值必须在原文中可定位。
 
     对 dp 中的 positivity_rate / gmc_value / sample_size 每个存在且非空的数值，
     格式化成多种形态（如 84.3 → ["84.3", "84.3%", "84.3％", "84.3 %"]），
-    任一形态能在 dp 的 source_context 或全文 text 中被找到（简单 in 判断）即视为
-    该数值 grounded。所有存在的关键数值都 grounded 才返回 True，否则 False。
+    任一形态能在 dp 的 source_context 或全文 text 中被找到即视为 grounded。
+    所有存在的关键数值都 grounded 才返回 True，否则 False。
 
     无任何待回验数值时返回 True（不因缺少数值而降级）。
+
+    P0-1：extra_values 可传入换算前的原始数值（如 mIU → IU 换算前的 965），
+    这些原始值的形态会并入每个 key 的 forms 列表——即该 key 的当前值 OR 原始值
+    任一能在原文定位即通过，避免单位换算后数值（0.965）与原文（965）不匹配。
+
+    P0-4：用正则数字边界 (?<![0-9.]) / (?![0-9]) 替代朴素 ``in``，
+    避免 "84.3" 被 "184.35" 误命中；同时支持千分位形式的整数匹配。
     """
     if not dp:
         return True
@@ -302,19 +319,33 @@ def validate_numeric_grounding(dp: dict, text: str) -> bool:
     source_context = dp.get("source_context") or ""
     haystacks = [t for t in (source_context, text) if t]
 
+    # P0-1：预计算 extra_values 的所有 forms
+    extra_forms: list[str] = []
+    if extra_values:
+        for val in extra_values:
+            extra_forms.extend(_numeric_grounding_forms(val))
+
     for key in _NUMERIC_GROUNDING_KEYS:
         forms = _numeric_grounding_forms(dp.get(key))
-        if not forms:
+        if not forms and not extra_forms:
             continue
+        # P0-1：把 extra_forms 并入回验集合
+        all_forms = list(forms) + extra_forms
+        # P0-4：边界感知匹配——form 前后不能跟其他数字/小数点，
+        # 但允许后跟 %、％、空格、汉字等（lookahead 仅拦截 [0-9]）
         if not any(
-            any(form in haystack for form in forms)
+            any(
+                re.search(rf"(?<![0-9.]){re.escape(form)}(?![0-9])", haystack)
+                for form in all_forms
+            )
             for haystack in haystacks
         ):
             logger.warning(
                 f"[grounding] 数值回验失败: {key}={dp.get(key)!r} 未能在原文中定位 "
-                f"(forms={forms})"
+                f"(forms={forms}, extra={extra_forms})"
             )
             return False
+
     return True
 
 
@@ -388,7 +419,11 @@ def ground_extraction(
     # P2-4：字符级 grounding 之后做数值回验——关键数值必须在原文中可定位。
     # 回验失败 → 标记为未 grounded + 低置信（即使字符级片段匹配上了）。
     item = extract_item if isinstance(extract_item, dict) else {}
-    if not validate_numeric_grounding(item, source_text):
+    # P0-1：把换算前的原始 gmc 值（如 965 mIU）也纳入回验，
+    # 避免换算后的 0.965 与原文 965 不匹配导致回验必失败。
+    _raw_gmc = item.get("_gmc_value_raw")
+    _extra = [_raw_gmc] if _raw_gmc is not None else None
+    if not validate_numeric_grounding(item, source_text, extra_values=_extra):
         res.is_grounded = False
         if isinstance(extract_item, dict):
             extract_item["is_grounded"] = False
@@ -415,6 +450,8 @@ class ValidationFlags:
     review_status_valid: bool = False
     value_range_valid: bool = True
     grounded: bool = False  # not strictly schema, but used to downgrade
+    # F-6: LLM 可能把 percent 写成 0-1 fraction (e.g. 0.9 means 90%)
+    suspected_fraction: bool = False
 
     @property
     def schema_issues(self) -> list[str]:
@@ -429,6 +466,8 @@ class ValidationFlags:
             issues.append("review_status_invalid")
         if not self.value_range_valid:
             issues.append("value_out_of_range")
+        if self.suspected_fraction:
+            issues.append("suspected_fraction")
         return issues
 
     @property
@@ -579,6 +618,20 @@ def validate_extraction_schema(
     gmc_ok = validate_value_range(item.get("gmc_value"), "gmc")
     _issues = _sanitize_unreasonable_values(item)
     flags.value_range_valid = (pr_ok and gmc_ok and "value_out_of_range" not in _issues)
+
+    # F-6: 0<positivity_rate<1 是"疑似比例值"（LLM 可能把 90% 写成 0.9）
+    _pr = item.get("positivity_rate")
+    if _pr is not None:
+        try:
+            _pr_f = float(_pr)
+            if 0.0 < _pr_f < 1.0:
+                flags.suspected_fraction = True
+                logger.warning(
+                    f"[validation] positivity_rate={_pr_f} 在 0-1 之间，疑似比例值；"
+                    f"按约定应为 0-100 百分数，请人工复核"
+                )
+        except (TypeError, ValueError):
+            pass
     if not flags.value_range_valid:
         logger.warning(
             f"[validation] value out of range / unreasonable: "

@@ -77,8 +77,10 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     container_name: antibody-backend
+    # S-3：仅宿主机本机绑定 backend 端口，局域网访问须经 nginx 8080 统一入口。
+    # nginx 通过容器间网络访问 backend:8000，不受此限制。
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     environment:

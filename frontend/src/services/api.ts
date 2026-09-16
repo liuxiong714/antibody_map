@@ -172,6 +172,11 @@ api.interceptors.response.use(
       handleAuthFailure();
     }
 
+    // 请求被取消（AbortController / 页面切换）：正常行为，不打 error 日志
+    if (error.code === 'ERR_CANCELED' || axios.isCancel(error)) {
+      return Promise.reject(error);
+    }
+
     const msg = resolveApiErrorMessage(error.response?.data, error.message || '请求失败');
     console.error('[API Error]', msg, error.response?.status, error.response?.data);
     return Promise.reject(error);

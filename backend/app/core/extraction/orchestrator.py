@@ -237,24 +237,66 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
 
     @staticmethod
     def _deduplicate_points(points: list[dict]) -> list[dict]:
-        """P2：合并去重 — 基于 disease+province+data_type+value 的组合去重"""
+        """P2/P0-3：合并去重 — 基于多字段组合 key 精确去重。
+
+        旧 key: disease|province|city|age_min|age_max|sero:{value}
+          缺少 data_kind/antibody_type/detection_method/sample_year → 同年同省同年龄组、
+          不同检测方法但恰好同值的两个真实点会被误删。
+
+        新 key (P0-3): disease|province|city|sample_year|age_min|age_max|
+                       antibody_type|detection_method|data_kind|{value:.6g}
+
+        - antibody_type / detection_method / sample_year 取 p.get(...) 做空值归一
+          (None→""，字符串 strip)
+        - data_kind = "sero"/"gmc"/"other"（沿用旧逻辑）
+        - 数值用 ``f"{float(v):.6g}"`` 格式化：避免 87.30 与 87.3 字符串不同漏去重；
+          整型（如 sample_size）也能正确格式化
+        """
+        def _norm_str(val) -> str:
+            if val is None:
+                return ""
+            s = str(val).strip()
+            return s
+
+        def _fmt_num(val) -> str:
+            """数值统一格式化：87.30 → "87.3"，965 → "965"，0.965 → "0.965"。"""
+            if val is None:
+                return ""
+            try:
+                return f"{float(val):.6g}"
+            except (TypeError, ValueError):
+                return _norm_str(val)
+
         seen: set[str] = set()
         unique: list[dict] = []
         for p in points:
-            # 构造去重 key：疾病+省份+数据类型+数值
-            disease = (p.get("disease_name") or "").strip()
-            province = (p.get("province") or "").strip()
-            city = (p.get("city") or "").strip()
-            age_min = p.get("age_min")
-            age_max = p.get("age_max")
-            if p.get("positivity_rate") is not None:
-                key_val = f"sero:{p.get('positivity_rate')}"
-            elif p.get("gmc_value") is not None:
-                key_val = f"gmc:{p.get('gmc_value')}"
-            else:
-                key_val = f"other:{p.get('detection_method', '')}"
+            # 空值归一化的标准字段
+            disease = _norm_str(p.get("disease_name"))
+            province = _norm_str(p.get("province"))
+            city = _norm_str(p.get("city"))
+            sample_year = _norm_str(p.get("sample_year"))
+            antibody_type = _norm_str(p.get("antibody_type"))
+            detection_method = _norm_str(p.get("detection_method"))
 
-            key = f"{disease}|{province}|{city}|{age_min}|{age_max}|{key_val}"
+            # 数值与 data_kind 判定（沿用旧逻辑，仅扩充精度）
+            age_min = p.get("age_min") if p.get("age_min") is not None else ""
+            age_max = p.get("age_max") if p.get("age_max") is not None else ""
+            if p.get("positivity_rate") is not None:
+                data_kind = "sero"
+                val_str = _fmt_num(p.get("positivity_rate"))
+            elif p.get("gmc_value") is not None:
+                data_kind = "gmc"
+                val_str = _fmt_num(p.get("gmc_value"))
+            else:
+                data_kind = "other"
+                val_str = _fmt_num(p.get("sample_size"))
+
+            key = (
+                f"{disease}|{province}|{city}|{sample_year}|"
+                f"{age_min}|{age_max}|"
+                f"{antibody_type}|{detection_method}|"
+                f"{data_kind}|{val_str}"
+            )
             if key not in seen:
                 seen.add(key)
                 unique.append(p)

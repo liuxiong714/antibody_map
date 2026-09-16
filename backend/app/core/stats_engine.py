@@ -22,7 +22,10 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
+import logging
 import numpy as np
+
+logger = logging.getLogger(__name__)
 import scipy.stats as sps
 from scipy.interpolate import BSpline
 from scipy.optimize import brentq, minimize
@@ -62,18 +65,29 @@ def _get(row: Any, key: str) -> Any:
 
 
 def _as_percent(p: Any) -> float | None:
-    """把可能为百分数（>1）或 0-1 比例的输入归一为 0-1 比例；非法返回 None。"""
+    """把 value 字段（约定恒为 0-100 百分数）转为 0-1 比例；非法返回 None。
+
+    F-6 口径统一：DataPoint.value 约定恒为 0-100 百分数（如 87.3 表示 87.3%），
+    不再根据 p>1 猜测/兼容 0-1 比例。0<p<1 的点应视为数据可疑，打 warning 让
+    人工复核（这些点 LLM 可能输出了 0.9 本意是 90%，但按新约定会变成 0.009）。
+    """
     if p is None:
         return None
     try:
         p = float(p)
     except (TypeError, ValueError):
         return None
-    if p > 1.0:
-        p = p / 100.0
-    if p < 0.0 or p > 1.0:
+    if p < 0.0 or p > 100.0:
+        logger.warning(f"[stats_engine] _as_percent 越界值 {p!r}，丢弃")
         return None
-    return p
+    # F-6：无条件除 100；0<p<1 打 warning 但保持原值返回（兼容旧数据）
+    if 0.0 < p < 1.0:
+        logger.warning(
+            f"[stats_engine] _as_percent 收到 0<p<1 的值 p={p}，按新口径应为百分数；"
+            f"请人工复核该点到底是比例值还是百分数"
+        )
+        return p
+    return p / 100.0
 
 
 # ============================================================
@@ -126,12 +140,20 @@ def weighted_rate_ci(rows: Sequence[Any], z: float = 1.96) -> dict:
 
     - rows: 每行须含 value（阳性率，0-1 或百分数均可）与 sample_size。
     - 保守起见：任一行 sample_size 缺失或 ≤0 → 该行剔除并计入 ``n_dropped``。
-    - 返回 ``{weighted_positivity, ci_lower, ci_upper, n_total, n_dropped, method}``，
-      三个比例字段均为百分数（×100，保留 2 位小数）；无有效行时均为 None。
+    - P0-2：truncation 截断值（"<"/">"）不参与聚合，计入 ``n_truncation_skipped``。
+      截断值表达的是区间边界（如 ">80" 表示 ≥80），不应按精确值 80 参与加权。
+    - 返回 ``{weighted_positivity, ci_lower, ci_upper, n_total, n_dropped,
+      n_truncation_skipped, method}``，三个比例字段均为百分数（×100，保留 2 位小数）；
+      无有效行时均为 None。
     """
     pairs: list[tuple[float, float]] = []  # (p, n)
     dropped = 0
+    trunc_skipped = 0
     for row in rows:
+        # P0-2：截断值不参与加权聚合
+        if _get(row, "truncation") is not None:
+            trunc_skipped += 1
+            continue
         p = _as_percent(_get(row, "value"))
         if p is None:
             continue
@@ -156,6 +178,7 @@ def weighted_rate_ci(rows: Sequence[Any], z: float = 1.96) -> dict:
             "ci_upper": None,
             "n_total": 0,
             "n_dropped": dropped,
+            "n_truncation_skipped": trunc_skipped,
             "method": "normal_approx",
         }
 
@@ -172,6 +195,7 @@ def weighted_rate_ci(rows: Sequence[Any], z: float = 1.96) -> dict:
         "ci_upper": round(hi * 100, 2),
         "n_total": round(w_sum),
         "n_dropped": dropped,
+        "n_truncation_skipped": trunc_skipped,
         "method": "normal_approx",
     }
 

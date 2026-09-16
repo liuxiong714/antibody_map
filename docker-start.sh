@@ -24,13 +24,14 @@ elif command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null; then
 fi
 
 # ---- 构建 compose 命令 ----
+# 基础 compose 已默认 CPU-only；GPU 通过 docker-compose.gpu.yml 追加
 COMPOSE_FILES="-f docker-compose.yml"
 
 if [ "$GPU_ENABLED" = "1" ]; then
-    echo "✅ 检测到 NVIDIA GPU，使用 GPU 模式启动 worker"
+    echo "✅ 检测到 NVIDIA GPU，追加 GPU overlay"
+    COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.gpu.yml"
 else
-    echo "⚠️  未检测到 NVIDIA GPU，自动退回 CPU 模式"
-    COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.cpu.yml"
+    echo "⚠️  未检测到 NVIDIA GPU，使用默认 CPU 模式"
 fi
 
 # ---- 执行 ----

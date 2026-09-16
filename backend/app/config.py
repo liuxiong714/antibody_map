@@ -259,7 +259,29 @@ class Settings(BaseSettings):
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
     APP_VERSION: str = _detect_version()
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    # S-4：CORS credentials 开关（硬编码 allow_credentials=True 不安全）
+    # model_validator 会在 CORS_ORIGINS 包含 "*" 时强制置 False，避免浏览器拒绝
+    # "Access-Control-Allow-Origin: *" 与 "Access-Control-Allow-Credentials: true" 同时出现。
+    CORS_ALLOW_CREDENTIALS: bool = True
     MAX_UPLOAD_SIZE: int = 52428800
+
+    @model_validator(mode="after")
+    def _cors_star_credentials_safety(self) -> "Settings":
+        """S-4：CORS_ORIGINS 含 '*' 时强制 CORS_ALLOW_CREDENTIALS=False。
+
+        浏览器 CORS 规范禁止同时发 allow_origins="*" + allow_credentials=true，
+        uvicorn/fastapi 不会报错但浏览器直接拒绝。此 validator 在启动期即阻断。
+        """
+        if "*" in self.CORS_ORIGINS and self.CORS_ALLOW_CREDENTIALS:
+            import warnings
+            warnings.warn(
+                "CORS_ORIGINS 含 '*' 时 CORS_ALLOW_CREDENTIALS 会被浏览器拒绝，"
+                "已强制置 False。请改用具体域名列表（如 ['https://yourdomain.com'] ）"
+                "以恢复 credentials 支持。"
+            )
+            self.CORS_ALLOW_CREDENTIALS = False
+        return self
+
     # 提取状态卡死阈值（分钟）：processing/queued 超过此时间未变，列表查询时自动重置为 failed
     # 2026-09-06 调优：本地 qwen3.8:27b 单篇提取（含重试）可达 20-40 分钟，30 分钟阈值会把
     # 正常排队/长任务误判为卡死批量重置，导致失败率虚高。调至 180 以覆盖本地模型单篇时长。

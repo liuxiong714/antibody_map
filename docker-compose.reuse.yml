@@ -1,0 +1,79 @@
+# ============================================================
+# 本地快速启动覆盖文件（复用旧镜像 + 旧数据卷）
+# 背景：全新 clone(antibody_map) 缺少 gitignore 的 build 输入
+# (backend/wheels、backend/caj2pdf_cache)，无法镜像构建。
+# 本文件：backend/worker/frontend 直接用旧镜像(已 tag 为本项目名)，
+# 范式数据卷复用旧项目 antibody_map01_* 保留真实数据；并为旧镜像
+# 放宽容器加固(旧镜像未经 read_only 设计)，worker 走 CPU(无 GPU)。
+# 用法：MONITORED_REF_HOST_PATH=... docker compose -f docker-compose.yml \
+#       -f docker-compose.reuse.yml up -d  # 注意：勿再追加 docker-compose.cpu.yml
+# ============================================================
+services:
+  postgres:
+    container_name: antibody-postgres
+    volumes:
+      # 复用旧项目真实数据卷（外部已存在）
+      - antibody_map01_postgres_data:/var/lib/postgresql/data
+      # 保留 schema 初始化脚本挂载（当前路径已存在，仅首次空卷时执行）
+      - ./backend/scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+
+  redis:
+    container_name: antibody-redis
+    volumes:
+      - antibody_map01_redis_data:/data
+
+  minio:
+    container_name: antibody-minio
+    volumes:
+      - antibody_map01_minio_data:/data
+
+  prometheus:
+    container_name: antibody-prometheus
+    volumes:
+      - antibody_map01_prometheus_data:/prometheus
+
+  grafana:
+    container_name: antibody-grafana
+    volumes:
+      - antibody_map01_grafana_data:/var/lib/grafana
+
+  backend:
+    image: antibody_map-backend:latest
+    # 旧镜像未针对 read_only/剥离能力 设计，放宽避免运行时写失败
+    read_only: false
+    cap_drop: []
+    # 旧镜像未安装 curl，新 compose 的健康检查命令不可用，改用 python 探测
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    image: antibody_map-worker:latest
+    read_only: false
+    cap_drop: []
+    environment:
+      # 新 compose 里 worker 沿用 .env 的 DATABASE_URL(localhost)，
+      # 容器内 localhost 指向自身，纠正为 postgres 服务名
+      DATABASE_URL: postgresql+asyncpg://antibody:${POSTGRES_PASSWORD}@postgres:5432/antibody_map
+
+  frontend:
+    image: antibody_map-frontend:latest
+    read_only: false
+    cap_drop: []
+
+volumes:
+  antibody_map01_postgres_data:
+    external: true
+  antibody_map01_redis_data:
+    external: true
+  antibody_map01_minio_data:
+    external: true
+  antibody_map01_prometheus_data:
+    external: true
+  antibody_map01_grafana_data:
+    external: true

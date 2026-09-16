@@ -153,9 +153,14 @@ def _calc_weighted_positivity(rows: list[DataPoint]) -> dict:
 
     调用 stats_engine.weighted_rate_ci（样本量加权，保守正态近似，
     任一行 sample_size 缺失则剔除并计入 dropped）。
-    返回 ``{weighted_positivity, ci_lower, ci_upper, total_sample}``（阳性率为百分数 0-100）；
+    返回 ``{weighted_positivity, ci_lower, ci_upper, total_sample,
+    n_truncation_skipped}``（阳性率为百分数 0-100）；
     无有效数据时各字段为 None，total_sample 为 0。
+
+    P0-2：truncation 截断值（"<"/">"）已在 weighted_rate_ci 中跳过，
+    结果中 ``n_truncation_skipped`` 透传自 stats_engine。
     """
+    # P0-2：先按 data_type/value 过滤，truncation 由 stats_engine 再过滤一次
     sp_rows = [r for r in rows if r.data_type == "seroprevalence" and r.value is not None]
     result = weighted_rate_ci(sp_rows)
     return {
@@ -163,6 +168,7 @@ def _calc_weighted_positivity(rows: list[DataPoint]) -> dict:
         "ci_lower": result["ci_lower"],
         "ci_upper": result["ci_upper"],
         "total_sample": result["n_total"],
+        "n_truncation_skipped": result.get("n_truncation_skipped", 0),
     }
 
 
@@ -172,8 +178,15 @@ def _calc_gmc(rows: list[DataPoint]) -> dict:
     调用 stats_engine.gmc_ci：对同组多个 GMC 值（已计算好的几何均值，非原始滴度）
     取对数平均 gmc = exp(mean(ln v))，样本量作权重，CI 按 ln v 的标准误构建。
     返回 ``{gmc, ci_lower, ci_upper, n, n_total}``；无有效数据时各字段为 None。
+
+    P0-2：truncation 截断值（"<"/">"）不参与 GMC 聚合——截断值表示区间边界，
+    不应按精确值计算几何均数。
     """
-    gmc_rows = [r for r in rows if r.data_type == "gmc" and r.value is not None]
+    # P0-2：追加 truncation is None 过滤（getattr 兼容 mock/ORM/dict）
+    gmc_rows = [
+        r for r in rows
+        if r.data_type == "gmc" and r.value is not None and getattr(r, "truncation", None) is None
+    ]
     res = gmc_ci(
         [r.value for r in gmc_rows],
         weights=[r.sample_size for r in gmc_rows],
@@ -194,14 +207,22 @@ def _meta_merge_cell(rows: list[DataPoint]) -> dict:
     作为研究单元调用 ``meta_proportion`` 合并。保留旧样本量加权值于
     ``rate_weighted_legacy``（@deprecated，仅用于与 meta 口径比对）。
 
+    P0-2：truncation 截断值（"<"/">"）不参与 Meta 合并——截断值表达的是
+    区间边界（如 ">80" 表示 ≥80），不应按精确值作为独立研究纳入合并。
+
     返回 ``{positivity, ci_lower, ci_upper, rate_weighted_legacy, total_sample, meta}``：
     - positivity / ci_lower / ci_upper: Meta 合并阳性率与 95% CI（0-100，主模型）；
-    - rate_weighted_legacy: 旧样本量加权阳性率（@deprecated）；
+    - rate_weighted_legacy: 旧样本量加权阳性率（@deprecated，仅用于与 meta 口径比对）；
     - total_sample: 有效研究样本量之和；
     - meta: {model, primary_model, I2, Q, Q_p, tau2, k, n_rep} 或 None（无有效研究）。
     无有效研究时阳性率字段为 None。
     """
-    sp_rows = [r for r in rows if r.data_type == "seroprevalence" and r.value is not None]
+    # P0-2：过滤 truncation 截断值（getattr 兼容 mock/ORM/dict）
+    sp_rows = [
+        r for r in rows
+        if r.data_type == "seroprevalence" and r.value is not None
+        and getattr(r, "truncation", None) is None
+    ]
 
     # 旧口径：样本量加权阳性率（@deprecated，仅保留用于比对）
     legacy = weighted_rate_ci(sp_rows)
@@ -211,7 +232,17 @@ def _meta_merge_cell(rows: list[DataPoint]) -> dict:
     for r in sp_rows:
         if not r.sample_size:
             continue
-        p = float(r.value) / 100.0 if float(r.value) > 1.0 else float(r.value)
+        raw_v = float(r.value)
+        if raw_v < 0.0 or raw_v > 100.0:
+            continue  # 非法范围跳过
+        # F-6：无条件 /100（value 约定恒为百分数）
+        p = raw_v / 100.0
+        if 0.0 < raw_v < 1.0:
+            import logging as _l
+            _l.getLogger(__name__).warning(
+                f"[_meta_merge_cell] 收到 0<value<1 的点 value={raw_v}，"
+                f"按新口径当作百分数；请人工复核"
+            )
         n = float(r.sample_size)
         if p < 0.0 or p > 1.0 or n <= 0:
             continue
@@ -264,7 +295,17 @@ def _compute_province_asr(group_rows: list[DataPoint]) -> dict:
     for r in group_rows:
         if r.data_type != "seroprevalence" or r.value is None:
             continue
-        p = float(r.value) / 100.0 if float(r.value) > 1.0 else float(r.value)
+        raw_v = float(r.value)
+        if raw_v < 0.0 or raw_v > 100.0:
+            continue  # 非法范围跳过
+        # F-6：无条件 /100（value 约定恒为百分数）
+        p = raw_v / 100.0
+        if 0.0 < raw_v < 1.0:
+            import logging as _l
+            _l.getLogger(__name__).warning(
+                f"[_meta_merge_cell] 收到 0<value<1 的点 value={raw_v}，"
+                f"按新口径当作百分数；请人工复核"
+            )
         if p < 0.0 or p > 1.0 or not r.sample_size or r.sample_size <= 0:
             continue
         n = float(r.sample_size)

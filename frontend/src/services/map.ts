@@ -484,3 +484,32 @@ export async function getAntigenicMap(titerTableId: string) {
   const { data } = await api.get<AntigenicMapData>(`/analysis/antigenic-map/${titerTableId}`);
   return data;
 }
+
+// ===== F-1：带 JWT 的数据点 CSV 导出（替代 window.open 裸跳转） =====
+
+/** 导出地图数据点为 CSV 文件（带 JWT 认证，经浏览器自动触发保存）。 */
+export async function exportDataPointsCsv(params: Record<string, unknown>): Promise<void> {
+  const resp = await api.get<Blob>('/map/export-data-points', { params, responseType: 'blob' });
+  const blob = resp.data as Blob;
+
+  let filename = '';
+  const cd =
+    (resp.headers?.['content-disposition'] || (resp.headers as any)?.['Content-Disposition'] || '') as string;
+  const utf8Match = cd.match(/filename\*=utf-8''([^;]+)/i);
+  if (utf8Match) {
+    filename = decodeURIComponent(utf8Match[1]);
+  } else {
+    const plainMatch = cd.match(/filename="?([^"]+)"?/i);
+    if (plainMatch) filename = plainMatch[1];
+  }
+  if (!filename) filename = `data_points_${new Date().toISOString().slice(0, 10)}.csv`;
+
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+}

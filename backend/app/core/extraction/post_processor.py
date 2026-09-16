@@ -107,10 +107,11 @@ class PostProcessorMixin:
 
     # F19：GMC 单位统一换算表（换算系数 = 目标 IU/ml 倍数）。
     # 1 IU = 1000 mIU，故 mIU/ml → IU/ml 需 ÷1000。
-    # 类级共享常量映射，仅读取不修改。
+    # key 为 re.sub(r"[^a-zA-Z0-9]", "", unit).lower() 后的结果，
+    # 即去掉分隔符的纯字母数字形态。
     _GMC_UNIT_CONVERSION: dict[str, float] = {  # noqa: RUF012
-        "miu/ml": 1 / 1000.0,
-        "miu/l": 1 / 1000.0,
+        "miuml": 1 / 1000.0,
+        "miul": 1 / 1000.0,
         "miuperml": 1 / 1000.0,
     }
 
@@ -150,7 +151,11 @@ class PostProcessorMixin:
     def _parse_ci_string(val) -> tuple[float | None, float | None]:
         """从 CI 字符串解析 (lower, upper)。
 
-        支持：'(95% CI 16.2%–19.5%)'、'95%CI: 16.2-19.5'、'[16.2, 19.5]' 等。
+        F-7：优先用显式区间分隔符（- – ~ 至 到）匹配第一对数字，
+        仅当失败才回退到"最后两个数字"的宽松逻辑（用于逗号分隔场景）。
+
+        支持：'(95% CI 16.2%–19.5%)'、'95%CI: 16.2-19.5'、'[16.2, 19.5]'、
+              '(95% CI 16.2-19.5, P<0.05)' 等（最后这种若用旧逻辑会吃到 "0.05"）。
         无法解析返回 (None, None)。
         """
         if val is None:
@@ -158,8 +163,16 @@ class PostProcessorMixin:
         t = str(val)
         # 移除置信水平前缀（95%/90%/95%CI 等）
         t = re.sub(r"9[05]\s*%?\s*(CI)?", "", t, flags=re.IGNORECASE)
-        t = t.replace("%", "").replace("％", "")
-        nums = re.findall(r"-?\d+(?:\.\d+)?", t)
+        t_clean = t.replace("%", "").replace("％", "")
+
+        # F-7 优先：显式区间分隔符（短横线 / 波浪 / 汉字 至 到）
+        m = re.search(r"(-?\d+(?:\.\d+)?)\s*[-–~至到]\s*(-?\d+(?:\.\d+)?)", t_clean)
+        if m:
+            lo, hi = float(m.group(1)), float(m.group(2))
+            return min(lo, hi), max(lo, hi)
+
+        # 回退：宽松找所有数字取最后两个（用于逗号分隔 / 括号嵌套）
+        nums = re.findall(r"-?\d+(?:\.\d+)?", t_clean)
         if len(nums) >= 2:
             vals = [float(n) for n in nums[-2:]]
             return min(vals), max(vals)
@@ -361,10 +374,14 @@ class PostProcessorMixin:
 
             # F19：GMC 单位统一换算（mIU/ml → IU/ml，÷1000）。
             # 换算后 gmc_unit 统一为 IU/ml，避免同文献/跨文献 mIU 与 IU 混用导致统计失真。
+            # P0-1：换算前先保存原始值，供 grounding 回验时在原文定位 mIU 数值
+            # （否则换算后 0.965 与原文 965 不匹配，grounding 必然失败）。
             if dp.get("gmc_value") is not None and dp.get("gmc_unit"):
                 _key = re.sub(r"[^a-zA-Z0-9]", "", str(dp["gmc_unit"])).lower()
                 _factor = self._GMC_UNIT_CONVERSION.get(_key)
                 if _factor is not None:
+                    dp["_gmc_value_raw"] = dp["gmc_value"]
+                    dp["_gmc_unit_raw"] = dp["gmc_unit"]
                     dp["gmc_value"] = round(dp["gmc_value"] * _factor, 4)
                     dp["gmc_unit"] = "IU/ml"
 

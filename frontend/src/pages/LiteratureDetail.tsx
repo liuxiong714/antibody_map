@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+﻿import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip, Switch, Typography, Alert,
@@ -10,6 +10,7 @@ import StatusBadge from '../components/StatusBadge';
 import QualityBadge from '../components/QualityBadge';
 import {
   getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText, confirmDataPoints, disputeDataPoints, deleteLiterature, listLiterature,
+  exportExtractionCsv, exportTraceabilityHtml, exportExtractionWord,
 } from '../services/literature';
 import PdfViewer from '../components/PdfViewer';
 import FilePreview from '../components/FilePreview';
@@ -19,6 +20,7 @@ import type { Literature, DataPoint, ExtractionStatusWithUsage } from '../types'
 import type { ExtractionHistoryItem } from '../services/literature';
 import dayjs from 'dayjs';
 import { clearAnalysisApiCache, clearMapApiCache } from '../services/map';
+import { usePolling } from '../hooks/usePolling';
 
 const { Text } = Typography;
 
@@ -34,7 +36,9 @@ const LiteratureDetail: React.FC = () => {
   const [reviewNote, setReviewNote] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [modalAction, setModalAction] = useState<'approved' | 'rejected'>('approved');
-  const intervalRef = useRef<number | null>(null);
+  // F-2：统一轮询 hook 取代手动 intervalRef（组件卸载自动清理）
+  // tick 内闭包捕获 id（URL 稳定），所以用 ref cache 最新值就够了
+  const metadataSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [extractModalOpen, setExtractModalOpen] = useState(false);
   const [extractModel, setExtractModel] = useState<string | undefined>(undefined);
   const [extractApiKey, setExtractApiKey] = useState('');
@@ -308,7 +312,7 @@ const LiteratureDetail: React.FC = () => {
 
   // 排查页码丢失问题：记录进入详情页时的来源上下文
   useEffect(() => {
-    console.log('[文献详情] 详情页挂载', {
+    if (import.meta.env.DEV) console.debug('[文献详情] 详情页挂载', {
       id,
       // 存在备份状态说明是从列表页点击进入（返回列表时应恢复页码）
       hasBackState: sessionStorage.getItem('literature_list_back_state') !== null,
@@ -345,7 +349,7 @@ const LiteratureDetail: React.FC = () => {
         if (uniqueProvinces.length === 1) {
           updates.region = topProvince;
         }
-        console.log(`[Sync] 省份: ${topProvince} (${count} 个数据点支持, 共 ${provinceCounts.size} 个不同省份)`);
+        if (import.meta.env.DEV) console.debug(`[Sync] 省份: ${topProvince} (${count} 个数据点支持, 共 ${provinceCounts.size} 个不同省份)`);
       }
     }
 
@@ -365,7 +369,7 @@ const LiteratureDetail: React.FC = () => {
         });
         const [topYear, count] = sortedYears[0];
         updates.pub_year = topYear;
-        console.log(`[Sync] 年份: ${topYear} (${count} 个数据点支持, 共 ${yearCounts.size} 个不同年份)`);
+        if (import.meta.env.DEV) console.debug(`[Sync] 年份: ${topYear} (${count} 个数据点支持, 共 ${yearCounts.size} 个不同年份)`);
       }
     }
 
@@ -417,6 +421,62 @@ const LiteratureDetail: React.FC = () => {
     });
   }, [literature, dataPoints, syncMetadataFromDataPoints]);
 
+  // F-2：统一轮询 hook —— 替换手写 intervalRef，组件卸载自动清理 + 404 容错
+  const pollExtraction = useCallback(async () => {
+    if (!id) return;
+    const fresh = await getLiterature(id);
+    setLiterature(fresh);
+
+    if (fresh.extraction_status === 'processing' || fresh.extraction_status === 'queued') {
+      return; // continue polling
+    }
+
+    // 终态
+    if (fresh.extraction_status === 'done') {
+      getExtractionResults(id).then((ext) => {
+        setDataPoints((ext as { data_points?: DataPoint[] })?.data_points || []);
+      }).catch(() => {});
+      let usageSuffix = '';
+      if (showUsageOnComplete) {
+        try {
+          const status = await getExtractionStatus(id);
+          setLastUsage(status);
+          if (status && status.total_tokens > 0) {
+            usageSuffix = `，消耗 ${status.total_tokens.toLocaleString()} tokens (${status.llm_model_used || '未知模型'}，约 $${status.llm_cost_usd.toFixed(4)})`;
+          }
+        } catch (e) {
+          console.warn('[LiteratureDetail] 获取 token 用量失败:', e);
+        }
+      }
+      message.success(`提取完成，共提取 ${fresh.extracted_count} 个数据点${usageSuffix}`);
+      if (metadataSyncTimeoutRef.current) clearTimeout(metadataSyncTimeoutRef.current);
+      metadataSyncTimeoutRef.current = setTimeout(() => {
+        syncMetadataFromDataPoints(false).then((updates) => {
+          if (updates) {
+            const parts: string[] = [];
+            if (updates.province) parts.push(`省份=${updates.province}`);
+            if (updates.pub_year) parts.push(`年份=${updates.pub_year}`);
+            if (parts.length > 0) message.success(`自动同步: ${parts.join(', ')}`);
+          }
+        }).catch(() => {});
+      }, 500);
+    } else if (fresh.extraction_status === 'failed') {
+      message.error('提取失败，请重试');
+    }
+  }, [id, showUsageOnComplete, syncMetadataFromDataPoints]);
+
+  const { start: startExtractionPolling, stop: stopExtractionPolling } = usePolling(pollExtraction, {
+    intervalMs: 3000,
+    maxAttempts: 200,
+    shouldStop: () => {
+      const st = literature?.extraction_status;
+      return st !== 'processing' && st !== 'queued' && st != null;
+    },
+    onGiveUp: (reason) => {
+      if (reason === 'maxAttempts') message.warning('提取轮询超时（10 分钟无响应），请刷新页面查看最新状态');
+    },
+  });
+
   const handleExtract = () => {
     setExtractModel(undefined);
     setExtractApiKey('');
@@ -451,56 +511,8 @@ const LiteratureDetail: React.FC = () => {
         await triggerExtraction(id, { model: '', clearExistingData });
       }
       message.success('AI 提取任务已提交，正在轮询进度...');
-      const poll = async () => {
-        try {
-          const fresh = await getLiterature(id);
-          if (fresh.extraction_status !== 'processing') {
-            if (intervalRef.current) {
-              clearInterval(intervalRef.current);
-              intervalRef.current = null;
-            }
-            setLiterature(fresh);
-            if (fresh.extraction_status === 'done') {
-              // 重新拉取数据点
-              getExtractionResults(id).then((ext) => {
-                setDataPoints((ext as { data_points?: DataPoint[] })?.data_points || []);
-              }).catch(() => {});
-              // 若启用了"显示提取消耗"，拉取 token 用量并展示
-              let usageSuffix = '';
-              if (showUsageOnComplete) {
-                try {
-                  const status = await getExtractionStatus(id);
-                  setLastUsage(status);
-                  if (status && status.total_tokens > 0) {
-                    usageSuffix = `，消耗 ${status.total_tokens.toLocaleString()} tokens (${status.llm_model_used || '未知模型'}，约 $${status.llm_cost_usd.toFixed(4)})`;
-                  }
-                } catch (e) {
-                  console.warn('[LiteratureDetail] 获取 token 用量失败:', e);
-                }
-              }
-              message.success(`提取完成，共提取 ${fresh.extracted_count} 个数据点${usageSuffix}`);
-              // 提取完成后自动同步年份和省份
-              setTimeout(() => {
-                syncMetadataFromDataPoints(false).then((updates) => {
-                  if (updates) {
-                    const parts: string[] = [];
-                    if (updates.province) parts.push(`省份=${updates.province}`);
-                    if (updates.pub_year) parts.push(`年份=${updates.pub_year}`);
-                    if (parts.length > 0) {
-                      message.success(`自动同步: ${parts.join(', ')}`);
-                    }
-                  }
-                }).catch(() => {});
-              }, 500);
-            } else if (fresh.extraction_status === 'failed') {
-              message.error('提取失败，请重试');
-            }
-          }
-        } catch (e) {
-          console.error('[LiteratureDetail] 轮询提取状态失败:', e);
-        }
-      };
-      intervalRef.current = window.setInterval(poll, 3000);
+      // F-2：统一轮询 hook 启动 —— 先停旧轮询（幂等），再开始新的
+      startExtractionPolling();
     } catch (err) {
       console.error('[LiteratureDetail] 提取任务提交失败:', err);
       message.error('提取失败');
@@ -560,11 +572,13 @@ const LiteratureDetail: React.FC = () => {
     failed: { color: 'red', label: '失败' },
   };
 
+  // F-2：组件卸载时清理 metadataSyncTimeoutRef（polling hook 自己有卸载清理，
+  // 这里只处理额外的 setTimeout 防抖清理）
   useEffect(() => {
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
+      if (metadataSyncTimeoutRef.current) {
+        clearTimeout(metadataSyncTimeoutRef.current);
+        metadataSyncTimeoutRef.current = null;
       }
     };
   }, []);
@@ -971,7 +985,7 @@ const LiteratureDetail: React.FC = () => {
   return (
     <>
       <Button icon={<ArrowLeftOutlined />} onClick={() => {
-        console.log('[文献详情] 点击返回列表', {
+        if (import.meta.env.DEV) console.debug('[文献详情] 点击返回列表', {
           id,
           hasBackState: sessionStorage.getItem('literature_list_back_state') !== null,
         });
@@ -1369,21 +1383,51 @@ const LiteratureDetail: React.FC = () => {
                       </Button>
                       <Button
                         icon={<DownloadOutlined />}
-                        onClick={() => window.open(`/api/v1/literatures/${id}/extraction/export`)}
+                        onClick={async () => {
+                          const hide = message.loading('正在生成 CSV...', 0);
+                          try {
+                            await exportExtractionCsv(id!);
+                            message.success('CSV 已下载');
+                          } catch (e: any) {
+                            message.error(e?.response?.status === 401 ? '登录已过期，请重新登录' : 'CSV 导出失败');
+                          } finally {
+                            hide();
+                          }
+                        }}
                         disabled={dataPoints.length === 0}
                       >
                         导出 CSV
                       </Button>
                       <Button
                         icon={<DownloadOutlined />}
-                        onClick={() => window.open(`/api/v1/literatures/${id}/extraction/traceability-html`)}
+                        onClick={async () => {
+                          const hide = message.loading('正在生成溯源 HTML...', 0);
+                          try {
+                            await exportTraceabilityHtml(id!);
+                            message.success('溯源 HTML 已下载');
+                          } catch (e: any) {
+                            message.error(e?.response?.status === 401 ? '登录已过期，请重新登录' : '溯源 HTML 导出失败');
+                          } finally {
+                            hide();
+                          }
+                        }}
                         disabled={dataPoints.length === 0}
                       >
                         溯源 HTML
                       </Button>
                       <Button
                         icon={<FileTextOutlined />}
-                        onClick={() => window.open(`/api/v1/literatures/${id}/extraction/export-word`)}
+                        onClick={async () => {
+                          const hide = message.loading('正在生成 Word 报告...', 0);
+                          try {
+                            await exportExtractionWord(id!);
+                            message.success('Word 报告已下载');
+                          } catch (e: any) {
+                            message.error(e?.response?.status === 401 ? '登录已过期，请重新登录' : 'Word 导出失败');
+                          } finally {
+                            hide();
+                          }
+                        }}
                         disabled={dataPoints.length === 0}
                       >
                         导出 Word
@@ -1424,12 +1468,18 @@ const LiteratureDetail: React.FC = () => {
                     rowSelection={{
                       selectedRowKeys,
                       onChange: (keys) => setSelectedRowKeys(keys),
+                      // F-4：跨页保留选中——翻页后之前勾的还在，批量审核不受分页影响
+                      preserveSelectedRowKeys: true,
                       getCheckboxProps: (r: DataPoint) => ({
-                        // 允许勾选任意状态的数据点（含已审核）进行批量通过/驳回，便于改判/重审；仅正在编辑的行禁用
                         disabled: isEditing(r),
                       }),
                     }}
-                    pagination={false}
+                    pagination={{
+                      pageSize: 50,
+                      showSizeChanger: true,
+                      pageSizeOptions: ['20', '50', '100'],
+                      showTotal: (total, range) => `${range[0]}-${range[1]} / ${total}`,
+                    }}
                   />
                 </Card>
               </div>

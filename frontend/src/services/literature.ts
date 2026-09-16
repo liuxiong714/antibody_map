@@ -36,18 +36,20 @@ export async function openLiteratureFolder(id: string) {
 }
 
 /**
- * 下载文献文件（带 JWT 认证，经浏览器自动触发下载）。
- * 说明：不能用 window.open('/api/.../download') 裸跳转——后端要求 JWT，
- * 裸跳转不带 Authorization 头会返回 401。这里走 axios(自带 token) 取 blob 后触发下载。
+ * 下载后端返回的 blob 文件（带 JWT 认证，经浏览器自动触发保存）。
+ * 统一处理 Content-Disposition 文件名解析 + 兜底策略。
+ *
+ * 为什么不能用 window.open('/api/...') 裸跳转？
+ *   后端多数导出接口要求 JWT，裸跳转不带 Authorization 头会返回 401。
+ *   必须走 axios（拦截器自动加 Bearer token）取 blob 后触发保存。
  */
-export async function downloadLiteratureFile(id: string, title?: string) {
-  const resp = await api.get<Blob>(`/literatures/${id}/download`, {
-    responseType: 'blob',
-  });
-  const blob = resp.data as Blob;
-  // 优先从 Content-Disposition 解析服务器返回的文件名，其次用标题兜底
+function _triggerBlobDownload(
+  blob: Blob,
+  headers: Record<string, unknown> | undefined,
+  fallbackBase: string,
+) {
   let filename = '';
-  const cd = (resp.headers?.['content-disposition'] as string) || '';
+  const cd = (headers?.['content-disposition'] || (headers as any)?.['Content-Disposition'] || '') as string;
   const utf8Match = cd.match(/filename\*=utf-8''([^;]+)/i);
   if (utf8Match) {
     filename = decodeURIComponent(utf8Match[1]);
@@ -56,8 +58,8 @@ export async function downloadLiteratureFile(id: string, title?: string) {
     if (plainMatch) filename = plainMatch[1];
   }
   if (!filename) {
-    const base = (title || `literature_${id}`).replace(/[\\/:*?"<>|]+/g, '_');
-    filename = `${base}.${extFromContentType(blob.type)}`;
+    const base = fallbackBase.replace(/[\\/:*?"<>|]+/g, '_');
+    filename = `${base}.${_extFromContentType(blob.type)}`;
   }
 
   const url = window.URL.createObjectURL(blob);
@@ -70,17 +72,41 @@ export async function downloadLiteratureFile(id: string, title?: string) {
   window.URL.revokeObjectURL(url);
 }
 
-function extFromContentType(type: string): string {
+function _extFromContentType(type: string): string {
   const map: Record<string, string> = {
     'application/pdf': 'pdf',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
     'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
     'text/html': 'html',
+    'text/csv': 'csv',
     'text/plain': 'txt',
     'application/epub+zip': 'epub',
   };
   return map[type] || type.split('/')[1] || 'download';
+}
+
+/** 下载文献原始文件 */
+export async function downloadLiteratureFile(id: string, title?: string) {
+  const resp = await api.get<Blob>(`/literatures/${id}/download`, { responseType: 'blob' });
+  _triggerBlobDownload(resp.data as Blob, resp.headers, title || `literature_${id}`);
+}
+
+// ===== 文献详情页三个导出（F-1：替代裸 window.open 避免 401） =====
+
+export async function exportExtractionCsv(literatureId: string) {
+  const resp = await api.get<Blob>(`/literatures/${literatureId}/extraction/export`, { responseType: 'blob' });
+  _triggerBlobDownload(resp.data as Blob, resp.headers, `literature_${literatureId}_extraction`);
+}
+
+export async function exportTraceabilityHtml(literatureId: string) {
+  const resp = await api.get<Blob>(`/literatures/${literatureId}/extraction/traceability-html`, { responseType: 'blob' });
+  _triggerBlobDownload(resp.data as Blob, resp.headers, `literature_${literatureId}_traceability`);
+}
+
+export async function exportExtractionWord(literatureId: string) {
+  const resp = await api.get<Blob>(`/literatures/${literatureId}/extraction/export-word`, { responseType: 'blob' });
+  _triggerBlobDownload(resp.data as Blob, resp.headers, `literature_${literatureId}_report`);
 }
 
 export async function deleteLiterature(id: string) {

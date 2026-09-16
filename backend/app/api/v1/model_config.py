@@ -46,7 +46,7 @@ FALLBACK_LOCAL_MODELS = [
 
 
 @router.get("/models", response_model=ApiResponse, summary="获取可用模型列表", description="获取可用模型列表，包括本地模型（Ollama等）和远程API模型配置")
-async def list_models(db: AsyncSession = Depends(get_db)):
+async def list_models(db: AsyncSession = Depends(get_db), _admin=Depends(require_admin)):
     """获取可用模型列表（本地 + 远程配置）
 
     本地模型：优先从本地模型配置表读取启用项，且仅保留当前已在 Ollama 实际部署
@@ -87,7 +87,7 @@ async def list_models(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/models/remote", response_model=ApiResponse, summary="获取远程模型配置列表", description="获取所有远程模型配置，包括API Key（掩码显示）、Base URL、模型名等")
-async def list_remote_models(db: AsyncSession = Depends(get_db)):
+async def list_remote_models(db: AsyncSession = Depends(get_db), _admin=Depends(require_admin)):
     """获取所有远程模型配置"""
     result = await db.execute(select(ApiModelConfig).order_by(ApiModelConfig.created_at.desc()))
     configs = result.scalars().all()
@@ -189,7 +189,7 @@ def _config_to_dict(c: ApiModelConfig) -> dict:
 # ── 本地模型配置管理（Ollama 等）────────────────────────────
 
 @router.get("/models/local", response_model=ApiResponse, summary="获取本地模型配置列表", description="获取所有本地模型配置，包括名称、模型名、描述、启用状态")
-async def list_local_models(db: AsyncSession = Depends(get_db)):
+async def list_local_models(db: AsyncSession = Depends(get_db), _admin=Depends(require_admin)):
     """获取所有本地模型配置，并标记每个模型是否已在本地 Ollama 下载"""
     result = await db.execute(
         select(LocalModelConfig).order_by(LocalModelConfig.created_at)
