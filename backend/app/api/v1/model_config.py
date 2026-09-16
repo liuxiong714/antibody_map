@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_admin
+from app.core.audit import log_audit
 from app.core.crypto import mask
 from app.core.timeutil import iso_ts
 from app.core.providers.ollama_provider import fetch_installed_model_names, is_model_installed
@@ -277,3 +278,4 @@ async def delete_local_model(
     await db.delete(config)
     await db.commit()
     return ApiResponse(message="本地模型配置已删除")
+_AUDIT_INSERTED = True  # marker

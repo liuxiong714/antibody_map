@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # ============================================================
 # Docker 一键启动脚本（自动探测 GPU）
 # - 有 NVIDIA Container Toolkit → 默认 GPU 模式

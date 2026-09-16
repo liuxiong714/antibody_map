@@ -1,4 +1,4 @@
-node_modules/
+﻿node_modules/
 __pycache__/
 .env
 *.pyc
@@ -20,13 +20,11 @@ frontend/tsconfig.tsbuildinfo
 frontend/coverage/
 backend/.coverage
 .coverage
-
 # 测试监控文件夹
 backend/data/test_monitor/
 backend/data/
 # 后台运行日志（loguru 持久化输出，含 AI 提取记录）
 backend/logs/
-
 # 日志与临时文件
 *.log
 *.tmp
@@ -41,19 +39,15 @@ extract_result.txt
 trigger*.txt
 test_output.txt
 out.txt
-
 # 根目录临时 TSV/CSV 分析输出
 /_*.tsv
 /_*.csv
-
 # 临时开发/测试脚本
 backend/check_*.py
 backend/test_*.py
 backend/tmp_*.py
-
 # mkdocs 构建产物
 site/
-
 # 根目录下划线前缀临时脚本（浏览器自动化/调试/暂存）——仅锚定仓库根，勿忽略深层源码（如 services/analysis/__init__.py）
 /_*.py
 /_*.json
@@ -73,10 +67,8 @@ site/
 /verify_format.py
 /backups
 /xlsx_in/
-
 # backend 下划线前缀临时调试脚本
 backend/_*.py
-
 # 临时脚本与调试文件（防止今后再混入版本控制）
 # 根目录/backend scripts 目录下的临时脚本
 scripts/*.sh
@@ -96,36 +88,33 @@ _tmp_*
 # 误创建的特殊文件/目录
 =*
 .obsidian/
-
 # 调试残留文件（分析用输入/输出）
 error.txt
-
 # 数据库备份文件
 backups/
-
 # 离线 wheel 仓库（手动下载，不含 torch 等大文件）
 backend/wheels/
-
 # caj2pdf 本地构建缓存（二进制，构建时由 Dockerfile 复制进镜像）
 backend/caj2pdf_cache/
-
 # 主题/界面预览临时 HTML
 theme*preview.html
-
 # Docker Compose 覆盖配置（含敏感凭据）
 docker-compose.override.yml
-
-
 # Python venv
 .venv/
 backend/.venv/
 **/__pycache__/
-*.pyc
-
 # Node build
 frontend/node_modules/
-frontend/dist/
-
 # IDE/OS
 .vscode/
 .idea/
+# 调试临时脚本 & 输出
+backend/verify_*.py
+backend/fix.*.py
+backend/init_db_*.py
+backend/tests/_*.py
+*.txt
+_patch_*.py
+fix_*.ps1
+.wslconfig

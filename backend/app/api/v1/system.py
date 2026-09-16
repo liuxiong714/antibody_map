@@ -22,6 +22,7 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db, require_admin
+from app.core.audit import log_audit
 from app.config import settings, _detect_version_runtime, _get_runtime_feature_flags, _set_feature_flag
 from app.core.logging_config import LOGS_DIR
 from app.core.parser_status import get_parser_status
@@ -96,6 +97,7 @@ async def patch_feature_flags(body: dict, _user=Depends(require_admin)):
             _set_feature_flag(str(name), bool(val))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    log_audit(action='feature_flags_update', target='feature_flags', user_id=getattr(_user, 'id', None), username=getattr(_user, 'username', None), result='success')
     return ApiResponse(data={}, message='Feature flags updated')
 
 @router.get("/info", response_model=ApiResponse, summary="获取系统信息", description="返回系统名称、版本号、运行环境、功能特性与日志目录等动态信息")
@@ -370,6 +372,7 @@ async def backup_database(_user=Depends(require_admin)):
 
         logger.info(f"[备份] 成功: {dump_file.name} size={size}B by user={_user.username if _user else '?'}")
         mb = round(size / 1024 / 1024, 2)
+        log_audit(action='db_backup', target='db', user_id=getattr(_user, 'id', None), username=getattr(_user, 'username', None), result='success')
         return ApiResponse(
             message="数据库备份成功",
             data={
@@ -416,6 +419,7 @@ async def download_backup(filename: str, _user=Depends(require_admin)):
     p = _safe_backup_path(filename)
     if not p.is_file():
         raise HTTPException(status_code=404, detail="备份文件不存在")
+    log_audit(action='db_backup_download', target='db_backup:{filename}', user_id=getattr(_user, 'id', None), username=getattr(_user, 'username', None), result='success')
     return FileResponse(str(p), filename=p.name, media_type="application/sql")
 
 
@@ -540,3 +544,4 @@ async def delete_goal_threshold(
 
 
 
+_AUDIT_INSERTED = True  # marker
