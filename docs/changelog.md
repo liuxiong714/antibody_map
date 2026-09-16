@@ -13,6 +13,7 @@
 - **metadata_validator** — 新增 ackend/app/core/metadata_validator.py：DOI ^10\.\d{4,9}/\S+$ 正则 + 长度 ≤128、PMID 1-9 位正整数、pub_year ∈ [1900, now+1]，无效值跳过并警告。
 - **前端 usePolling Hook** — rontend/src/hooks/usePolling.ts 统一多处轮询逻辑（文献详情提取状态、报告生成、批量任务进度），内置 404 容忍（连续 4 次）、最多 200 次、shouldStop、onGiveUp 回调、组件卸载自动清理等防泄漏设计。
 - **数据点表格分页** — 文献详情页数据点列表支持分页（pageSize=50，showSizeChanger 20/50/100），跨页保留 selectedRowKeys。
+- **文献详情页上一篇 / 下一篇** — 详情页标题栏右侧新增「上一篇（LeftOutlined）」按钮，与已有「下一篇」共用一次列表请求（esolvePrevNext），首位/末位自动置灰。
 
 ### 修复
 

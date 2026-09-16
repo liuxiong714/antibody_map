@@ -77,7 +77,8 @@ const LiteratureDetail: React.FC = () => {
   const [editForm, setEditForm] = useState<Record<string, string | number | null>>({});
   const [saving, setSaving] = useState(false);
 
-  // 下一篇：与文献列表（列表页离开时保存的排序/筛选）保持一致，取当前文献的下一条 id
+  // 上一篇 / 下一篇：与文献列表（列表页离开时保存的排序/筛选）保持一致，取当前文献的前后 id
+  const [prevId, setPrevId] = useState<string | null>(null);
   const [nextId, setNextId] = useState<string | null>(null);
 
   // 数据点行内编辑状态
@@ -274,23 +275,22 @@ const LiteratureDetail: React.FC = () => {
     }
   };
 
-  // 解析“下一篇”：复用列表页进入详情前保存的排序/筛选，拉取有序 id 序列，
-  // 找到当前文献的下一条。无列表上下文时按默认排序（created desc）拉取。
-  // ??"???"???????created desc???????????????
-  // ???????????????? id ????? findIndex=-1????????
-  // page_size ?????? le=100???????????????
-  const resolveNextId = useCallback(async (currentId: string) => {
+  // 解析 prev/next：复用列表页进入详情前保存的排序/筛选，拉取有序 id 序列，
+  // 找到当前文献的前一条 / 后一条。无列表上下文时按默认排序（created desc）拉取。
+  const resolvePrevNext = useCallback(async (currentId: string) => {
     try {
       const resp = await listLiterature({ page: 1, page_size: 100 });
       const idx = resp.items.findIndex((it) => it.id === currentId);
+      const prev = idx > 0 ? resp.items[idx - 1].id : null;
       const next = idx >= 0 && idx + 1 < resp.items.length ? resp.items[idx + 1].id : null;
+      setPrevId(prev);
       setNextId(next);
     } catch (err) {
-      console.error('[LiteratureDetail] resolveNextId failed:', err);
+      console.error('[LiteratureDetail] resolvePrevNext failed:', err);
+      setPrevId(null);
       setNextId(null);
     }
   }, []);
-
   const fetchData = useCallback(async () => {
     if (!id) return;
     setLoading(true);
@@ -298,7 +298,7 @@ const LiteratureDetail: React.FC = () => {
       const [lit, ext] = await Promise.all([
         getLiterature(id),
         getExtractionResults(id),
-        resolveNextId(id),
+        resolvePrevNext(id),
       ]);
       setLiterature(lit);
       setDataPoints((ext as { data_points?: DataPoint[] })?.data_points || []);
@@ -308,7 +308,7 @@ const LiteratureDetail: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [id, resolveNextId]);
+  }, [id, resolvePrevNext]);
 
   // 排查页码丢失问题：记录进入详情页时的来源上下文
   useEffect(() => {
@@ -1049,6 +1049,12 @@ const LiteratureDetail: React.FC = () => {
                     </Space>
                   ) : (
                     <Space>
+                      <Button
+                        size="small"
+                        icon={<LeftOutlined />}
+                        disabled={!prevId}
+                        onClick={() => prevId && navigate(`/literature/${prevId}`)}
+                      >上一篇</Button>
                       <Button
                         size="small"
                         icon={<RightOutlined />}
