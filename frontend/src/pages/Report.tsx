@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+﻿import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Card, Button, Input, Select, Spin, Empty, message, Tag, Divider, Table, Modal, Space, Tooltip, Tabs, Popconfirm, Dropdown } from 'antd';
 import { FileTextOutlined, EyeOutlined, DownloadOutlined, HistoryOutlined, ExperimentOutlined, EditOutlined, SaveOutlined, CloseOutlined, DeleteOutlined, ExclamationCircleOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import AntibodyReportForm from '../components/AntibodyReportForm';
@@ -7,6 +7,7 @@ import ReportContentView from '../components/ReportContentView';
 import TemplateManager from '../components/TemplateManager';
 import { generateReport, generateVaccinationStrategy, generateImmuneBarrier, listReports, updateReport, deleteReport, getReport, listTemplates } from '../services/map';
 import { getTaskStatus } from '../services/system';
+import { usePolling } from '../hooks/usePolling';
 import { ReportData, ReportRecord, ReportTemplate } from '../types';
 import dayjs from 'dayjs';
 
@@ -116,63 +117,62 @@ const Report: React.FC = () => {
 
   // ---- 报告后台异步"点外卖"模式：提交后原地轮询任务状态，完成后自动展示报告 ----
   const [genTip, setGenTip] = useState('AI 正在生成报告...');
-  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const stopPolling = () => {
-    if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
-  };
+  // ---- usePolling 统一管理报告异步生成的轮询 ----
+  const activeTaskIdRef = useRef<string | null>(null);
 
-  /** 轮询单任务直到 done/failed，自动解析历史并展示生成报告（沿用原同步拉起 ReportContentView 的行为） */
-  const pollReportTask = useCallback(async (taskId: string): Promise<void> => {
-    return new Promise<void>((resolve) => {
-      stopPolling();
-      const tick = async () => {
+  const pollTick = useCallback(async () => {
+    const tid = activeTaskIdRef.current;
+    if (!tid) return;
+    const st = await getTaskStatus(tid);
+    const status = String(st.status || 'running');
+    const progress = String(st.progress || '');
+    if (progress) setGenTip("AI 正在生成报告…" + progress);
+    if (status === 'done') {
+      const rid = (st.result as { report_id?: string } | undefined)?.report_id;
+      if (rid) {
         try {
-          const st = await getTaskStatus(taskId);
-          const status = String(st.status || 'running');
-          const progress = String(st.progress || '');
-          if (progress) setGenTip(`AI 正在生成报告…${progress}`);
-          if (status === 'done') {
-            stopPolling();
-            const rid = (st.result as { report_id?: string } | undefined)?.report_id;
-            if (rid) {
-              try {
-                const data = await getReport(rid);
-                // 详情接口返回 ReportRecord（content 可空）；生成报告必有内容，转成内容视图所需的 ReportData
-                setReport({
-                  id: data.id,
-                  title: data.title,
-                  content: data.content || '',
-                  report_type: data.report_type || 'antibody_analysis',
-                  literature_count: 0,
-                  data_point_count: 0,
-                  language: data.language || 'zh',
-                  llm_model: data.llm_model,
-                  generated_at: data.generated_at || new Date().toISOString(),
-                });
-              } catch (e) { console.error('[Report] 加载生成报告失败:', e); }
-            }
-            message.success('报告生成成功');
-            fetchHistory();
-            resolve();
-          } else if (status === 'failed') {
-            stopPolling();
-            message.error(`报告生成失败: ${String(st.error || '未知错误')}`);
-            resolve();
-          }
-          // running/queued: 继续轮询
-        } catch (e: any) {
-          // 任务可能刚结束尚未写入 Redis，或后端暂时不可达：稍后重试
-          const st = e?.response?.status;
-          if (st === 404) { stopPolling(); message.error('报告任务不存在或已过期'); resolve(); }
-        }
-      };
-      pollTimer.current = setInterval(() => void tick(), 3000);
-      void tick();
-    });
+          const data = await getReport(rid);
+          setReport({
+            id: data.id,
+            title: data.title,
+            content: data.content || '',
+            report_type: data.report_type || 'antibody_analysis',
+            literature_count: 0, data_point_count: 0,
+            language: data.language || 'zh',
+            llm_model: data.llm_model,
+            generated_at: data.generated_at || new Date().toISOString(),
+          });
+        } catch (e) { console.error('[Report] load failed:', e); }
+      }
+      message.success('报告生成成功');
+      fetchHistory();
+      activeTaskIdRef.current = null;
+      stopPolling();
+    } else if (status === 'failed') {
+      message.error("报告生成失败: " + String(st.error || "未知错误"));
+      activeTaskIdRef.current = null;
+      stopPolling();
+    }
   }, [fetchHistory]);
 
-  useEffect(() => () => stopPolling(), []);
+  const { start: startPolling, stop: stopPolling } = usePolling(pollTick, {
+    intervalMs: 3000,
+    maxAttempts: 200,
+    maxConsecutive404: 4,
+    shouldStop: () => activeTaskIdRef.current === null,
+    onGiveUp: (reason) => {
+      if (reason === '404') message.error('报告任务不存在或已过期');
+      else message.error('报告生成超时，请稍后重试');
+      activeTaskIdRef.current = null;
+    },
+  });
+
+  /** 对外入口：开始轮询指定 taskId */
+  const pollReportTask = useCallback((taskId: string) => {
+    activeTaskIdRef.current = taskId;
+    startPolling();
+  }, [startPolling]);
 
   const handleGenerateAntibody = async () => {
     setLoading(true);
@@ -557,3 +557,4 @@ const Report: React.FC = () => {
 };
 
 export default Report;
+

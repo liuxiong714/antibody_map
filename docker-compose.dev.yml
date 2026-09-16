@@ -1,0 +1,19 @@
+﻿# Development overlay: 把本地 backend/app + docs 挂载进容器，
+# 改 Python 代码或 changelog.md 后只需重启对应容器，无需 docker build。
+# 用法: docker compose -f docker-compose.yml -f docker-compose.reuse.yml -f docker-compose.dev.yml up -d
+# 生产部署不要带这个文件 —— GPU overlay (docker-compose.gpu.yml) 与它互斥（GPU 服务器不会
+# 用本地源码 volume，因为源码已 git clone 到宿主机再 docker build）。
+
+services:
+  backend:
+    volumes:
+      # 挂载 app 代码 + docs（CHANGELOG 在 /app/docs/changelog.md）
+      - ./backend/app:/app/backend/app
+      - ./docs:/app/docs
+
+  worker:
+    volumes:
+      # worker 与 backend 共享同一份 app 代码（import 路径相同 /app/app/...）
+      - ./backend/app:/app/backend/app
+      - ./docs:/app/docs
+

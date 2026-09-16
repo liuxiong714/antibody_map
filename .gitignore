@@ -115,3 +115,17 @@ theme*preview.html
 # Docker Compose 覆盖配置（含敏感凭据）
 docker-compose.override.yml
 
+
+# Python venv
+.venv/
+backend/.venv/
+**/__pycache__/
+*.pyc
+
+# Node build
+frontend/node_modules/
+frontend/dist/
+
+# IDE/OS
+.vscode/
+.idea/

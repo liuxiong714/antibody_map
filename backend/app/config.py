@@ -7,6 +7,80 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Runtime cache for version & feature flags (TTL = 30s)
+_VERSION_CACHE = {"value": None, "mtime": 0.0}
+_FLAG_CACHE = {"flags": None, "mtime": 0.0}
+_CACHE_TTL = 30.0
+
+
+def _detect_version_runtime() -> str:
+    import re, time
+    global _VERSION_CACHE
+    now = time.time()
+    cache = _VERSION_CACHE
+    if cache["value"] and (now - cache["mtime"]) < _CACHE_TTL:
+        return cache["value"]
+    changelog = _PROJECT_ROOT / "docs" / "changelog.md"
+    try:
+        if changelog.exists():
+            content = changelog.read_text(encoding="utf-8")
+            m = re.search(r"^##\s+v?(\d+\.\d+\.\d+)", content, re.MULTILINE)
+            if m:
+                cache["value"] = m.group(1)
+                cache["mtime"] = now
+                return m.group(1)
+    except Exception:
+        pass
+    cache["value"] = APP_VERSION_FALLBACK
+    cache["mtime"] = now
+    return APP_VERSION_FALLBACK
+
+
+def _get_runtime_feature_flags() -> dict:
+    import time
+    global _FLAG_CACHE
+    now = time.time()
+    cache = _FLAG_CACHE
+    if cache["flags"] and (now - cache["mtime"]) < _CACHE_TTL:
+        return cache["flags"]
+    flags = {
+        "kg_extraction": bool(settings.ENABLE_KG_EXTRACTION),
+        "kg_qa_unreviewed": bool(settings.KG_QA_INCLUDE_UNREVIEWED),
+        "proxy_headers": True,
+    }
+    cache["flags"] = flags
+    cache["mtime"] = now
+    return flags
+
+
+# ---- In-memory feature flag overrides (admin toggles) ----
+_FLAG_OVERRIDES: dict = {}
+
+def _set_feature_flag(name: str, enabled: bool) -> None:
+    global _FLAG_OVERRIDES, _FLAG_CACHE
+    allowed = {'kg_extraction', 'kg_qa_unreviewed'}
+    if name not in allowed:
+        raise ValueError(f'Unknown flag {name!r}. Allowed: {sorted(allowed)}')
+    _FLAG_OVERRIDES[name] = bool(enabled)
+    _FLAG_CACHE = {'flags': None, 'mtime': 0.0}
+
+def _get_runtime_feature_flags() -> dict:
+    import time
+    global _FLAG_CACHE, _FLAG_OVERRIDES
+    now = time.time()
+    cache = _FLAG_CACHE
+    if cache['flags'] and (now - cache['mtime']) < _CACHE_TTL and not _FLAG_OVERRIDES:
+        return cache['flags']
+    flags = {
+        'kg_extraction': bool(settings.ENABLE_KG_EXTRACTION),
+        'kg_qa_unreviewed': bool(settings.KG_QA_INCLUDE_UNREVIEWED),
+        'proxy_headers': True,
+    }
+    for k, v in _FLAG_OVERRIDES.items():
+        flags[k] = v
+    cache['flags'] = flags
+    cache['mtime'] = now
+    return flags
 def _detect_version() -> str:
     """???????????????????
 
@@ -382,3 +456,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Module-level snapshot version. Runtime version always takes precedence.
+APP_VERSION_FALLBACK = settings.APP_VERSION

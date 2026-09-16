@@ -1,4 +1,4 @@
-"""系统信息与后台日志查看接口。
+﻿"""系统信息与后台日志查看接口。
 
 - /system/info        ：返回版本号、运行环境、功能特性等动态系统信息
 - /system/logs        ：列出日志目录下的日志文件
@@ -22,7 +22,7 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db, require_admin
-from app.config import settings
+from app.config import settings, _detect_version_runtime, _get_runtime_feature_flags, _set_feature_flag
 from app.core.logging_config import LOGS_DIR
 from app.core.parser_status import get_parser_status
 from app.core.redis_background_tasks import active_tasks as _redis_active_tasks
@@ -88,15 +88,32 @@ def _safe_log_file(filename: str) -> Path:
     return file_path
 
 
+
+@router.patch('/feature-flags', response_model=ApiResponse, summary='动态开关 feature flag', description='内存级别开关 kg_extraction 等特性。仅管理员可用。修改仅影响当前 FastAPI 进程（不持久化 .env）')
+async def patch_feature_flags(body: dict, _user=Depends(require_admin)):
+    try:
+        for name, val in body.items():
+            _set_feature_flag(str(name), bool(val))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return ApiResponse(data={}, message='Feature flags updated')
+
 @router.get("/info", response_model=ApiResponse, summary="获取系统信息", description="返回系统名称、版本号、运行环境、功能特性与日志目录等动态信息")
 async def system_info(_user=Depends(get_current_user)):
-    """获取系统动态信息（版本号等来源于单一版本源 settings.APP_VERSION）。"""
+    """Get runtime system info.
+
+    ``version`` is computed on every call (with 30s TTL) so changelog bumps
+    take effect **without restarting the container** — as long as the
+    changelog.md file inside the container has been updated.
+    """
     return ApiResponse(
         data={
             "name": "Antibody Map",
-            "version": settings.APP_VERSION,
+            "version": _detect_version_runtime(),
+            "version_snapshot": settings.APP_VERSION,
             "environment": settings.APP_ENV,
             "features": FEATURES,
+            "feature_flags": _get_runtime_feature_flags(),
             "log_dir": str(LOGS_DIR),
             "repo_url": "https://github.com/liuxiong714/antibody_map",
             "parsers": get_parser_status(),
@@ -520,3 +537,6 @@ async def delete_goal_threshold(
     """删除某疾病的阈值覆盖，恢复默认值"""
     await goal_threshold_service.delete_goal_threshold(db, disease)
     return ApiResponse(message="已恢复默认阈值", data={"disease": disease, "reset": True})
+
+
+

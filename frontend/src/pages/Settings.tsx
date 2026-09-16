@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+﻿import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Card, Tabs, Button, Space, Tag, Select, Input, Alert, Typography, Empty, Spin, Tooltip,
-  Table, Upload, Modal, message,
+  Table, Upload, Modal, message, Switch,
 } from 'antd';
 import {
   SettingOutlined, RobotOutlined, SafetyOutlined, FileTextOutlined, ReloadOutlined,
@@ -10,7 +10,7 @@ import {
 } from '@ant-design/icons';
 import ModelManager from '../components/ModelManager';
 import LocalModelManager from '../components/LocalModelManager';
-import { getSystemInfo, listLogFiles, getLogContent, SystemInfo, LogFile, LogEntry, listBackups, backupDatabase, buildDownloadBackupUrl, restoreBackup, BackupFile, getActiveTasks, ActiveTaskGroup, ActiveTaskItem } from '../services/system';
+import { getSystemInfo, patchFeatureFlags, listLogFiles, getLogContent, SystemInfo, LogFile, LogEntry, listBackups, backupDatabase, buildDownloadBackupUrl, restoreBackup, BackupFile, getActiveTasks, ActiveTaskGroup, ActiveTaskItem } from '../services/system';
 import './Settings.css';
 
 const { Text } = Typography;
@@ -648,6 +648,28 @@ const Settings: React.FC = () => {
               </span>
             </div>
             <div className="system-info-item">
+
+          <Card size='small' style={{ marginBottom: 12 }} title='特性开关（管理员）'>
+            <Space direction='vertical' style={{ width: '100%' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>知识图谱 LLM 自动抽取</span>
+                <Switch
+                  checked={!!sysInfo?.feature_flags?.kg_extraction}
+                  onChange={async (val) => {
+                    try {
+                      await patchFeatureFlags({ kg_extraction: val });
+                      message.success('特性已更新');
+                      loadSystemInfo();
+                    } catch (e: any) { message.error(e?.response?.data?.detail || '更新失败'); }
+                  }}
+                />
+              </div>
+              <Typography.Text type='secondary'>
+                开启后文献 AI 提取成功时自动触发三元组抽取（额外 LLM 调用）。关闭时此 API 返回 400。
+                重启 worker 进程使开关在后台任务中生效。
+              </Typography.Text>
+            </Space>
+          </Card>
               <span className="label">功能特性</span>
               <div className="value">
                 {sysInfo?.features?.length ? (

@@ -1,10 +1,12 @@
-import api from './api';
+﻿import api from './api';
 
 export interface SystemInfo {
   name: string;
   version: string;
+  version_snapshot?: string;
   environment: string;
   features: string[];
+  feature_flags?: Record<string, boolean>;
   log_dir: string;
   repo_url: string;
 }
@@ -33,6 +35,10 @@ export async function getSystemInfo(): Promise<SystemInfo> {
   return data;
 }
 
+
+export async function patchFeatureFlags(flags: Record<string, boolean>): Promise<void> {
+  await api.patch('/system/feature-flags', flags);
+}
 export async function listLogFiles(): Promise<{ dir: string; files: LogFile[] }> {
   const { data } = await api.get<{ dir: string; files: LogFile[] }>('/system/logs');
   return data;
