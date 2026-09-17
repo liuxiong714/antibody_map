@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip, Switch, Typography, Alert,
@@ -23,6 +23,40 @@ import { clearAnalysisApiCache, clearMapApiCache } from '../services/map';
 import { usePolling } from '../hooks/usePolling';
 
 const { Text } = Typography;
+
+// 列表页跳转详情页前保存的 sessionStorage key（与 Literature.tsx 保持一致）
+const LIST_STATE_KEY = 'literature_list_back_state';
+
+// 从 sessionStorage 解析列表页保存的筛选/排序参数，用于上一篇/下一篇保持与列表一致的上下文
+function readSavedListParams(): Record<string, unknown> {
+  try {
+    const raw = sessionStorage.getItem(LIST_STATE_KEY);
+    if (!raw) return {};
+    const s = JSON.parse(raw);
+    const params: Record<string, unknown> = {};
+    if (s.keyword) params.keyword = s.keyword;
+    if (s.disease) params.disease = s.disease;
+    if (s.province) params.province = s.province;
+    if (s.yearStart) params.year_start = s.yearStart;
+    if (s.yearEnd) params.year_end = s.yearEnd;
+    if (s.journal) params.journal = s.journal;
+    if (s.sortBy) params.sort_by = s.sortBy;
+    if (s.sortOrder) params.sort_order = s.sortOrder;
+    if (s.reviewStatus) params.review_status = s.reviewStatus;
+    if (s.extractionStatus) params.extraction_status = s.extractionStatus;
+    if (s.fileFormat) params.file_format = s.fileFormat;
+    if (s.titleFilter) params.title = s.titleFilter;
+    if (s.authorsFilter) params.authors = s.authorsFilter;
+    if (s.createdStart) params.created_start = s.createdStart;
+    if (s.createdEnd) params.created_end = s.createdEnd;
+    if (s.hasAbstract === 'has') params.has_abstract = true;
+    if (s.hasAbstract === 'none') params.has_abstract = false;
+    return params;
+  } catch (err) {
+    console.error('[LiteratureDetail] 解析列表状态失败:', err);
+    return {};
+  }
+}
 
 const LiteratureDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -279,12 +313,40 @@ const LiteratureDetail: React.FC = () => {
   // 找到当前文献的前一条 / 后一条。无列表上下文时按默认排序（created desc）拉取。
   const resolvePrevNext = useCallback(async (currentId: string) => {
     try {
-      const resp = await listLiterature({ page: 1, page_size: 100 });
-      const idx = resp.items.findIndex((it) => it.id === currentId);
-      const prev = idx > 0 ? resp.items[idx - 1].id : null;
-      const next = idx >= 0 && idx + 1 < resp.items.length ? resp.items[idx + 1].id : null;
-      setPrevId(prev);
-      setNextId(next);
+      const savedParams = readSavedListParams();
+      const PAGE_SIZE = 100;
+      const MAX_PAGES = 20; // 安全上限 2000 条
+      let items: { id: string }[] = [];
+      let foundIdx = -1;
+      let total = Infinity;
+
+      // 带列表页筛选/排序逐页拉取，找到当前文献位置
+      for (let p = 1; p <= MAX_PAGES && items.length < total; p++) {
+        const resp = await listLiterature({ ...savedParams, page: p, page_size: PAGE_SIZE });
+        total = resp.total;
+        if (resp.items.length === 0) break;
+        const idxInPage = resp.items.findIndex((it) => it.id === currentId);
+        items = items.concat(resp.items);
+        if (idxInPage >= 0) {
+          foundIdx = items.length - resp.items.length + idxInPage;
+          // 当前文献是本页最后一条且仍有下一页：再拉一页以获取 nextId
+          if (idxInPage === resp.items.length - 1 && items.length < total) {
+            const next = await listLiterature({ ...savedParams, page: p + 1, page_size: PAGE_SIZE });
+            items = items.concat(next.items);
+          }
+          break;
+        }
+      }
+
+      // 兜底：带筛选未找到（数据变动/筛选失效）则回退默认排序
+      if (foundIdx < 0 && Object.keys(savedParams).length > 0) {
+        const resp = await listLiterature({ page: 1, page_size: 100 });
+        items = resp.items;
+        foundIdx = resp.items.findIndex((it) => it.id === currentId);
+      }
+
+      setPrevId(foundIdx > 0 ? items[foundIdx - 1].id : null);
+      setNextId(foundIdx >= 0 && foundIdx + 1 < items.length ? items[foundIdx + 1].id : null);
     } catch (err) {
       console.error('[LiteratureDetail] resolvePrevNext failed:', err);
       setPrevId(null);

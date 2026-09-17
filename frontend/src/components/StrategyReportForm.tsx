@@ -1,10 +1,34 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Row, Col, Button, Input, Select, Divider, InputNumber, Space, Tag } from 'antd';
+import { Card, Row, Col, Button, Input, Select, Divider, InputNumber, Space, Tag, DatePicker } from 'antd';
 import { FileTextOutlined, RobotOutlined, SettingOutlined, ProfileOutlined } from '@ant-design/icons';
+import dayjs, { Dayjs } from 'dayjs';
 import ProvinceSelector from './ProvinceSelector';
 import ModelManager from './ModelManager';
 import { getModels } from '../services/map';
 import { ModelOption } from '../types';
+
+const { RangePicker } = DatePicker;
+
+/** 解析已存的 taskTime 字符串为 RangePicker 值（兼容历史记录）。支持 "2026-08-01~2026-10-31"、"2026年8月-10月"、"2026-08-01 至 2026-10-31" 等。 */
+function parseTaskTimeToRange(value: string | undefined): [Dayjs, Dayjs] | null {
+  if (!value) return null;
+  // 先尝试正则提取两个 YYYY-MM-DD
+  const fullMatches = value.match(/(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})/g);
+  if (fullMatches && fullMatches.length >= 2) {
+    const start = dayjs(fullMatches[0].replace(/年|月/g, '-').replace(/\./g, '-'));
+    const end = dayjs(fullMatches[1].replace(/年|月/g, '-').replace(/\./g, '-'));
+    if (start.isValid() && end.isValid()) return [start, end];
+  }
+  // 再尝试 "YYYY年MM-MM" / "YYYY-MM 至 YYYY-MM" 这种只精确到月的
+  const yearMonthMatch = value.match(/(\d{4})[-/年.](\d{1,2})[^\d]+(\d{1,2})/);
+  if (yearMonthMatch) {
+    const [, y, m1, m2] = yearMonthMatch;
+    const start = dayjs(`${y}-${m1}-01`);
+    const end = dayjs(`${y}-${m2}-01`).endOf('month');
+    if (start.isValid() && end.isValid()) return [start, end];
+  }
+  return null;
+}
 
 interface TemplateOption {
   value: string;
@@ -99,7 +123,20 @@ const StrategyReportForm: React.FC<Props> = ({
           </Col>
           <Col span={8}>
             <div style={{ marginBottom: 4, fontWeight: 500 }}>任务时间 <span style={{ color: 'red' }}>*</span></div>
-            <Input placeholder="如：2026年8-10月" value={taskTime} onChange={(e) => onTaskTimeChange(e.target.value)} />
+            <RangePicker
+              style={{ width: '100%' }}
+              placeholder={['开始日期', '结束日期']}
+              value={parseTaskTimeToRange(taskTime)}
+              onChange={(dates) => {
+                if (!dates || !dates[0] || !dates[1]) {
+                  onTaskTimeChange('');
+                } else {
+                  onTaskTimeChange(
+                    `${dates[0].format('YYYY-MM-DD')} 至 ${dates[1].format('YYYY-MM-DD')}`,
+                  );
+                }
+              }}
+            />
           </Col>
           <Col span={8}>
             <div style={{ marginBottom: 4, fontWeight: 500 }}>任务地点 <span style={{ color: 'red' }}>*</span></div>

@@ -25,7 +25,7 @@ from app.core.metadata_validator import (
 )
 from app.core.pdf_table_parser import extract_tables_markdown
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES, normalize_province
-from app.core.text_preprocessor import preprocess
+from app.core.text_preprocessor import preprocess, detect_language
 from app.models.api_model_config import ApiModelConfig
 from app.models.base import async_session
 from app.models.data_point import DataPoint
@@ -614,11 +614,23 @@ async def _process_literature_async(
                     "文件解析后文本为空，可能为扫描件或不支持的格式"
                 )
             logger.info(f"文件解析成功: {len(raw_text)} 字符")
+
+            # 从 ExtractionText（str 子类）中提取视觉增强数据（如有）
+            vision_data = getattr(raw_text, "vision_data", None)
+            if vision_data:
+                _vl_dp = len(vision_data.get("data_points") or [])
+                _vl_tt = len(vision_data.get("titer_tables") or [])
+                logger.info(
+                    f"[视觉增强] 捕获视觉提取结果: data_points={_vl_dp}, titer_tables={_vl_tt}"
+                )
+            else:
+                vision_data = None
         else:
             # 无 PDF，但有摘要：直接用摘要作为提取输入
             raw_text = literature.abstract or ""
             file_ext = ""
             tables_md = ""
+            vision_data = None
             logger.info(f"无 PDF，使用摘要作为提取输入: {len(raw_text)} 字符")
 
         # 3b. P0-1：PDF/CAJ 文件额外提取结构化表格 Markdown，注入 LLM 提示词
@@ -661,7 +673,8 @@ async def _process_literature_async(
 
         # 4. 预处理文本（保留 clean_text 用于 grounding）
         clean_text = preprocess(raw_text)
-        logger.info(f"文本预处理完成: {len(clean_text)} 字符")
+        detected_lang = detect_language(clean_text)
+        logger.info(f"文本预处理完成: {len(clean_text)} 字符, 检测语言={detected_lang}")
 
         # 4b. P2：保存 clean_text 到文件，供溯源查看使用
         try:
@@ -742,7 +755,7 @@ async def _process_literature_async(
             try:
                 extract_results = await extractor.extract_with_retry(
                     text=clean_text,
-                    language="zh",
+                    language=detected_lang,
                     title=literature.title or "",
                     journal=literature.journal or "",
                     pub_year=literature.pub_year,
@@ -757,6 +770,37 @@ async def _process_literature_async(
             _extract_seconds = time.perf_counter() - _extract_start
             _llm_seconds = _extract_seconds
             logger.info(f"LLM 提取完成: {len(extract_results)} 个数据点")
+
+            # 视觉增强数据点合并：视觉提取器（扫描页 OCR 之外）返回的 data_points
+            # 已经是结构化格式（按 EXTRACTION_JSON_SCHEMA），直接追加到 LLM 结果列表
+            # 一起走 grounding + schema 校验 + 去重流程。
+            # 在 grounding 无法精确匹配视觉数据点时（因为视觉输入是整页图，
+            # grounding 文本里可能找不到对应片段），标记 source="vision" 便于审核区分。
+            if vision_data:
+                vision_dps = vision_data.get("data_points") or []
+                if vision_dps:
+                    # 标记来源，便于后续审核/调试区分视觉来源和 LLM 来源的数据点
+                    for vp in vision_dps:
+                        if isinstance(vp, dict):
+                            vp["_source"] = "vision"
+                            # 视觉提取的数据点没有 grounding（来自整页图片），
+                            # 在转换 DataPoint 时会走"A3 LLM 重抽 grounding"兜底路径
+                    extract_results.extend(vision_dps)
+                    logger.info(
+                        f"[视觉增强] 合并视觉数据点: +{len(vision_dps)} → 总计 {len(extract_results)}"
+                    )
+
+                    # 视觉提取的 titer_tables 也注入 extractor，供后续使用
+                    vision_tt = vision_data.get("titer_tables") or []
+                    if vision_tt and extractor:
+                        try:
+                            extractor._titer_tables.extend(vision_tt)
+                            logger.info(
+                                f"[视觉增强] 合并视觉滴度表: +{len(vision_tt)}"
+                            )
+                        except Exception as e:
+                            logger.warning(f"[视觉增强] 视觉滴度表合并失败（不影响数据点）: {e}")
+
             usage_summary = extractor.get_usage_summary()
             titer_tables = extractor.get_titer_tables()
             # P1-1：捕获顶层 article 元数据用于回填 literature

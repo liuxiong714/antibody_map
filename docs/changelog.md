@@ -1,4 +1,24 @@
-﻿# 变更日志
+## 变更日志
+
+## v1.27.0 (2026-09-17)
+
+### 新增
+
+- **疫苗接种策略报告 · 任务时间日历选择器** — 报告生成页 StrategyReportForm 的「任务时间」字段从手动输入框升级为 antd `DatePicker.RangePicker`，点击弹出双月日历拖拽选起止日期，序列化为 `YYYY-MM-DD 至 YYYY-MM-DD` 与后端 `task_time` 字符串兼容；内置 `parseTaskTimeToRange()` 反向解析器，加载历史报告时可把旧格式（`2026年8-10月` / `2026-08-01~2026-10-31`）回填到日历控件。
+- **Model 层字段级归一化（ORM @validates）** — `DataPoint` / `Literature` 模型新增 SQLAlchemy `@validates` 自动校验，province/disease/method 字段在任何 ORM 入库路径（提取管线、题录导入、合成自测、手工写入）都统一走 `term_normalizer` 归一化，**从根本上杜绝 import/synthetic 等旁路写入脏数据**。
+
+### 修复
+
+- **省份字段重复（北京 vs 北京市、广东 vs 广东省、全国 vs 中国）** — 根因是 import/synthetic 等旁路未调用 `normalize_province`、只有 post_processor 做了归一化。修复：① PROVINCE_MAP 新增 `中国/中华人民共和国 → 全国` 条目；② 数据库 28 条脏数据一次性 SQL 修正（北京市→北京 12 行、广东省→广东 15 行、中国→全国 1 行）；③ Model 层 `@validates("province")` 兜底未来所有入库。
+- **英文 SCI 文献自动路由英文提示词** — extract_task.py 硬编码 language='zh'，detect_language 检测到英文后仍走中文 PROMPT。修复：import detect_language，文本预处理后动态检测语言并传给 extractor，PROMPT_EN 分支打通。端到端验证：香港育龄妇女水痘 VZV 血清流行率英文文献成功提取 4 条数据点。
+- **重复文献合并后 extraction_status 元数据不同步** — duplicates.py 合并时重算 extracted_count 但未同步 extraction_status，导致 `done_no_data` 但有 ≥1 条 DataPoint 的矛盾状态。修复：合并时根据 DataPoint 行数重算 status；crud.py 新增 `align_literature_terminal_state()` 在列表查询时自动对齐，防止新脏数据积累。已清理 6 条存量脏数据。
+- **知识图谱三列布局** — 中间 EChart 自适应 Canvas 宽高（ResizeObserver 监听容器尺寸变化），右侧面板贴紧浏览器右边框 + 可手动拖拽调宽 + 可隐藏；默认开启「全节点」开关。
+
+### 文档
+
+- **README / features.md** — 本版本前端/后端改动均属 bugfix+UX 层，未新增需功能文档描述的模块，故仅在本 changelog 记录。
+
+---
 
 ## v1.26.0 (2026-09-16)
 

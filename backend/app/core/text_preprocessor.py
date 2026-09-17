@@ -80,15 +80,45 @@ def preprocess(text: str, file_type: str = "text") -> str:
     lang = detect_language(text)
     text = truncate(text)
 
-    # 尝试移除参考文献部分，减少噪音
-    refs = extract_references(text)
-    if refs and lang == "zh":
-        ref_start = text.find("参考文献")
-        if ref_start > 0:
-            text = text[:ref_start]
-    elif refs:
-        ref_start = re.search(r"\nReferences\s*\n", text, re.IGNORECASE)
-        if ref_start:
-            text = text[: ref_start.start()]
+    # 尝试移除参考文献部分，减少噪音。
+    # 安全护栏：
+    # 1. 只移除文本后段 ≥50% 位置之后出现的参考文献（避免 OCR 噪音中
+    #    误匹配 "参考文献" 字样导致正文中段被截断）；
+    # 2. 移除后剩余文本量下降超过 80% 则放弃移除（防止极端误杀）。
+    original_len = len(text)
+    ref_removed = False
+
+    if lang == "zh":
+        # 找最后一个 "参考文献" 标记（学位论文末尾通常有"参考文献列表"一节，
+        # 而正文/页眉中可能出现零散的"参考文献"字样）。
+        # 同时匹配变体：参考文献目  参考文献：  参考文献.
+        candidates = [
+            text.rfind("参考文献\n"),
+            text.rfind("参考文献目"),
+            text.rfind("参考文献："),
+            text.rfind("参考文献:"),
+        ]
+        ref_start = max(c for c in candidates if c > 0) if any(c > 0 for c in candidates) else -1
+        if ref_start >= original_len * 0.5:
+            trimmed = text[:ref_start]
+            if len(trimmed) >= original_len * 0.2:  # 剩余 ≥20% 才移除
+                text = trimmed
+                ref_removed = True
+    else:
+        ref_match = re.search(r"\nReferences\s*\n", text, re.IGNORECASE)
+        if ref_match and ref_match.start() >= original_len * 0.5:
+            trimmed = text[: ref_match.start()]
+            if len(trimmed) >= original_len * 0.2:
+                text = trimmed
+                ref_removed = True
+
+    if ref_removed:
+        logger.info(
+            f"[preprocess] 移除参考文献: {original_len} -> {len(text)} 字符"
+        )
+    else:
+        logger.info(
+            f"[preprocess] 保留全文（未移除参考文献）: {original_len} 字符"
+        )
 
     return text.strip()

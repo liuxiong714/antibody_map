@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { forwardRef, useState, useRef, useEffect, useCallback, useImperativeHandle } from 'react';
 import { Button, Space, Spin, message } from 'antd';
 import {
   ZoomInOutlined,
@@ -32,6 +32,19 @@ interface PdfViewerProps {
   literatureId: string | null;
   defaultScale?: number;
   maxHeight?: string;
+  /** 页面布局：single 单列滚动 / double 双列并排 */
+  pageLayout?: 'single' | 'double';
+}
+
+export interface PdfViewerHandle {
+  /** 滚动 delta 像素（正值向下） */
+  scrollBy: (delta: number) => void;
+  /** 滚动到指定页码 */
+  scrollToPage: (pageNum: number) => void;
+  /** 获取当前页码 */
+  getCurrentPage: () => number;
+  /** 获取总页数 */
+  getNumPages: () => number;
 }
 
 const MIN_SCALE = 0.5;
@@ -39,11 +52,15 @@ const MAX_SCALE = 3.0;
 const SCALE_STEP = 0.2;
 const RENDER_BUFFER = 2; // 当前可视区域外额外渲染的页数
 
-const PdfViewer: React.FC<PdfViewerProps> = ({
-  literatureId,
-  defaultScale = 1.0,
-  maxHeight = 'calc(100vh - 280px)',
-}) => {
+const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>((
+  {
+    literatureId,
+    defaultScale = 1.0,
+    maxHeight = 'calc(100vh - 280px)',
+    pageLayout = 'single',
+  },
+  ref,
+) => {
   const [numPages, setNumPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [scale, setScale] = useState(defaultScale);
@@ -59,10 +76,26 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const renderTasksRef = useRef<Map<number, pdfjsLib.RenderTask>>(new Map());
   const visibleRangeRef = useRef<{ start: number; end: number }>({ start: 1, end: 1 });
   const allDimsRef = useRef<{ w: number; h: number }[]>([]);
-  // 渲染串行化锁：observer/scroll/scale 等多个触发源并发触发渲染时，排队合并执行，
-  // 避免同一页出现多个 renderTask 相互 cancel，导致被取消页既不重新挂载也无后续渲染而永久空白。
   const pendingRenderRef = useRef(false);
   const requestedRangeRef = useRef<{ start: number; end: number } | undefined>(undefined);
+
+  // 暴露给父组件的滚动 API
+  useImperativeHandle(ref, () => ({
+    scrollBy: (delta: number) => {
+      const container = scrollRef.current;
+      if (!container) return;
+      container.scrollBy({ top: delta, behavior: 'auto' });
+    },
+    scrollToPage: (pageNum: number) => {
+      const el = document.getElementById(`pdf-placeholder-${pageNum}`);
+      const container = scrollRef.current;
+      if (!el || !container) return;
+      const top = el.offsetTop - 10;
+      container.scrollTo({ top, behavior: 'auto' });
+    },
+    getCurrentPage: () => currentPage,
+    getNumPages: () => pdfRef.current?.numPages ?? numPages,
+  }));
 
   // 计算适合宽度的缩放比例
   const calcFitWidthScale = useCallback(() => {
@@ -515,12 +548,17 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         {loading && (
           <Spin size="large" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
         )}
-        {/* 内层容器：居中显示，超出时横向滚动 */}
+        {/* 内层容器：居中显示，超出时横向滚动；双页时用 flex-wrap 并排 */}
         <div
           style={{
-            minWidth: 'fit-content',
+            minWidth: pageLayout === 'double' ? '0' : 'fit-content',
+            maxWidth: pageLayout === 'double' ? '100%' : undefined,
             margin: '0 auto',
             padding: '12px 12px',
+            display: pageLayout === 'double' ? 'flex' : undefined,
+            flexWrap: pageLayout === 'double' ? 'wrap' : undefined,
+            gap: pageLayout === 'double' ? 8 : undefined,
+            justifyContent: pageLayout === 'double' ? 'center' : undefined,
           }}
         >
           {pageDims.map((dim, idx) => {
@@ -535,12 +573,13 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                 style={{
                   width: `${displayW}px`,
                   minHeight: `${displayH}px`,
-                  marginBottom: 8,
+                  marginBottom: pageLayout === 'double' ? 0 : 8,
                   backgroundColor: '#fff',
                   boxShadow: '0 2px 12px rgba(0,0,0,0.12)',
                   lineHeight: 0,
                   position: 'relative',
                   overflow: 'hidden',
+                  flexShrink: 0,
                 }}
               />
             );
@@ -549,6 +588,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       </div>
     </div>
   );
-};
+});
 
 export default PdfViewer;

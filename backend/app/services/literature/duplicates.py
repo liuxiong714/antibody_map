@@ -354,7 +354,7 @@ async def merge_literatures(
             moved += 1
             deleted_conflicts += len(conflict_tgts)
 
-    # 3. 重算 target 计数
+    # 3. 重算 target 计数与状态（合并改变了 DataPoint 归属，必须同步 Literature 元数据）
     total_dp = (await db.execute(
         select(func.count(DataPoint.id)).where(DataPoint.literature_id == target_id))).scalar() or 0
     approved = (await db.execute(
@@ -363,6 +363,17 @@ async def merge_literatures(
         .where(DataPoint.review_status == "approved"))).scalar() or 0
     target.extracted_count = total_dp
     target.approved_count = approved
+    # 合并可能让 target 的 DataPoint 数量从 0 变成 >0（或反之），必须同步 extraction_status：
+    #   - 有 DataPoint 但 status 是 done_no_data → 改为 done
+    #   - 无 DataPoint 但 status 是 done → 改为 done_no_data
+    if target.extraction_status in ("done", "done_no_data"):
+        new_status = "done" if total_dp > 0 else "done_no_data"
+        if target.extraction_status != new_status:
+            logger.info(
+                f"合并重复文献 {target_id}: extraction_status {target.extraction_status} → {new_status} "
+                f"(total_dp={total_dp}, approved={approved})"
+            )
+            target.extraction_status = new_status
     target.updated_at = datetime.now(timezone.utc)
 
     # 4. 文件处理：若选择保留 source 的文件，target.file_path 已被设为 source.file_path

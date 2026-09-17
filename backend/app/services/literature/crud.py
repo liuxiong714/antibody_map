@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import Integer, and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -88,7 +88,89 @@ async def reset_stale_extraction_status(db: AsyncSession) -> int:
         await db2.commit()
     if stale_lits:
         logger.info(f"自动重置了 {len(stale_lits)} 条卡死提取状态为 failed，并写入失败历史")
+
+    # 顺带对齐终态文献的计数与状态（防御性修复：合并重复、手动补录、竞态中断等路径
+    # 可能导致 Literature.extracted_count / extraction_status 与 DataPoint 表实际不一致）
+    await align_literature_terminal_state(db)
     return len(stale_lits)
+
+
+async def align_literature_terminal_state(db: AsyncSession) -> int:
+    """对齐终态文献（done / done_no_data）的计数与状态。
+
+    修复场景：
+    - 重复合并只改 extracted_count 不改 extraction_status（已在 duplicates.py 修，但历史脏数据需清理）
+    - 手动补录 DataPoint 不改 done_no_data → done 的翻转（extraction.py:668 只在 failed/pending 时翻转）
+    - 提取流程中途异常导致 CAS UPDATE 与 DataPoint delete 部分生效
+    - 其他任何绕过正常提取流程的 DataPoint 增删操作
+
+    不动 pending / queued / processing / failed（这些是中间态，可能正在变化）。
+    """
+    # 子查询：每篇终态文献的 DataPoint 实际计数
+    dp_counts_sub = (
+        select(
+            DataPoint.literature_id.label("lid"),
+            func.count(DataPoint.id).label("dp_total"),
+            func.sum((DataPoint.review_status == "approved").cast(Integer)).label("dp_approved"),
+            func.sum((DataPoint.review_status == "rejected").cast(Integer)).label("dp_rejected"),
+        )
+        .group_by(DataPoint.literature_id)
+        .subquery()
+    )
+
+    # 选出所有终态文献，对比 Literature 字段 vs DataPoint 实际
+    lits = (await db.execute(
+        select(Literature, dp_counts_sub.c.dp_total, dp_counts_sub.c.dp_approved, dp_counts_sub.c.dp_rejected)
+        .outerjoin(dp_counts_sub, dp_counts_sub.c.lid == Literature.id)
+        .where(
+            Literature.extraction_status.in_(["done", "done_no_data"]),
+            Literature.deleted_at.is_(None),
+        )
+    )).all()
+
+    fixed = 0
+    for lit, dp_total, dp_approved, dp_rejected in lits:
+        dp_total = dp_total or 0
+        dp_approved = dp_approved or 0
+        dp_rejected = dp_rejected or 0
+
+        # 计算期望的 status：有 DataPoint → done，无 → done_no_data
+        expected_status = "done" if dp_total > 0 else "done_no_data"
+
+        needs_update = False
+        new_values = {}
+
+        if lit.extracted_count != dp_total:
+            new_values["extracted_count"] = dp_total
+            needs_update = True
+        if lit.approved_count != dp_approved:
+            new_values["approved_count"] = dp_approved
+            needs_update = True
+        if lit.rejected_count != dp_rejected:
+            new_values["rejected_count"] = dp_rejected
+            needs_update = True
+        if lit.extraction_status != expected_status:
+            new_values["extraction_status"] = expected_status
+            needs_update = True
+
+        if needs_update:
+            await db.execute(
+                update(Literature)
+                .where(Literature.id == lit.id)
+                .values(**new_values, updated_at=datetime.now(timezone.utc))
+            )
+            fixed += 1
+            logger.info(
+                f"[align_state] 修复文献 {lit.id}: "
+                f"count {lit.extracted_count}→{dp_total}, "
+                f"approved {lit.approved_count}→{dp_approved}, "
+                f"rejected {lit.rejected_count}→{dp_rejected}, "
+                f"status {lit.extraction_status}→{expected_status}"
+            )
+
+    if fixed > 0:
+        await db.commit()
+    return fixed
 
 
 async def list_literature(

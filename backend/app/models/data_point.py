@@ -13,13 +13,29 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.dialects.postgresql import JSON
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
+from app.core.term_normalizer import normalize_province
 from app.models.base import Base
 
 
 class DataPoint(Base):
     __tablename__ = "data_point"
+
+    # ---- 字段级归一化（覆盖所有 ORM 入库入口，兜住 import/synthetic 等漏处理的路径）----
+    @validates("province")
+    def _normalize_province(self, key: str, value: str | None) -> str | None:
+        return normalize_province(value) if value else value
+
+    @validates("disease")
+    def _normalize_disease(self, key: str, value: str | None) -> str | None:
+        from app.core.term_normalizer import normalize_disease
+        return normalize_disease(value) if value else value
+
+    @validates("method")
+    def _normalize_method(self, key: str, value: str | None) -> str | None:
+        from app.core.term_normalizer import normalize_method
+        return normalize_method(value) if value else value
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     literature_id: Mapped[uuid.UUID | None] = mapped_column(

@@ -369,7 +369,7 @@ const LiteraturePage: React.FC = () => {
     try {
       await deleteLiterature(id);
       message.success('删除成功');
-      fetchList();
+      await fetchList();
     } catch (err) {
       console.error('[Literature] 删除文献失败:', err);
       message.error('删除失败');
@@ -2545,13 +2545,78 @@ const LiteraturePage: React.FC = () => {
         </div>
       </Modal>
 
-      <PdfPreviewModal
-        open={previewOpen}
-        literatureId={previewLitId}
-        literatureTitle={previewLitTitle}
-        filePath={previewLitFilePath}
-        onClose={() => setPreviewOpen(false)}
-      />
+      {/* 预览面板：带 AI 提取 + 上/下一篇导航 */}
+      {(() => {
+        const idx = items.findIndex((i) => i.id === previewLitId);
+        const hasPrev = idx > 0;
+        const hasNext = idx >= 0 && idx < items.length - 1;
+        return (
+          <PdfPreviewModal
+            open={previewOpen}
+            literatureId={previewLitId}
+            literatureTitle={previewLitTitle}
+            filePath={previewLitFilePath}
+            onClose={() => setPreviewOpen(false)}
+            hasPrev={hasPrev}
+            hasNext={hasNext}
+            onExtract={
+              previewLitId
+                ? () => {
+                    handleExtract(previewLitId);
+                    setPreviewOpen(false);
+                  }
+                : undefined
+            }
+            onDelete={
+              previewLitId
+                ? async () => {
+                    // 删除前先锁定要跳转的目标（避免闭包里 items 过时）
+                    const curIdx = items.findIndex((i) => i.id === previewLitId);
+                    const nextTarget =
+                      curIdx < 0
+                        ? null
+                        : curIdx < items.length - 1
+                        ? items[curIdx + 1] // 删中间/首部 → 跳到后面顶上来的那个
+                        : curIdx > 0
+                        ? items[curIdx - 1] // 删末位 → 回退上一篇
+                        : null; // 这页就 1 条，删完空了
+
+                    await handleDelete(previewLitId);
+
+                    if (nextTarget) {
+                      setPreviewLitId(nextTarget.id);
+                      setPreviewLitTitle(nextTarget.title);
+                      setPreviewLitFilePath(nextTarget.file_path || null);
+                    } else {
+                      // 列表空了，关面板
+                      setPreviewOpen(false);
+                    }
+                  }
+                : undefined
+            }
+            onPrev={
+              hasPrev
+                ? () => {
+                    const prev = items[idx - 1];
+                    setPreviewLitId(prev.id);
+                    setPreviewLitTitle(prev.title);
+                    setPreviewLitFilePath(prev.file_path || null);
+                  }
+                : undefined
+            }
+            onNext={
+              hasNext
+                ? () => {
+                    const nxt = items[idx + 1];
+                    setPreviewLitId(nxt.id);
+                    setPreviewLitTitle(nxt.title);
+                    setPreviewLitFilePath(nxt.file_path || null);
+                  }
+                : undefined
+            }
+          />
+        );
+      })()}
 
       {/* 上传后查重警告 */}
       <Modal
@@ -2651,7 +2716,7 @@ const LiteraturePage: React.FC = () => {
         title={<><RestOutlined /> 回收站</>}
         open={trashOpen}
         onCancel={() => setTrashOpen(false)}
-        width={900}
+        width={1200}
         footer={[
           <Button key="refresh" icon={<ReloadOutlined />} onClick={fetchTrashList}>
             刷新
@@ -2699,15 +2764,14 @@ const LiteraturePage: React.FC = () => {
             onChange: (p, ps) => { setTrashPage(p); setTrashPageSize(ps); },
             showTotal: (t) => `共 ${t} 条`,
           }}
-          scroll={{ x: 700 }}
           size="middle"
           columns={[
-            { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true, width: 300 },
-            { title: '作者', dataIndex: 'authors', key: 'authors', ellipsis: true, width: 150, render: (v: string) => v || '-' },
-            { title: '期刊', dataIndex: 'journal', key: 'journal', ellipsis: true, width: 150, render: (v: string) => v || '-' },
-            { title: '年份', dataIndex: 'pub_year', key: 'pub_year', width: 60, render: (v: number) => v || '-' },
+            { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true, width: 380 },
+            { title: '作者', dataIndex: 'authors', key: 'authors', ellipsis: true, width: 180, render: (v: string) => v || '-' },
+            { title: '期刊', dataIndex: 'journal', key: 'journal', ellipsis: true, width: 160, render: (v: string) => v || '-' },
+            { title: '年份', dataIndex: 'pub_year', key: 'pub_year', width: 70, render: (v: number) => v || '-' },
             {
-              title: '删除时间', dataIndex: 'deleted_at', key: 'deleted_at', width: 160,
+              title: '删除时间', dataIndex: 'deleted_at', key: 'deleted_at', width: 170,
               render: (v: string) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-',
             },
             {

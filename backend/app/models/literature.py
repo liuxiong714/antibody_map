@@ -16,14 +16,19 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
+from app.core.term_normalizer import normalize_province
 from app.models.base import Base
 from app.models.literature_tag import Tag, literature_tag
 
 
 class Literature(Base):
     __tablename__ = "literature"
+
+    @validates("province")
+    def _normalize_province(self, key: str, value: str | None) -> str | None:
+        return normalize_province(value) if value else value
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     title: Mapped[str] = mapped_column(String(500))

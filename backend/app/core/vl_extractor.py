@@ -133,41 +133,40 @@ async def extract_with_vision(page_images: list[bytes], json_schema: dict) -> st
         return ""
 
     try:
-        client = AsyncOpenAI(
+        async with AsyncOpenAI(
             base_url=settings.OLLAMA_BASE_URL,
             api_key=settings.OLLAMA_API_KEY,
-        )
+        ) as client:
+            batch_size = _get_vl_batch_size()
+            batch_count = (len(page_images) + batch_size - 1) // batch_size
+            parsed_results: list[dict] = []
+            for i in range(batch_count):
+                batch = page_images[i * batch_size : (i + 1) * batch_size]
+                try:
+                    raw = await _call_single_batch(client, batch, json_schema)
+                except Exception as e:
+                    logger.warning(f"[VL] 第 {i + 1}/{batch_count} 批请求失败，跳过: {e}")
+                    continue
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except (ValueError, TypeError):
+                    logger.warning(f"[VL] 第 {i + 1}/{batch_count} 批输出非合法 JSON，忽略")
+                    continue
+                parsed_results.append(obj)
 
-        batch_size = _get_vl_batch_size()
-        batch_count = (len(page_images) + batch_size - 1) // batch_size
-        parsed_results: list[dict] = []
-        for i in range(batch_count):
-            batch = page_images[i * batch_size : (i + 1) * batch_size]
-            try:
-                raw = await _call_single_batch(client, batch, json_schema)
-            except Exception as e:
-                logger.warning(f"[VL] 第 {i + 1}/{batch_count} 批请求失败，跳过: {e}")
-                continue
-            if not raw:
-                continue
-            try:
-                obj = json.loads(raw)
-            except (ValueError, TypeError):
-                logger.warning(f"[VL] 第 {i + 1}/{batch_count} 批输出非合法 JSON，忽略")
-                continue
-            parsed_results.append(obj)
+            if not parsed_results:
+                logger.warning("[VL] 所有批次均未得到有效 JSON，返回空串")
+                return ""
 
-        if not parsed_results:
-            logger.warning("[VL] 所有批次均未得到有效 JSON，返回空串")
-            return ""
-
-        merged = _merge_vision_results(parsed_results)
-        logger.info(
-            f"[VL] 分批视觉提取完成: {batch_count} 批，合并后 data_points="
-            f"{len(merged.get('data_points') or [])}, titer_tables="
-            f"{len(merged.get('titer_tables') or [])}"
-        )
-        return json.dumps(merged, ensure_ascii=False)
+            merged = _merge_vision_results(parsed_results)
+            logger.info(
+                f"[VL] 分批视觉提取完成: {batch_count} 批，合并后 data_points="
+                f"{len(merged.get('data_points') or [])}, titer_tables="
+                f"{len(merged.get('titer_tables') or [])}"
+            )
+            return json.dumps(merged, ensure_ascii=False)
     except Exception as e:
         logger.warning(f"[VL] 视觉提取失败，返回空串: {e}")
         return ""

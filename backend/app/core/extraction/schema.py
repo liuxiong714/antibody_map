@@ -67,9 +67,6 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
       "gmc_unit": "GMC单位（如：IU/ml、mIU/ml、μg/ml）",
       "gmc_ci_lower": GMC 95%置信区间下限,
       "gmc_ci_upper": GMC 95%置信区间上限,
-      "journal": "发表杂志名称",
-      "authors": "作者（多个用分号分隔）",
-      "author_affiliations": "作者单位",
       "source_page": 来源页码（整数，如无法判断填null）,
       "source_context": "包含该数据的原文片段（20-50字，保留关键数字）",
       "estimate_type": "估计类型：primary（主估计/总体汇总）或 subgroup（子组/分层估计）",
@@ -92,6 +89,7 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
 
 ## 重要规则
 - **article 元数据**：从文献文本（标题、首页、摘要区）提取文献级元数据填入顶层 `article` 对象；文本中明确存在才填，无法确定的字段填null，**禁止编造 DOI/PMID/摘要/年份**。
+- **data_point 不重复文献级元数据**：`journal`/`authors`/`author_affiliations` 仅在顶层 `article` 中出现，每条 data_point 不再重复这些字段（减少输出量）。
 - **排除方法学/判定阈值**：检测方法、实验步骤、以及"不可检测/阴性/可疑/阳性"的判定 cut-off 阈值（如 "<50 IU/l 为不可检测"）**不是**研究结果数据，不得提取为数据点。
 - **省份必须匹配**：从上述标准列表中选取最匹配的省份名称。如文中"鲁"→"山东"，"广东省"→"广东"，"上海"→"上海"
 - **百分比处理**：87.3% → 填87.3（去掉%符号）；如果多个年份/组别有%数据，全部提取为多个数据点
@@ -170,9 +168,8 @@ EXTRACTION_JSON_SCHEMA = {
                     "gmc_unit": {"type": ["string", "null"]},
                     "gmc_ci_lower": {"type": ["number", "null"]},
                     "gmc_ci_upper": {"type": ["number", "null"]},
-                    "journal": {"type": ["string", "null"]},
-                    "authors": {"type": ["string", "null"]},
-                    "author_affiliations": {"type": ["string", "null"]},
+                    # journal/authors/author_affiliations 已提升到顶层 article，
+                    # data_point 不再重复，减少 LLM 输出量（每条节省 ~100 字符）
                     "source_page": {"type": ["string", "null"]},
                     "source_context": {"type": ["string", "null"]},
                     "estimate_type": {"type": "string", "enum": ["primary", "subgroup", "null"]},
@@ -261,9 +258,6 @@ If a value only describes a positivity/negativity judgment cutoff, ignore it and
       "gmc_unit": "GMC unit (IU/ml, mIU/ml, μg/ml)",
       "gmc_ci_lower": GMC 95% CI lower,
       "gmc_ci_upper": GMC 95% CI upper,
-      "journal": "journal name",
-      "authors": "authors (semicolon separated)",
-      "author_affiliations": "author affiliations",
       "source_page": source page number (integer, null if undeterminable),
       "source_context": "original text snippet containing key data (20-50 chars)"
     }}
@@ -372,9 +366,6 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
       "gmc_unit": "GMC单位（如：IU/ml、mIU/ml、μg/ml）",
       "gmc_ci_lower": GMC 95%置信区间下限,
       "gmc_ci_upper": GMC 95%置信区间上限,
-      "journal": "发表杂志名称",
-      "authors": "作者（多个用分号分隔）",
-      "author_affiliations": "作者单位",
       "source_page": 来源页码（整数，如无法判断填null）,
       "source_context": "包含该数据的原文片段（20-50字，保留关键数字）",
       "estimate_type": "估计类型：primary（主估计/总体汇总）或 subgroup（子组/分层估计）",
@@ -397,6 +388,7 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
 
 ## 重要规则
 - **article 元数据**：从文献文本（标题、首页、摘要区）提取文献级元数据填入顶层 `article` 对象；文本中明确存在才填，无法确定的字段填null，**禁止编造 DOI/PMID/摘要/年份**。
+- **data_point 不重复文献级元数据**：`journal`/`authors`/`author_affiliations` 仅在顶层 `article` 中出现，每条 data_point 不再重复这些字段（减少输出量）。
 - **排除方法学/判定阈值**：检测方法、实验步骤、以及"不可检测/阴性/可疑/阳性"的判定 cut-off 阈值（如 "<50 IU/l 为不可检测"）**不是**研究结果数据，不得提取为数据点。
 - **省份必须匹配**：从上述标准列表中选取最匹配的省份名称。如文中"鲁"→"山东"，"广东省"→"广东"，"上海"→"上海"
 - **百分比处理**：87.3% → 填87.3（去掉%符号）；如果多个年份/组别有%数据，全部提取为多个数据点

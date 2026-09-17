@@ -441,6 +441,7 @@ class LLMClientMixin:
         content_parts: list[str] = []
         usage_dict: dict | None = None
         actual_model: str | None = None
+        finish_reason: str | None = None
         try:
             while True:
                 try:
@@ -464,6 +465,11 @@ class LLMClientMixin:
                         "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
                         "total_tokens": getattr(u, "total_tokens", 0) or 0,
                     }
+                # 捕获 finish_reason（最后一个有内容的 chunk 会携带）
+                if chunk.choices and chunk.choices[0]:
+                    fr = getattr(chunk.choices[0], "finish_reason", None)
+                    if fr:
+                        finish_reason = fr
                 if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                     content_parts.append(chunk.choices[0].delta.content)
                 if getattr(chunk, "model", None):
@@ -483,6 +489,12 @@ class LLMClientMixin:
             await _consume_daily_quota(usage_dict["total_tokens"])
         if content:
             logger.info(f"LLM 返回内容长度: {len(content)}")
+        # 关键：记录 finish_reason，便于诊断 JSON 截断根因
+        if finish_reason == "length":
+            logger.warning(
+                f"LLM 输出因 max_tokens 限制被截断（finish_reason=length），"
+                f"实际输出 {len(content)} 字符 — 建议增大 LLM_MAX_TOKENS 或精简输出格式"
+            )
         return content or ""
 
     async def _assert_local_model_installed(self) -> None:

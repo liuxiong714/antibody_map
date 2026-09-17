@@ -188,7 +188,7 @@ const MainLayout: React.FC = () => {
             </Dropdown>
           </Space>
         </Header>
-        <Content style={{ margin: 16, padding: 16, background: 'var(--ab-bg-layout)', minHeight: 280 }}>
+        <Content className={location.pathname.startsWith('/knowledge-graph') ? 'layout-content-kg' : undefined} style={location.pathname.startsWith('/knowledge-graph') ? { background: 'var(--ab-bg-layout)', minHeight: 280 } : { margin: 16, padding: 16, background: 'var(--ab-bg-layout)', minHeight: 280 }}>
           <Outlet />
         </Content>
       </Layout>

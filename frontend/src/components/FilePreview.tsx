@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, Space, Spin, message, Empty, Typography, Upload } from 'antd';
 import { DownloadOutlined, FileTextOutlined, UploadOutlined } from '@ant-design/icons';
 import { uploadLiteratureFile } from '../services/literature';
-import PdfViewer from './PdfViewer';
+import PdfViewer, { PdfViewerHandle } from './PdfViewer';
 
 const { Text } = Typography;
 
@@ -12,6 +12,10 @@ interface FilePreviewProps {
   defaultScale?: number;
   maxHeight?: string;
   onFileUploaded?: () => void;
+  /** PDF 页面布局 */
+  pageLayout?: 'single' | 'double';
+  /** 暴露 PdfViewer 滚动/翻页 API */
+  pdfRef?: React.Ref<PdfViewerHandle>;
 }
 
 /**
@@ -55,6 +59,8 @@ const FilePreview: React.FC<FilePreviewProps> = ({
   defaultScale = 0.8,
   maxHeight = '100%',
   onFileUploaded,
+  pageLayout,
+  pdfRef,
 }) => {
   const ext = filePath?.toLowerCase().match(/\.([^.]+)$/)?.[1] || '';
   const [textContent, setTextContent] = useState<string | null>(null);
@@ -165,9 +171,11 @@ const FilePreview: React.FC<FilePreviewProps> = ({
   if (isPdf) {
     return (
       <PdfViewer
+        ref={pdfRef}
         literatureId={literatureId}
         defaultScale={defaultScale}
         maxHeight={maxHeight}
+        pageLayout={pageLayout}
       />
     );
   }

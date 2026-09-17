@@ -45,18 +45,41 @@ from app.core.parse_cache import get_cache, set_cache  # noqa: E402
 logger = logging.getLogger("uvicorn")
 
 
-def _run_cache_coro(coro):
-    """在同步函数中执行异步缓存协程。
+class ExtractionText(str):
+    """str 子类：携带解析时视觉提取器返回的结构化数据，同时保持 str 兼容性。
+
+    用法与普通 str 完全一致（可用于字符串拼接、比较、序列化等），
+    通过 `.vision_data` 属性访问视觉提取结果（dict 或 None）。
+    """
+
+    __slots__ = ("vision_data",)
+
+    def __new__(cls, text: str, vision_data: dict | None = None):
+        instance = super().__new__(cls, text)
+        instance.vision_data = vision_data
+        return instance
+
+
+def _run_cache_coro(coro, timeout: float | None = 30):
+    """在同步函数中执行异步协程。
 
     无运行中的事件循环时直接用 asyncio.run；若已处于事件循环内（如 Celery 异步
     任务中调用 extract_text），则另起临时线程运行，避免 asyncio.run 报错。
+
+    Parameters
+    ----------
+    coro : awaitable
+        要执行的协程对象。
+    timeout : float | None
+        在线程模式下等待结果的最大秒数。默认 30 秒（Redis 缓存操作够用）；
+        视觉提取等长耗时任务应传入 None（无限等待）或足够大的值。
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result(timeout=30)
+        return pool.submit(asyncio.run, coro).result(timeout=timeout)
 
 
 async def _ocr_pages_async(
@@ -173,30 +196,37 @@ def _extract_with_mineru(file_bytes: bytes) -> str | None:
                 _os.unlink(tmp_path)
 
 
-def extract_text(file_bytes: bytes) -> str:
+def extract_text(file_bytes: bytes) -> ExtractionText:
     """从 PDF 文件字节中提取文本。
 
     优先使用 MinerU 增强解析（若已安装且启用），
     否则回退到 PyMuPDF + OCR 兜底。
+
+    返回 ExtractionText（str 子类），可直接当字符串使用；
+    扫描页视觉提取器返回的结构化 data_points 等放在 `.vision_data` 属性中。
     """
     # 缓存：以文件字节 sha256 为 key，命中则直接复用，避免重复跑最慢的 MinerU/OCR
     cache_key = hashlib.sha256(file_bytes).hexdigest()
     cached = _run_cache_coro(get_cache(cache_key))
     if cached is not None:
         logger.info(f"[解析缓存] 命中: key={cache_key[:12]}…, 文本 {len(cached)} 字符")
-        return cached
+        # 缓存仅存纯文本，vision_data 不缓存（每次视觉提取独立）
+        return ExtractionText(cached, vision_data=None)
 
-    def _cache_result(result: str) -> str:
-        """解析成功后写入缓存（空结果不缓存），并原样返回。"""
-        if result:
-            _run_cache_coro(set_cache(cache_key, result))
-        return result
+    # 本次解析的视觉提取结果（如有）
+    _vision_data: dict | None = None
+
+    def _cache_result(text: str) -> str:
+        """解析成功后写入缓存（空结果不缓存），并原样返回文本。"""
+        if text:
+            _run_cache_coro(set_cache(cache_key, text))
+        return text
 
     # 尝试 MinerU 增强解析
     if HAS_MINERU and settings.ENABLE_MINERU_PDF_PARSER:
         mineru_text = _extract_with_mineru(file_bytes)
         if mineru_text:
-            return _cache_result(mineru_text)
+            return ExtractionText(_cache_result(mineru_text), vision_data=None)
     elif not HAS_MINERU and settings.ENABLE_MINERU_PDF_PARSER:
         logger.warning(
             "[MinerU] 已启用但不可用，请安装 PyTorch 和 mineru："
@@ -205,7 +235,7 @@ def extract_text(file_bytes: bytes) -> str:
 
     if not HAS_PYMUPDF:
         logger.warning("PyMuPDF 不可用，PDF 解析被跳过")
-        return ""
+        return ExtractionText("", vision_data=None)
 
     # 单页有效文本少于该字符数 → 判定为扫描页/文字层损坏页，交给 OCR
     PAGE_TEXT_MIN = 100
@@ -263,25 +293,33 @@ def extract_text(file_bytes: bytes) -> str:
                     f"检测到 {len(page_images_for_vision)} 个扫描页，调用视觉提取器增强..."
                 )
                 vision_text = _run_cache_coro(
-                    extract_with_vision(page_images_for_vision, EXTRACTION_JSON_SCHEMA)
+                    extract_with_vision(page_images_for_vision, EXTRACTION_JSON_SCHEMA),
+                    timeout=None,
                 )
                 if vision_text and vision_text.strip():
                     # 视觉提取器输出的是"严格按 Schema 的结构化 JSON"（已提取的数据点），
                     # 不能当作文档正文追加进文本，否则下游 LLM 会拿这段历史 JSON 当文献
-                    # 文本再次提取，造成重复提取/数据混乱（见 问题3）。
-                    # 仅当输出是散文（非 JSON）时才作为正文候选追加。
+                    # 文本再次提取，造成重复提取/数据混乱。
+                    # 但 JSON 里的 data_points / titer_tables 需要保留传递到下游。
                     stripped = vision_text.lstrip()
                     looks_json = stripped.startswith("{") or stripped.startswith("[")
                     if looks_json:
                         try:
-                            json.loads(stripped)  # 校验确为合法 JSON，避免误判
+                            _vision_data = json.loads(stripped)
+                            dp_count = len(_vision_data.get("data_points") or [])
+                            tt_count = len(_vision_data.get("titer_tables") or [])
                             logger.info(
-                                f"[视觉增强] 视觉输出为结构化 JSON({len(vision_text)} 字符)，"
-                                f"不追加为正文（避免重复提取）"
+                                f"[视觉增强] 视觉输出为结构化 JSON({len(vision_text)} 字符), "
+                                f"data_points={dp_count}, titer_tables={tt_count}，"
+                                f"不追加为正文，传递到下游合并"
                             )
                         except (ValueError, TypeError):
                             # 以 { 或 [ 开头但不是合法 JSON → 按散文兜底追加
                             looks_json = False
+                            logger.warning(
+                                f"[视觉增强] 视觉输出疑似 JSON 但解析失败，"
+                                f"按散文追加: {vision_text[:200]}"
+                            )
                     if not looks_json:
                         full_text_parts.append(vision_text)
                         logger.info(f"[视觉增强] 视觉提取返回 {len(vision_text)} 字符，已追加")
@@ -301,11 +339,16 @@ def extract_text(file_bytes: bytes) -> str:
                 parts = [*full_text_parts, ocr_text] if full_text_parts else [ocr_text]
                 result = "\n\n".join(parts)
                 logger.info(f"[PyMuPDF+OCR] 解析完成: {len(result)} 字符（含 OCR 兜底）")
-                return _cache_result(result)
+                return ExtractionText(
+                    _cache_result(result), vision_data=_vision_data
+                )
 
         logger.info(f"[PyMuPDF] 解析完成: {len(combined_text)} 字符")
-        return _cache_result(combined_text if combined_text.strip() else "")
+        return ExtractionText(
+            _cache_result(combined_text if combined_text.strip() else ""),
+            vision_data=_vision_data,
+        )
 
     except Exception as e:
         logger.error(f"PDF 解析失败: {e}")
-        return ""
+        return ExtractionText("", vision_data=None)

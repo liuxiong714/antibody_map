@@ -1,4 +1,4 @@
-﻿/* ============================================================
+/* ============================================================
    theme.css — 科研学术主题（Academic Blue）CSS 变量
    与 theme.ts 中的 academicColors 保持同步（单一色值源）
    ============================================================ */
@@ -326,4 +326,19 @@ html[data-app-theme="enhanced"] .ant-select-selector,
 html[data-app-theme="enhanced"] .ant-input,
 html[data-app-theme="enhanced"] .ant-tabs-tab {
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* ── 知识图谱全宽布局：干掉 Content margin/padding ── */
+.ant-layout-content.layout-content-kg {
+  margin: 0 !important;
+  padding: 0 !important;
+  background: var(--ab-bg-layout) !important;
+}
+
+/* ── 知识图谱：强制 Card 内部容器传递宽度到 EChart ── */
+.ant-layout-content.layout-content-kg .ant-card {
+  min-width: 0 !important;
+}
+.ant-layout-content.layout-content-kg .ant-card-body {
+  min-width: 0 !important;
 }
