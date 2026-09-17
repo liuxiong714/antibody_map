@@ -4,6 +4,17 @@
 
 ### 新增
 
+- **系统设置 · 系统活动 Tab（审计日志落库 + 关键路径全覆盖）** — 原「后台日志」Tab 仅展示进程 stdout（运维排障用），普通用户看不出系统最近在干什么。新增独立「系统活动」Tab 消费 `audit_log` 表，Tab 宽面板（max-width: 1400px）保证所有 Tab 一行铺开。审计核心改造：
+  1. `backend/app/core/audit.py` 从纯 stdout 双通道升级为 **stdout + asyncpg DB 落库**；独立 async engine 与 base.py 主 engine 解耦，Celery worker 与 FastAPI 进程通用；落库失败自动降级仅写 stdout，不反制业务。
+  2. 覆盖关键用户关注路径：
+     - 文献 AI 提取 **完成 / 失败**（`extraction_completed` / `extraction_failed`，含模型 / 数据点数量 / 错误类型）
+     - 三类报告（抗体分析 / 免疫屏障 / 疫苗接种策略）**生成成功 / 失败**（`report_generated`，含 kind / disease / model）
+     - 知识图谱抽取 **完成 / 失败**（`kg_extraction_completed` / `kg_extraction_failed`，含 processed / written 三元组数）
+     - 文件夹监控 **扫描**（`folder_monitor_scanned`，含 scanned / imported / skipped / failed 统计）
+     - 数据库备份 / 还原 / 下载、登录 / 登出 / 登录失败、数据点审核、MinIO 清理、特性开关调整 —— 全部自动落库
+  3. 后端新端点 `GET /api/v1/system/audit-logs`：分页 + action / username / keyword 过滤 + 27 种 action 友好中文标签映射。
+  4. 前端 Settings.tsx 新 Tab：Table（时间 / 彩色 Tag 动作 / 用户 / 目标）+ 工具条筛选 + 展开详情（目标 / 详情 / IP / 实体 / 原值 / 新值）。
+
 - **疫苗接种策略报告 · 任务时间日历选择器** — 报告生成页 StrategyReportForm 的「任务时间」字段从手动输入框升级为 antd `DatePicker.RangePicker`，点击弹出双月日历拖拽选起止日期，序列化为 `YYYY-MM-DD 至 YYYY-MM-DD` 与后端 `task_time` 字符串兼容；内置 `parseTaskTimeToRange()` 反向解析器，加载历史报告时可把旧格式（`2026年8-10月` / `2026-08-01~2026-10-31`）回填到日历控件。
 - **Model 层字段级归一化（ORM @validates）** — `DataPoint` / `Literature` 模型新增 SQLAlchemy `@validates` 自动校验，province/disease/method 字段在任何 ORM 入库路径（提取管线、题录导入、合成自测、手工写入）都统一走 `term_normalizer` 归一化，**从根本上杜绝 import/synthetic 等旁路写入脏数据**。
 

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.core import redis_background_tasks as bg
+from app.core.audit import log_audit
 from app.models.base import async_session
 from app.tasks.async_runner import run_async
 from app.tasks.celery_app import celery_app
@@ -43,11 +44,38 @@ def run_report_generation(
         data = run_async(__run_report_generation(
             task_id, language, disease, province, data_type, title, model, template_id, kind
         ))
+        # ── 审计：报告生成完成 ──
+        try:
+            log_audit(
+                action="report_generated",
+                target=f"report:{data.get('id', '')}",
+                detail={
+                    "kind": _kind_label(kind),
+                    "disease": disease,
+                    "province": province,
+                    "model": model,
+                    "title": title,
+                },
+                result="success",
+                entity_type="report",
+                entity_id=str(data.get("id", "")),
+            )
+        except Exception:
+            pass
         return data
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         logger.error(f"后台报告生成失败（{kind}）: {err}\n{traceback.format_exc()}")
         run_async(bg.finish("report_generation", task_id, status="failed", error=err))
+        try:
+            log_audit(
+                action="report_generated",
+                target="report",
+                detail={"kind": _kind_label(kind), "error": err[:500]},
+                result="fail",
+            )
+        except Exception:
+            pass
         raise
 
 
@@ -74,11 +102,37 @@ def run_vaccination_strategy(
             personnel_gender, personnel_age, personnel_vaccination_history,
             title, template_id, model,
         ))
+        try:
+            log_audit(
+                action="report_generated",
+                target=f"report:{data.get('id', '')}",
+                detail={
+                    "kind": "疫苗接种策略报告",
+                    "task_type": task_type,
+                    "task_time": task_time,
+                    "task_location": task_location,
+                    "model": model,
+                },
+                result="success",
+                entity_type="report",
+                entity_id=str(data.get("id", "")),
+            )
+        except Exception:
+            pass
         return data
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         logger.error(f"后台疫苗接种策略报告生成失败: {err}\n{traceback.format_exc()}")
         run_async(bg.finish("report_generation", task_id, status="failed", error=err))
+        try:
+            log_audit(
+                action="report_generated",
+                target="report",
+                detail={"kind": "疫苗接种策略报告", "error": err[:500]},
+                result="fail",
+            )
+        except Exception:
+            pass
         raise
 
 
@@ -104,11 +158,34 @@ def run_kg_extraction(
     run_async(bg.start("kg_extraction", task_id=task_id, scope=scope))
     try:
         result = run_async(__run_kg_extraction(task_id, scope, limit, literature_ids, model, api_key, base_url))
+        try:
+            log_audit(
+                action="kg_extraction_completed",
+                target="kg_extraction",
+                detail={
+                    "scope": scope,
+                    "processed": result.get("processed", 0),
+                    "written": result.get("total_written", 0),
+                    "remaining": result.get("remaining", 0),
+                },
+                result="success",
+            )
+        except Exception:
+            pass
         return result
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         logger.error(f"后台知识图谱抽取失败: {err}\n{traceback.format_exc()}")
         run_async(bg.finish("kg_extraction", task_id, status="failed", error=err))
+        try:
+            log_audit(
+                action="kg_extraction_failed",
+                target="kg_extraction",
+                detail={"scope": scope, "error": err[:500]},
+                result="fail",
+            )
+        except Exception:
+            pass
         raise
 
 

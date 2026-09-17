@@ -1,4 +1,4 @@
-﻿import api from './api';
+import api from './api';
 
 export interface SystemInfo {
   name: string;
@@ -117,5 +117,47 @@ export async function getActiveTasks(): Promise<ActiveTasks> {
 /** 按任务ID查询单个后台任务（报告生成/知识图谱抽取）的实时状态；任务结束后仍可读取 result（如 report_id） */
 export async function getTaskStatus(taskId: string): Promise<ActiveTaskItem> {
   const { data } = await api.get<ActiveTaskItem>(`/system/tasks/${taskId}`);
+  return data;
+}
+
+// ===================== 审计日志（系统活动） =====================
+
+export interface AuditLogEntry {
+  id: string;
+  action: string;
+  action_label: string;
+  username: string | null;
+  target: string | null;
+  detail: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
+  old_value: string | null;
+  new_value: string | null;
+  client_ip: string | null;
+  created_at: string | null;
+}
+
+export interface AuditLogList {
+  items: AuditLogEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+  action_options: string[];
+}
+
+export async function listAuditLogs(params: {
+  page?: number;
+  page_size?: number;
+  action?: string;
+  username?: string;
+  keyword?: string;
+} = {}): Promise<AuditLogList> {
+  const q = new URLSearchParams();
+  if (params.page) q.set("page", String(params.page));
+  if (params.page_size) q.set("page_size", String(params.page_size));
+  if (params.action) q.set("action", params.action);
+  if (params.username) q.set("username", params.username);
+  if (params.keyword) q.set("keyword", params.keyword);
+  const { data } = await api.get<AuditLogList>(`/system/audit-logs?${q.toString()}`);
   return data;
 }

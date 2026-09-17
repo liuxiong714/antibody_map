@@ -26,6 +26,7 @@ from app.core.metadata_validator import (
 from app.core.pdf_table_parser import extract_tables_markdown
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES, normalize_province
 from app.core.text_preprocessor import preprocess, detect_language
+from app.core.audit import log_audit
 from app.models.api_model_config import ApiModelConfig
 from app.models.base import async_session
 from app.models.data_point import DataPoint
@@ -1270,6 +1271,24 @@ def process_literature(
             logger.info(f"文献 {literature_id} 提取被新任务取代，跳过")
         else:
             logger.info(f"文献 {literature_id} 提取完成，数据点: {result.get('extracted_count', 0)}")
+            # ── 审计：提取终局 ──
+            try:
+                final_status_tag = result.get("status", "")
+                if final_status_tag in ("done", "done_no_data"):
+                    log_audit(
+                        action="extraction_completed",
+                        target=f"literature:{literature_id}",
+                        detail={
+                            "status": final_status_tag,
+                            "data_points": result.get("extracted_count", 0),
+                            "model": result.get("model"),
+                        },
+                        result="success",
+                        entity_type="literature",
+                        entity_id=str(literature_id),
+                    )
+            except Exception:
+                pass
         return result
 
     except Exception as e:
@@ -1330,6 +1349,22 @@ def process_literature(
                 except Exception as he:
                     logger.warning(f"写入失败历史记录出错: {he}")
                 await db.commit()
+                # ── 审计：提取失败 ──
+                try:
+                    log_audit(
+                        action="extraction_failed",
+                        target=f"literature:{literature_id}",
+                        detail={
+                            "error_type": err_type,
+                            "message": err["message"][:500],
+                            "model": lit_model,
+                        },
+                        result="fail",
+                        entity_type="literature",
+                        entity_id=str(literature_id),
+                    )
+                except Exception:
+                    pass
 
         # 连接类错误重试耗尽：回退到 pending（不判死、不写 failed 历史），
         # 使该文献在模型服务恢复后可被重新提取。

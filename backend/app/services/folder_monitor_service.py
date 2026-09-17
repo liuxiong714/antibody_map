@@ -14,6 +14,7 @@ from app.core.document_parser import ALLOWED_EXTS
 from app.models.base import async_session
 from app.models.literature import Literature
 from app.models.monitored_folder import MonitoredFile, MonitoredFolder
+from app.core.audit import log_audit
 from app.services.extraction_service import trigger_extraction
 from app.services.literature_service import compute_pdf_hash, upload_literature
 
@@ -272,6 +273,21 @@ async def scan_folder(db: AsyncSession, folder: MonitoredFolder) -> dict:
         f"文件夹监控: 扫描 '{folder.name}' 完成 — "
         f"发现 {len(new_files)} 个新文件, 导入 {imported}, 跳过 {skipped}, 失败 {failed}"
     )
+    # ── 审计：文件夹监控扫描 ──
+    try:
+        log_audit(
+            action="folder_monitor_scanned",
+            target=f"folder:{folder.name}",
+            detail={
+                "scanned": len(new_files),
+                "imported": imported,
+                "skipped": skipped,
+                "failed": failed,
+            },
+            result="success" if imported or skipped else ("fail" if failed else "success"),
+        )
+    except Exception:
+        pass
     return {
         "scanned": len(new_files),
         "imported": imported,

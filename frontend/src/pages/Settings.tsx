@@ -1,16 +1,16 @@
-﻿import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Card, Tabs, Button, Space, Tag, Select, Input, Alert, Typography, Empty, Spin, Tooltip,
   Table, Upload, Modal, message, Switch,
 } from 'antd';
 import {
   SettingOutlined, RobotOutlined, SafetyOutlined, FileTextOutlined, ReloadOutlined,
-  SearchOutlined, DownOutlined, ClearOutlined, DesktopOutlined,
+  SearchOutlined, DownOutlined, ClearOutlined, DesktopOutlined, HistoryOutlined,
   DatabaseOutlined, DownloadOutlined, RollbackOutlined, FieldTimeOutlined,
 } from '@ant-design/icons';
 import ModelManager from '../components/ModelManager';
 import LocalModelManager from '../components/LocalModelManager';
-import { getSystemInfo, patchFeatureFlags, listLogFiles, getLogContent, SystemInfo, LogFile, LogEntry, listBackups, backupDatabase, buildDownloadBackupUrl, restoreBackup, BackupFile, getActiveTasks, ActiveTaskGroup, ActiveTaskItem } from '../services/system';
+import { getSystemInfo, patchFeatureFlags, listLogFiles, getLogContent, SystemInfo, LogFile, LogEntry, listBackups, backupDatabase, buildDownloadBackupUrl, restoreBackup, BackupFile, getActiveTasks, ActiveTaskGroup, ActiveTaskItem, listAuditLogs, AuditLogEntry } from '../services/system';
 import './Settings.css';
 
 const { Text } = Typography;
@@ -76,6 +76,16 @@ const Settings: React.FC = () => {
   const [logLoading, setLogLoading] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [logError, setLogError] = useState('');
+  // ── 系统活动（审计日志）Tab ──
+  const [auditItems, setAuditItems] = useState<AuditLogEntry[]>([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(50);
+  const [auditActionFilter, setAuditActionFilter] = useState('');
+  const [auditUserFilter, setAuditUserFilter] = useState('');
+  const [auditKeyword, setAuditKeyword] = useState('');
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditActionOptions, setAuditActionOptions] = useState<string[]>([]);
   const logBodyRef = useRef<HTMLDivElement>(null);
   const keywordRef = useRef<any>(null);
 
@@ -288,6 +298,36 @@ const Settings: React.FC = () => {
       tasksTimer.current = null;
     };
   }, [activeTab, loadActiveTasks]);
+
+  // 加载审计日志（切到 activities Tab 或筛选条件变化时）
+  useEffect(() => {
+    if (activeTab !== 'activities') return;
+    let cancelled = false;
+    (async () => {
+      setAuditLoading(true);
+      try {
+        const data = await listAuditLogs({
+          page: auditPage,
+          page_size: auditPageSize,
+          action: auditActionFilter || undefined,
+          username: auditUserFilter || undefined,
+          keyword: auditKeyword || undefined,
+        });
+        if (cancelled) return;
+        setAuditItems(data.items);
+        setAuditTotal(data.total);
+        if (auditActionOptions.length === 0 && data.action_options?.length) {
+          setAuditActionOptions(data.action_options);
+        }
+      } catch (err) {
+        console.error('[Settings] 加载审计日志失败:', err);
+      } finally {
+        if (!cancelled) setAuditLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, auditPage, auditPageSize, auditActionFilter, auditUserFilter, auditKeyword]);
 
   const formatTaskTime = (iso: string) => {
     if (!iso) return '';
@@ -522,6 +562,112 @@ const Settings: React.FC = () => {
                       )}
                     </Space>
                   ),
+                },
+              ]}
+            />
+          </div>
+        </Card>
+      ),
+    },
+    {
+      key: 'activities',
+      label: (
+        <span>
+          <HistoryOutlined /> 系统活动
+        </span>
+      ),
+      children: (
+        <Card>
+          <div className="settings-section">
+            <p className="settings-desc">
+              系统自动记录的关键动作日志（登录/审核/提取/报告生成/备份还原等），可按动作类型、用户名、关键字筛选，实时反映最近系统在做什么。
+            </p>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+              <Select
+                style={{ width: 220 }}
+                placeholder="全部动作类型"
+                value={auditActionFilter || undefined}
+                onChange={(v) => { setAuditActionFilter(v || ''); setAuditPage(1); }}
+                allowClear
+                options={auditActionOptions.map((a) => ({ value: a, label: a }))}
+              />
+              <Input
+                style={{ width: 160 }}
+                placeholder="用户名"
+                value={auditUserFilter}
+                allowClear
+                onChange={(e) => { setAuditUserFilter(e.target.value); setAuditPage(1); }}
+              />
+              <Input
+                style={{ width: 220 }}
+                placeholder="关键字（目标 / 详情）"
+                value={auditKeyword}
+                allowClear
+                onChange={(e) => { setAuditKeyword(e.target.value); setAuditPage(1); }}
+              />
+              <Button type="primary" icon={<ReloadOutlined />} onClick={() => setAuditPage((p) => p)}>刷新</Button>
+            </div>
+            <Table<AuditLogEntry>
+              rowKey="id"
+              loading={auditLoading}
+              size="middle"
+              dataSource={auditItems}
+              expandable={{
+                expandedRowRender: (record) => (
+                  <div style={{ padding: '4px 12px 12px', fontSize: 13 }}>
+                    {record.target && <div><Text type="secondary">目标：</Text>{record.target}</div>}
+                    {record.detail && <div><Text type="secondary">详情：</Text><Text code>{record.detail}</Text></div>}
+                    {record.client_ip && <div><Text type="secondary">IP：</Text>{record.client_ip}</div>}
+                    {record.entity_type && <div><Text type="secondary">实体：</Text>{record.entity_type}{record.entity_id ? ` (${record.entity_id})` : ''}</div>}
+                    {record.old_value && <div><Text type="secondary">原值：</Text><Text code>{record.old_value}</Text></div>}
+                    {record.new_value && <div><Text type="secondary">新值：</Text><Text code>{record.new_value}</Text></div>}
+                  </div>
+                ),
+                rowExpandable: (r) => !!(r.detail || r.target || r.old_value || r.new_value),
+              }}
+              pagination={{
+                current: auditPage,
+                pageSize: auditPageSize,
+                total: auditTotal,
+                showSizeChanger: true,
+                pageSizeOptions: ['20', '50', '100'],
+                showTotal: (t) => `共 ${t} 条活动`,
+                onChange: (p, ps) => { setAuditPage(p); setAuditPageSize(ps); },
+              }}
+              columns={[
+                {
+                  title: '时间',
+                  dataIndex: 'created_at',
+                  key: 'time',
+                  width: 160,
+                  render: (v: string) => {
+                    if (!v) return '-';
+                    const d = new Date(v);
+                    const pad = (n: number) => String(n).padStart(2, '0');
+                    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+                  },
+                },
+                {
+                  title: '动作',
+                  dataIndex: 'action',
+                  key: 'action',
+                  width: 190,
+                  render: (v: string, r) => {
+                    const isFail = v?.endsWith('_failed') || v === 'login_failed';
+                    const isExtraction = v?.startsWith('extraction');
+                    const isReport = v?.startsWith('report');
+                    const isLogin = v?.includes('login') || v?.includes('logout');
+                    const color = isFail ? 'red' : isExtraction ? 'blue' : isReport ? 'purple' : isLogin ? 'green' : 'default';
+                    return <Tag color={color}>{r.action_label || v}</Tag>;
+                  },
+                },
+                { title: '用户', dataIndex: 'username', key: 'user', width: 120, render: (v: string) => v || '-' },
+                {
+                  title: '目标',
+                  dataIndex: 'target',
+                  key: 'target',
+                  ellipsis: true,
+                  render: (v: string, r) => v || r.entity_id ? (v || r.entity_id) : '-',
                 },
               ]}
             />

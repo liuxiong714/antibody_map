@@ -1,4 +1,4 @@
-﻿"""系统信息与后台日志查看接口。
+"""系统信息与后台日志查看接口。
 
 - /system/info        ：返回版本号、运行环境、功能特性等动态系统信息
 - /system/logs        ：列出日志目录下的日志文件
@@ -492,6 +492,14 @@ async def restore_database(
         raise HTTPException(status_code=400, detail=f"还原失败（已回滚）: {err_text[-300:]}")
 
     logger.info(f"[还原] 成功: {filename} by user={_user.username}")
+    log_audit(
+        action="db_restore",
+        target=f"db_backup:{filename}",
+        user_id=getattr(_user, "id", None),
+        username=getattr(_user, "username", None),
+        result="success",
+        detail={"size_bytes": len(dump_bytes)},
+    )
     return ApiResponse(message="数据库还原成功", data={"filename": filename, "size": len(dump_bytes)})
 
 
@@ -532,7 +540,7 @@ async def upsert_goal_threshold(
     return ApiResponse(message="阈值已更新", data=data)
 
 
-@router.delete("/thresholds/{disease}", response_model=ApiResponse, summary="重置保护目标阈值", description="删除某疾病的阈值覆盖，恢复默认值（管理员）")
+@router.delete("/thresholds/{disease}", response_model=ApiResponse, summary="重置保护目标阈值", description="删除某疾病的阈值覆盖，恢复默认值")
 async def delete_goal_threshold(
     disease: str,
     db: AsyncSession = Depends(get_db),
@@ -542,6 +550,105 @@ async def delete_goal_threshold(
     await goal_threshold_service.delete_goal_threshold(db, disease)
     return ApiResponse(message="已恢复默认阈值", data={"disease": disease, "reset": True})
 
+
+# ===================== 审计日志查询 =====================
+
+# action 友好标签映射（供前端「系统活动」Tab 展示）
+ACTION_LABELS = {
+    "login": "登录成功",
+    "login_failed": "登录失败",
+    "logout": "退出登录",
+    "feature_flags_update": "特性开关调整",
+    "db_backup": "数据库备份",
+    "db_backup_download": "下载备份文件",
+    "db_restore": "数据库还原",
+    "literature_uploaded": "上传文献",
+    "literature_imported": "批量导入文献",
+    "literature_deduped": "文献去重合并",
+    "literature_deleted": "删除文献",
+    "literature_merged": "文献合并",
+    "extraction_started": "开始提取",
+    "extraction_completed": "提取完成",
+    "extraction_failed": "提取失败",
+    "report_generated": "报告生成完成",
+    "report_deleted": "删除报告",
+    "synthetic_started": "合成自测开始",
+    "synthetic_completed": "合成自测完成",
+    "data_point_review": "数据点审核",
+    "model_config_created": "新增模型配置",
+    "model_config_updated": "更新模型配置",
+    "model_config_deleted": "删除模型配置",
+    "kg_extraction_completed": "知识图谱抽取完成",
+    "kg_extraction_failed": "知识图谱抽取失败",
+    "folder_monitor_scanned": "文件夹监控扫描",
+    "cleanup_minio_orphan_objects": "MinIO 孤儿文件清理",
+}
+
+
+@router.get("/audit-logs", response_model=ApiResponse, summary="查询审计日志", description="按时间倒序返回 audit_log 表的审计条目，支持按 action/user/keyword 过滤；默认最近 200 条")
+async def list_audit_logs(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(50, ge=1, le=500, description="每页条数"),
+    action: str = Query("", description="按 action 过滤，如 login / extraction_completed"),
+    username: str = Query("", description="按用户名过滤"),
+    keyword: str = Query("", description="按 detail/target 关键字过滤（包含匹配）"),
+    _user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.audit_log import AuditLog
+    from sqlalchemy import or_, select, func
+
+    stmt = select(AuditLog)
+    count_stmt = select(func.count(AuditLog.id))
+    where_clauses = []
+    if action:
+        where_clauses.append(AuditLog.action == action)
+    if username:
+        where_clauses.append(AuditLog.username == username)
+    if keyword:
+        like = f"%{keyword}%"
+        where_clauses.append(
+            or_(
+                AuditLog.detail.ilike(like),
+                AuditLog.target.ilike(like),
+            )
+        )
+
+    for c in where_clauses:
+        stmt = stmt.where(c)
+        count_stmt = count_stmt.where(c)
+
+    total = (await db.execute(count_stmt)).scalar_one()
+
+    stmt = stmt.order_by(AuditLog.created_at.desc())
+    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+    rows = (await db.execute(stmt)).scalars().all()
+
+    def _serialize(r: AuditLog) -> dict:
+        return {
+            "id": str(r.id),
+            "action": r.action,
+            "action_label": ACTION_LABELS.get(r.action, r.action),
+            "username": r.username,
+            "target": r.target,
+            "detail": r.detail,
+            "entity_type": r.entity_type,
+            "entity_id": r.entity_id,
+            "old_value": r.old_value,
+            "new_value": r.new_value,
+            "client_ip": r.client_ip,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+
+    return ApiResponse(
+        data={
+            "items": [_serialize(r) for r in rows],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "action_options": sorted(ACTION_LABELS.keys()),
+        }
+    )
 
 
 _AUDIT_INSERTED = True  # marker
