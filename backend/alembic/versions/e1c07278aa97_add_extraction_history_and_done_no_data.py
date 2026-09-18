@@ -43,23 +43,52 @@ def upgrade() -> None:
     op.create_index(op.f('ix_extraction_history_status'), 'extraction_history', ['status'], unique=False)
 
     # 2. 更新 literature 表的 extraction_status 检查约束，添加 done_no_data
-    op.drop_constraint('lit_extraction_status_check', 'literature', type_='check')
-    op.create_check_constraint(
-        'lit_extraction_status_check',
-        'literature',
-        "extraction_status IN ('pending','processing','done','done_no_data','failed')",
-    )
+    # 约束名可能为 lit_extraction_status_check（SQLAlchemy 生成）或
+    # literature_extraction_status_check（init_db.sql 内联生成），
+    # 使用 PL/pgSQL 动态 SQL 安全处理不存在的情况
+    op.execute("""
+        DO $$
+        DECLARE
+            _conname text;
+            _defn text;
+        BEGIN
+            SELECT conname, pg_get_constraintdef(oid)
+            INTO _conname, _defn
+            FROM pg_constraint
+            WHERE conrelid = 'literature'::regclass AND contype = 'c';
+
+            IF _conname IS NOT NULL AND _defn IS NOT NULL AND position('done_no_data' in _defn) = 0 THEN
+                EXECUTE format('ALTER TABLE literature DROP CONSTRAINT %I', _conname);
+                EXECUTE 'ALTER TABLE literature ADD CONSTRAINT lit_extraction_status_check '
+                    || 'CHECK (extraction_status IN (''pending'',''processing'',''done'',''done_no_data'',''failed''))';
+            END IF;
+        END;
+        $$;
+    """)
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     # 1. 恢复原来的检查约束（去掉 done_no_data）
-    op.drop_constraint('lit_extraction_status_check', 'literature', type_='check')
-    op.create_check_constraint(
-        'lit_extraction_status_check',
-        'literature',
-        "extraction_status IN ('pending','processing','done','failed')",
-    )
+    op.execute("""
+        DO $$
+        DECLARE
+            _conname text;
+            _defn text;
+        BEGIN
+            SELECT conname, pg_get_constraintdef(oid)
+            INTO _conname, _defn
+            FROM pg_constraint
+            WHERE conrelid = 'literature'::regclass AND contype = 'c';
+
+            IF _conname IS NOT NULL AND _defn IS NOT NULL AND position('done_no_data' in _defn) > 0 THEN
+                EXECUTE format('ALTER TABLE literature DROP CONSTRAINT %I', _conname);
+                EXECUTE 'ALTER TABLE literature ADD CONSTRAINT lit_extraction_status_check '
+                    || 'CHECK (extraction_status IN (''pending'',''processing'',''done'',''failed''))';
+            END IF;
+        END;
+        $$;
+    """)
 
     # 2. 删除 extraction_history 表
     op.drop_index(op.f('ix_extraction_history_status'), table_name='extraction_history')

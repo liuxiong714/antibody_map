@@ -707,7 +707,22 @@ async def _process_literature_async(
                 logger.info(f"从 ApiModelConfig(id={model_config_id}) 读取 API Key")
             else:
                 logger.warning(f"ApiModelConfig(id={model_config_id}) 不存在，回退到系统配置")
-        # 未提供 model_config_id 时，使用系统配置
+        # 未提供 model_config_id（或用临时配置校验失败）时，优先按 provider 注册中心解析。
+        # 例如 qwen3.5:4b / glm-ocr:bf16 等本地 Ollama 模型 -> OLLAMA_BASE_URL，
+        # 而非硬编码为系统默认的远程 API（否则会把本地模型名发给 DeepSeek）。
+        if not resolved_api_key:
+            resolved_api_key = None
+            resolved_base_url = None
+            try:
+                from app.core.providers import get_provider_for_model
+
+                provider_cls = get_provider_for_model(effective_model)
+                if provider_cls is not None:
+                    resolved_api_key, resolved_base_url = provider_cls.get_config()
+                    logger.info(f"按 Provider({provider_cls.name}) 解析模型 {effective_model} 的 API 配置")
+            except ImportError:
+                pass  # providers 包不可用时回退到系统默认配置
+        # 仍无匹配 Provider 时，使用系统默认配置
         if not resolved_api_key:
             resolved_api_key = settings.LLM_API_KEY or None
             resolved_base_url = settings.LLM_BASE_URL or None
