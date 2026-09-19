@@ -179,6 +179,55 @@ class PostProcessorMixin:
         return None, None
 
     @staticmethod
+    def _parse_age_group_text(val) -> tuple[int | None, int | None]:
+        """从 age_group 文本解析 (age_min, age_max)。
+
+        支持格式：
+          - "1-4 years" / "1-4岁" / "1-4"        → (1, 4)
+          - "0–14" / "0~14" / "0至14" / "0到14"   → (0, 14)
+          - "<5 years" / "<5岁" / "<5"             → (None, 4)
+          - "≤5" / "<=5"                          → (None, 5)
+          - "≥18" / ">=18" / "18+" / ">18"        → (18, None)
+          - "Adults (18+)" / "Adults ≥18"         → (18, None)
+          - "Children" / "儿童"                   → (None, None)  # 无法确定
+        无法解析返回 (None, None)。
+        """
+        if val is None:
+            return None, None
+        s = str(val).strip().lower()
+
+        # 范围格式：数字-数字 / 数字–数字 / 数字~数字 / 数字至数字 / 数字到数字
+        m = re.search(r"(\d+)\s*[-–~至到]\s*(\d+)", s)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+
+        # 上限格式：<5 / ≤5 / <=5 / < 5 years
+        m = re.search(r"[<≤]\s*(\d+)", s)
+        if m:
+            upper = int(m.group(1))
+            # "<5 years" → max=4；"≤5" → max=5
+            if "≤" in s or "<=" in s:
+                return None, upper
+            return None, upper - 1 if upper > 0 else None
+
+        # 下限格式：≥18 / >=18 / 18+ / >18 / adults ≥18
+        m = re.search(r"[≥>=]\s*(\d+)|(\d+)\s*\+", s)
+        if m:
+            num = m.group(1) or m.group(2)
+            lower = int(num)
+            if "≥" in s or ">=" in s or "+" in s:
+                return lower, None
+            return lower + 1, None
+
+        # 单个数字（如 "5 years"）—— 当作精确年龄点，当作 min=max
+        m = re.search(r"^(\d+)\s*(?:years?|岁|yrs?)?$", s)
+        if m:
+            n = int(m.group(1))
+            return n, n
+
+        return None, None
+
+    @staticmethod
     def _normalize_aliases(item: dict) -> dict:
         """将本地模型常见的非标准字段名映射到标准 schema。
 
@@ -192,8 +241,16 @@ class PostProcessorMixin:
 
         # 阳性率简单别名
         if norm.get("positivity_rate") is None:
-            for alias in ("seroprevalence", "positive_rate", "positivity",
-                          "seropositivity", "seroprevalence_rate"):
+            for alias in (
+                # 基础别名
+                "seroprevalence", "positive_rate", "positivity",
+                "seropositivity", "seroprevalence_rate",
+                # nemotron/gemma4 MoE 模型常用别名（带 _percent / _rate 后缀）
+                "positivity_rate_percent", "positive_rate_percent",
+                "seroprevalence_percent", "prevalence", "prevalence_rate",
+                "percent_positive", "positive_percent",
+                "infection_rate", "infection_rate_percent",
+            ):
                 if norm.get(alias) is not None:
                     norm["positivity_rate"] = norm[alias]
                     break
@@ -223,6 +280,17 @@ class PostProcessorMixin:
                 if lo is not None:
                     norm["positivity_ci_lower"] = lo
                     norm["positivity_ci_upper"] = hi
+
+        # age_group 文本 → age_min/age_max 解析（nemotron/gemma4 常用 "1-4 years" / "<5 years" 等格式）
+        if (norm.get("age_min") is None and norm.get("age_max") is None
+                and norm.get("age_group") is not None):
+            parsed_min, parsed_max = PostProcessorMixin._parse_age_group_text(
+                norm["age_group"]
+            )
+            if parsed_min is not None:
+                norm["age_min"] = parsed_min
+            if parsed_max is not None:
+                norm["age_max"] = parsed_max
 
         # ===== 复合字段名智能匹配（宽格式数据） =====
         # 本地模型常输出宽格式：每个组一行，列名包含 disease + indicator

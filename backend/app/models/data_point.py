@@ -53,10 +53,10 @@ class DataPoint(Base):
     age_max: Mapped[int | None]
     sample_size: Mapped[int | None]
     data_type: Mapped[str | None] = mapped_column(String(20), index=True)
-    value: Mapped[float | None] = mapped_column(Numeric(10, 4))
+    value: Mapped[float | None] = mapped_column(Numeric(14, 4))
     unit: Mapped[str | None] = mapped_column(String(50))
-    ci_lower: Mapped[float | None] = mapped_column(Numeric(10, 4))
-    ci_upper: Mapped[float | None] = mapped_column(Numeric(10, 4))
+    ci_lower: Mapped[float | None] = mapped_column(Numeric(14, 4))
+    ci_upper: Mapped[float | None] = mapped_column(Numeric(14, 4))
     method: Mapped[str | None] = mapped_column(String(200))
     assay: Mapped[str | None] = mapped_column(String(200))
     population: Mapped[str | None] = mapped_column(String(200))
@@ -115,8 +115,11 @@ class DataPoint(Base):
             "literature_id",
             "review_status",
         ),
+        # 流行病学/病原学监测指标(阶段1):
+        #   incidence=发病率 / case_count=发病人数 / mortality=死亡率/病死率 / death_count=死亡数
+        # 均为"加法",不触碰既有 seroprevalence/gmc 数据与逻辑
         CheckConstraint(
-            "data_type IN ('seroprevalence','gmc')",
+            "data_type IN ('seroprevalence','gmc','incidence','case_count','mortality','death_count')",
             name="dp_data_type_check",
         ),
         CheckConstraint(

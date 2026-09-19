@@ -66,6 +66,8 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         self._titer_tables: list[dict] = []
         # P1-1：顶层 article 元数据（LLM 提取的文献级元数据，首个非空者胜出）
         self._article_meta: dict = {}
+        # 阶段2：病原学监测数据累加器（LLM 输出的 pathogen_monitoring 数组）
+        self._pathogen_monitoring: list[dict] = []
 
     # ===== B5：分级模型策略 =====
 
@@ -113,10 +115,16 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         """返回本次提取捕获的顶层 article 元数据（P1-1）。"""
         return dict(self._article_meta)
 
+    def get_pathogen_monitoring(self) -> list[dict]:
+        """返回本次提取累计的病原学监测数据（阶段2）。"""
+        return list(self._pathogen_monitoring)
+
     def _has_key_fields(self, points: list[dict]) -> bool:
         """检查是否包含关键字段"""
         return any(
             p.get("positivity_rate") is not None or p.get("gmc_value") is not None
+            or p.get("incidence_rate") is not None or p.get("case_count") is not None
+            or p.get("mortality_rate") is not None or p.get("death_count") is not None
             for p in points
         )
 
@@ -287,6 +295,18 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
             elif p.get("gmc_value") is not None:
                 data_kind = "gmc"
                 val_str = _fmt_num(p.get("gmc_value"))
+            elif p.get("incidence_rate") is not None:
+                data_kind = "incidence"
+                val_str = _fmt_num(p.get("incidence_rate"))
+            elif p.get("mortality_rate") is not None:
+                data_kind = "mortality"
+                val_str = _fmt_num(p.get("mortality_rate"))
+            elif p.get("case_count") is not None:
+                data_kind = "case_count"
+                val_str = _fmt_num(p.get("case_count"))
+            elif p.get("death_count") is not None:
+                data_kind = "death_count"
+                val_str = _fmt_num(p.get("death_count"))
             else:
                 data_kind = "other"
                 val_str = _fmt_num(p.get("sample_size"))
@@ -446,6 +466,12 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         for tt in self._post_process_titer_tables(data):
             self._titer_tables.append(tt)
 
+        # 阶段2：累计本次输出中的病原学监测数据（独立表承载，弱校验，缺失字段置None）
+        if isinstance(data, dict):
+            for pm in data.get("pathogen_monitoring") or []:
+                if isinstance(pm, dict):
+                    self._pathogen_monitoring.append(pm)
+
         # 补充元信息
         for p in points:
             if title and not p.get("_title"):
@@ -579,6 +605,8 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         self._titer_tables = []
         # P1-1：每次完整提取前重置 article 元数据累加器
         self._article_meta = {}
+        # 阶段2：每次完整提取前重置病原学监测累加器
+        self._pathogen_monitoring = []
 
         # A1：表格优先提取 — 先从表格单独提取一轮
         all_points: list[dict] = []

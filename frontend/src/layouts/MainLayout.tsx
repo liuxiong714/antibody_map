@@ -20,6 +20,7 @@ import {
   LockOutlined,
   SettingOutlined,
   ApartmentOutlined,
+  ProfileOutlined,
 } from '@ant-design/icons';
 import LanguageSwitcher from '../components/LanguageSwitcher';
 import ThemeSwitcher from '../components/ThemeSwitcher';
@@ -65,6 +66,7 @@ const MainLayout: React.FC = () => {
     { key: '/', icon: <EnvironmentOutlined />, label: t('nav.map') },
     { key: '/literature', icon: <BookOutlined />, label: t('nav.literature') },
     { key: '/analysis', icon: <BarChartOutlined />, label: t('nav.analysis') },
+    { key: '/epidemic', icon: <ProfileOutlined />, label: t('nav.epidemic', '流行特征') },
     { key: '/assessment', icon: <SafetyOutlined />, label: t('nav.assessment') },
     { key: '/antigenic-map', icon: <RadarChartOutlined />, label: t('nav.antigenicMap') },
     { key: '/knowledge-graph', icon: <ApartmentOutlined />, label: t('nav.knowledgeGraph') },

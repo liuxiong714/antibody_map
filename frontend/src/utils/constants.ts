@@ -28,7 +28,14 @@ export const DISEASES: DiseaseOption[] = [
 export const DATA_TYPE_LABEL: Record<string, string> = {
   seroprevalence: '血清阳性率',
   gmc: 'GMC 几何平均浓度',
+  incidence: '发病率',
+  case_count: '发病人数',
+  mortality: '死亡率/病死率',
+  death_count: '死亡数',
 };
+
+// 流行病学监测指标 data_type（阶段3）
+export const EPIDEMIC_DATA_TYPES = ['incidence', 'case_count', 'mortality', 'death_count'] as const;
 
 export const CONFIDENCE_META: Record<string, { color: string; label: string }> = {
   high: { color: 'green', label: '高' },

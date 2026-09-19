@@ -93,7 +93,7 @@ async def get_simulation(
             continue
         foi = _calc_foi_from_sp(float(r.value), mid)
         if foi is not None:
-            foi_tuples.append((foi, r.sample_size or 1))
+            foi_tuples.append((foi, float(r.sample_size or 1)))
     foi_avg = None
     if foi_tuples:
         w = sum(wt for _, wt in foi_tuples)
@@ -297,7 +297,7 @@ async def get_immunity_projection(
         label = _get_age_group_label(r.age_min, r.age_max) or "其他"
         bucket = age_buckets.setdefault(label, {"sp_sum": 0.0, "sample_sum": 0})
         sp = float(r.value)
-        ss = r.sample_size or 0
+        ss = float(r.sample_size or 0)
         if ss > 0:
             bucket["sp_sum"] += sp * ss
             bucket["sample_sum"] += ss
@@ -468,7 +468,7 @@ async def get_immune_barrier_assessment(
             continue
         foi = _calc_foi_from_sp(float(r.value), age_mid)
         if foi is not None:
-            foi_tuples.append((foi, r.sample_size or 1))
+            foi_tuples.append((foi, float(r.sample_size or 1)))
     if foi_tuples:
         w_total_foi = sum(w for _, w in foi_tuples)
         legacy_foi = round(
@@ -551,7 +551,7 @@ async def get_immune_barrier_assessment(
             age_map[label] = {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []}
         bucket = age_map[label]
         sp = float(r.value)
-        ss = r.sample_size or 0
+        ss = float(r.sample_size or 0)
         if ss > 0:
             bucket["sp_sum"] += sp * ss
             bucket["sample_sum"] += ss
@@ -597,7 +597,7 @@ async def get_immune_barrier_assessment(
                 prov_map[p] = {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []}
             pm = prov_map[p]
             sp = float(r.value)
-            ss = r.sample_size or 0
+            ss = float(r.sample_size or 0)
             if ss > 0:
                 pm["sp_sum"] += sp * ss
                 pm["sample_sum"] += ss
@@ -905,7 +905,7 @@ async def get_foi_analysis(
             if r.value is None:
                 continue
             sp = float(r.value)
-            ss = r.sample_size or 0
+            ss = float(r.sample_size or 0)
             label = _get_age_group_label(r.age_min, r.age_max)
             if label is None:
                 label = "其他"
@@ -1046,7 +1046,7 @@ async def get_foi_analysis(
 
         # 用加权平均 SP 与 HIT 对比
         overall_sp = None
-        sp_valid = [(r.value, r.sample_size or 1) for r in dis_rows if r.value is not None]
+        sp_valid = [(float(r.value), float(r.sample_size or 1)) for r in dis_rows if r.value is not None]
         if sp_valid:
             w_sum = sum(w for _, w in sp_valid)
             overall_sp = round(sum(v * w for v, w in sp_valid) / w_sum, 2) if w_sum > 0 else None
@@ -1081,7 +1081,7 @@ async def get_foi_analysis(
                     prov_map[p] = {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []}
                 pm = prov_map[p]
                 sp = float(r.value)
-                ss = r.sample_size or 0
+                ss = float(r.sample_size or 0)
                 if ss and ss > 0:
                     pm["sp_sum"] += sp * ss
                     pm["sample_sum"] += ss
@@ -1268,7 +1268,7 @@ async def get_vaccine_analysis(
 
     for dis_key, dis_rows in disease_rows.items():
         # 整体 SP（加权）
-        sp_list = [(float(r.value), r.sample_size or 1) for r in dis_rows if r.value is not None]
+        sp_list = [(float(r.value), float(r.sample_size or 1)) for r in dis_rows if r.value is not None]
         if sp_list:
             wsum = sum(w for _, w in sp_list)
             overall_sp = round(sum(v * w for v, w in sp_list) / wsum, 2) if wsum > 0 else None
@@ -1282,7 +1282,7 @@ async def get_vaccine_analysis(
         ve_result: dict | None = None
         if vaxxed and unvaxxed:
             def _wsp(group):
-                lst = [(float(r.value), r.sample_size or 1) for r in group if r.value is not None]
+                lst = [(float(r.value), float(r.sample_size or 1)) for r in group if r.value is not None]
                 if not lst:
                     return None
                 sw = sum(w for _, w in lst)
@@ -1360,7 +1360,7 @@ async def get_vaccine_analysis(
                 prov_map[p].append(r)
 
         for prov_name, prov_rows in prov_map.items():
-            sp_l = [(float(r.value), r.sample_size or 1) for r in prov_rows if r.value is not None]
+            sp_l = [(float(r.value), float(r.sample_size or 1)) for r in prov_rows if r.value is not None]
             if sp_l:
                 sw = sum(w for _, w in sp_l)
                 psp = round(sum(v * w for v, w in sp_l) / sw, 2) if sw > 0 else None
@@ -1371,7 +1371,7 @@ async def get_vaccine_analysis(
             prov_ve = None
             if pv and pu:
                 def _wsp2(group):
-                    lst = [(float(r.value), r.sample_size or 1) for r in group if r.value is not None]
+                    lst = [(float(r.value), float(r.sample_size or 1)) for r in group if r.value is not None]
                     if not lst:
                         return None
                     sw2 = sum(w for _, w in lst)
@@ -1473,7 +1473,7 @@ async def get_effective_barrier(
         if label is None:
             continue
         sp = float(r.value)
-        ss = r.sample_size or 0
+        ss = float(r.sample_size or 0)
         if ss > 0:
             buckets[label]["sp_sum"] += sp * ss
             buckets[label]["sample_sum"] += ss

@@ -21,6 +21,7 @@ const ExtractionSelfTest = React.lazy(() => import('./pages/ExtractionSelfTest')
 const FolderMonitor = React.lazy(() => import('./pages/FolderMonitor'));
 const PubmedSearch = React.lazy(() => import('./pages/PubmedSearch'));
 const KnowledgeGraph = React.lazy(() => import('./pages/KnowledgeGraph'));
+const EpidemicFeatures = React.lazy(() => import('./pages/EpidemicFeatures'));
 const UserManagement = React.lazy(() => import('./pages/UserManagement'));
 const Settings = React.lazy(() => import('./pages/Settings'));
 
@@ -86,6 +87,7 @@ const App: React.FC = () => {
               <Route path="/folders" element={<PageBoundary><FolderMonitor /></PageBoundary>} />
               <Route path="/pubmed" element={<PageBoundary><PubmedSearch /></PageBoundary>} />
               <Route path="/knowledge-graph" element={<PageBoundary><KnowledgeGraph /></PageBoundary>} />
+              <Route path="/epidemic" element={<PageBoundary><EpidemicFeatures /></PageBoundary>} />
               <Route path="/users" element={<PageBoundary><UserManagement /></PageBoundary>} />
               <Route path="/settings" element={<PageBoundary><Settings /></PageBoundary>} />
               <Route path="*" element={<PageBoundary><NotFound /></PageBoundary>} />

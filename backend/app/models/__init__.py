@@ -13,6 +13,7 @@ from app.models.literature import Literature
 from app.models.literature_tag import Tag, literature_tag
 from app.models.local_model_config import LocalModelConfig
 from app.models.monitored_folder import MonitoredFile, MonitoredFolder
+from app.models.pathogen_monitoring import PathogenMonitoring
 from app.models.reference_import_log import ReferenceImportLog
 from app.models.report import Report
 from app.models.report_template import ReportTemplate
@@ -36,6 +37,7 @@ __all__ = [
     "LocalModelConfig",
     "MonitoredFile",
     "MonitoredFolder",
+    "PathogenMonitoring",
     "ReferenceImportLog",
     "Report",
     "ReportTemplate",

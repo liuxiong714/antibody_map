@@ -436,12 +436,18 @@ def _calc_weighted_rate(dps: list, target_data_type: str | None = None) -> tuple
 
     if effective_type == "seroprevalence":
         # 阳性率：标准化小数格式并封顶 100%
-        weighted_sum = float(sum(_normalize_seroprevalence(dp.value) * dp.sample_size for dp in valid_dps))
+        # 注意：dp.sample_size 来自 DB 是 Decimal，需要统一转 float
+        weighted_sum = sum(
+            float(_normalize_seroprevalence(dp.value)) * float(dp.sample_size)
+            for dp in valid_dps
+        )
     else:
         # GMC: 直接使用原始值
-        weighted_sum = float(sum(float(dp.value) * dp.sample_size for dp in valid_dps))
+        weighted_sum = sum(
+            float(dp.value) * float(dp.sample_size) for dp in valid_dps
+        )
 
-    total_sample = int(sum(dp.sample_size for dp in valid_dps))
+    total_sample = int(sum(float(dp.sample_size) for dp in valid_dps))
     weighted_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
 
     return weighted_rate, total_sample

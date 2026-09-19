@@ -32,6 +32,7 @@ from app.models.base import async_session
 from app.models.data_point import DataPoint
 from app.models.extraction_history import ExtractionHistory
 from app.models.literature import Literature
+from app.models.pathogen_monitoring import PathogenMonitoring
 from app.models.titer_table import TiterTable
 from app.services.crossref_service import extract_doi_from_text
 from app.services.quality_service import score_data_point as _score_data_point
@@ -338,6 +339,29 @@ async def _link_subgroup_parents(db, all_data_points: list[DataPoint]) -> None:
         logger.info(f"P1-1 子估计归并: {linked}/{len(subgroups)} 个子估计已关联到主估计")
 
 
+def _pm_num(val):
+    """阶段2：病原学检出率等数值清洗（DB clamp + type coercion，防插入失败）。"""
+    if val is None or val == "":
+        return None
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return None
+    if abs(v) >= 10_000_000:
+        return None
+    return v
+
+
+def _pm_int(val):
+    """阶段2：病原学整数清洗（分离株数/样本量/年份/页码）。"""
+    if val is None or val == "":
+        return None
+    try:
+        return int(round(float(str(val).replace(",", ""))))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
 async def _extract_result_to_datapoints(
     literature_id: str,
     extract_result: dict,
@@ -456,14 +480,31 @@ async def _extract_result_to_datapoints(
     # P1-1：记录 parent_group 标识，供主流程归并子估计的 parent_id
     parent_group = cleaned.get("parent_group")
 
+    # DB 安全 clamp：value / ci_lower / ci_upper 字段是 Numeric(14,4)
+    # — 超范围值（绝对值 ≥1e10）直接置 None，避免 asyncpg NumericValueOutOfRangeError
+    # （这种极端值大概率是 LLM 错误提取，不应落库）
+    _MAX_VALUE = 10_000_000  # 1e7，留安全余量（DB max 是 9.9999e7）
+
+    def _db_clamp(val):
+        if val is None:
+            return None
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return None
+        if abs(v) >= _MAX_VALUE:
+            logger.warning(f"[db-clamp] value={v} 超出 DB Numeric(14,4) 范围，置 None")
+            return None
+        return v
+
     # 血清阳性率数据点
     if cleaned.get("positivity_rate") is not None:
         dp_sp = DataPoint(
             data_type="seroprevalence",
-            value=cleaned["positivity_rate"],
+            value=_db_clamp(cleaned["positivity_rate"]),
             unit="%",
-            ci_lower=cleaned.get("positivity_ci_lower"),
-            ci_upper=cleaned.get("positivity_ci_upper"),
+            ci_lower=_db_clamp(cleaned.get("positivity_ci_lower")),
+            ci_upper=_db_clamp(cleaned.get("positivity_ci_upper")),
             **common,
         )
         # P1-1：暂存 parent_group 到私有属性，主流程归并时使用
@@ -475,15 +516,61 @@ async def _extract_result_to_datapoints(
     if cleaned.get("gmc_value") is not None:
         dp_gmc = DataPoint(
             data_type="gmc",
-            value=cleaned["gmc_value"],
+            value=_db_clamp(cleaned["gmc_value"]),
             unit=cleaned.get("gmc_unit"),
-            ci_lower=cleaned.get("gmc_ci_lower"),
-            ci_upper=cleaned.get("gmc_ci_upper"),
+            ci_lower=_db_clamp(cleaned.get("gmc_ci_lower")),
+            ci_upper=_db_clamp(cleaned.get("gmc_ci_upper")),
             **common,
         )
         if parent_group:
             dp_gmc._parent_group = parent_group
         data_points.append(dp_gmc)
+
+    # —— 流行病学监测指标(阶段1)：发病率/发病人数/死亡率/死亡数 ——
+    # 与 sero/gmc 并列的独立 data_type，复用相同溯源/审核/主次估计机制
+    if cleaned.get("incidence_rate") is not None:
+        dp_inc = DataPoint(
+            data_type="incidence",
+            value=_db_clamp(cleaned["incidence_rate"]),
+            unit=cleaned.get("incidence_unit") or "/10万",
+            **common,
+        )
+        if parent_group:
+            dp_inc._parent_group = parent_group
+        data_points.append(dp_inc)
+
+    if cleaned.get("case_count") is not None:
+        dp_cc = DataPoint(
+            data_type="case_count",
+            value=_db_clamp(cleaned["case_count"]),
+            unit="例",
+            **common,
+        )
+        if parent_group:
+            dp_cc._parent_group = parent_group
+        data_points.append(dp_cc)
+
+    if cleaned.get("mortality_rate") is not None:
+        dp_mort = DataPoint(
+            data_type="mortality",
+            value=_db_clamp(cleaned["mortality_rate"]),
+            unit=cleaned.get("mortality_unit") or "‰",
+            **common,
+        )
+        if parent_group:
+            dp_mort._parent_group = parent_group
+        data_points.append(dp_mort)
+
+    if cleaned.get("death_count") is not None:
+        dp_dc = DataPoint(
+            data_type="death_count",
+            value=_db_clamp(cleaned["death_count"]),
+            unit="例",
+            **common,
+        )
+        if parent_group:
+            dp_dc._parent_group = parent_group
+        data_points.append(dp_dc)
 
     return data_points
 
@@ -740,6 +827,7 @@ async def _process_literature_async(
                 logger.info(f"Extraction cache hit for literature {literature_id}")
                 extract_results = cached.get("extract_results") or []
                 titer_tables = cached.get("titer_tables") or []
+                pathogen_monitoring = cached.get("pathogen_monitoring") or []
                 usage_summary = cached.get("usage_summary") or {}
                 # P1-1：缓存也携带 article 元数据
                 article_meta = cached.get("article_meta") or {}
@@ -821,6 +909,8 @@ async def _process_literature_async(
             titer_tables = extractor.get_titer_tables()
             # P1-1：捕获顶层 article 元数据用于回填 literature
             article_meta = extractor.get_article_meta()
+            # 阶段2：捕获病原学监测数据
+            pathogen_monitoring = extractor.get_pathogen_monitoring()
             # 记录 Prometheus 指标：提取耗时 + LLM token/费用/结局
             observe_extraction_duration(effective_model, _extract_seconds)
             record_llm_completion(effective_model, "success", usage_summary)
@@ -945,6 +1035,10 @@ async def _process_literature_async(
             await db.execute(
                 delete(TiterTable).where(TiterTable.literature_id == literature_id)
             )
+            # 阶段2：一并清除旧病原学监测数据
+            await db.execute(
+                delete(PathogenMonitoring).where(PathogenMonitoring.literature_id == literature_id)
+            )
         else:
             # 仅清除未审核和已驳回的数据点，保留已审核通过的
             old_dp_result = await db.execute(
@@ -967,6 +1061,13 @@ async def _process_literature_async(
                 delete(TiterTable).where(
                     TiterTable.literature_id == literature_id,
                     TiterTable.review_status.in_(["pending", "rejected"]),
+                )
+            )
+            # 阶段2：未审核/已驳回的病原学监测数据一并清除，保留已审核
+            await db.execute(
+                delete(PathogenMonitoring).where(
+                    PathogenMonitoring.literature_id == literature_id,
+                    PathogenMonitoring.review_status.in_(["pending", "rejected"]),
                 )
             )
 
@@ -992,6 +1093,38 @@ async def _process_literature_async(
             ))
         if titer_tables:
             logger.info(f"P2-tt 试点: 已持久化 {len(titer_tables)} 张滴度矩阵表（文献 {literature_id}）")
+
+        # 5d. 阶段2：持久化 LLM 提取到的病原学监测数据（PathogenMonitoring）
+        # 缓存命中时 pathogen_monitoring 直接取自缓存，无需再读 extractor
+        _pm_added = 0
+        for pm in pathogen_monitoring:
+            db.add(PathogenMonitoring(
+                literature_id=literature_id,
+                disease=pm.get("disease_name"),
+                pathogen_type=pm.get("pathogen_type"),
+                pathogen_name=pm.get("pathogen_name"),
+                serotype=pm.get("serotype"),
+                genotype=pm.get("genotype"),
+                subtype=pm.get("subtype"),
+                lineage=pm.get("lineage"),
+                variant_sites=pm.get("variant_sites"),
+                detection_rate=_pm_num(pm.get("detection_rate")),
+                isolation_count=_pm_int(pm.get("isolation_count")),
+                sample_size=_pm_int(pm.get("sample_size")),
+                detection_method=pm.get("detection_method"),
+                population=pm.get("population"),
+                specimen=pm.get("specimen"),
+                region=pm.get("region"),
+                province=pm.get("province"),
+                city=pm.get("city"),
+                collection_year=_pm_int(pm.get("collection_year")),
+                source_page=_pm_int(pm.get("source_page")),
+                source_context=pm.get("source_context"),
+                review_status="pending",
+            ))
+            _pm_added += 1
+        if _pm_added:
+            logger.info(f"阶段2: 已持久化 {_pm_added} 条病原学监测数据（文献 {literature_id}）")
 
         # 6b. P1-1：归并子估计的 parent_id 到对应主估计
         # 逻辑：子估计的 _parent_group 标识匹配主估计的 (province+disease+data_type) 组合
@@ -1231,6 +1364,7 @@ async def _process_literature_async(
                 await _set_extraction_cache(cache_key, {
                     "extract_results": extract_results,
                     "titer_tables": titer_tables,
+                    "pathogen_monitoring": pathogen_monitoring,
                     "usage_summary": usage_summary,
                     "article_meta": article_meta,
                 })

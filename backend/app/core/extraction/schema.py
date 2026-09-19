@@ -67,6 +67,12 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
       "gmc_unit": "GMC单位（如：IU/ml、mIU/ml、μg/ml）",
       "gmc_ci_lower": GMC 95%置信区间下限,
       "gmc_ci_upper": GMC 95%置信区间上限,
+      "incidence_rate": 发病率数值（如23.5；无则null）,
+      "incidence_unit": "发病率单位（如：/10万、%、‰）",
+      "case_count": 发病人数（整数，如236；无则null）,
+      "mortality_rate": 死亡率/病死率数值（如0.8表示0.8%；无则null）,
+      "mortality_unit": "死亡率单位（如：/10万、%、‰）",
+      "death_count": 死亡数（整数；无则null）,
       "source_page": 来源页码（整数，如无法判断填null）,
       "source_context": "包含该数据的原文片段（20-50字，保留关键数字）",
       "estimate_type": "估计类型：primary（主估计/总体汇总）或 subgroup（子组/分层估计）",
@@ -83,6 +89,29 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
       "source_page": 来源页码（整数，如无法判断填null）,
       "source_context": "包含该表格的原文片段（20-50字）",
       "confidence": 0.0到1.0的置信度（依据表格结构是否完整、行列是否对齐、数值是否连贯判断）
+    }}
+  ],
+  "pathogen_monitoring": [
+    {{
+      "disease_name": "疾病名称",
+      "pathogen_type": "病原体类型（如 病毒、细菌）",
+      "pathogen_name": "病原体名称（如 麻疹病毒）",
+      "serotype": "血清型（如 D8、B3）",
+      "genotype": "基因型（如 H1、H3）",
+      "subtype": "亚型（如 A(H1N1)）",
+      "lineage": "谱系/流行株（如 clade、优势株）",
+      "variant_sites": "变异位点（如 N450D）",
+      "detection_rate": 检出率数值（去掉%号）,
+      "isolation_count": 分离株数（整数）,
+      "sample_size": 检测样本量（整数）,
+      "detection_method": "检测方法（如 PCR、病毒分离、测序）",
+      "population": "人群/标本来源描述",
+      "specimen": "标本类型（如 咽拭子、血清）",
+      "province": "省份（标准列表）",
+      "city": "城市",
+      "collection_year": 采样年份,
+      "source_page": 来源页码,
+      "source_context": "原文片段（20-50字）"
     }}
   ]
 }}
@@ -112,6 +141,8 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
   - 判断主估计 vs 子估计的方法：主估计通常样本量更大、覆盖范围更全（如"全省"vs"某市"）、年龄段更宽（如"0-14岁"vs"0-5岁"）
   - 如果文献只有单一数据点（无总体vs分组关系），统一标记为 estimate_type="primary"
   - parent_group 用简短中文描述即可，后端会自动归并同组子估计到对应主估计
+
+- 无病原学数据时输出 []。病原学字段：pathogen_type病原体类型 / pathogen_name病原体名称 / serotype血清型 / genotype基因型 / subtype亚型 / lineage谱系流行株 / variant_sites变异位点 / detection_rate检出率(去%号) / isolation_count分离株数 / sample_size检测样本量 / detection_method检测方法 / population人群 / specimen标本 / province省 / city市 / collection_year采样年；缺失填null，不得编造。
 
 文献文本：
 {text}"""
@@ -168,6 +199,14 @@ EXTRACTION_JSON_SCHEMA = {
                     "gmc_unit": {"type": ["string", "null"]},
                     "gmc_ci_lower": {"type": ["number", "null"]},
                     "gmc_ci_upper": {"type": ["number", "null"]},
+                    # —— 流行病学监测指标(阶段1,可选,可与抗体数据并存)——
+                    # incidence_rate/case_count/mortality_rate/death_count 为与抗体并列的独立指标类型
+                    "incidence_rate": {"type": ["number", "null"]},
+                    "incidence_unit": {"type": ["string", "null"]},
+                    "case_count": {"type": ["integer", "null"]},
+                    "mortality_rate": {"type": ["number", "null"]},
+                    "mortality_unit": {"type": ["string", "null"]},
+                    "death_count": {"type": ["integer", "null"]},
                     # journal/authors/author_affiliations 已提升到顶层 article，
                     # data_point 不再重复，减少 LLM 输出量（每条节省 ~100 字符）
                     "source_page": {"type": ["string", "null"]},
@@ -196,8 +235,79 @@ EXTRACTION_JSON_SCHEMA = {
                 },
             },
         },
+        # —— 病原学监测数据(阶段2,独立表，可与抗体/流病数据并存)——
+        # pathogen_type/pathogen_name/serotype/genotype/subtype/lineage/variant_sites
+        # 记录流行株与病原特征；detection_rate/isolation_count 为病原学监测指标
+        "pathogen_monitoring": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "disease_name": {"type": ["string", "null"]},
+                    "pathogen_type": {"type": ["string", "null"]},
+                    "pathogen_name": {"type": ["string", "null"]},
+                    "serotype": {"type": ["string", "null"]},
+                    "genotype": {"type": ["string", "null"]},
+                    "subtype": {"type": ["string", "null"]},
+                    "lineage": {"type": ["string", "null"]},
+                    "variant_sites": {"type": ["string", "null"]},
+                    "detection_rate": {"type": ["number", "null"]},
+                    "isolation_count": {"type": ["integer", "null"]},
+                    "sample_size": {"type": ["integer", "null"]},
+                    "detection_method": {"type": ["string", "null"]},
+                    "population": {"type": ["string", "null"]},
+                    "specimen": {"type": ["string", "null"]},
+                    "province": {"type": ["string", "null"], "enum": [*CHINA_PROVINCE_NAMES, None]},
+                    "city": {"type": ["string", "null"]},
+                    "collection_year": {"type": ["integer", "null"]},
+                    "source_page": {"type": ["string", "null"]},
+                    "source_context": {"type": ["string", "null"]},
+                },
+            },
+        },
     },
 }
+
+# 病原学监测数据说明(用于三份 prompt 中复用)
+PATHOGEN_EXTRACTION_RULES_ZH = """## 病原学监测数据（阶段2）提取规则
+- **病原学数据与血清抗体互补**：除抗体阳性率/GMC外，文献【结果】中的病原学监测数据也需提取到 `pathogen_monitoring` 数组；若无则输出空数组 []
+- 每条病原学记录包含流行株/病原特征字段，只填文献**明确出现**的值，缺失填null，不得编造：
+  - pathogen_type：病原体类型（病毒/细菌/寄生虫/真菌等）
+  - pathogen_name：病原体名称（如 麻疹病毒、风疹病毒、狂犬病毒）
+  - serotype：血清型（如 D8、B3、1型）
+  - genotype：基因型（如 H1、H3、G1）
+  - subtype：亚型（如 A(H1N1)、B/Victoria）
+  - lineage：谱系/流行株（如 clade、优势株、疫苗株来源）
+  - variant_sites：变异位点（如 N450D、V470M或氨基酸突变位点描述）
+  - detection_rate：检出率/阳性分离率（去掉%号；无则null）
+  - isolation_count：分离/检出的病原株数（整数；无则null）
+  - sample_size：检测样本量（整数；无则null）
+  - detection_method：检测方法（如 PCR、病毒分离培养、基因测序、RT-PCR）
+  - population：人群/标本来源描述（如：临床发热病例、健康人群、流感样病例）
+  - specimen：标本类型（如：咽拭子、鼻拭子、血清、脑脊液）
+  - province/city/collection_year：采样地与年份（province 从标准列表选）
+  - source_page/source_context：来源页码与原文片段（必填）"""
+
+PATHOGEN_EXTRACTION_RULES_EN = """## Pathogen surveillance data (Phase 2) extraction rules
+- Pathogen data complements antibody data: besides positivity/GMC, also extract pathogen surveillance data from the Results into the `pathogen_monitoring` array; output an empty array [] if none present.
+- Each pathogen record holds strain/pathogen-feature fields; fill only values EXPLICITLY in the text, else null (do not fabricate):
+  - pathogen_type: pathogen class (virus/bacteria/parasite/fungus etc.)
+  - pathogen_name: pathogen name (e.g., measles virus, rubella virus)
+  - serotype: serotype (e.g., D8, B3, type 1)
+  - genotype: genotype (e.g., H1, H3, G1)
+  - subtype: subtype (e.g., A(H1N1), B/Victoria)
+  - lineage: lineage/circulating strain (e.g., clade, dominant strain)
+  - variant_sites: variant sites (e.g., N450D, V470M or amino-acid mutation description)
+  - detection_rate: detection/isolation rate (omit %, else null)
+  - isolation_count: number of isolated strains (integer; null if none)
+  - sample_size: tested sample count (integer; null if none)
+  - detection_method: assay (e.g., PCR, virus isolation, gene sequencing, RT-PCR)
+  - population: population/specimen-source description
+  - specimen: specimen type (e.g., throat swab, nasal swab, serum, CSF)
+  - province/city/collection_year: sampling site and year (province from reference list)
+  - source_page/source_context: source page and snippet (required)"""
+
 
 PROMPT_EN = """You are a professional epidemiological literature data extraction expert. Carefully read the following literature and extract ALL antibody serological data points. A single paper may contain multiple data points (different regions, populations, time periods, or assay types) — extract ALL of them.
 
@@ -258,6 +368,12 @@ If a value only describes a positivity/negativity judgment cutoff, ignore it and
       "gmc_unit": "GMC unit (IU/ml, mIU/ml, μg/ml)",
       "gmc_ci_lower": GMC 95% CI lower,
       "gmc_ci_upper": GMC 95% CI upper,
+      "incidence_rate": incidence rate value (e.g., 23.5; null if none),
+      "incidence_unit": "incidence unit (e.g., /100k, %, ‰)",
+      "case_count": case count (integer, e.g., 236; null if none),
+      "mortality_rate": mortality/case-fatality rate (e.g., 0.8 means 0.8%; null if none),
+      "mortality_unit": "mortality unit (e.g., /100k, %, ‰)",
+      "death_count": death count (integer; null if none),
       "source_page": source page number (integer, null if undeterminable),
       "source_context": "original text snippet containing key data (20-50 chars)"
     }}
@@ -272,6 +388,29 @@ If a value only describes a positivity/negativity judgment cutoff, ignore it and
       "source_page": source page number (integer, null if undeterminable),
       "source_context": "original text snippet containing the table (20-50 chars)",
       "confidence": 0.0-1.0 confidence (based on table structure completeness and row/col alignment)
+    }}
+  ],
+  "pathogen_monitoring": [
+    {{
+      "disease_name": "disease name",
+      "pathogen_type": "pathogen class (e.g., virus, bacteria)",
+      "pathogen_name": "pathogen name (e.g., measles virus)",
+      "serotype": "serotype (e.g., D8, B3)",
+      "genotype": "genotype (e.g., H1, H3)",
+      "subtype": "subtype (e.g., A(H1N1))",
+      "lineage": "lineage/circulating strain (e.g., clade)",
+      "variant_sites": "variant sites (e.g., N450D)",
+      "detection_rate": detection rate (omit % sign),
+      "isolation_count": number of isolated strains (integer),
+      "sample_size": tested sample count (integer),
+      "detection_method": "assay (e.g., PCR, virus isolation, sequencing)",
+      "population": "population/specimen-source description",
+      "specimen": "specimen type (e.g., throat swab, serum)",
+      "province": "province (from reference list)",
+      "city": "city",
+      "collection_year": sample year (integer),
+      "source_page": source page number,
+      "source_context": "original text snippet (20-50 chars)"
     }}
   ]
 }}
@@ -291,7 +430,9 @@ If a value only describes a positivity/negativity judgment cutoff, ignore it and
   - Matrix: rows = antigens (e.g., strains), columns = antisera (e.g., immune reference sera), cells = integer titer values (e.g., 40, 80, 160, 320, <10)
   - Values must be integers; values below detection limit such as "<10" or "<20" → 0; "-", blank, missing → null
   - Output one record per independent table; assay_type must be one of hi / vnt / elisa
-  - Tables with confidence < 0.8 will be routed to manual review, so assess table completeness honestly
+  - Tables with confidence < 0.8 will be routed to manual review, so assess table structure completeness honestly
+
+- Output [] when no pathogen data. Pathogen fields: pathogen_type class / pathogen_name name / serotype / genotype / subtype / lineage circulating strain / variant_sites / detection_rate (omit % sign) / isolation_count / sample_size / detection_method / population / specimen / province / city / collection_year; fill null when missing, never fabricate.
 
 Literature text:
 {text}"""
@@ -366,6 +507,12 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
       "gmc_unit": "GMC单位（如：IU/ml、mIU/ml、μg/ml）",
       "gmc_ci_lower": GMC 95%置信区间下限,
       "gmc_ci_upper": GMC 95%置信区间上限,
+      "incidence_rate": 发病率数值（如23.5；无则null）,
+      "incidence_unit": "发病率单位（如：/10万、%、‰）",
+      "case_count": 发病人数（整数，如236；无则null）,
+      "mortality_rate": 死亡率/病死率数值（如0.8表示0.8%；无则null）,
+      "mortality_unit": "死亡率单位（如：/10万、%、‰）",
+      "death_count": 死亡数（整数；无则null）,
       "source_page": 来源页码（整数，如无法判断填null）,
       "source_context": "包含该数据的原文片段（20-50字，保留关键数字）",
       "estimate_type": "估计类型：primary（主估计/总体汇总）或 subgroup（子组/分层估计）",
@@ -382,6 +529,29 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
       "source_page": 来源页码（整数，如无法判断填null）,
       "source_context": "包含该表格的原文片段（20-50字）",
       "confidence": 0.0到1.0的置信度（依据表格结构是否完整、行列是否对齐、数值是否连贯判断）
+    }}
+  ],
+  "pathogen_monitoring": [
+    {{
+      "disease_name": "疾病名称",
+      "pathogen_type": "病原体类型（如 病毒、细菌）",
+      "pathogen_name": "病原体名称（如 麻疹病毒）",
+      "serotype": "血清型（如 D8、B3）",
+      "genotype": "基因型（如 H1、H3）",
+      "subtype": "亚型（如 A(H1N1)）",
+      "lineage": "谱系/流行株（如 clade、优势株）",
+      "variant_sites": "变异位点（如 N450D）",
+      "detection_rate": 检出率数值（去掉%号）,
+      "isolation_count": 分离株数（整数）,
+      "sample_size": 检测样本量（整数）,
+      "detection_method": "检测方法（如 PCR、病毒分离、测序）",
+      "population": "人群/标本来源描述",
+      "specimen": "标本类型（如 咽拭子、血清）",
+      "province": "省份（标准列表）",
+      "city": "城市",
+      "collection_year": 采样年份,
+      "source_page": 来源页码,
+      "source_context": "原文片段（20-50字）"
     }}
   ]
 }}
@@ -411,4 +581,7 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
   - 判断主估计 vs 子估计的方法：主估计通常样本量更大、覆盖范围更全（如"全省"vs"某市"）、年龄段更宽（如"0-14岁"vs"0-5岁"）
   - 如果文献只有单一数据点（无总体vs分组关系），统一标记为 estimate_type="primary"
   - parent_group 用简短中文描述即可，后端会自动归并同组子估计到对应主估计
-  - **仅输出JSON**：不要包含任何解释性文字或markdown代码块标记"""
+
+{PATHOGEN_EXTRACTION_RULES_ZH}
+
+- **仅输出JSON**：不要包含任何解释性文字或markdown代码块标记"""

@@ -16,7 +16,7 @@ class DataPointCreate(BaseModel):
     age_min: int | None = None
     age_max: int | None = None
     sample_size: int | None = None
-    data_type: str | None = Field(None, pattern=r"^(seroprevalence|gmc)$")
+    data_type: str | None = Field(None, pattern=r"^(seroprevalence|gmc|incidence|case_count|mortality|death_count)$")
     value: float | None = None
     unit: str | None = None
     ci_lower: float | None = None
@@ -46,7 +46,7 @@ class DataPointUpdate(BaseModel):
     age_min: int | None = None
     age_max: int | None = None
     sample_size: int | None = None
-    data_type: str | None = Field(None, pattern=r"^(seroprevalence|gmc)$")
+    data_type: str | None = Field(None, pattern=r"^(seroprevalence|gmc|incidence|case_count|mortality|death_count)$")
     value: float | None = None
     unit: str | None = None
     ci_lower: float | None = None

@@ -17,6 +17,7 @@ import FilePreview from '../components/FilePreview';
 import { DATA_TYPE_LABEL, DISEASES, PROVINCES, VENDOR_INFO } from '../utils/constants';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
 import type { Literature, DataPoint, ExtractionStatusWithUsage } from '../types';
+import PathogenPanel from '../components/PathogenPanel';
 import type { ExtractionHistoryItem } from '../services/literature';
 import dayjs from 'dayjs';
 import { clearAnalysisApiCache, clearMapApiCache } from '../services/map';
@@ -1578,6 +1579,7 @@ const LiteratureDetail: React.FC = () => {
                     }}
                   />
                 </Card>
+                <PathogenPanel literatureId={id || ''} />
               </div>
 
               {/* 垂直拖拽手柄（仅当右侧未折叠时显示） */}
