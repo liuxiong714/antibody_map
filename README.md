@@ -11,10 +11,12 @@
 ## 核心功能
 
 - **文献管理** — 上传 PDF/CAJ/EPUB/DOCX/PPTX/XLSX/TXT/HTML 文献，URL 导入，题录批量导入（RIS/EndNote/PubMed/WoS/读秀超星），元数据管理，**PDF 在线预览**（pdf.js 内联 Worker 流式加载，离线/反向代理环境可用，文本层支持框选、复制），重复检测与合并，回收站软删除，**导入历史追踪**（基于 pdf_hash 文件指纹识别重复导入）
-- **AI 数据提取** — LLM 自动提取血清阳性率/GMC 等数据点，支持 DeepSeek/OpenAI/Qwen/本地 Ollama，长文档分块并行提取，精确字符级溯源，强 Schema 校验；管线加固（API Key 加密存储、提示注入防护、token 预算/日配额/并发上限、幂等写库、状态超时自动回收）；「提取状态」弹窗与列表查询统计口径统一，区分「已完成/完成（无数据）/失败」三终局；文献详情页内联展示「历次 AI 提取历史」（含耗时/模型/Token/费用，支持一键重新提取），批量重新提取时模型/API Key/缓存复用一键切换；API Key 支持系统级（.env 环境变量）与数据库加密存储（ApiModelConfig）两种来源，后者支持远程模型凭据安全传递
+- **AI 数据提取** — LLM 自动提取血清阳性率/GMC 等数据点，支持 DeepSeek/OpenAI/Qwen/本地 Ollama，长文档分块并行提取，精确字符级溯源，强 Schema 校验；管线加固（API Key 加密存储、提示注入防护、token 预算/日配额/并发上限、幂等写库、状态超时自动回收）；「提取状态」弹窗与列表查询统计口径统一，区分「已完成/完成（无数据）/失败」三终局；文献详情页内联展示「历次 AI 提取历史」（含耗时/模型/Token/费用，支持一键重新提取），批量重新提取时模型/API Key/缓存复用一键切换；API Key 支持系统级（.env 环境变量）与数据库加密存储（ApiModelConfig）两种来源，后者支持远程模型凭据安全传递；**数据点溯源**（`model_used` + `extraction_history_id`）让每条数据点可反查由哪个模型、哪次提取批次产出，支持按模型筛选/对比
 - **数据审核** — 人工审核（通过/驳回），审核意见留痕，行内编辑，手动新增数据点；审核队列按置信度与质量分排序（低置信低质量优先），滴度矩阵审核衔接，「LLM 原始输出 vs 人工修改」diff 留痕
 - **地图可视化** — 全国/省级/市级交互式抗体热力地图，时间序列动画
 - **数据分析** — 逐年趋势、区域对比、**分区对比（中部/东部/西部/北部/南部）**、年龄分层、FOI 感染力分析、VE 疫苗效果、Meta 分析（森林图/漏斗图）、空间热点/冷点（Moran's I + Getis-Ord Gi*）、免疫屏障模拟、免疫屏障达标概率（Monte Carlo 不确定性量化）、出生队列分析、省间公平性；省份按权威分区分组，选择器与分析表格展示「简称·分区」（如「北京（京·中部）」）
+- **流行病学与病原学监测** — 流行病学指标（发病率/发病人数/死亡率/死亡数）按疾病×省份×年份聚合展示；**病原学监测表**（独立于 data_point）存储 LLM 从文献中同步提取的流行株基因型/血清型/谱系/变异位点/检出率等，与血清抗体数据互补；前端「流行特征」Tab 联动展示两类数据，支持按疾病/省份筛选；**PathogenPanel** 组件嵌入文献详情页
+- **多域数据扩展** — data_point 新增 `data_domain`（immunology/epidemiology/pathogen）、`indicator`、`numerator/denominator`、`period_type/period_month`、`pathogen/serotype/genotype/lineage` 等字段，单一 Schema 覆盖血清抗体、流行病学、病原学三大领域；`extra` JSONB 字段兜底非常规维度，避免字段爆炸；新增 data_type：proportion（构成比）/resistance_rate（耐药率）/positive_rate（检出阳性率）/attack_rate（罹患率）/secondary_attack_rate（续发率）
 - **抗原图谱** — HI/VNT/ELISA 滴度矩阵的 metric MDS 降维，2D 抗原图谱
 - **报告生成** — LLM 生成**抗体分析报告**、**疫苗接种策略报告**、**免疫屏障评估报告**，**后台异步生成**（前端轮询进度，长报告不超时中断），支持在线编辑和按 Markdown/Word/PDF 下载
 - **PDF 解析增强** — **pdf-inspector**（Rust 实现，自动修复损坏 PDF 尾部结构后提取）+ **AnyDoc**（Rust 实现，毫秒级转 GFM Markdown），失败自动回退现有解析链

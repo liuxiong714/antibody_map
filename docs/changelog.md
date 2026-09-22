@@ -1,5 +1,42 @@
 ## 变更日志
 
+## v1.28.0 (2026-09-22)
+
+### 新增
+
+- **流行特征模块（流行病学 + 病原学监测）** — 在左侧菜单「数据分析」与「免疫屏障评估」之间新增「流行特征」入口（路由 `/epidemic`）。页面三张 Tab：
+  1. **流行病学概览**：从 data_point 表中 data_type ∈ {incidence, case_count, mortality, death_count} 的已审核数据聚合展示四指标汇总卡片 + 省级分布表格（分页）。比率型（发病率/死亡率）取均值，求和型（发病人数/死亡数）直接累加，不套用阳性率的样本量加权逻辑。
+  2. **病原学监测**：展示独立表 `pathogen_monitoring` 的数据，按疾病/审核状态筛选。字段覆盖病原体类型/名称、血清型、基因型、亚型、谱系（clade）、变异位点、检出率、分离株数、检测方法、标本类型、时空溯源等。
+  3. **血清抗体联动**：从 data_point 拉取流行病学 data_type 明细。
+- **PathogenMonitoring 独立表** — `backend/app/models/pathogen_monitoring.py` 新建，与 data_point 解耦；LLM 同一次提取调用中同步输出 pathogen_monitoring 数组（orchestrator.py 扩展 schema → post_processor 并行写入），无需额外触发一次提取任务；自带 `@validates("province")` 字段级归一化；审核状态 pending/approved/rejected。
+- **多域数据扩展（data_point Schema 扩展）** — data_point 表新增字段支撑三大数据域：
+  - `data_domain`（immunology/epidemiology/pathogen，默认 immunology 零迁移）、`indicator`、`numerator`/`denominator`、`period_type`（year/quarter/month/week）/`period_month`
+  - `pathogen`/`serotype`/`genotype`/`lineage`/`typing_method`/`specimen_type`（病原学字段，与 disease 解耦）
+  - `extra` JSONB 兜底非常规维度
+  - CheckConstraint 新增 5 种 data_type：proportion / resistance_rate / positive_rate / attack_rate / secondary_attack_rate（加法扩展，不触碰既有 seroprevalence/gmc 数据）
+- **数据点溯源** — data_point 新增 `model_used`（冗余直存，展示零 JOIN 开销）与 `extraction_history_id`（外键到 extraction_history，SET NULL 防级联删除）。import/synthetic/手动录入路径无 ExtractionHistory 时允许 NULL。
+- **ExtractionHistory processing_status** — 提取历史表新增 `processing_status` 字段（queued/processing/completed/failed），记录批次在 Celery 队列中的实际处理阶段，与 data_point 的 extraction_status 解耦。
+- **提取管线多维域扩展** — schema.py 新增 pathogen_monitoring schema 定义 + data_point 多域字段；orchestrator.py 提示词扩展同步提取病原学数据；post_processor.py 并行写 pathogen_monitoring 表；extract_task.py 任务流程扩展支持多域结果落库。
+- **PathogenPanel 组件** — 嵌入 LiteratureDetail.tsx，展示单篇文献提取出的所有病原学监测数据点（基因型/血清型/谱系/检出率等）。
+- **分析/详情页增强** — Analysis.tsx 多域 Tab；KnowledgeGraph.tsx 支持 pathogen 域实体；Literature.tsx 筛选/列表增强；LiteratureDetail.tsx 重写支持多域数据展示。
+- **LiteraturePicker 增强** — 支持按模型/批次等多维度筛选勾选文献。
+
+### 迁移
+
+- `backend/alembic/versions/add_pathogen_monitoring.py` — 新建 pathogen_monitoring 表 + 索引
+- `backend/alembic/versions/add_multidomain_extension.py` — data_point 新增 15 个字段 + CheckConstraint 扩展
+- `backend/alembic/versions/add_datapoint_extraction_provenance.py` — data_point 新增 model_used + extraction_history_id
+- `backend/alembic/versions/add_extraction_history_processing_status.py` — extraction_history 新增 processing_status
+
+### 文档
+
+- **README.md** — 核心功能列表新增「流行病学与病原学监测」「多域数据扩展」「数据点溯源」；AI 数据提取条目补充溯源说明
+- **docs/index.md** — 快速导航新增「流行特征」，智能特性区新增 3 条
+- **docs/guide/features.md** — 菜单顺序更新，新增第 4 节「流行特征」（流行病学指标 + 病原学监测 + PathogenPanel + 多域扩展字段表），后续章节顺延
+- **docs/changelog.md** — 本 v1.28.0 条目
+
+---
+
 ## v1.27.0 (2026-09-17)
 
 ### 新增

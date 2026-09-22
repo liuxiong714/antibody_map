@@ -11,7 +11,7 @@
 ## 快速导航
 
 - [快速开始](guide/getting-started.md) — 环境要求、一键部署、分步启动
-- [核心功能](guide/features.md) — 文献管理、AI 提取、地图可视化、数据分析、知识图谱、报告生成
+- [核心功能](guide/features.md) — 文献管理、AI 提取、地图可视化、流行特征、数据分析、知识图谱、报告生成
 - [项目架构](guide/architecture.md) — 项目结构、技术栈、数据流、数据库模型
 - [配置参考](guide/configuration.md) — LLM 配置、数据库与存储、本地 Ollama 配置、CAJ 支持
 - [部署指南](guide/deployment.md) — Docker 部署、数据迁移、GPU 加速
@@ -43,6 +43,9 @@ PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML。解析采用**策略模式*
 - **多格式导入导出与跨电脑迁移**：JSON 格式完整包含数据点，可跨电脑迁移
 - **纯函数统计引擎**：全局置信区间（CI）引擎统一计算，全部配套单元测试
 - **数据驱动常量表**：标准人口、省份邻接矩阵、疾病解读注释等存于 `reference_data/*.json`
+- **流行特征模块**：流行病学指标（发病率/发病人数/死亡率/死亡数）聚合展示 + 独立病原学监测表（流行株基因型/血清型/谱系/变异位点），与血清抗体数据互补
+- **多域数据扩展**：单一 data_point Schema 覆盖 immunology/epidemiology/pathogen 三大数据域，病原学字段与 disease 解耦，extra JSONB 兜底非常规维度
+- **数据点溯源**：`model_used` + `extraction_history_id` 让每条数据点可反查产出模型与批次来源
 
 ## License
 
