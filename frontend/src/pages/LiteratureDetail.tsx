@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip, Switch, Typography, Alert, Popconfirm,
+  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip, Switch, Typography, Alert, Popconfirm, DatePicker,
 } from 'antd';
-import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined, DownloadOutlined, PlusOutlined, HistoryOutlined, ClockCircleOutlined, FileTextOutlined, DeleteOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined, DownloadOutlined, PlusOutlined, HistoryOutlined, ClockCircleOutlined, FileTextOutlined, DeleteOutlined, FilterOutlined, SearchOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
@@ -52,6 +52,7 @@ function readSavedListParams(): Record<string, unknown> {
     if (s.createdEnd) params.created_end = s.createdEnd;
     if (s.hasAbstract === 'has') params.has_abstract = true;
     if (s.hasAbstract === 'none') params.has_abstract = false;
+    if (s.tagFilter) params.tag_id = s.tagFilter;
     return params;
   } catch (err) {
     console.error('[LiteratureDetail] 解析列表状态失败:', err);
@@ -68,6 +69,9 @@ const LiteratureDetail: React.FC = () => {
   const [extracting, setExtracting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  // L3 全量筛选状态：自定义 range / input（Table 原生 filters 自行管理）
+  const [yearRange, setYearRange] = useState<[number, number] | null>(null);
+  const [popKeyword, setPopKeyword] = useState('');
   const [reviewNote, setReviewNote] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [modalAction, setModalAction] = useState<'approved' | 'rejected'>('approved');
@@ -83,8 +87,9 @@ const LiteratureDetail: React.FC = () => {
   useEffect(() => {
     buildModelOptions().then(setModelOptions);
   }, []);
-  // 提取时是否保留已审核数据
-  const [clearExistingData, setClearExistingData] = useState(false);
+  // 2026-09-22：彻底禁用 replace 模式，clearExistingData 状态已移除
+  // 是否强制跳过 LLM 缓存（重新跑 LLM 获取新鲜结果）
+  const [forceRefreshCache, setForceRefreshCache] = useState<boolean>(false);
   // 是否在本次提取完成后显示 token/费用/模型信息
   const [showUsageOnComplete, setShowUsageOnComplete] = useState<boolean>(() => {
     try { return localStorage.getItem('lit_show_usage_on_complete') === '1'; } catch { return false; }
@@ -578,10 +583,11 @@ const LiteratureDetail: React.FC = () => {
           modelConfigId,
           apiKey: extractApiKey || undefined,
           baseUrl: extractBaseUrl || undefined,
-          clearExistingData,
+          // clearExistingData 已移除（2026-09-22 彻底禁用 replace 模式，后端 API 也强制 append）
+          useCache: !forceRefreshCache,  // 勾选强制刷新时跳过 LLM 缓存
         });
       } else {
-        await triggerExtraction(id, { model: '', clearExistingData });
+        await triggerExtraction(id, { model: '', useCache: !forceRefreshCache });
       }
       message.success('AI 提取任务已提交，正在轮询进度...');
       // F-2：统一轮询 hook 启动 —— 先停旧轮询（幂等），再开始新的
@@ -595,18 +601,8 @@ const LiteratureDetail: React.FC = () => {
   };
 
   const confirmExtract = () => {
-    if (clearExistingData) {
-      Modal.confirm({
-        title: '确认全量重抽？',
-        content: '将清空该文献所有既有数据点（含已审核通过的数据、审核意见与质量分），并以待审核(pending)状态重新提取，不可恢复。',
-        okText: '确认全量重抽',
-        okType: 'danger',
-        cancelText: '取消',
-        onOk: doExtract,
-      });
-    } else {
-      doExtract();
-    }
+    // 2026-09-22：彻底禁用 replace 模式，永远走 append，直接执行
+    doExtract();
   };
 
   // 切换"显示提取消耗"开关时持久化到 localStorage
@@ -707,10 +703,74 @@ const LiteratureDetail: React.FC = () => {
 
   const isEditing = (record: DataPoint) => editingRowId === record.id;
 
+  // L3：从当前数据自动生成各列 filter options（多选筛选）
+  const filterOptions = useMemo(() => {
+    const uniq = <T,>(arr: T[], key?: (v: T) => string) => {
+      const seen = new Set<string>();
+      return arr.filter((v) => {
+        const k = key ? key(v) : String(v);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    };
+    return {
+      disease: uniq(dataPoints.map((r) => r.disease).filter(Boolean) as string[])
+        .map((v) => ({ text: v, value: v })),
+      province: uniq(dataPoints.map((r) => r.province).filter(Boolean) as string[])
+        .map((v) => ({ text: v, value: v })),
+      data_type: uniq(dataPoints.map((r) => r.data_type).filter(Boolean) as string[])
+        .map((v) => ({ text: DATA_TYPE_LABEL[v] || v, value: v })),
+      confidence: [
+        { text: '高', value: 'high' }, { text: '中', value: 'medium' }, { text: '低', value: 'low' },
+      ],
+      review_status: [
+        { text: '待审', value: 'pending' }, { text: '通过', value: 'approved' }, { text: '驳回', value: 'rejected' },
+      ],
+      grounded: [
+        { text: '已匹配', value: 'yes' }, { text: '未匹配', value: 'no' },
+      ],
+      quality_grade: uniq(dataPoints.map((r) => r.quality_grade).filter(Boolean) as string[])
+        .sort()
+        .map((v) => ({ text: v, value: v })),
+      model_used: uniq(dataPoints.map((r) => r.model_used).filter(Boolean) as string[])
+        .map((v) => ({ text: v.includes(':') ? v.split(':').slice(-1)[0] + ' / ' + v : v, value: v })),
+    };
+  }, [dataPoints]);
+
+  // L3：手动处理年份 range 和人群关键词（因为 Table 原生 filters 不擅长范围/模糊）
+  const filteredDataPoints = useMemo(() => {
+    let arr = dataPoints;
+    if (yearRange) {
+      const [lo, hi] = yearRange;
+      arr = arr.filter((r) => {
+        const y = r.collection_year;
+        if (y == null) return false;
+        return y >= lo && y <= hi;
+      });
+    }
+    if (popKeyword.trim()) {
+      const kw = popKeyword.trim().toLowerCase();
+      arr = arr.filter((r) => (r.population || '').toLowerCase().includes(kw));
+    }
+    return arr;
+  }, [dataPoints, yearRange, popKeyword]);
+
+  const activeFilterCount = useMemo(() => {
+    return (yearRange ? 1 : 0) + (popKeyword.trim() ? 1 : 0);
+  }, [yearRange, popKeyword]);
+
+  const clearAllFilters = () => {
+    setYearRange(null);
+    setPopKeyword('');
+  };
+
   const columns: ColumnsType<DataPoint> = [
     {
-      title: '疾病', dataIndex: 'disease', key: 'disease', width: 85, fixed: 'left' as const,
+      title: '疾病', dataIndex: 'disease', key: 'disease', width: 85,
       sorter: (a, b) => (a.disease || '').localeCompare(b.disease || ''),
+      filters: filterOptions.disease,
+      onFilter: (v, r) => r.disease === v,
       render: (v: string, r: DataPoint) =>
         isEditing(r) ? (
           <Input size="small" value={editRowData?.disease ?? ''}
@@ -729,6 +789,8 @@ const LiteratureDetail: React.FC = () => {
         const rb = [b.province, b.city].filter(Boolean).join(' ') || '';
         return ra.localeCompare(rb);
       },
+      filters: filterOptions.province,
+      onFilter: (v, r) => r.province === v,
       render: (_: unknown, r: DataPoint) =>
         isEditing(r) ? (
           <Space size={4}>
@@ -779,6 +841,22 @@ const LiteratureDetail: React.FC = () => {
     },
     {
       title: '人群', key: 'population', width: 100,
+      sorter: (a, b) => (a.population || '').localeCompare(b.population || ''),
+      filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, visible }) => (
+        <div style={{ padding: 8 }}>
+          <Input.Search
+            size="small"
+            placeholder="输入关键词筛选"
+            allowClear
+            enterButton={<SearchOutlined />}
+            onSearch={(kw) => { setPopKeyword(kw); confirm(); }}
+            onChange={(e) => { if (!e.target.value) { setPopKeyword(''); confirm(); } }}
+            style={{ width: 180 }}
+          />
+        </div>
+      ),
+      filterIcon: <FilterOutlined style={{ color: popKeyword ? '#1677ff' : undefined }} />,
+      filterDropdownOpen: false,
       render: (_: unknown, r: DataPoint) => r.population ? (
         <Tooltip title={r.population} placement="top">
           <span>{r.population.length > 10 ? r.population.slice(0, 10) + '…' : r.population}</span>
@@ -788,6 +866,8 @@ const LiteratureDetail: React.FC = () => {
     {
       title: '数据类型', dataIndex: 'data_type', key: 'dt', width: 85,
       sorter: (a, b) => (a.data_type || '').localeCompare(b.data_type || ''),
+      filters: filterOptions.data_type,
+      onFilter: (v, r) => r.data_type === v,
       render: (v: string, r: DataPoint) =>
         isEditing(r) ? (
           <Select size="small" value={editRowData?.data_type ?? undefined}
@@ -866,6 +946,31 @@ const LiteratureDetail: React.FC = () => {
     {
       title: '年份', dataIndex: 'collection_year', key: 'cy', width: 72,
       sorter: (a, b) => (a.collection_year ?? Number.MAX_SAFE_INTEGER) - (b.collection_year ?? Number.MAX_SAFE_INTEGER),
+      filterDropdown: ({ confirm }) => (
+        <div style={{ padding: 8 }}>
+          <Space direction="vertical" size={8}>
+            <DatePicker.RangePicker
+              picker="year"
+              size="small"
+              style={{ width: 220 }}
+              placeholder={['起始年', '结束年']}
+              value={yearRange ? [dayjs(yearRange[0]), dayjs(yearRange[1])] : null}
+              onChange={(vals) => {
+                if (vals && vals[0] && vals[1]) {
+                  setYearRange([vals[0].year(), vals[1].year()]);
+                } else {
+                  setYearRange(null);
+                }
+              }}
+            />
+            <Space size={4}>
+              <Button type="primary" size="small" onClick={() => confirm()}>确定</Button>
+              <Button size="small" onClick={() => { setYearRange(null); confirm(); }}>清除</Button>
+            </Space>
+          </Space>
+        </div>
+      ),
+      filterIcon: <FilterOutlined style={{ color: yearRange ? '#1677ff' : undefined }} />,
       render: (v: number, r: DataPoint) =>
         isEditing(r) ? (
           <InputNumber size="small" value={editRowData?.collection_year ?? undefined}
@@ -879,6 +984,8 @@ const LiteratureDetail: React.FC = () => {
         const order = { high: 3, medium: 2, low: 1 };
         return (order[a.confidence as keyof typeof order] || 0) - (order[b.confidence as keyof typeof order] || 0);
       },
+      filters: filterOptions.confidence,
+      onFilter: (v, r) => r.confidence === v,
       render: (v: string, r: DataPoint) =>
         isEditing(r) ? (
           <Select size="small" value={editRowData?.confidence ?? undefined}
@@ -894,6 +1001,8 @@ const LiteratureDetail: React.FC = () => {
     {
       title: '溯源', key: 'grounded', width: 68,
       sorter: (a, b) => Number(b.is_grounded) - Number(a.is_grounded),
+      filters: filterOptions.grounded,
+      onFilter: (v, r) => (v === 'yes' ? r.is_grounded : !r.is_grounded),
       render: (_: unknown, r: DataPoint) => {
         if (r.is_grounded) {
           const extra = r.source_char_start != null && r.source_char_end != null
@@ -975,6 +1084,8 @@ const LiteratureDetail: React.FC = () => {
     {
       title: '质量', key: 'quality', width: 80,
       sorter: (a, b) => (a.quality_score ?? -1) - (b.quality_score ?? -1),
+      filters: filterOptions.quality_grade,
+      onFilter: (v, r) => r.quality_grade === v,
       render: (_: unknown, r: DataPoint) => (
         <QualityBadge
           qualityScore={r.quality_score}
@@ -990,6 +1101,8 @@ const LiteratureDetail: React.FC = () => {
         const order: Record<string, number> = { approved: 3, pending: 2, rejected: 1 };
         return (order[a.review_status] || 0) - (order[b.review_status] || 0);
       },
+      filters: filterOptions.review_status,
+      onFilter: (v, r) => r.review_status === v,
       render: (_: unknown, r: DataPoint) => (
         <Tag color={r.review_status === 'approved' ? 'green' : r.review_status === 'rejected' ? 'red' : 'default'} style={{ margin: 0 }}>
           {r.review_status === 'approved' ? '通过' : r.review_status === 'rejected' ? '驳回' : '待审'}
@@ -998,6 +1111,7 @@ const LiteratureDetail: React.FC = () => {
     },
     {
       title: '审核人', key: 'reviewer', width: 75,
+      sorter: (a, b) => (a.reviewer_name || a.reviewer_id || '').localeCompare(b.reviewer_name || b.reviewer_id || ''),
       render: (_: unknown, r: DataPoint) => (r.reviewer_name || r.reviewer_id || <span style={{ color: '#d9d9d9' }}>-</span>),
     },
     {
@@ -1021,7 +1135,7 @@ const LiteratureDetail: React.FC = () => {
         ),
     },
     {
-      title: '操作', key: 'actions', width: 120,
+      title: '操作', key: 'actions', width: 200,
       render: (_: unknown, r: DataPoint) =>
         isEditing(r) ? (
           <Space size="small">
@@ -1044,13 +1158,22 @@ const LiteratureDetail: React.FC = () => {
     {
       title: '提取模型/时间',
       key: 'provenance',
-      width: 140,
-      fixed: 'right' as const,
+      width: 170,
+      sorter: (a, b) => {
+        const ma = (a.model_used || '').localeCompare(b.model_used || '');
+        if (ma !== 0) return ma;
+        return (a.created_at || '').localeCompare(b.created_at || '');
+      },
+      filters: filterOptions.model_used,
+      onFilter: (v, r) => r.model_used === v,
       render: (_: unknown, r: DataPoint) => (
         <div style={{ fontSize: 12, lineHeight: 1.5 }}>
           <Tag color={r.model_used ? 'blue' : 'default'} style={{ marginBottom: 2, marginRight: 0 }}>
             {r.model_used
-              ? (r.model_used.includes(':') ? r.model_used.split(':').pop()! : r.model_used)
+              ? (() => {
+                  const parts = r.model_used.split(':');
+                  return parts.length > 2 ? parts.slice(1).join(':') : r.model_used;
+                })()
               : '未记录'}
           </Tag>
           <div style={{ color: '#8c8c8c', fontSize: 11 }}>
@@ -1652,18 +1775,26 @@ const LiteratureDetail: React.FC = () => {
                       >
                         批量驳回
                       </Button>
+                      {activeFilterCount > 0 && (
+                        <Button
+                          icon={<FilterOutlined />}
+                          onClick={clearAllFilters}
+                        >
+                          清空筛选（{activeFilterCount}）
+                        </Button>
+                      )}
                     </Space>
                   }
-                  styles={{ body: { flex: 1, overflow: 'hidden', padding: 0, minHeight: 0 } }}
+                  styles={{ body: { flex: 1, overflow: 'auto', padding: 0, minHeight: 0 } }}
                   style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
                 >
                   <div ref={dataTableWrapRef} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
                   <Table
                     rowKey="id"
-                    dataSource={dataPoints}
+                    dataSource={filteredDataPoints}
                     columns={columns}
                     showSorterTooltip={{ title: '点击排序' }}
-                    scroll={{ x: 1900, y: tableScrollY }}
+                    scroll={{ x: 2050, y: tableScrollY }}
                     size="middle"
                     rowClassName={(r: DataPoint) => {
                       if (r.confidence === 'low') return 'low-confidence-row';
@@ -1843,6 +1974,14 @@ const LiteratureDetail: React.FC = () => {
         })()}
         <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
           <Checkbox
+            checked={forceRefreshCache}
+            onChange={(e) => setForceRefreshCache(e.target.checked)}
+          >
+            强制重新跑 LLM（跳过已有缓存，重新调用模型获取新鲜结果）
+          </Checkbox>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <Checkbox
             checked={showUsageOnComplete}
             onChange={(e) => toggleShowUsage(e.target.checked)}
           >
@@ -1850,11 +1989,8 @@ const LiteratureDetail: React.FC = () => {
           </Checkbox>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
-          <Switch checked={clearExistingData} onChange={setClearExistingData} size="small" />
-          <Text style={{ fontSize: 13 }}>
-            {clearExistingData
-              ? '替换旧结果：清空所有已有数据点，本次提取重新生成'
-              : '追加新批次：保留全部已有数据点，本次提取新增一批（新旧通过「提取模型/时间」列区分）'}
+          <Text style={{ fontSize: 13, color: '#1677ff' }}>
+            ℹ️ 追加模式：本次提取将保留全部已有数据点，新增一批独立结果（新旧通过「提取模型/时间」列区分）
           </Text>
         </div>
         {(dataPoints.length > 0 || historyList.length > 0) && (

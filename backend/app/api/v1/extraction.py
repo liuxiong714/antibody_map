@@ -239,7 +239,7 @@ class CreateDataPointRequest(BaseModel):
 
 # ── 提取相关路由 ────────────────────────────────────────
 
-@router.post("/literatures/{literature_id}/extraction", response_model=ApiResponse, summary="触发AI提取", description="触发单篇文献的AI数据提取任务，可指定模型、API Key和Base URL，支持清空已有数据后重新提取")
+@router.post("/literatures/{literature_id}/extraction", response_model=ApiResponse, summary="触发AI提取", description="触发单篇文献的AI数据提取任务，可指定模型、API Key和Base URL。默认追加模式（保留已有数据点）；replace 模式（清空重抽）已禁用，防止历史数据丢失")
 async def start_extraction(
     literature_id: uuid.UUID,
     req: ExtractionRequest = None,
@@ -252,7 +252,9 @@ async def start_extraction(
         model_config_id = req.model_config_id if req else None
         api_key = req.api_key if req else None
         base_url = req.base_url if req else None
-        clear_existing = req.clear_existing_data if req else False
+        # 2026-09-22：服务端强制 append 模式，忽略客户端传来的 clear_existing_data=True，
+        # 防止 replace 模式误删已有数据点；synthetic 任务在服务内部直接调 trigger_extraction 不受此限制
+        clear_existing = False
         use_cache = req.use_cache if req else True
         result = await trigger_extraction(db, literature_id, model, api_key, base_url, model_config_id, clear_existing, use_cache)
         return ApiResponse(message="提取任务已提交", data=result)
@@ -314,14 +316,14 @@ async def start_batch_extraction(
                 skipped.append({"id": lit_id_str, "title": literature.title, "reason": f"当前状态 {literature.extraction_status}，跳过"})
                 continue
 
-            # 触发提取
+            # 触发提取（2026-09-22：强制 append 模式，忽略客户端 clear_existing_data）
             await trigger_extraction(
                 db, lit_id,
                 model=req.model,
                 api_key=req.api_key,
                 base_url=req.base_url,
                 model_config_id=req.model_config_id,
-                clear_existing_data=req.clear_existing_data,
+                clear_existing_data=False,
                 use_cache=req.use_cache,
             )
             submitted.append({

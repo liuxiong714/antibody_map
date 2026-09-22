@@ -184,6 +184,7 @@ export interface ExtractionOptions {
   // 远程 API 模型配置 ID（对应 api_model_config 表），指定后后端按该配置读取 API Key/Base URL
   modelConfigId?: string;
   clearExistingData?: boolean;
+  useCache?: boolean;
 }
 
 export async function triggerExtraction(literatureId: string, options?: ExtractionOptions) {
@@ -212,11 +213,11 @@ export interface BatchExtractionResult {
 }
 
 export async function triggerBatchExtraction(
-  literatureIds: string[],
+  literatureIds: any,
   options?: ExtractionOptions,
 ): Promise<BatchExtractionResult> {
   const body: Record<string, unknown> = {
-    literature_ids: literatureIds,
+    literature_ids: literatureIds.filter(Boolean) as string[],
   };
   if (options) {
     body.model = options.model;
@@ -760,5 +761,76 @@ export async function permanentlyDeleteLiterature(literatureId: string): Promise
 
 export async function emptyTrash(olderThanDays: number = 30): Promise<EmptyTrashResult> {
   const { data } = await api.post<EmptyTrashResult>(`/literatures/trash/empty?older_than_days=${olderThanDays}`);
+  return data;
+}
+
+// --- 提取历史 vs 数据点 一致性审计 ---
+export interface ExtractionConsistencyItem {
+  eh_id: string; literature_id: string; title: string; model: string; status: string;
+  eh_dp: number; real_dp: number; diff: number; already_marked: boolean; extracted_at: string | null;
+}
+export interface ExtractionConsistencyPreview {
+  total_mismatch: number; eh_dp_claimed: number; real_dp_sum: number; lost_dp: number;
+  by_model: Record<string, { count: number; eh_dp: number; real_dp: number }>;
+  items: ExtractionConsistencyItem[];
+}
+export interface ExtractionConsistencyResult {
+  fixed: number; already_marked_skipped: number; total_input: number; errors: string[];
+}
+
+function _consistencyUrl(base: string, p?: { literature_ids?: string[]; model?: string; only_unmarked?: boolean }): string {
+  const q = new URLSearchParams();
+  if (p?.literature_ids?.length) q.set('literature_ids', p.literature_ids.join(','));
+  if (p?.model) q.set('model', p.model);
+  if (p?.only_unmarked !== undefined) q.set('only_unmarked', String(p.only_unmarked));
+  const qs = q.toString();
+  return qs ? base + '?' + qs : base;
+}
+
+export async function previewExtractionConsistency(p?: {
+  literature_ids?: string[]; model?: string; only_unmarked?: boolean;
+}): Promise<ExtractionConsistencyPreview> {
+  const { data } = await api.get<ExtractionConsistencyPreview>(
+    _consistencyUrl('/literatures/audit-extraction-consistency/preview', p)
+  );
+  return data;
+}
+
+export async function executeExtractionConsistency(p?: {
+  literature_ids?: string[]; model?: string; only_unmarked?: boolean;
+}): Promise<ExtractionConsistencyResult> {
+  const { data } = await api.post<ExtractionConsistencyResult>(
+    _consistencyUrl('/literatures/audit-extraction-consistency?dry_run=false', p)
+  );
+  return data;
+}
+// TXT/CSV 文件匹配 + 批量标签编组
+export interface MatchByTextResult extends Record<string, any> {
+  total_lines: number;
+  matched_count: number;
+  unmatched_count: number;
+  ambiguous_count: number;
+  matched: Array<any>;
+  unmatched: Array<{ line: number; input: string }>;
+  ambiguous: Array<{ line: number; input: string; count?: number; candidates: Array<{ id: string; title: string; similarity: number }> } & Record<string, any>>;
+}
+export async function matchByText(file: File): Promise<MatchByTextResult> {
+  const fd = new FormData();
+  fd.append('file', file);
+  const { data } = await api.post<MatchByTextResult>('/literatures/match-by-text', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+}
+export async function batchSetTags(
+  literatureIds: any,
+  tags: Array<{ tag_id: string | null; tag_name: string | null; color?: string }>,
+  action: 'add' | 'remove' | 'set' = 'add',
+): Promise<{ success_count: number; failed_count: number; tag_ids_used: string[]; tag_names_used: string[] }> {
+  const { data } = await api.post('/literatures/batch-tags', {
+    literature_ids: literatureIds.filter(Boolean) as string[],
+    tags,
+    action,
+  });
   return data;
 }

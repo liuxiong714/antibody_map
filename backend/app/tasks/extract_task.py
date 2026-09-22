@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 
 from app.config import settings
 from app.core.document_parser import extract_text
@@ -1338,6 +1338,40 @@ async def _process_literature_async(
             )
             return {"literature_id": str(literature_id), "status": "superseded", "data_point_count": 0}
 
+        # 8c. 一致性校验：commit 前核对 eh 声明的 dp 数与 real data_point 表
+        # 防止出现「eh.data_point_count=N 但 data_point 表实际为 0」的假成功记录
+        try:
+            await db.flush()
+            _real_dp_row = await db.execute(
+                select(func.count(DataPoint.id)).where(DataPoint.extraction_history_id == _history_id)
+            )
+            _real_dp_count = _real_dp_row.scalar() or 0
+            if _real_dp_count != final_count:
+                logger.warning(
+                    f"[DP_CONSISTENCY] 文献 {literature_id} eh 声明 {final_count} dp, "
+                    f"real data_point 表实际 {_real_dp_count}. 自动修正."
+                )
+                _new_history.data_point_count = _real_dp_count
+                _err_suffix = (
+                    f"[DP_DROPPED] eh claimed {final_count} dp, "
+                    f"real table has {_real_dp_count}. Auto-corrected at commit."
+                )
+                if _new_history.error_message:
+                    _new_history.error_message = _new_history.error_message + "\n" + _err_suffix
+                else:
+                    _new_history.error_message = _err_suffix
+                # 同步修正 literature 聚合字段和 final_status
+                final_count = _real_dp_count
+                final_status = "done_no_data" if final_count == 0 else final_status
+                await db.execute(
+                    update(Literature).where(Literature.id == literature_id).values(
+                        extraction_status=final_status,
+                        extracted_count=final_count,
+                    )
+                )
+        except Exception as _ve:
+            logger.warning(f"[DP_CONSISTENCY] 一致性校验异常（不阻塞 commit）: {_ve}")
+
         await db.commit()
 
         # 9. KG 知识图谱抽取（独立于主提取流程，失败不影响任何已有功能）
@@ -1463,8 +1497,19 @@ def process_literature(
         is_conn = err_type in ("connection_error", "ollama_unreachable")
 
         # 更新状态为 failed（连接类错误在最后一次重试耗尽时不走此分支，见 _reopen_pending）
+        # F25 保护：如果该文献已经存在至少一条 success 历史（即曾有可用数据），
+        # 则不将状态覆盖为 failed —— 保持 done，避免"多模型重试失败把已有成功状态冲掉"。
         async def _mark_failed():
             async with async_session() as db:
+                # 先查 success 历史，决定写什么状态
+                _has_success = (await db.execute(
+                    select(func.count(ExtractionHistory.id)).where(
+                        ExtractionHistory.literature_id == literature_id,
+                        ExtractionHistory.status == "success",
+                    )
+                )).scalar() or 0
+                _new_status = "failed" if _has_success == 0 else "done"
+
                 stmt = (
                     update(Literature)
                     .where(Literature.id == literature_id)
@@ -1473,7 +1518,7 @@ def process_literature(
                 if _fail_generation is not None:
                     stmt = stmt.where(Literature.extraction_generation == _fail_generation)
                 result = await stmt.values(
-                    extraction_status="failed",
+                    extraction_status=_new_status,
                     extraction_started_at=None,
                     worker_heartbeat=None,
                 ).returning(Literature.id, Literature.llm_model_used)
@@ -1483,6 +1528,11 @@ def process_literature(
                         f"文献 {literature_id} 已非 processing 或已被新任务接管，跳过标记 failed"
                     )
                     return
+                if _new_status == "done":
+                    logger.warning(
+                        f"文献 {literature_id} 本次提取失败但已有 success 历史（{_has_success}条），"
+                        f"保留状态 done 而非覆盖为 failed"
+                    )
                 lit_id, lit_model = row[0], row[1]
                 # 写入失败历史记录（错误信息带类型前缀，便于前端/日志诊断）
                 _fail_elapsed = (
@@ -1522,8 +1572,18 @@ def process_literature(
 
         # 连接类错误重试耗尽：回退到 pending（不判死、不写 failed 历史），
         # 使该文献在模型服务恢复后可被重新提取。
+        # F25 保护：如果已有 success 历史，回退为 done 而非 pending ——
+        # 避免"连接抖动"把已有可用数据冲成 pending，让其他新任务误触发。
         async def _reopen_pending():
-            async with async_session():
+            async with async_session() as db:
+                _has_success = (await db.execute(
+                    select(func.count(ExtractionHistory.id)).where(
+                        ExtractionHistory.literature_id == literature_id,
+                        ExtractionHistory.status == "success",
+                    )
+                )).scalar() or 0
+                _new_status = "pending" if _has_success == 0 else "done"
+
                 stmt = (
                     update(Literature)
                     .where(Literature.id == literature_id)
@@ -1532,16 +1592,22 @@ def process_literature(
                 if _fail_generation is not None:
                     stmt = stmt.where(Literature.extraction_generation == _fail_generation)
                 result = await stmt.values(
-                    extraction_status="pending",
+                    extraction_status=_new_status,
                     extraction_started_at=None,
                     worker_heartbeat=None,
                     llm_model_used=None,
                 ).returning(Literature.id)
                 if result.first() is not None:
-                    logger.warning(
-                        f"文献 {literature_id} 连接类错误重试已耗尽，回退 pending（待模型服务恢复后续跑），"
-                        f"err=[{err_type}] {err['message'][:300]}"
-                    )
+                    if _new_status == "done":
+                        logger.warning(
+                            f"文献 {literature_id} 连接类错误重试耗尽，但已有 success 历史（{_has_success}条），"
+                            f"保留状态 done；err=[{err_type}] {err['message'][:300]}"
+                        )
+                    else:
+                        logger.warning(
+                            f"文献 {literature_id} 连接类错误重试已耗尽，回退 pending（待模型服务恢复后续跑），"
+                            f"err=[{err_type}] {err['message'][:300]}"
+                        )
 
         if is_conn:
             if self.request.retries >= self.max_retries:

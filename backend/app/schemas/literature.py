@@ -45,6 +45,14 @@ class LiteratureUpdate(BaseModel):
     approved_count: int | None = None
 
 
+class TagBrief(BaseModel):
+    id: UUID
+    name: str
+    color: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class LiteratureResponse(BaseModel):
     id: UUID
     title: str
@@ -77,7 +85,7 @@ class LiteratureResponse(BaseModel):
     llm_cost_usd: float | None = None
     llm_call_count: int = 0
     llm_usage_detail: dict | None = None
-    tags: list[dict] | None = None
+    tags: list[TagBrief] | None = None
     # 知识库(KG)三元组抽取状态：kg_extracted=true 表示该文献已在知识库中抽取过
     kg_extracted: bool | None = None
     kg_triple_count: int = 0

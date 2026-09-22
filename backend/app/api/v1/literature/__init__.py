@@ -7,6 +7,7 @@ from .crud import router as crud_router
 from .duplicates import router as dup_router
 from .file import router as file_router
 from .import_export import router as ie_router
+from .selection import router as sel_router
 
 router = APIRouter()
 
@@ -15,3 +16,4 @@ router.include_router(ie_router)
 router.include_router(file_router)
 router.include_router(dup_router)
 router.include_router(cln_router)
+router.include_router(sel_router)

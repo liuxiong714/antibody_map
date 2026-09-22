@@ -30,7 +30,11 @@ import { backupDatabase } from '../services/system';
 const { Sider, Content, Header } = Layout;
 
 const MainLayout: React.FC = () => {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsedState] = useState(() => localStorage.getItem('sider_collapsed') === '1');
+  const setCollapsed = (v: boolean) => {
+    localStorage.setItem('sider_collapsed', v ? '1' : '0');
+    setCollapsedState(v);
+  };
   const [username, setUsername] = useState('');
   // 登录时已将 is_admin 写入 storage，这里同步初始化，避免菜单项延迟出现（不同步）
   const [isAdmin, setIsAdmin] = useState<boolean>(
@@ -153,15 +157,16 @@ const MainLayout: React.FC = () => {
   ];
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ height: '100vh', overflow: 'hidden' }}>
       <Sider
         collapsible
         collapsed={collapsed}
         onCollapse={setCollapsed}
         theme="dark"
         width={200}
+        style={{ height: '100vh', position: 'sticky', top: 0, overflow: 'auto' }}
       >
-        <div className="sider-logo" style={{ height: 64, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div className="sider-logo" style={{ height: 64, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <span style={{ color: '#fff', fontSize: collapsed ? 14 : 18, fontWeight: 'bold', whiteSpace: 'nowrap' }}>
             {collapsed ? t('app.name.short') : t('app.name')}
           </span>
@@ -172,10 +177,11 @@ const MainLayout: React.FC = () => {
           selectedKeys={[selectedKey]}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
+          style={{ flexShrink: 0 }}
         />
       </Sider>
-      <Layout>
-        <Header style={{ background: 'var(--ab-bg-container)', padding: '0 24px', borderBottom: '1px solid var(--ab-border-light)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <Layout style={{ height: '100%', overflow: 'hidden' }}>
+        <Header style={{ flexShrink: 0, background: 'var(--ab-bg-container)', padding: '0 24px', borderBottom: '1px solid var(--ab-border-light)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h2 style={{ margin: 0, fontSize: 16, color: 'var(--ab-text)' }}>{t('app.title')}</h2>
           <Space>
             <ThemeSwitcher />
@@ -190,8 +196,10 @@ const MainLayout: React.FC = () => {
             </Dropdown>
           </Space>
         </Header>
-        <Content className={location.pathname.startsWith('/knowledge-graph') ? 'layout-content-kg' : undefined} style={location.pathname.startsWith('/knowledge-graph') ? { background: 'var(--ab-bg-layout)', minHeight: 280 } : { margin: 16, padding: 16, background: 'var(--ab-bg-layout)', minHeight: 280 }}>
-          <Outlet />
+        <Content style={{ flex: 1, overflow: 'auto' }}>
+          <div className={location.pathname.startsWith('/knowledge-graph') ? 'layout-content-kg' : undefined} style={location.pathname.startsWith('/knowledge-graph') ? { background: 'var(--ab-bg-layout)', minHeight: '100%' } : { margin: 16, padding: 16, background: 'var(--ab-bg-layout)', minHeight: '100%', borderRadius: 8 }}>
+            <Outlet />
+          </div>
         </Content>
       </Layout>
 

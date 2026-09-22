@@ -1,5 +1,36 @@
 ## 变更日志
 
+## v1.29.0 (2026-09-22)
+
+### 新增
+
+- **文献批量选中与编组（TXT/CSV 导入匹配）** — 新增路由 `backend/app/api/v1/literature/selection.py`：
+  - 支持 `.txt`（每行一条）/ `.csv`（自动识别 uuid/标题/标题-作者-期刊 列）两种格式导入
+  - 三层匹配策略：UUID 精确 → 标题+作者模糊 → 纯标题模糊，未匹配返回候选 TOP3 供前端二次确认
+  - 批量打 Tag（新建/追加/覆盖三种模式），用于大规模文献分组（如"20 篇麻疹血清抗体"一次性编组分析）
+- **提取历史一致性审计（extraction_history vs data_point）** — 新建服务 `backend/app/services/extraction_audit_service.py` + 新路由：
+  - `GET /literatures/audit-extraction-consistency/preview`：管理员全局扫描，返回 mismatch 清单；支持按 literature_ids / model 限定，可选 only_unmarked（已修过的不再返回）
+  - `POST /literatures/audit-extraction-consistency/fix`：批量修正，将 `eh.data_point_count` 改写为真实行数，未入表的记录在 `eh.error_message` 中追加 `[DP_DROPPED: eh=N, actual=0/M]` 保留审计痕迹
+  - **事前校验**：`extract_task.py` 在 commit 前自动核对 batch 写入的数据点量 vs 预期数，超阈值拒绝落库
+- **DISEASE_MAP 大幅扩充**（`backend/app/core/term_normalizer.py`）— 从 40+ 条目扩展到 60+：
+  - 血清群合并：脑膜炎奈瑟菌 A/C/Y/W135 → 流脑
+  - 结核亚型合并：肺/淋巴/潜伏/骨/淋巴结/儿童/自身免疫抗体 → 结核病
+  - 新增病种：肺炎支原体、布鲁氏菌病（含牛/羊/猪型）、森林脑炎、口蹄疫（O/A/Asia1 型）、肺炎（含肺炎球菌/肺炎链球菌）、腺病毒感染、莱姆病、SFTS（发热伴血小板减少综合征）、斑点热、虫媒病毒、呼吸道感染、病毒性肝炎（泛称合并）
+  - `@validates("disease")` 字段级归一化自动生效，覆盖所有 ORM 入库路径
+
+### 修复
+
+- **提取强制追加模式（禁用 replace）** — `extraction.py` 单篇 `POST /literatures/{id}/extraction` 和批量 `POST /literatures/extraction/batch` 两处均硬编码 `clear_existing_data=False`，忽略客户端传来的 `clear_existing_data=True`。synthetic 自测任务在服务内部直接调 `trigger_extraction` 不受此限制。防止误操作清空历史数据点
+- **Literature.tsx 前端大升级**（+451 行）— 批量选中/筛选/Tag 管理 UI，配合新 selection API
+
+### 文档
+
+- **README.md** — AI 数据提取条目补充「追加模式安全」；新增「文献批量选中与编组」「提取历史一致性审计」
+- **docs/index.md** — DISEASE_MAP 从 40+ 扩充到 60+，病种清单更新；智能特性新增 4 条（追加模式、一致性审计、批量编组、DISEASE_MAP 扩充）
+- **docs/changelog.md** — 本 v1.29.0 条目
+
+---
+
 ## v1.28.0 (2026-09-22)
 
 ### 新增

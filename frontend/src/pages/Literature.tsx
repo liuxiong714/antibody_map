@@ -1,8 +1,8 @@
-﻿import React, { useCallback, useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Alert, Dropdown, Switch, DatePicker, Badge, Divider,
 } from 'antd';
-import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined, PaperClipOutlined, RestOutlined, EditOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined, PaperClipOutlined, RestOutlined, EditOutlined, TagsOutlined, CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined, AuditOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import { Resizable, ResizeCallbackData } from 'react-resizable';
@@ -12,7 +12,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, resetMyExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, previewOrphanCleanup, executeOrphanCleanup, OrphanCleanupPreview, OrphanCleanupResult, fixTitles, FixTitlesResult, applyFixTitles, FixTitleApplyItem, aiVerifyTitles, AiVerifyTitlesResult, getExtractionQueueStatus, ExtractionQueueStatus, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult, exportLiteratures } from '../services/literature';
+import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, resetMyExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, previewOrphanCleanup, executeOrphanCleanup, OrphanCleanupPreview, OrphanCleanupResult, previewExtractionConsistency, executeExtractionConsistency, ExtractionConsistencyPreview, fixTitles, FixTitlesResult, applyFixTitles, FixTitleApplyItem, aiVerifyTitles, AiVerifyTitlesResult, getExtractionQueueStatus, ExtractionQueueStatus, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult, exportLiteratures, matchByText, batchSetTags, listTags, createTag, deleteTag, type MatchByTextResult, type TagItem } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
@@ -99,7 +99,7 @@ function clearDefaultModel() {
 // 保存/恢复列表状态的 sessionStorage key
 const LIST_STATE_KEY = 'literature_list_back_state';
 
-const StatBox: React.FC<{ label: string; count: number; color: string }> = ({ label, count, color }) => (
+const StatBox: React.FC<{ label: React.ReactNode; count: number; color: string }> = ({ label, count, color }) => (
   <div style={{
     flex: 1, minWidth: 100, textAlign: 'center',
     padding: '12px 8px', borderRadius: 8, border: `1px solid ${color}`,
@@ -196,7 +196,7 @@ const LiteraturePage: React.FC = () => {
     const payload = {
       sortBy, sortOrder, sortInfo, page, pageSize,
       keyword, disease, province, yearStart, yearEnd, journal, reviewStatus, extractionStatus, fileFormat,
-      titleFilter, authorsFilter, createdStart, createdEnd, hasAbstract,
+      titleFilter, authorsFilter, createdStart, createdEnd, hasAbstract, tagFilter,
     };
     if (import.meta.env.DEV) console.debug('[文献列表] 进入详情页前保存状态:', payload);
     try {
@@ -212,6 +212,8 @@ const LiteraturePage: React.FC = () => {
   const [extracting, setExtracting] = useState(false);
   const [extractApiKey, setExtractApiKey] = useState('');
   const [extractBaseUrl, setExtractBaseUrl] = useState('');
+  // 2026-09-22：是否强制跳过 LLM 缓存
+  const [forceRefreshCache, setForceRefreshCache] = useState<boolean>(false);
   const [extractCustomModel, setExtractCustomModel] = useState('');
   // 是否将当前选择的模型保存为默认
   const [saveAsDefault, setSaveAsDefault] = useState(false);
@@ -221,8 +223,7 @@ const LiteraturePage: React.FC = () => {
   const [batchExtractMode, setBatchExtractMode] = useState(false);
   // 当前用户是否为管理员（登录时已写入 storage）
   const isAdmin = localStorage.getItem('is_admin') === 'true' || sessionStorage.getItem('is_admin') === 'true';
-  // 提取时是否保留已审核数据
-  const [clearExistingData, setClearExistingData] = useState(false);
+  // 2026-09-22：彻底禁用 replace 模式，clearExistingData 状态已移除
   // 表格多选
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [selectedRows, setSelectedRows] = useState<Literature[]>([]);
@@ -271,6 +272,22 @@ const LiteraturePage: React.FC = () => {
   const [replacing, setReplacing] = useState(false);
   const [folderImportTriggerExtraction, setFolderImportTriggerExtraction] = useState(true);
 
+  // ── 编组/标签相关状态 ──
+  const [tagFilter, setTagFilter] = useState<string>(() => (_cachedState?.tagFilter as string) || '');
+  const [allTags, setAllTags] = useState<TagItem[]>([]);
+  const [matchOpen, setMatchOpen] = useState(false);
+  const [matchResult, setMatchResult] = useState<MatchByTextResult | null>(null);
+  const [matchLoading, setMatchLoading] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [useExistingTagId, setUseExistingTagId] = useState<string | undefined>(undefined);
+  const [tagging, setTagging] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  // 给选中文献批量打标签的 Modal
+  const [batchTagOpen, setBatchTagOpen] = useState(false);
+  const [batchTagName, setBatchTagName] = useState('');
+  const [batchTagExistingId, setBatchTagExistingId] = useState<string | undefined>(undefined);
+  const [batchTagging, setBatchTagging] = useState(false);
+
   // 标题修正（可勾选、可编辑）
   const [titleFixModalOpen, setTitleFixModalOpen] = useState(false);
   const [titleFixChanges, setTitleFixChanges] = useState<FixTitlesResult['changes']>([]);
@@ -302,6 +319,101 @@ const LiteraturePage: React.FC = () => {
     }
   };
 
+  // ── 从文件匹配文献并预览 ──
+  const handleMatchFile = async (file: File) => {
+    setPendingFile(file);
+    setMatchLoading(true);
+    setMatchResult(null);
+    try {
+      const result = await matchByText(file);
+      setMatchResult(result);
+      setNewGroupName('');
+      setUseExistingTagId(undefined);
+      setMatchOpen(true);
+    } catch (err: any) {
+      console.error('[Literature] 文件匹配失败:', err);
+      message.error(err?.response?.data?.detail || '文件解析失败');
+    } finally {
+      setMatchLoading(false);
+    }
+  };
+
+  // ── 匹配预览确认：选中所有匹配到的文献 + （可选）保存为编组 ──
+  const handleConfirmMatchSave = async () => {
+    if (!matchResult) return;
+    const matchedIds = matchResult.matched.map((m) => m.id);
+    if (matchedIds.length === 0) {
+      message.warning('没有匹配到任何文献');
+      return;
+    }
+
+    // 如果用户指定了编组（新建或从已有选），则批量打标签
+    const tagTargetId = useExistingTagId || undefined;
+    const tagTargetName = !tagTargetId && newGroupName.trim() ? newGroupName.trim() : undefined;
+
+    if (tagTargetId || tagTargetName) {
+      setTagging(true);
+      try {
+        await batchSetTags(
+          matchedIds,
+          [{ tag_id: tagTargetId ?? null, tag_name: tagTargetName ?? null, color: '#1677ff' }],
+          'add',
+        );
+        message.success(`已将 ${matchedIds.length} 篇文献加入编组「${
+          allTags.find((t) => t.id === tagTargetId)?.name || tagTargetName
+        }」`);
+        await reloadTags();
+      } catch (err: any) {
+        console.error('[Literature] 批量打标签失败:', err);
+        message.error(err?.response?.data?.detail || '保存编组失败');
+      } finally {
+        setTagging(false);
+      }
+    } else {
+      message.info(`已选中 ${matchedIds.length} 篇文献（未保存编组，可在列表中继续操作或重新打开保存编组）`);
+    }
+
+    // 关闭预览 + 选中这些文献
+    setMatchOpen(false);
+    setSelectedRowKeys(matchedIds as React.Key[]);
+    setSelectedRows([]); // 稍后 fetchList 后重建
+    setPendingFile(null);
+
+    // 把筛选清空（如果用户之前有 tagFilter），让列表显示所有文献
+    // 但 matchedIds 可能跨页，这里只做选中状态，不改变筛选条件
+  };
+
+  // ── 给已选中文献批量打编组 ──
+  const handleConfirmBatchTag = async () => {
+    if (selectedRowKeys.length === 0) return;
+    const tagTargetId = batchTagExistingId || undefined;
+    const tagTargetName = !tagTargetId && batchTagName.trim() ? batchTagName.trim() : undefined;
+    if (!tagTargetId && !tagTargetName) {
+      message.warning('请选择已有编组或输入新编组名');
+      return;
+    }
+    setBatchTagging(true);
+    try {
+      const result = await batchSetTags(
+        selectedRowKeys.map(String),
+        [{ tag_id: tagTargetId ?? null, tag_name: tagTargetName ?? null, color: '#1677ff' }],
+        'add',
+      );
+      message.success(`已将 ${result.success_count} 篇文献加入编组「${
+        allTags.find((t) => t.id === tagTargetId)?.name || tagTargetName
+      }」`);
+      await reloadTags();
+      setBatchTagOpen(false);
+      setBatchTagName('');
+      setBatchTagExistingId(undefined);
+    } catch (err: any) {
+      console.error('[Literature] 批量打标签失败:', err);
+      message.error(err?.response?.data?.detail || '保存编组失败');
+    } finally {
+      setBatchTagging(false);
+    }
+  };
+
   const fetchList = useCallback(async () => {
     // 取消上一个尚未完成的同源列表请求，避免切页/改筛选后旧响应 setState（F46）
     abortListRef.current?.abort();
@@ -327,6 +439,7 @@ const LiteraturePage: React.FC = () => {
       if (createdEnd) params.created_end = createdEnd;
       if (hasAbstract === 'has') params.has_abstract = true;
       if (hasAbstract === 'none') params.has_abstract = false;
+      if (tagFilter) params.tag_id = tagFilter;
       const resp = await listLiterature(params, { signal: controller.signal });
       setItems(resp.items);
       setTotal(resp.total);
@@ -337,9 +450,20 @@ const LiteraturePage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, keyword, disease, province, yearStart, yearEnd, journal, sortBy, sortOrder, reviewStatus, extractionStatus, fileFormat, titleFilter, authorsFilter, createdStart, createdEnd, hasAbstract]);
+  }, [page, pageSize, keyword, disease, province, yearStart, yearEnd, journal, sortBy, sortOrder, reviewStatus, extractionStatus, fileFormat, titleFilter, authorsFilter, createdStart, createdEnd, hasAbstract, tagFilter]);
 
   useEffect(() => { fetchList(); }, [fetchList]);
+
+  // 加载标签列表（编组下拉 + 匹配弹窗共用）
+  const reloadTags = useCallback(async () => {
+    try {
+      const tags = await listTags();
+      setAllTags(tags);
+    } catch (err) {
+      console.error('[Literature] 加载标签列表失败:', err);
+    }
+  }, []);
+  useEffect(() => { reloadTags(); }, [reloadTags]);
 
   // === 回收站列表 ===
   const fetchTrashList = useCallback(async () => {
@@ -836,8 +960,9 @@ const LiteraturePage: React.FC = () => {
         modelConfigId,
         apiKey: extractApiKey || undefined,
         baseUrl: extractBaseUrl || undefined,
-        clearExistingData,
-      } : (clearExistingData !== undefined ? { model: '', clearExistingData } : undefined);
+        // clearExistingData 已移除（2026-09-22 彻底禁用 replace 模式，后端 API 也强制 append）
+        useCache: !forceRefreshCache,  // 勾选强制刷新时跳过 LLM 缓存
+      } : undefined;
 
       if (batchExtractMode) {
         // 批量提取模式
@@ -878,19 +1003,8 @@ const LiteraturePage: React.FC = () => {
   };
 
   const confirmExtract = () => {
-    if (clearExistingData) {
-      const scope = batchExtractMode ? `所选 ${selectedRowKeys.length} 篇文献` : '该文献';
-      Modal.confirm({
-        title: '确认全量重抽？',
-        content: `将清空${scope}的所有既有数据点（含已审核通过的数据、审核意见与质量分），并以待审核(pending)状态重新提取，不可恢复。`,
-        okText: '确认全量重抽',
-        okType: 'danger',
-        cancelText: '取消',
-        onOk: doExtract,
-      });
-    } else {
-      doExtract();
-    }
+    // 2026-09-22：彻底禁用 replace 模式，永远走 append，直接执行
+    doExtract();
   };
 
   const handleTableChange = (pagination: any, filters: any, sorter: any) => {
@@ -1587,12 +1701,73 @@ const LiteraturePage: React.FC = () => {
               label: v.label,
             }))}
           />
+          <Select
+            value={tagFilter || undefined}
+            onChange={(v) => { setTagFilter(v || ''); setPage(1); }}
+            style={{ width: 140 }}
+            placeholder="按编组筛选"
+            allowClear
+            options={allTags.map((t) => ({
+              value: t.id,
+              label: (
+                <span>
+                  <Tag color={t.color || '#1677ff'} style={{ marginRight: 4 }}>●</Tag>
+                  {t.name}
+                </span>
+              ),
+            }))}
+          />
+          <Dropdown
+            menu={{
+              items: allTags.length === 0
+                ? [{ key: 'none', disabled: true, label: '（暂无编组）' }]
+                : allTags.map((t) => ({
+                    key: t.id,
+                    label: (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
+                        <Tag color={t.color || '#1677ff'} style={{ margin: 0 }}>●</Tag>
+                        <span style={{ flex: 1 }}>{t.name}</span>
+                        <Popconfirm
+                          title={`删除编组「${t.name}」？`}
+                          description="编组本身会被删除，文献不会被删除。"
+                          okText="确认删除"
+                          okButtonProps={{ danger: true, size: 'small' }}
+                          cancelText="取消"
+                          onConfirm={async (e) => {
+                            e?.stopPropagation();
+                            try {
+                              await deleteTag(t.id);
+                              message.success(`已删除编组「${t.name}」`);
+                              if (tagFilter === t.id) setTagFilter('');
+                              await reloadTags();
+                            } catch (err: any) {
+                              message.error(err?.response?.data?.detail || '删除失败');
+                            }
+                          }}
+                        >
+                          <Button
+                            size="small"
+                            type="text"
+                            danger
+                            icon={<DeleteOutlined />}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        </Popconfirm>
+                      </div>
+                    ),
+                  })),
+            }}
+            trigger={['click']}
+          >
+            <Button icon={<TagsOutlined />} />
+          </Dropdown>
           <Button icon={<ReloadOutlined />} onClick={() => {
             setKeyword(''); setDisease(''); setProvince(''); setYearStart(undefined);
             setYearEnd(undefined); setJournal(''); setSortBy('created'); setSortOrder('desc');
             setReviewStatus(''); setExtractionStatus(''); setFileFormat(''); setPage(1); setPageSize(20);
             setTitleFilter(''); setAuthorsFilter(''); setCreatedStart(undefined); setCreatedEnd(undefined);
             setSortInfo({ field: 'created_at', order: 'descend' });
+            setTagFilter('');
           }}>重置筛选</Button>
           <Button type="primary" icon={<SearchOutlined />} onClick={fetchList}>查询</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => {
@@ -1676,6 +1851,31 @@ const LiteraturePage: React.FC = () => {
           >
             清理无文件文献
           </Button>
+          <Button icon={<AuditOutlined />} onClick={() => {
+              previewExtractionConsistency({ only_unmarked: false }).then((result: ExtractionConsistencyPreview) => {
+                if (result.total_mismatch === 0) { message.success('All consistent'); return; }
+                const rows = Object.entries(result.by_model).map(function([m, v]) {
+                  return '<tr><td>' + (m || '(none)') + '</td><td>' + v.count + '</td><td>' + v.eh_dp + '</td><td>' + v.real_dp + '</td><td style=color:red>' + (v.eh_dp - v.real_dp) + '</td></tr>';
+                }).join('');
+                Modal.confirm({
+                  title: 'Data Consistency', width: 680,
+                  content: React.createElement('div', null,
+                    React.createElement('p', null, 'Found ', React.createElement('strong', null, result.total_mismatch), ' mismatches.'),
+                    React.createElement('p', null, 'eh claims ' + result.eh_dp_claimed + ' dp, real has ' + result.real_dp_sum + ', lost ', React.createElement('strong', {style:{color:'red'}}, result.lost_dp), ' dp.'),
+                    React.createElement('table', {style:{width:'100%',fontSize:12,borderCollapse:'collapse',border:'1px solid #eee'}},
+                      React.createElement('thead', null, React.createElement('tr', null, React.createElement('th', null, 'Model'), React.createElement('th', null, 'Count'), React.createElement('th', null, 'eh dp'), React.createElement('th', null, 'real'), React.createElement('th', null, 'lost'))),
+                      React.createElement('tbody', {dangerouslySetInnerHTML:{__html: rows}})
+                    ),
+                    React.createElement('p', {style:{fontSize:12,color:'#888',marginTop:8}}, 'Fix tags [DP_DROPPED] in error_message and corrects eh.data_point_count. No deletion.')
+                  ),
+                  okText: 'Fix ' + result.total_mismatch, cancelText: 'Cancel',
+                  onOk: async () => {
+                    try { const r = await executeExtractionConsistency({ only_unmarked: false }); message.success('Done: fixed ' + r.fixed + ', skipped ' + r.already_marked_skipped); }
+                    catch (err: any) { message.error((err && err.response && err.response.data && err.response.data.detail) || 'Failed'); }
+                  },
+                });
+              }).catch((err: any) => message.error((err && err.response && err.response.data && err.response.data.detail) || 'Check failed'));
+            }}>Consistency Audit</Button>
           <Button icon={<DeleteOutlined />} onClick={() => {
               previewOrphanCleanup().then((result: OrphanCleanupPreview) => {
                 if (result.orphan_count === 0) {
@@ -1934,6 +2134,29 @@ const LiteraturePage: React.FC = () => {
           </Dropdown>
           <Button icon={<ImportOutlined />} onClick={() => { setImportFile(null); setImportSkipDuplicates(true); setImportModalOpen(true); }}>
             导入文献
+          </Button>
+          <Upload
+            accept=".txt,.csv"
+            showUploadList={false}
+            beforeUpload={(file) => {
+              handleMatchFile(file);
+              return false; // 阻止 antd 的默认上传，自己发请求
+            }}
+          >
+            <Button icon={<FileTextOutlined />} loading={matchLoading}>
+              从文件导入选中
+            </Button>
+          </Upload>
+          <Button
+            icon={<TagsOutlined />}
+            disabled={selectedRowKeys.length === 0}
+            onClick={() => {
+              setBatchTagName('');
+              setBatchTagExistingId(undefined);
+              setBatchTagOpen(true);
+            }}
+          >
+            批量打编组 {selectedRowKeys.length > 0 ? `(${selectedRowKeys.length})` : ''}
           </Button>
         </Space>
       </Card>
@@ -2430,6 +2653,173 @@ const LiteraturePage: React.FC = () => {
         </div>
       </Modal>
 
+      {/* ── 从文件匹配文献 · 预览 Modal ── */}
+      <Modal
+        title={<><FileTextOutlined /> 文件匹配预览</>}
+        open={matchOpen}
+        onCancel={() => { setMatchOpen(false); setPendingFile(null); }}
+        onOk={handleConfirmMatchSave}
+        confirmLoading={tagging}
+        okText="确认并选中"
+        width={720}
+      >
+        {matchResult && (
+          <div>
+            {/* 统计概览 */}
+            <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+              <StatBox label="总行数" count={matchResult.total_lines} color="#1677ff" />
+              <StatBox label={<><CheckCircleOutlined /> 已匹配</>} count={matchResult.matched_count} color="#52c41a" />
+              <StatBox label={<><QuestionCircleOutlined /> 多条匹配</>} count={matchResult.ambiguous_count} color="#faad14" />
+              <StatBox label={<><CloseCircleOutlined /> 未命中</>} count={matchResult.unmatched_count} color="#ff4d4f" />
+            </div>
+
+            {/* 未命中列表 */}
+            {matchResult.unmatched.length > 0 && (
+              <Collapse
+                ghost
+                items={[{
+                  key: 'unmatched',
+                  label: `未命中 ${matchResult.unmatched.length} 行（忽略）`,
+                  children: (
+                    <ul style={{ paddingLeft: 20, margin: 0, maxHeight: 150, overflowY: 'auto' }}>
+                      {matchResult.unmatched.slice(0, 50).map((u) => (
+                        <li key={u.line} style={{ color: '#ff4d4f', fontSize: 13 }}>
+                          行 {u.line}：「{u.input.length > 80 ? u.input.slice(0, 80) + '…' : u.input}」
+                        </li>
+                      ))}
+                      {matchResult.unmatched.length > 50 && (
+                        <li style={{ color: '#999' }}>…还有 {matchResult.unmatched.length - 50} 行未显示</li>
+                      )}
+                    </ul>
+                  ),
+                }]}
+              />
+            )}
+
+            {/* 多条匹配 */}
+            {matchResult.ambiguous.length > 0 && (
+              <Collapse
+                ghost
+                items={[{
+                  key: 'ambiguous',
+                  label: `多条匹配 ${matchResult.ambiguous.length} 行（未选中，请手动处理）`,
+                  children: (
+                    <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+                      {matchResult.ambiguous.slice(0, 20).map((a) => (
+                        <div key={a.line} style={{ marginBottom: 8, fontSize: 13 }}>
+                          <div style={{ color: '#faad14' }}>行 {a.line}「{a.input}」→ 匹配到 {a.count} 篇：</div>
+                          <ul style={{ paddingLeft: 20, margin: 0 }}>
+                            {a.candidates.map((c) => (
+                              <li key={c.id} style={{ color: '#888' }}>
+                                {c.id.slice(0, 8)}… · {c.title}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  ),
+                }]}
+              />
+            )}
+
+            {/* 已匹配的列表（前 10 条预览） */}
+            {matchResult.matched.length > 0 && (
+              <div style={{ marginTop: 12, fontSize: 13 }}>
+                <Text strong style={{ color: '#52c41a' }}>
+                  已匹配 {matchResult.matched_count} 篇（前 10 条预览）：
+                </Text>
+                <ul style={{ paddingLeft: 20, margin: '6px 0', maxHeight: 180, overflowY: 'auto' }}>
+                  {matchResult.matched.slice(0, 10).map((m) => {
+                    const typeLabel = m.match_type === 'uuid' ? 'UUID' : m.match_type === 'title_exact' ? '标题精确' : '标题模糊';
+                    return (
+                      <li key={m.id} style={{ color: '#333' }}>
+                        <Tag color={m.match_type === 'uuid' ? 'blue' : m.match_type === 'title_exact' ? 'green' : 'orange'}>{typeLabel}</Tag>
+                        {m.title.slice(0, 60)}{m.title.length > 60 ? '…' : ''}
+                      </li>
+                    );
+                  })}
+                  {matchResult.matched_count > 10 && (
+                    <li style={{ color: '#999' }}>…还有 {matchResult.matched_count - 10} 篇</li>
+                  )}
+                </ul>
+              </div>
+            )}
+
+            <Divider style={{ margin: '12px 0' }} />
+
+            {/* 编组保存区 */}
+            <div>
+              <Text strong><TagsOutlined /> 保存为编组（可选）</Text>
+              <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                不填则仅选中，不保存编组
+              </Text>
+              <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                <Select
+                  value={useExistingTagId}
+                  onChange={(v) => { setUseExistingTagId(v); if (v) setNewGroupName(''); }}
+                  placeholder="选择已有编组"
+                  allowClear
+                  style={{ flex: 1 }}
+                  options={allTags.map((t) => ({
+                    value: t.id,
+                    label: <><Tag color={t.color} style={{ marginRight: 4 }}>●</Tag>{t.name}</>,
+                  }))}
+                />
+                <Input
+                  placeholder="或输入新编组名"
+                  value={newGroupName}
+                  onChange={(e) => { setNewGroupName(e.target.value); if (e.target.value) setUseExistingTagId(undefined); }}
+                  style={{ flex: 1 }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── 给选中文献批量打编组 Modal ── */}
+      <Modal
+        title={<><TagsOutlined /> 批量给选中的 {selectedRowKeys.length} 篇文献打编组</>}
+        open={batchTagOpen}
+        onCancel={() => { setBatchTagOpen(false); setBatchTagName(''); setBatchTagExistingId(undefined); }}
+        onOk={handleConfirmBatchTag}
+        confirmLoading={batchTagging}
+        okText="确认打编组"
+        width={480}
+      >
+        <div style={{ marginBottom: 12 }}>
+          <Text>选择已有编组：</Text>
+          <Select
+            value={batchTagExistingId}
+            onChange={(v) => { setBatchTagExistingId(v); if (v) setBatchTagName(''); }}
+            placeholder="选择已有编组"
+            allowClear
+            style={{ width: '100%', marginTop: 6 }}
+            options={allTags.map((t) => ({
+              value: t.id,
+              label: <><Tag color={t.color} style={{ marginRight: 4 }}>●</Tag>{t.name}</>,
+            }))}
+          />
+        </div>
+        <div>
+          <Text>或输入新编组名：</Text>
+          <Input
+            placeholder="新编组名（不存在会自动创建）"
+            value={batchTagName}
+            onChange={(e) => { setBatchTagName(e.target.value); if (e.target.value) setBatchTagExistingId(undefined); }}
+            style={{ marginTop: 6 }}
+          />
+        </div>
+        <Alert
+          message="操作说明"
+          description="新编组会追加到文献现有标签上，不会清除已有编组。"
+          type="info"
+          showIcon
+          style={{ marginTop: 12 }}
+        />
+      </Modal>
+
       <Modal
         title={batchExtractMode ? (<><RobotOutlined /> 批量选择提取模型</>) : (<><RobotOutlined /> 选择提取模型</>)}
         open={extractModalOpen}
@@ -2540,12 +2930,17 @@ const LiteraturePage: React.FC = () => {
             </>
           )}
         </div>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+          <Checkbox
+            checked={forceRefreshCache}
+            onChange={(e) => setForceRefreshCache(e.target.checked)}
+          >
+            强制重新跑 LLM（跳过已有缓存，重新调用模型获取新鲜结果）
+          </Checkbox>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
-          <Switch checked={clearExistingData} onChange={setClearExistingData} size="small" />
-          <Text style={{ fontSize: 13 }}>
-            {clearExistingData
-              ? '替换旧结果：清空所有已有数据点，本次提取重新生成'
-              : '追加新批次：保留全部已有数据点，本次提取新增一批（新旧通过「提取模型/时间」列区分）'}
+          <Text style={{ fontSize: 13, color: '#1677ff' }}>
+            ℹ️ 追加模式：本次提取将保留全部已有数据点，新增一批独立结果（新旧通过「提取模型/时间」列区分）
           </Text>
         </div>
         {extractLitId && (

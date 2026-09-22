@@ -116,3 +116,144 @@ async def cleanup_minio_orphan_objects_endpoint(
             f"物理删除 {result['deleted']} 个，失败 {result['failed']} 个"
         )
     return ApiResponse(message=message, data=result)
+# ─────────────────────────────────────────────────────────────────────────────
+# 数据一致性审计：extraction_history vs data_point 表
+# ─────────────────────────────────────────────────────────────────────────────
+
+from app.services.extraction_audit_service import (
+    fix_extraction_consistency,
+    scan_extraction_consistency,
+)
+
+
+@router.get(
+    "/literatures/audit-extraction-consistency/preview",
+    response_model=ApiResponse,
+    summary="预览提取历史 vs 数据点的一致性",
+    description=(
+        "(管理员) 全局扫描 extraction_history.data_point_count 与 data_point 表 "
+        "实际行数是否一致，返回 mismatch 清单。不执行任何修改。"
+    ),
+)
+async def preview_extraction_consistency(
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    literature_ids: str | None = Query(
+        None,
+        description="可选，逗号分隔的文献 UUID 列表；不传则扫描全部",
+    ),
+    model: str | None = Query(None, description="可选，限定模型名，如 ollama:gpt-oss:20b"),
+    only_unmarked: bool = Query(
+        True,
+        description="True=只返回尚未 [DP_DROPPED] 标记的记录（默认）",
+    ),
+    include_non_success: bool = Query(
+        False,
+        description="False=只检查 status=success（默认）；True=含 no_data/failed",
+    ),
+):
+    _lit_ids = None
+    if literature_ids:
+        _lit_ids = [x.strip() for x in literature_ids.split(",") if x.strip()]
+
+    mismatches = await scan_extraction_consistency(
+        db,
+        literature_ids=_lit_ids,
+        model=model,
+        only_unmarked=only_unmarked,
+        include_non_success=include_non_success,
+    )
+    total_eh = len(mismatches)
+    eh_dp_claimed = sum(m["eh_dp"] for m in mismatches)
+    real_dp_sum = sum(m["real_dp"] for m in mismatches)
+    lost_dp = eh_dp_claimed - real_dp_sum
+
+    # 按 model 汇总
+    by_model: dict[str, dict] = {}
+    for m in mismatches:
+        mm = by_model.setdefault(
+            m["model"] or "(no model)",
+            {"count": 0, "eh_dp": 0, "real_dp": 0},
+        )
+        mm["count"] += 1
+        mm["eh_dp"] += m["eh_dp"]
+        mm["real_dp"] += m["real_dp"]
+
+    return ApiResponse(
+        message=(
+            f"扫描完成：发现 {total_eh} 条不一致的提取历史，"
+            f"eh 声称 {eh_dp_claimed} dp 但 real 表仅 {real_dp_sum} dp，"
+            f"**丢失 {lost_dp} dp**"
+        ),
+        data={
+            "total_mismatch": total_eh,
+            "eh_dp_claimed": eh_dp_claimed,
+            "real_dp_sum": real_dp_sum,
+            "lost_dp": lost_dp,
+            "by_model": by_model,
+            "items": mismatches,
+        },
+    )
+
+
+@router.post(
+    "/literatures/audit-extraction-consistency",
+    response_model=ApiResponse,
+    summary="执行一致性修复：标记 mismatch 并修正 eh.data_point_count",
+    description=(
+        "(管理员) 对预览中的 mismatch 批量执行：在 error_message 追加 "
+        "[DP_DROPPED] 标记，并把 eh.data_point_count 改写成 real 表实际值。"
+        "默认 dry_run=true 仅预览不修改；显式 dry_run=false 才真正写入。"
+    ),
+)
+async def execute_extraction_consistency(
+    dry_run: bool = Query(
+        True,
+        description="True=仅预览（默认，不修改 DB）；False=真正写入修正",
+    ),
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    literature_ids: str | None = Query(None, description="可选，逗号分隔的文献 UUID"),
+    model: str | None = Query(None, description="可选，限定模型名"),
+    only_unmarked: bool = Query(True, description="True=仅处理未标记的（默认）"),
+):
+    _lit_ids = None
+    if literature_ids:
+        _lit_ids = [x.strip() for x in literature_ids.split(",") if x.strip()]
+
+    mismatches = await scan_extraction_consistency(
+        db,
+        literature_ids=_lit_ids,
+        model=model,
+        only_unmarked=only_unmarked,
+    )
+
+    if dry_run:
+        return ApiResponse(
+            message=(
+                f"[dry_run] 发现 {len(mismatches)} 条需要修正的 mismatch "
+                f"（{sum(m['eh_dp'] - m['real_dp'] for m in mismatches)} dp 丢失）。"
+                f"加 ?dry_run=false 执行真正修正。"
+            ),
+            data={
+                "to_fix": len(mismatches),
+                "lost_dp": sum(m["eh_dp"] - m["real_dp"] for m in mismatches),
+                "items": mismatches[:50],  # 限制预览条目数
+                "truncated": len(mismatches) > 50,
+            },
+        )
+
+    try:
+        result = await fix_extraction_consistency(db, mismatches, operator=user.username)
+    except Exception as e:
+        logger.error(f"[audit_consistency] 执行失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"修正失败: {e}") from e
+
+    return ApiResponse(
+        message=(
+            f"修正完成：成功标记 {result['fixed']} 条，"
+            f"跳过已标记 {result['already_marked_skipped']} 条，"
+            f"errors={len(result['errors'])}"
+        ),
+        data=result,
+    )
