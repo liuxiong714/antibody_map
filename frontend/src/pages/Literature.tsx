@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useState, useRef } from 'react';
+﻿import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
-  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Dropdown, Switch, DatePicker, Badge, Divider,
+  Card, Table, Button, Input, InputNumber, Space, Modal, Upload, Form, Select, message, Popconfirm, Tag, Tooltip, Progress, Collapse, Typography, Checkbox, Alert, Dropdown, Switch, DatePicker, Badge, Divider,
 } from 'antd';
 import { UploadOutlined, SearchOutlined, DeleteOutlined, ExperimentOutlined, PlusOutlined, RobotOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined, CopyOutlined, ExportOutlined, LinkOutlined, SyncOutlined, ImportOutlined, FileTextOutlined, TableOutlined, FilePdfOutlined, FileUnknownOutlined, BookOutlined, FileWordOutlined, FilePptOutlined, FileExcelOutlined, GlobalOutlined, FileOutlined, StopOutlined, FolderOpenOutlined, ShrinkOutlined, PaperClipOutlined, RestOutlined, EditOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -12,7 +12,7 @@ import StatusBadge from '../components/StatusBadge';
 import PdfPreviewModal from '../components/PdfPreviewModal';
 import MergeDialog from '../components/MergeDialog';
 import DuplicateScanPanel from '../components/DuplicateScanPanel';
-import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, resetMyExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, previewOrphanCleanup, executeOrphanCleanup, OrphanCleanupPreview, OrphanCleanupResult, fixTitles, FixTitlesResult, applyFixTitles, FixTitleApplyItem, aiVerifyTitles, AiVerifyTitlesResult, getExtractionQueueStatus, ExtractionQueueStatus, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult } from '../services/literature';
+import { listLiterature, deleteLiterature, batchDeleteLiteratures, uploadLiterature, uploadLiteratureFile, downloadLiteratureFile, triggerExtraction, triggerBatchExtraction, checkDuplicate, createLiteratureFromUrl, syncMetadata, syncMetadataBatch, importLiteratures, stopExtraction, resetStuckExtractions, resetMyExtractions, batchImportFromFolder, batchUploadFiles, BatchImportResult, openLiteratureFolder, cleanupEmpty, CleanupEmptyResult, previewOrphanCleanup, executeOrphanCleanup, OrphanCleanupPreview, OrphanCleanupResult, fixTitles, FixTitlesResult, applyFixTitles, FixTitleApplyItem, aiVerifyTitles, AiVerifyTitlesResult, getExtractionQueueStatus, ExtractionQueueStatus, listTrash, restoreLiterature, permanentlyDeleteLiterature, emptyTrash, TrashItem, EmptyTrashResult, exportLiteratures } from '../services/literature';
 import { Literature, DuplicateMatchItem } from '../types';
 import { VENDOR_INFO, EXTRACTION_STATUS_META, PROVINCES } from '../utils/constants';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
@@ -1403,7 +1403,7 @@ const LiteraturePage: React.FC = () => {
       onHeaderCell: () => ({ width: colWidths.actions, onResize: handleColumnResize('actions') }),
       render: (_: unknown, r: Literature) => (
         <Space size={4} wrap>
-          <Tooltip title="AI 提取">
+          <Tooltip title={r.extraction_status === 'done' || r.extraction_status === 'done_no_data' ? '再次 AI 提取（已存在数据，可选替换或追加）' : 'AI 提取'}>
             <Button
               size="small"
               icon={<ExperimentOutlined />}
@@ -1898,31 +1898,34 @@ const LiteraturePage: React.FC = () => {
               { key: 'sel_xlsx_dp', icon: <FileExcelOutlined />, label: `导出选中 Excel（含数据点）${selectedRowKeys.length > 0 ? ` (${selectedRowKeys.length}篇)` : ''}`, disabled: selectedRowKeys.length === 0 },
               { key: 'sel_csv', icon: <FileTextOutlined />, label: `导出选中 CSV${selectedRowKeys.length > 0 ? ` (${selectedRowKeys.length}篇)` : ''}`, disabled: selectedRowKeys.length === 0 },
             ],
-            onClick: ({ key }) => {
+            onClick: async ({ key }) => {
               const idsParam = selectedRowKeys.map((k) => String(k)).join(',');
-              const buildUrl = (extra: Record<string, string>) => {
-                const params = new URLSearchParams(extra);
-                if (keyword) params.set('keyword', keyword);
-                if (disease) params.set('disease', disease);
-                if (province) params.set('province', province);
-                if (yearStart) params.set('year_start', String(yearStart));
-                if (yearEnd) params.set('year_end', String(yearEnd));
-                if (journal) params.set('journal', journal);
-                if (reviewStatus) params.set('review_status', reviewStatus);
-                if (fileFormat) params.set('file_format', fileFormat);
-                return params;
+              const baseFilters = {
+                ...(keyword ? { keyword } : {}),
+                ...(disease ? { disease } : {}),
+                ...(province ? { province } : {}),
+                ...(yearStart ? { year_start: yearStart } : {}),
+                ...(yearEnd ? { year_end: yearEnd } : {}),
+                ...(journal ? { journal } : {}),
+                ...(reviewStatus ? { review_status: reviewStatus } : {}),
+                ...(fileFormat ? { file_format: fileFormat } : {}),
               };
-              const urls: Record<string, string> = {
-                all_csv: buildUrl({}).toString(),
-                all_xlsx: buildUrl({ format: 'xlsx' }).toString(),
-                all_json_dp: buildUrl({ format: 'json', include_data_points: 'true' }).toString(),
-                all_xlsx_dp: buildUrl({ format: 'xlsx', include_data_points: 'true' }).toString(),
-                sel_csv: buildUrl({ literature_ids: idsParam }).toString(),
-                sel_json_dp: buildUrl({ format: 'json', include_data_points: 'true', literature_ids: idsParam }).toString(),
-                sel_xlsx_dp: buildUrl({ format: 'xlsx', include_data_points: 'true', literature_ids: idsParam }).toString(),
+              const plans: Record<string, Parameters<typeof exportLiteratures>[0]> = {
+                all_csv: { ...baseFilters, format: 'csv' },
+                all_xlsx: { ...baseFilters, format: 'xlsx' },
+                all_json_dp: { ...baseFilters, format: 'json', include_data_points: true },
+                all_xlsx_dp: { ...baseFilters, format: 'xlsx', include_data_points: true },
+                sel_csv: { ...baseFilters, format: 'csv', literature_ids: idsParam },
+                sel_json_dp: { ...baseFilters, format: 'json', include_data_points: true, literature_ids: idsParam },
+                sel_xlsx_dp: { ...baseFilters, format: 'xlsx', include_data_points: true, literature_ids: idsParam },
               };
-              const url = urls[key];
-              if (url) window.open(`/api/v1/literatures/export?${url}`);
+              const params = plans[key];
+              if (!params) return;
+              try {
+                await exportLiteratures(params);
+              } catch (e) {
+                message.error(e instanceof Error ? `导出失败：${e.message}` : '导出失败');
+              }
             },
           }}>
             <Button icon={<ExportOutlined />}>
@@ -2540,9 +2543,19 @@ const LiteraturePage: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
           <Switch checked={clearExistingData} onChange={setClearExistingData} size="small" />
           <Text style={{ fontSize: 13 }}>
-            {clearExistingData ? '清除并重新提取所有数据（含已审核的）' : '保留已审核通过的数据点，仅覆盖未审核/已驳回的数据'}
+            {clearExistingData
+              ? '替换旧结果：清空所有已有数据点，本次提取重新生成'
+              : '追加新批次：保留全部已有数据点，本次提取新增一批（新旧通过「提取模型/时间」列区分）'}
           </Text>
         </div>
+        {extractLitId && (
+          <Alert
+            style={{ marginTop: 10 }}
+            type="warning"
+            showIcon
+            message="该文献已提取过，以上开关决定了本次如何处理已有数据。新提取的数据点会自动标记本次使用的模型和时间。"
+          />
+        )}
       </Modal>
 
       {/* 预览面板：带 AI 提取 + 上/下一篇导航 */}

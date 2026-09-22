@@ -84,15 +84,22 @@ async def get_approved_dps(
     data_type: str | None = None,
     year_start: int | None = None,
     year_end: int | None = None,
+    review_statuses: list[str] | None = None,
 ) -> list:
-    """查询 approved + primary 数据点（不含已删除文献），仅投影所需列。"""
+    """查询 primary 数据点（不含已删除文献），仅投影所需列。
+
+    review_statuses 控制审核状态过滤，默认 ["approved"] 与历史行为一致。
+    传 ["approved", "pending"] 可同时展示待审核数据。
+    """
+    if review_statuses is None:
+        review_statuses = ["approved"]
     base = select(
         DataPoint.id, DataPoint.literature_id, DataPoint.disease, DataPoint.province,
         DataPoint.collection_year, DataPoint.population, DataPoint.method, DataPoint.assay,
         DataPoint.data_type, DataPoint.value, DataPoint.unit, DataPoint.sample_size,
         DataPoint.estimate_type,
     ).where(
-        DataPoint.review_status == "approved",
+        DataPoint.review_status.in_(review_statuses),
         DataPoint.estimate_type == "primary",
     )
     base = base.outerjoin(Literature, DataPoint.literature_id == Literature.id)
@@ -383,9 +390,10 @@ async def get_graph(
     year_start: int | None = None,
     year_end: int | None = None,
     max_nodes: int = 600,
+    review_statuses: list[str] | None = None,
 ) -> dict:
     """构建知识图谱（按样本量优先，超出 max_nodes 时裁剪调查）。"""
-    rows = await get_approved_dps(db, disease, province, data_type, year_start, year_end)
+    rows = await get_approved_dps(db, disease, province, data_type, year_start, year_end, review_statuses)
     if not rows:
         return {"survey_count": 0, "nodes": [], "edges": [], "trimmed_nodes": 0}
 
@@ -408,9 +416,9 @@ async def get_graph(
     }
 
 
-async def get_overview(db: AsyncSession) -> dict:
-    """各实体/关系类型的计数概览（基于 approved primary 数据点）。"""
-    rows = await get_approved_dps(db)
+async def get_overview(db: AsyncSession, review_statuses: list[str] | None = None) -> dict:
+    """各实体/关系类型的计数概览。"""
+    rows = await get_approved_dps(db, review_statuses=review_statuses)
     builder = _GraphBuilder()
     for row in rows:
         builder.add_survey(row)

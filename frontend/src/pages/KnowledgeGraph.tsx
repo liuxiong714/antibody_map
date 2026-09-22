@@ -2,6 +2,8 @@ import React, { useState, useEffect, useMemo, useRef, useCallback, useLayoutEffe
 
 import { useNavigate } from 'react-router-dom';
 
+import { useTranslation } from 'react-i18next';
+
 import {
 
   Card, Row, Col, Select, Slider, Button, Spin, Empty, Alert, Drawer, Descriptions,
@@ -43,6 +45,8 @@ import {
 import { getTaskStatus } from '../services/system';
 
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
+
+import { DISEASES } from '../utils/constants';
 
 import type {
 
@@ -170,6 +174,20 @@ const KnowledgeGraph: React.FC = () => {
 
   const navigate = useNavigate();
 
+  const { i18n } = useTranslation();
+
+  // 疾病 slug → {zh, en} 映射（来自 DISEASES 常量；非标准疾病如"乙型脑炎" fallback 显示原值）
+  const diseaseLabelMap = useMemo(() => {
+    const m = new Map<string, { zh: string; en: string }>();
+    DISEASES.forEach((d) => m.set(d.key, { zh: d.name_cn, en: d.name_en }));
+    return m;
+  }, []);
+  const getDiseaseLabel = (slug: string) => {
+    const meta = diseaseLabelMap.get(slug);
+    if (!meta) return slug; // 非标准疾病（如"乙型脑炎"）直接显示原值
+    return i18n.language?.startsWith('en') ? meta.en : meta.zh;
+  };
+
   // 筛选项
 
   const [options, setOptions] = useState<KgOptionsData | null>(null);
@@ -185,6 +203,9 @@ const KnowledgeGraph: React.FC = () => {
   const [yearEnd, setYearEnd] = useState<number | undefined>(undefined);
 
   const [maxNodes, setMaxNodes] = useState(600);
+
+  // 审核状态过滤：approved（仅已审核通过） / approved_pending（含待审核）
+  const [reviewStatus, setReviewStatus] = useState<string>('approved');
 
   // 数据
 
@@ -494,6 +515,9 @@ const KnowledgeGraph: React.FC = () => {
 
     if (yearEnd) params.year_end = yearEnd;
 
+    // 审核状态过滤：approved → ['approved']; approved_pending → ['approved', 'pending']
+    params.review_status = reviewStatus === 'approved_pending' ? ['approved', 'pending'] : ['approved'];
+
     setLoading(true);
 
     getKgGraph(params)
@@ -528,7 +552,7 @@ const KnowledgeGraph: React.FC = () => {
 
     };
 
-  }, [disease, province, dataType, yearStart, yearEnd, maxNodes]);
+  }, [disease, province, dataType, yearStart, yearEnd, maxNodes, reviewStatus]);
 
 
 
@@ -545,6 +569,8 @@ const KnowledgeGraph: React.FC = () => {
     setYearEnd(undefined);
 
     setMaxNodes(600);
+
+    setReviewStatus('approved');
 
   };
 
@@ -1398,7 +1424,7 @@ const KnowledgeGraph: React.FC = () => {
         <Row gutter={[8, 4]} align="middle">
           <Col>
             <span>疾病</span>
-            <Select style={{ minWidth: 120, marginLeft: 6 }} placeholder="全部" allowClear showSearch value={disease} onChange={setDisease} options={(options?.diseases ?? []).map((d) => ({ value: d, label: d }))} />
+            <Select style={{ minWidth: 120, marginLeft: 6 }} placeholder="全部" allowClear showSearch value={disease} onChange={setDisease} options={(options?.diseases ?? []).map((d) => ({ value: d, label: getDiseaseLabel(d) }))} />
           </Col>
           <Col>
             <span>地区</span>
@@ -1413,6 +1439,13 @@ const KnowledgeGraph: React.FC = () => {
             <Select style={{ width: 80, marginLeft: 6 }} placeholder="起始" allowClear value={yearStart} onChange={setYearStart} options={(options?.years ?? []).map((y) => ({ value: y, label: `${y}` }))} />
             <span style={{ margin: '0 2px' }}>-</span>
             <Select style={{ width: 80 }} placeholder="结束" allowClear value={yearEnd} onChange={setYearEnd} options={(options?.years ?? []).map((y) => ({ value: y, label: `${y}` }))} />
+          </Col>
+          <Col>
+            <span>审核</span>
+            <Select style={{ minWidth: 140, marginLeft: 6 }} value={reviewStatus} onChange={setReviewStatus} options={[
+              { value: 'approved', label: '仅已审核通过' },
+              { value: 'approved_pending', label: '含待审核' },
+            ]} />
           </Col>
           <Col><Button size="small" icon={<ReloadOutlined />} onClick={resetFilters}>重置</Button></Col>
           <Divider type="vertical" />

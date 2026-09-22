@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -116,6 +117,10 @@ async def list_literatures(
         for lid, cnt in triples_res.all():
             kg_counts[str(lid)] = cnt
 
+    # 检查 txt 缓存是否存在（跑过数据点提取的文献才有缓存）
+    _TEXT_DIR = Path("/app/backend/data/pdfs")
+    _txt_set = {p.stem for p in _TEXT_DIR.glob("*.txt")} if _TEXT_DIR.exists() else set()
+
     serialized = []
     for item in items:
         data = LiteratureResponse.model_validate(item).model_dump()
@@ -127,6 +132,7 @@ async def list_literatures(
         _lid = str(getattr(item, "id", ""))
         data["kg_extracted"] = _lid in kg_counts
         data["kg_triple_count"] = kg_counts.get(_lid, 0)
+        data["has_txt_cache"] = _lid in _txt_set
         serialized.append(data)
 
     return PagedResponse(

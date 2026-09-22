@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip, Switch, Typography, Alert,
+  Card, Descriptions, Table, Button, Space, Tag, Modal, Input, InputNumber, Checkbox, message, Spin, Select, Row, Col, Tooltip, Switch, Typography, Alert, Popconfirm,
 } from 'antd';
 import { CheckOutlined, CloseOutlined, ExperimentOutlined, ArrowLeftOutlined, RobotOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UpOutlined, DownOutlined, RightOutlined, LeftOutlined, EditOutlined, SaveOutlined, SyncOutlined, DownloadOutlined, PlusOutlined, HistoryOutlined, ClockCircleOutlined, FileTextOutlined, DeleteOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -9,7 +9,7 @@ import ConfidenceBadge from '../components/ConfidenceBadge';
 import StatusBadge from '../components/StatusBadge';
 import QualityBadge from '../components/QualityBadge';
 import {
-  getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText, confirmDataPoints, disputeDataPoints, deleteLiterature, listLiterature,
+  getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, deleteExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText, confirmDataPoints, disputeDataPoints, deleteLiterature, listLiterature,
   exportExtractionCsv, exportTraceabilityHtml, exportExtractionWord,
 } from '../services/literature';
 import PdfViewer from '../components/PdfViewer';
@@ -101,6 +101,10 @@ const LiteratureDetail: React.FC = () => {
   const [leftWidthPercent, setLeftWidthPercent] = useState(55);
   const dragRef = useRef<'vertical' | 'horizontal' | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // 数据点表格滚动区域高度（动态测量，使表头固定、横向滚动条常驻可视区底部）
+  const dataTableWrapRef = useRef<HTMLDivElement>(null);
+  const [tableScrollY, setTableScrollY] = useState(400);
 
   // 折叠状态
   const [isTopCollapsed, setIsTopCollapsed] = useState(false);
@@ -229,7 +233,13 @@ const LiteratureDetail: React.FC = () => {
         try {
           await deleteLiterature(id!);
           message.success('已删除到回收站');
-          navigate('/literature');
+          if (nextId) {
+            navigate(`/literature/${nextId}`);
+          } else if (prevId) {
+            navigate(`/literature/${prevId}`);
+          } else {
+            navigate('/literature');
+          }
         } catch (err) {
           console.error('[LiteratureDetail] 删除文献失败:', err);
           message.error('删除失败');
@@ -699,17 +709,21 @@ const LiteratureDetail: React.FC = () => {
 
   const columns: ColumnsType<DataPoint> = [
     {
-      title: '疾病', dataIndex: 'disease', key: 'disease', width: 80,
+      title: '疾病', dataIndex: 'disease', key: 'disease', width: 85, fixed: 'left' as const,
       sorter: (a, b) => (a.disease || '').localeCompare(b.disease || ''),
       render: (v: string, r: DataPoint) =>
         isEditing(r) ? (
           <Input size="small" value={editRowData?.disease ?? ''}
             onChange={(e) => updateEditField('disease', e.target.value || null)}
-            style={{ width: 70 }} />
-        ) : (v || '-'),
+            style={{ width: 75 }} />
+        ) : (
+          <Tooltip title={v} placement="top">
+            <span>{v || '-'}</span>
+          </Tooltip>
+        ),
     },
     {
-      title: '地区', key: 'region', width: 160,
+      title: '地区', key: 'region', width: 110,
       sorter: (a, b) => {
         const ra = [a.province, a.city].filter(Boolean).join(' ') || '';
         const rb = [b.province, b.city].filter(Boolean).join(' ') || '';
@@ -720,15 +734,27 @@ const LiteratureDetail: React.FC = () => {
           <Space size={4}>
             <Input size="small" value={editRowData?.province ?? ''}
               onChange={(e) => updateEditField('province', e.target.value || null)}
-              placeholder="省" style={{ width: 70 }} />
+              placeholder="省" style={{ width: 46 }} />
             <Input size="small" value={editRowData?.city ?? ''}
               onChange={(e) => updateEditField('city', e.target.value || null)}
-              placeholder="市" style={{ width: 70 }} />
+              placeholder="市" style={{ width: 46 }} />
           </Space>
-        ) : ([r.province, r.city].filter(Boolean).join(' ') || '-'),
+        ) : (
+          (() => {
+            const prov = r.province;
+            const city = r.city;
+            if (!prov && !city) return '-';
+            const label = city ? `${prov ?? ''}·${city}` : (prov || '');
+            return (
+              <Tooltip title={label} placement="top">
+                <span>{label}</span>
+              </Tooltip>
+            );
+          })()
+        ),
     },
     {
-      title: '年龄段', key: 'age', width: 100,
+      title: '年龄段', key: 'age', width: 85,
       sorter: (a, b) => {
         const amin = a.age_min ?? Number.MAX_SAFE_INTEGER;
         const bmin = b.age_min ?? Number.MAX_SAFE_INTEGER;
@@ -740,55 +766,66 @@ const LiteratureDetail: React.FC = () => {
           <Space size={4}>
             <InputNumber size="small" value={editRowData?.age_min ?? undefined}
               onChange={(v) => updateEditField('age_min', v ?? null)}
-              placeholder="最小" style={{ width: 60 }} min={0} max={150} />
+              placeholder="最小" style={{ width: 42 }} min={0} max={150} />
             <InputNumber size="small" value={editRowData?.age_max ?? undefined}
               onChange={(v) => updateEditField('age_max', v ?? null)}
-              placeholder="最大" style={{ width: 60 }} min={0} max={150} />
+              placeholder="最大" style={{ width: 42 }} min={0} max={150} />
           </Space>
         ) : (
-          r.age_min != null && r.age_max != null ? `${r.age_min}-${r.age_max}岁` : '-'
+          r.age_min != null && r.age_max != null ? `${r.age_min}–${r.age_max}岁` :
+          r.age_min != null ? `≥${r.age_min}岁` :
+          r.age_max != null ? `≤${r.age_max}岁` : '-'
         ),
     },
     {
-      title: '人群', key: 'population', width: 140,
-      render: (_: unknown, r: DataPoint) => r.population || '-',
+      title: '人群', key: 'population', width: 100,
+      render: (_: unknown, r: DataPoint) => r.population ? (
+        <Tooltip title={r.population} placement="top">
+          <span>{r.population.length > 10 ? r.population.slice(0, 10) + '…' : r.population}</span>
+        </Tooltip>
+      ) : '-',
     },
     {
-      title: '数据类型', dataIndex: 'data_type', key: 'dt', width: 100,
+      title: '数据类型', dataIndex: 'data_type', key: 'dt', width: 85,
       sorter: (a, b) => (a.data_type || '').localeCompare(b.data_type || ''),
       render: (v: string, r: DataPoint) =>
         isEditing(r) ? (
           <Select size="small" value={editRowData?.data_type ?? undefined}
             onChange={(val) => updateEditField('data_type', val || null)}
-            style={{ width: 90 }} allowClear
+            style={{ width: 75 }} allowClear
             options={Object.entries(DATA_TYPE_LABEL).map(([k, label]) => ({ value: k, label }))} />
         ) : (DATA_TYPE_LABEL[v] || v || '-'),
     },
     {
-      title: '数值', key: 'value', width: 120,
+      title: '数值', key: 'value', width: 110,
       sorter: (a, b) => (a.value ?? Number.MAX_SAFE_INTEGER) - (b.value ?? Number.MAX_SAFE_INTEGER),
       render: (_: unknown, r: DataPoint) =>
         isEditing(r) ? (
           <Space size={4}>
             <InputNumber size="small" value={editRowData?.value ?? undefined}
               onChange={(v) => updateEditField('value', v ?? null)}
-              style={{ width: 70 }} step={0.1} />
+              style={{ width: 60 }} step={0.1} />
             <Input size="small" value={editRowData?.unit ?? ''}
               onChange={(e) => updateEditField('unit', e.target.value || null)}
-              placeholder="单位" style={{ width: 50 }} />
+              placeholder="单位" style={{ width: 40 }} />
           </Space>
-        ) : (
-          r.value != null ? `${r.value} ${r.unit || ''}` : '-'
-        ),
+        ) : r.value != null ? (
+          <span>
+            <strong style={{ color: r.data_type === 'seroprevalence' ? '#1677ff' : '#52c41a' }}>
+              {Number.isInteger(r.value) ? r.value : parseFloat(r.value.toFixed(4))}
+            </strong>
+            <span style={{ color: '#8c8c8c', marginLeft: 4 }}>{r.unit || ''}</span>
+          </span>
+        ) : '-',
     },
     {
-      title: '冲突提示', key: 'conflict', width: 110,
+      title: '冲突', key: 'conflict', width: 72,
       sorter: (a, b) =>
         (a.conflicts?.some((c) => c.conflict) ? 1 : 0) - (b.conflicts?.some((c) => c.conflict) ? 1 : 0),
       render: (_: unknown, r: DataPoint) => {
         const rels = r.conflicts || [];
         const conflicts = rels.filter((c) => c.conflict);
-        if (conflicts.length === 0) return '-';
+        if (conflicts.length === 0) return <span style={{ color: '#d9d9d9' }}>-</span>;
         const lines = rels.map((c, i) => {
           const diffPct = (c.relative_diff * 100).toFixed(1);
           return (
@@ -811,33 +848,33 @@ const LiteratureDetail: React.FC = () => {
             }
             placement="topLeft"
           >
-            <Tag color="red" style={{ margin: 0, cursor: 'help' }}>⚠ {conflicts.length} 处差异大</Tag>
+            <Tag color="red" style={{ margin: 0, cursor: 'help' }}>⚠ {conflicts.length}处</Tag>
           </Tooltip>
         );
       },
     },
     {
-      title: '样本量', dataIndex: 'sample_size', key: 'ss', width: 80,
+      title: '样本量', dataIndex: 'sample_size', key: 'ss', width: 72,
       sorter: (a, b) => (a.sample_size ?? Number.MAX_SAFE_INTEGER) - (b.sample_size ?? Number.MAX_SAFE_INTEGER),
       render: (v: number, r: DataPoint) =>
         isEditing(r) ? (
           <InputNumber size="small" value={editRowData?.sample_size ?? undefined}
             onChange={(val) => updateEditField('sample_size', val ?? null)}
-            style={{ width: 70 }} min={0} />
-        ) : (v || '-'),
+            style={{ width: 62 }} min={0} />
+        ) : (v ?? '-'),
     },
     {
-      title: '采集年份', dataIndex: 'collection_year', key: 'cy', width: 80,
+      title: '年份', dataIndex: 'collection_year', key: 'cy', width: 72,
       sorter: (a, b) => (a.collection_year ?? Number.MAX_SAFE_INTEGER) - (b.collection_year ?? Number.MAX_SAFE_INTEGER),
       render: (v: number, r: DataPoint) =>
         isEditing(r) ? (
           <InputNumber size="small" value={editRowData?.collection_year ?? undefined}
             onChange={(val) => updateEditField('collection_year', val ?? null)}
-            style={{ width: 70 }} min={1900} max={2100} />
-        ) : (v || '-'),
+            style={{ width: 62 }} min={1900} max={2100} />
+        ) : (v ?? '-'),
     },
     {
-      title: '置信度', dataIndex: 'confidence', key: 'cf', width: 80,
+      title: '置信度', dataIndex: 'confidence', key: 'cf', width: 70,
       sorter: (a, b) => {
         const order = { high: 3, medium: 2, low: 1 };
         return (order[a.confidence as keyof typeof order] || 0) - (order[b.confidence as keyof typeof order] || 0);
@@ -846,7 +883,7 @@ const LiteratureDetail: React.FC = () => {
         isEditing(r) ? (
           <Select size="small" value={editRowData?.confidence ?? undefined}
             onChange={(val) => updateEditField('confidence', val || null)}
-            style={{ width: 70 }} allowClear
+            style={{ width: 60 }} allowClear
             options={[
               { value: 'high', label: '高' },
               { value: 'medium', label: '中' },
@@ -855,7 +892,7 @@ const LiteratureDetail: React.FC = () => {
         ) : (<ConfidenceBadge confidence={v} />),
     },
     {
-      title: '溯源', key: 'grounded', width: 76,
+      title: '溯源', key: 'grounded', width: 68,
       sorter: (a, b) => Number(b.is_grounded) - Number(a.is_grounded),
       render: (_: unknown, r: DataPoint) => {
         if (r.is_grounded) {
@@ -863,45 +900,45 @@ const LiteratureDetail: React.FC = () => {
             ? ` [${r.source_char_start},${r.source_char_end})`
             : '';
           return (
-            <Tooltip title={`原文已匹配${extra}`} placement="topLeft">
-              <Tag color="green" style={{ margin: 0 }}>✓ 已匹配</Tag>
+            <Tooltip title={`原文已匹配${extra}`} placement="top">
+              <Tag color="green" style={{ margin: 0 }}>✓</Tag>
             </Tooltip>
           );
         }
         return (
-          <Tooltip title="LLM 提供的原文依据在整篇文档中未找到对应片段，疑似幻觉，建议优先审核" placement="topLeft">
-            <Tag color="red" style={{ margin: 0 }}>⚠ 未匹配</Tag>
+          <Tooltip title="LLM 提供的原文依据在整篇文档中未找到对应片段，疑似幻觉" placement="topLeft">
+            <Tag color="default" style={{ margin: 0, opacity: 0.55 }}>未匹配</Tag>
           </Tooltip>
         );
       },
     },
     {
-      title: '原文依据', key: 'source', width: 180,
+      title: '原文依据', key: 'source', width: 150,
       render: (_: unknown, r: DataPoint) => {
         if (isEditing(r)) {
           return (
-            <Space size={4} style={{ width: 170 }} direction="vertical">
+            <Space size={4} style={{ width: 140 }} direction="vertical">
               <Space size={4}>
                 <InputNumber size="small" value={editRowData?.source_page ?? undefined}
                   onChange={(v) => updateEditField('source_page', v ?? null)}
-                  placeholder="页码" style={{ width: 60 }} min={1} />
+                  placeholder="页" style={{ width: 50 }} min={1} />
                 <Input size="small" value={editRowData?.source_context ?? ''}
                   onChange={(e) => updateEditField('source_context', e.target.value || null)}
-                  placeholder="原文上下文" style={{ width: 100 }} />
+                  placeholder="上下文" style={{ width: 80 }} />
               </Space>
               <Space size={4}>
                 <InputNumber size="small" value={editRowData?.source_char_start ?? undefined}
                   onChange={(v) => updateEditField('source_char_start', v ?? null)}
-                  placeholder="起始" style={{ width: 80 }} min={0} />
+                  placeholder="起" style={{ width: 60 }} min={0} />
                 <InputNumber size="small" value={editRowData?.source_char_end ?? undefined}
                   onChange={(v) => updateEditField('source_char_end', v ?? null)}
-                  placeholder="结束" style={{ width: 80 }} min={0} />
+                  placeholder="止" style={{ width: 60 }} min={0} />
               </Space>
               <Checkbox
                 checked={!!editRowData?.is_grounded}
                 onChange={(e) => updateEditField('is_grounded', e.target.checked)}
               >
-                已匹配原文
+                已匹配
               </Checkbox>
             </Space>
           );
@@ -912,10 +949,10 @@ const LiteratureDetail: React.FC = () => {
         if (!context && !page && !hasInterval) return '-';
 
         const displayText = page
-          ? `第 ${page} 页`
+          ? `第${page}页`
           : (hasInterval
               ? `[${r.source_char_start},${r.source_char_end})`
-              : (context ? context.substring(0, 20) + '...' : '-'));
+              : (context ? context.substring(0, 16) + '…' : '-'));
 
         const tooltipLines: string[] = [];
         if (page) tooltipLines.push(`页码：第 ${page} 页`);
@@ -936,7 +973,7 @@ const LiteratureDetail: React.FC = () => {
       },
     },
     {
-      title: '质量', key: 'quality', width: 90,
+      title: '质量', key: 'quality', width: 80,
       sorter: (a, b) => (a.quality_score ?? -1) - (b.quality_score ?? -1),
       render: (_: unknown, r: DataPoint) => (
         <QualityBadge
@@ -948,43 +985,43 @@ const LiteratureDetail: React.FC = () => {
       ),
     },
     {
-      title: '状态', key: 'status', width: 80,
+      title: '状态', key: 'status', width: 72,
       sorter: (a, b) => {
         const order: Record<string, number> = { approved: 3, pending: 2, rejected: 1 };
         return (order[a.review_status] || 0) - (order[b.review_status] || 0);
       },
       render: (_: unknown, r: DataPoint) => (
-        <Tag color={r.review_status === 'approved' ? 'green' : r.review_status === 'rejected' ? 'red' : 'default'}>
-          {r.review_status === 'approved' ? '已通过' : r.review_status === 'rejected' ? '已驳回' : '待审核'}
+        <Tag color={r.review_status === 'approved' ? 'green' : r.review_status === 'rejected' ? 'red' : 'default'} style={{ margin: 0 }}>
+          {r.review_status === 'approved' ? '通过' : r.review_status === 'rejected' ? '驳回' : '待审'}
         </Tag>
       ),
     },
     {
-      title: '审核人', key: 'reviewer', width: 90,
-      render: (_: unknown, r: DataPoint) => (r.reviewer_name || r.reviewer_id || '-'),
+      title: '审核人', key: 'reviewer', width: 75,
+      render: (_: unknown, r: DataPoint) => (r.reviewer_name || r.reviewer_id || <span style={{ color: '#d9d9d9' }}>-</span>),
     },
     {
-      title: '审核时间', key: 'reviewed_at', width: 150,
+      title: '审核时间', key: 'reviewed_at', width: 120,
       sorter: (a, b) => (a.reviewed_at || '').localeCompare(b.reviewed_at || ''),
-      render: (_: unknown, r: DataPoint) => (r.reviewed_at ? dayjs(r.reviewed_at).format('YYYY-MM-DD HH:mm') : '-'),
+      render: (_: unknown, r: DataPoint) => (r.reviewed_at ? dayjs(r.reviewed_at).format('MM-DD HH:mm') : <span style={{ color: '#d9d9d9' }}>-</span>),
     },
     {
-      title: '审核意见', key: 'review_comment', width: 180,
+      title: '审核意见', key: 'review_comment', width: 140,
       render: (_: unknown, r: DataPoint) =>
         isEditing(r) ? (
           <Input.TextArea size="small" value={editRowData?.review_comment ?? ''}
             onChange={(e) => updateEditField('review_comment', e.target.value || null)}
-            autoSize={{ minRows: 1, maxRows: 4 }} placeholder="审核意见（选填）" />
+            autoSize={{ minRows: 1, maxRows: 4 }} placeholder="审核意见" />
         ) : (
           <Tooltip title={r.review_comment || '暂无'} placement="topLeft">
             <span style={{ color: r.review_comment ? undefined : '#bbb' }}>
-              {(r.review_comment || '').length > 20 ? `${(r.review_comment || '').slice(0, 20)}…` : (r.review_comment || '-')}
+              {(r.review_comment || '').length > 16 ? `${(r.review_comment || '').slice(0, 16)}…` : (r.review_comment || '-')}
             </span>
           </Tooltip>
         ),
     },
     {
-      title: '操作', key: 'actions', width: 140,
+      title: '操作', key: 'actions', width: 120,
       render: (_: unknown, r: DataPoint) =>
         isEditing(r) ? (
           <Space size="small">
@@ -1002,6 +1039,27 @@ const LiteratureDetail: React.FC = () => {
               onClick={() => handleSingleReview(r.id, 'rejected')} />
           </Space>
         ),
+    },
+    // F21：提取批次溯源
+    {
+      title: '提取模型/时间',
+      key: 'provenance',
+      width: 140,
+      fixed: 'right' as const,
+      render: (_: unknown, r: DataPoint) => (
+        <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+          <Tag color={r.model_used ? 'blue' : 'default'} style={{ marginBottom: 2, marginRight: 0 }}>
+            {r.model_used
+              ? (r.model_used.includes(':') ? r.model_used.split(':').pop()! : r.model_used)
+              : '未记录'}
+          </Tag>
+          <div style={{ color: '#8c8c8c', fontSize: 11 }}>
+            {r.created_at
+              ? dayjs(r.created_at).format('MM-DD HH:mm')
+              : '-'}
+          </div>
+        </div>
+      ),
     },
   ];
 
@@ -1040,6 +1098,25 @@ const LiteratureDetail: React.FC = () => {
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+  // 数据点表格：动态测量容器高度，设置 Table scroll.y 使表头固定、横向滚动条常驻
+  useEffect(() => {
+    const el = dataTableWrapRef.current;
+    if (!el) return;
+    const update = () => {
+      // 容器高度 - 表头(~48px) - 分页栏(~56px) - 边框余量
+      const h = el.clientHeight - 110;
+      setTableScrollY(Math.max(160, h));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    window.addEventListener('resize', update);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', update);
     };
   }, []);
 
@@ -1090,10 +1167,10 @@ const LiteratureDetail: React.FC = () => {
           </div>
         ) : (
           <>
-            <div style={{ flex: `0 0 ${topHeightPercent}%`, overflow: 'auto', minHeight: 0, marginBottom: 0, transition: 'flex 0.25s' }}>
+            <div style={{ flex: `0 0 ${topHeightPercent}%`, overflow: 'hidden', minHeight: 0, marginBottom: 0, transition: 'flex 0.25s' }}>
               <Card
-                style={{ height: '100%' }}
-                styles={{ body: { height: '100%', overflow: 'auto' } }}
+                style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+                styles={{ body: { flex: 1, overflow: 'auto', minHeight: 0 } }}
                 title={
                   <Space align="start">
                     <span style={{ cursor: 'pointer', flexShrink: 0 }} onClick={() => setIsTopCollapsed(true)}>
@@ -1226,7 +1303,7 @@ const LiteratureDetail: React.FC = () => {
                     )}
                     <Space style={{ marginTop: 12 }}>
                       <Button icon={<ExperimentOutlined />} onClick={handleExtract} loading={extracting}>
-                        AI 提取
+                        {dataPoints.length > 0 || historyList.length > 0 ? '再次 AI 提取' : 'AI 提取'}
                       </Button>
                       <Tooltip title="从已提取的数据点中同步年份和省份信息">
                         <Button
@@ -1364,30 +1441,60 @@ const LiteratureDetail: React.FC = () => {
                               {
                                 title: '操作',
                                 key: 'action',
-                                width: 100,
-                                render: (_: unknown, r: ExtractionHistoryItem) => (
-                                  <Button
-                                    type="link"
-                                    size="small"
-                                    onClick={() => {
-                                      if (!id) return;
-                                      // 点击历史记录，使用相同模型重新提取
-                                      if (r.model) {
-                                        setExtractModel(r.model);
-                                        // 自动根据模型匹配默认 baseUrl
-                                        const vendor = modelOptions.find((o) => o.value === r.model)?.vendor || '';
-                                        setExtractBaseUrl(VENDOR_INFO[vendor]?.defaultBaseUrl || '');
-                                      } else {
-                                        setExtractModel(undefined);
-                                        setExtractBaseUrl('');
-                                      }
-                                      setExtractApiKey('');
-                                      setExtractModalOpen(true);
-                                    }}
-                                  >
-                                    重新提取
-                                  </Button>
-                                ),
+                                width: 150,
+                                render: (_: unknown, r: ExtractionHistoryItem) => {
+                                  const isAdmin = localStorage.getItem('is_admin') === 'true';
+                                  return (
+                                    <Space size={4}>
+                                      <Button
+                                        type="link"
+                                        size="small"
+                                        onClick={() => {
+                                          if (!id) return;
+                                          // 点击历史记录，使用相同模型重新提取
+                                          if (r.model) {
+                                            setExtractModel(r.model);
+                                            // 自动根据模型匹配默认 baseUrl
+                                            const vendor = modelOptions.find((o) => o.value === r.model)?.vendor || '';
+                                            setExtractBaseUrl(VENDOR_INFO[vendor]?.defaultBaseUrl || '');
+                                          } else {
+                                            setExtractModel(undefined);
+                                            setExtractBaseUrl('');
+                                          }
+                                          setExtractApiKey('');
+                                          setExtractModalOpen(true);
+                                        }}
+                                      >
+                                        重新提取
+                                      </Button>
+                                      {isAdmin && (
+                                        <Popconfirm
+                                          title="删除该提取历史？"
+                                          description={
+                                            <>
+                                              历史记录 <b>{r.model || '(未记录)'}</b> ({r.status}) 将被永久删除。<br />
+                                              关联的数据点 <b>不会删除</b>，仅解除追溯关联。
+                                            </>
+                                          }
+                                          okText="删除"
+                                          okButtonProps={{ danger: true }}
+                                          cancelText="取消"
+                                          onConfirm={async () => {
+                                            try {
+                                              await deleteExtractionHistory(r.id);
+                                              message.success('提取历史已删除');
+                                              loadExtractionHistory();
+                                            } catch {
+                                              message.error('删除失败');
+                                            }
+                                          }}
+                                        >
+                                          <Button type="link" size="small" danger icon={<DeleteOutlined />} />
+                                        </Popconfirm>
+                                      )}
+                                    </Space>
+                                  );
+                                },
                               },
                             ]}
                           />
@@ -1547,15 +1654,16 @@ const LiteratureDetail: React.FC = () => {
                       </Button>
                     </Space>
                   }
-                  styles={{ body: { flex: 1, overflow: 'auto', padding: 0 } }}
-                  style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+                  styles={{ body: { flex: 1, overflow: 'hidden', padding: 0, minHeight: 0 } }}
+                  style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
                 >
+                  <div ref={dataTableWrapRef} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
                   <Table
                     rowKey="id"
                     dataSource={dataPoints}
                     columns={columns}
                     showSorterTooltip={{ title: '点击排序' }}
-                    scroll={{ x: 1400 }}
+                    scroll={{ x: 1900, y: tableScrollY }}
                     size="middle"
                     rowClassName={(r: DataPoint) => {
                       if (r.confidence === 'low') return 'low-confidence-row';
@@ -1578,6 +1686,7 @@ const LiteratureDetail: React.FC = () => {
                       showTotal: (total, range) => `${range[0]}-${range[1]} / ${total}`,
                     }}
                   />
+                  </div>
                 </Card>
                 <PathogenPanel literatureId={id || ''} />
               </div>
@@ -1647,7 +1756,7 @@ const LiteratureDetail: React.FC = () => {
                     <span>文献预览</span>
                   </Space>
                 }
-                styles={{ body: { padding: 8, flex: 1, overflow: 'auto' } }}
+                styles={{ body: { padding: 8, flex: 1, overflow: 'hidden', minHeight: 0 } }}
                 style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
               >
                 {id ? (
@@ -1743,9 +1852,19 @@ const LiteratureDetail: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>
           <Switch checked={clearExistingData} onChange={setClearExistingData} size="small" />
           <Text style={{ fontSize: 13 }}>
-            {clearExistingData ? '清除并重新提取所有数据（含已审核的）' : '保留已审核通过的数据点，仅覆盖未审核/已驳回的数据'}
+            {clearExistingData
+              ? '替换旧结果：清空所有已有数据点，本次提取重新生成'
+              : '追加新批次：保留全部已有数据点，本次提取新增一批（新旧通过「提取模型/时间」列区分）'}
           </Text>
         </div>
+        {(dataPoints.length > 0 || historyList.length > 0) && (
+          <Alert
+            style={{ marginTop: 10 }}
+            type="warning"
+            showIcon
+            message="该文献已有提取记录/数据点，以上开关决定了本次如何处理已有数据。新提取的数据点会自动标记本次使用的模型和时间。"
+          />
+        )}
       </Modal>
 
       <Modal

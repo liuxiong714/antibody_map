@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import Integer, and_, case, func, or_, select, update
+from sqlalchemy import Integer, String, and_, case, cast, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -209,12 +209,14 @@ async def list_literature(
 
     if keyword:
         like = f"%{keyword}%"
+        _id_text = cast(Literature.id, String)
         query = query.where(
             Literature.title.ilike(like)
             | Literature.authors.ilike(like)
             | Literature.journal.ilike(like)
             | Literature.abstract.ilike(like)
             | func.array_to_string(Literature.keywords, " ").ilike(like)
+            | _id_text.ilike(like)
         )
         count_query = count_query.where(
             Literature.title.ilike(like)
@@ -222,6 +224,7 @@ async def list_literature(
             | Literature.journal.ilike(like)
             | Literature.abstract.ilike(like)
             | func.array_to_string(Literature.keywords, " ").ilike(like)
+            | _id_text.ilike(like)
         )
 
     if province:
@@ -527,15 +530,18 @@ async def list_trash_literatures(
 
     if keyword:
         like = f"%{keyword}%"
+        _id_text = cast(Literature.id, String)
         query = query.where(
             Literature.title.ilike(like)
             | Literature.authors.ilike(like)
             | Literature.journal.ilike(like)
+            | _id_text.ilike(like)
         )
         count_query = count_query.where(
             Literature.title.ilike(like)
             | Literature.authors.ilike(like)
             | Literature.journal.ilike(like)
+            | _id_text.ilike(like)
         )
 
     query = query.order_by(Literature.deleted_at.desc())

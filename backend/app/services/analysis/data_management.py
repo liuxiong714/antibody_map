@@ -197,6 +197,8 @@ async def get_approved_data_points_for_snapshot(
 async def get_data_gap_analysis(
     db: AsyncSession,
     disease: str | None = None,
+    province: str | None = None,
+    city: str | None = None,
 ) -> dict:
     """数据覆盖度分析：统计各省份/城市×各年份的数据点分布，识别需要审核和补充的数据缺口。
 
@@ -206,9 +208,18 @@ async def get_data_gap_analysis(
     - 区分"需要审核"和"需要补充"两种情况
     - 所有条目（包括已完善）都保留展示
 
+    再增强（2026-09-20）：
+    - 新增 province / city 可选筛选参数，实现省→市下钻
+    - 新增 region_disease_year_matrix：按 [地区 × 疾病] × 年份 细粒度矩阵
+    - 每个单元格返回 **三种覆盖度指标**（前端按用户选择切换展示）：
+        a. cov_quality_score  — 完整性评分（approved_ab/5×70 − pending×2，0-100）
+        b. cov_threshold_pct  — 质量阈值达成率（approved_ab / WELL_COVERED_THRESHOLD × 100）
+        c. cov_timespan_pct   — 时期覆盖度（该 disease 在该 region 有数据的年份 / 总跨度年数 × 100）
+
     查询 ALL 数据点（含 pending/approved/rejected 全部状态），
     返回 overview / review_needed / supplement_needed / data_gaps
-           / province_year_matrix / city_year_matrix。
+           / province_year_matrix / city_year_matrix
+           / region_disease_year_matrix。
     """
     # ---- 完整性评分常量 ----
     # 已审核数据点 ≥ 这个阈值 → 该组合被认为"完善"
@@ -269,6 +280,10 @@ async def get_data_gap_analysis(
     if disease:
         normalized_disease = normalize_disease(disease)
         query = query.where(DataPoint.disease == normalized_disease)
+    if province:
+        query = query.where(DataPoint.province == province)
+    if city:
+        query = query.where(DataPoint.city.contains(city))
 
     result = await db.execute(query)
     rows = result.all()
@@ -512,6 +527,141 @@ async def get_data_gap_analysis(
         "well_covered_threshold": WELL_COVERED_THRESHOLD,
     }
 
+    # ---- 7. region_disease_year_matrix（[地区 × 疾病] × 年份 细粒度矩阵）----
+    # 三种覆盖度指标全部在单元格里预计算，前端按用户选择切换展示
+    WELL = WELL_COVERED_THRESHOLD
+    n_years = len(year_list)
+
+    # 基础聚合 key：(region_mode, region_key_tuple, disease, year)
+    # region_mode 决定粒度：'province'（省级别） / 'city'（city 级别）
+    region_rows: list[dict] = []
+    for r in rows:
+        if not r.province:
+            continue
+        prov = r.province.split(";")[0].strip()
+        if not prov:
+            continue
+        norm_dis = normalize_disease(r.disease) if r.disease else (r.disease or "未知")
+        year = r.collection_year
+
+        # 两条线并行：省粒度 + 若有 city 则 city 粒度
+        for mode, rk in (
+            ("province", (prov, None)),
+            ("city", (prov, r.city.replace("；", ";").split(";")[0].strip() if r.city else None)),
+        ):
+            if mode == "city" and not rk[1]:
+                continue
+            region_rows.append({
+                "mode": mode,
+                "province": rk[0],
+                "city": rk[1],
+                "disease": norm_dis,
+                "year": year,
+                "review_status": r.review_status,
+                "quality_grade": r.quality_grade,
+                "cnt": r.cnt,
+            })
+
+    # 汇总：按 (mode, prov, city, disease, year) 聚合状态计数
+    rd_year_map: dict[tuple, dict] = {}
+    for rr in region_rows:
+        key = (rr["mode"], rr["province"], rr["city"], rr["disease"], rr["year"])
+        if key not in rd_year_map:
+            rd_year_map[key] = {"total": 0, "pending": 0, "approved": 0, "approved_ab": 0}
+        rd_year_map[key]["total"] += rr["cnt"]
+        if rr["review_status"] == "pending":
+            rd_year_map[key]["pending"] += rr["cnt"]
+        elif rr["review_status"] == "approved":
+            rd_year_map[key]["approved"] += rr["cnt"]
+            if rr["quality_grade"] in ("A", "B"):
+                rd_year_map[key]["approved_ab"] += rr["cnt"]
+
+    # 汇总：region × disease 维度 → active_years 集合（算时期覆盖度用）
+    rd_active_years: dict[tuple, set] = {}
+    for (mode, prov, city, dis, year), _ in rd_year_map.items():
+        rkey = (mode, prov, city, dis)
+        rd_active_years.setdefault(rkey, set()).add(year)
+
+    # 最终输出
+    rd_by_region: dict[tuple, dict] = {}
+    for (mode, prov, city, dis, year), cell in rd_year_map.items():
+        rkey = (mode, prov, city, dis)
+        if rkey not in rd_by_region:
+            rd_by_region[rkey] = {
+                "mode": mode,
+                "region": {"province": prov, "city": city},
+                "disease": dis,
+                "years": {},
+                "_cities_for_drill": {},
+                "_total_approved_ab": 0,
+                "_total_pending": 0,
+            }
+        active_n = len(rd_active_years[rkey])
+        rd_by_region[rkey]["years"][str(year)] = {
+            "total": cell["total"],
+            "pending": cell["pending"],
+            "approved": cell["approved"],
+            "approved_ab": cell["approved_ab"],
+            "completeness_score": _calc_completeness(cell["approved_ab"], cell["pending"], n_years),
+            "status": _status_label(cell["approved_ab"], cell["pending"]),
+            # 三种覆盖度指标（year 单元格级别，cov_timespan 由 region 汇总计算后回填）
+            "cov_quality_score": _calc_completeness(cell["approved_ab"], cell["pending"], n_years),
+            "cov_threshold_pct": round(min(cell["approved_ab"] / max(WELL, 1) * 100, 100.0), 2),
+            "cov_timespan_pct": round(min(active_n / max(n_years, 1) * 100, 100.0), 2),
+        }
+        rd_by_region[rkey]["_total_approved_ab"] += cell["approved_ab"]
+        rd_by_region[rkey]["_total_pending"] += cell["pending"]
+
+    # 省→市下钻：为 province 模式的行构建 cities 列表
+    # 从 region_rows 里收 province 模式且同一 disease 出现过的 city
+    prov_city_disease: dict[tuple, set] = {}
+    for rr in region_rows:
+        if rr["mode"] != "city":
+            continue
+        key = (rr["province"], rr["disease"])
+        if rr["city"]:
+            prov_city_disease.setdefault(key, set()).add(rr["city"])
+
+    region_disease_year_matrix: list[dict] = []
+    for rkey, item in rd_by_region.items():
+        mode = item["mode"]
+        prov = item["region"]["province"]
+        dis = item["disease"]
+        active_n = len(rd_active_years[rkey])
+        total_approved_ab = item["_total_approved_ab"]
+        total_pending = item["_total_pending"]
+
+        # region_summary 三种指标（跨所有年份汇总）
+        region_summary = {
+            "total": sum(y["total"] for y in item["years"].values()),
+            "approved_ab": total_approved_ab,
+            "pending": total_pending,
+            "cov_quality_score": _calc_completeness(total_approved_ab, total_pending, n_years),
+            "cov_threshold_pct": round(min(total_approved_ab / max(WELL, 1) * 100, 100.0), 2),
+            "cov_timespan_pct": round(min(active_n / max(n_years, 1) * 100, 100.0), 2),
+            "active_year_count": active_n,
+            "span_year_count": n_years,
+        }
+        # 省→市下钻：省级别行追加 cities 列表（用于前端自动列出该省有数据的市）
+        if mode == "province":
+            cities_of_dis = prov_city_disease.get((prov, dis), set())
+            region_summary["cities"] = sorted(cities_of_dis)
+
+        item.pop("_total_approved_ab", None)
+        item.pop("_total_pending", None)
+        item.pop("_cities_for_drill", None)
+        item["region_summary"] = region_summary
+        item.pop("mode", None)  # 不对外暴露，region 对象里已有 province/city
+        region_disease_year_matrix.append(item)
+
+    # 排序：先 province 模式，再 city 模式；疾病按字母
+    region_disease_year_matrix.sort(key=lambda x: (
+        0 if x["region"]["city"] is None else 1,
+        x["region"]["province"],
+        x["region"]["city"] or "",
+        x["disease"],
+    ))
+
     return {
         "overview": overview,
         "review_needed": review_needed,
@@ -519,6 +669,7 @@ async def get_data_gap_analysis(
         "data_gaps": data_gaps,
         "province_year_matrix": province_year_matrix,
         "city_year_matrix": city_year_matrix,
+        "region_disease_year_matrix": region_disease_year_matrix,
     }
 
 

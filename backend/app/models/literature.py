@@ -108,6 +108,19 @@ class Literature(Base):
         DateTime(timezone=True), nullable=True, default=None, index=True
     )
 
+    # —— Phase 0: 文献类型与数据域标签 ——
+    # literature_type: 区分研究论文 / 监测周报月报 / 暴发调查 / 病原学监测 / 数据集
+    literature_type: Mapped[str | None] = mapped_column(
+        String(50), index=True,
+        comment="文献类型：研究论文/监测周报/暴发调查/病原学监测/数据集",
+    )
+    # data_domain_tags: 该文献涉及的数据域（可多选），用于筛选与提取策略选择
+    data_domain_tags: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String(50)),
+        comment="数据域标签：immunology/epidemiology/pathogen 可多选",
+    )
+    # —— Phase 0 结束 ——
+
     __table_args__ = (
         CheckConstraint(
             "extraction_status IN ('pending','queued','processing','done','done_no_data','failed')",

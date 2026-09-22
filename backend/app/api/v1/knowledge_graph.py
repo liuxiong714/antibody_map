@@ -53,8 +53,11 @@ logger = logging.getLogger("kg")
 
 
 @router.get("/overview", response_model=ApiResponse, summary="知识图谱概览")
-async def overview(db: AsyncSession = Depends(get_db)):
-    data = await kg.get_overview(db)
+async def overview(
+    review_status: list[str] = Query(["approved"], description="审核状态过滤（可重复传）：approved / pending / rejected"),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await kg.get_overview(db, review_statuses=review_status)
     return ApiResponse(data=data)
 
 
@@ -72,6 +75,7 @@ async def graph(
     year_start: int | None = Query(None, ge=1900, le=2100),
     year_end: int | None = Query(None, ge=1900, le=2100),
     max_nodes: int = Query(600, ge=50, le=5000),
+    review_status: list[str] = Query(["approved"], description="审核状态过滤（可重复传）：approved / pending / rejected"),
     db: AsyncSession = Depends(get_db),
 ):
     data = await kg.get_graph(
@@ -82,6 +86,7 @@ async def graph(
         year_start=year_start,
         year_end=year_end,
         max_nodes=max_nodes,
+        review_statuses=review_status,
     )
     return ApiResponse(data=data)
 

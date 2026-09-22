@@ -1,5 +1,5 @@
 
-from sqlalchemy import func, select
+from sqlalchemy import cast, func, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.data_point import DataPoint
@@ -23,15 +23,19 @@ async def search_literatures(
 
     if keyword:
         like = f"%{keyword}%"
+        # 支持按标题/作者/期刊/UUID 前缀检索；UUID cast 为 String 后可直接 ILIKE
+        _id_text = cast(Literature.id, String)
         query = query.where(
             Literature.title.ilike(like)
             | Literature.authors.ilike(like)
             | Literature.journal.ilike(like)
+            | _id_text.ilike(like)
         )
         count_query = count_query.where(
             Literature.title.ilike(like)
             | Literature.authors.ilike(like)
             | Literature.journal.ilike(like)
+            | _id_text.ilike(like)
         )
 
     if province:

@@ -345,6 +345,7 @@ async def get_extraction_results(
             "quality_breakdown": _metadata_quality_breakdown(dp),
             # P1-6：同省同病同年已有已审核数据点冲突对比（审核页只读提示）
             "conflicts": conflicts.get(str(dp.id), []),
+            "model_used": dp.model_used,
             "created_at": iso_ts(dp.created_at),
             "updated_at": iso_ts(dp.updated_at),
         }

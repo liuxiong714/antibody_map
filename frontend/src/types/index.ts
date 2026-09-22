@@ -26,6 +26,7 @@ export interface Literature {
   extraction_status: string;
   kg_extracted?: boolean;
   kg_triple_count?: number;
+  has_txt_cache?: boolean;
   extracted_count: number;
   approved_count: number;
   rejected_count: number;
@@ -105,6 +106,10 @@ export interface DataPoint {
   source_char_start: number | null;
   source_char_end: number | null;
   is_grounded: boolean;
+  // F21：提取批次溯源（2026-09-20 新增）
+  model_used?: string | null;
+  extraction_history_id?: string | null;
+  extracted_at?: string | null;
   // P1-6：同省同病同年已有已审核数据点冲突对比（审核页只读提示，无冲突/无对比数据时为 []）
   conflicts?: Array<{
     literature_id: string | null;
@@ -510,6 +515,47 @@ export interface DataGapAnalysisResult {
   data_gaps: DataGapItem[];
   province_year_matrix: ProvinceYearRow[];
   city_year_matrix: CityYearRow[];
+  /** [地区 × 疾病] × 年份 细粒度覆盖度矩阵（2026-09-20 新增，支持省→市下钻与三种覆盖度指标切换） */
+  region_disease_year_matrix?: RegionDiseaseYearRow[];
+}
+
+// ===== 地区·疾病·时期 覆盖度矩阵（region_disease_year_matrix） =====
+
+/** 覆盖度指标 key：由前端按用户选择切换显示 */
+export type CoverageMetricKey = 'quality_score' | 'threshold_pct' | 'timespan_pct';
+
+/** [地区 × 疾病 × 年份] 单元格 —— 同时返回三种覆盖度指标 */
+export interface RegionDiseaseYearCell extends ProvinceYearCell {
+  /** a. 完整性评分（复用 _calc_completeness，0-100） */
+  cov_quality_score: number;
+  /** b. 质量阈值达成率（approved_ab / WELL_COVERED_THRESHOLD × 100） */
+  cov_threshold_pct: number;
+  /** c. 时期覆盖度（该 region×disease 有数据的年份数 / 总跨度年数 × 100） */
+  cov_timespan_pct: number;
+}
+
+/** region_summary：跨所有年份的汇总指标 + 省→市下钻辅助信息 */
+export interface RegionDiseaseYearSummary {
+  total: number;
+  approved_ab: number;
+  pending: number;
+  cov_quality_score: number;
+  cov_threshold_pct: number;
+  cov_timespan_pct: number;
+  /** 该 region×disease 有数据的年份数 */
+  active_year_count: number;
+  /** 分析时间跨度总年数（来自 overview.year_range 计算） */
+  span_year_count: number;
+  /** 省级别 region 时：同一疾病在该省出现过的所有 city 列表（用于省→市下钻） */
+  cities?: string[];
+}
+
+/** [地区 × 疾病] 行：years 按年份分组，region_summary 提供汇总 */
+export interface RegionDiseaseYearRow {
+  region: { province: string; city: string | null };
+  disease: string;
+  years: Record<string, RegionDiseaseYearCell>;
+  region_summary: RegionDiseaseYearSummary;
 }
 
 // ===== 文件夹监控 =====

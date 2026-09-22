@@ -272,10 +272,15 @@ async def __run_kg_extraction(task_id, scope, limit, literature_ids, model="", a
         if literature_ids:
             requested = {str(i) for i in literature_ids}
             candidates = [i for i in txt_ids if i in requested]
+            logger.info(f"[KG定向抽取] 请求 {len(requested)} 篇，其中 {len(candidates)} 篇有缓存 txt（缓存 txt 总数 {len(txt_ids)}）")
+            missing_txt = requested - set(candidates)
+            if missing_txt:
+                logger.info(f"[KG定向抽取] 缺少 txt 缓存的文献: {list(missing_txt)[:5]}")
         else:
             candidates = txt_ids
 
         todo = [i for i in candidates if i not in already]
+        logger.info(f"[KG抽取] 候选 {len(candidates)} → 过滤已抽取后剩余 {len(todo)}（已抽过 {len(already)} 篇）")
         if not todo:
             await bg.finish("kg_extraction", task_id, status="done",
                             result={"processed": 0, "total_written": 0, "remaining": 0})

@@ -22,7 +22,7 @@ import { getTrend, getRegionCompare, getZoneCompare, getAgeStratify, getApproved
 import { useFilterStore } from '../store';
 import type { TableRowSelection } from 'antd/es/table/interface';
 import type { ColumnsType } from 'antd/es/table';
-import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, MetaMergeResponse, AssayHeterogeneityResponse, SimulationResponse, MapDataPoint, MetaMergeProvinceResult, AssayHeterogeneityRow, HeterogeneityLevel, CoverageReviewResult, ReviewStatsResult, MetaAnalysisResponse, MetaAnalysisGroup, BirthCohortResponse } from '../types';
+import type { DataGapAnalysisResult, DataGapItem, ProvinceYearRow, FoiHerdImmunityResult, VaccineEffectivenessCoverageResult, FoiProvinceMatrixRow, VaccineProvinceMatrixRow, FoiPerDiseaseResult, VaccinePerDiseaseResult, EquityAnalysisResponse, QualityAssessmentResponse, GoalTrackingResponse, AgeCurveResponse, MetaMergeResponse, AssayHeterogeneityResponse, SimulationResponse, MapDataPoint, MetaMergeProvinceResult, AssayHeterogeneityRow, HeterogeneityLevel, CoverageReviewResult, ReviewStatsResult, MetaAnalysisResponse, MetaAnalysisGroup, BirthCohortResponse, CoverageMetricKey, RegionDiseaseYearRow } from '../types';
 import { DISEASES, PROVINCE_GEOJSON_NAME, provinceLabel } from '../utils/constants';
 import { lineWithBand, barWithError, funnelPlotOption, wilsonCi, ftTransform, birthCohortHeatmapOption, birthCohortLinesOption } from '../utils/chartBuilders';
 import ForestPlot from '../components/ForestPlot';
@@ -116,6 +116,14 @@ const Analysis: React.FC = () => {
   const [coverageReviewLoading, setCoverageReviewLoading] = useState(false);
   const [coverageReviewDisease, setCoverageReviewDisease] = useState('');
   const [gapLoading, setGapLoading] = useState(false);
+
+  // 地区·疾病·时期覆盖度趋势（2026-09-20 新增）
+  const [regionCovProvince, setRegionCovProvince] = useState<string>('');
+  const [regionCovCity, setRegionCovCity] = useState<string>('');
+  const [regionCovDisease, setRegionCovDisease] = useState<string>('');
+  const [regionCovMetric, setRegionCovMetric] = useState<CoverageMetricKey>('quality_score');
+  const [regionCovLoading, setRegionCovLoading] = useState(false);
+  const [regionCovData, setRegionCovData] = useState<RegionDiseaseYearRow[]>([]);
 
   // 审核统计（审核量/通过率/平均审核时间，按疾病/审核人）
   const [reviewStats, setReviewStats] = useState<ReviewStatsResult | null>(null);
@@ -220,14 +228,18 @@ const Analysis: React.FC = () => {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  // 获取数据覆盖度分析
-  const fetchGapData = useCallback(async () => {
+  // 获取数据覆盖度分析（全库 + 筛选 province/city 两种路径共用）
+  const fetchGapData = useCallback(async (extraParams?: Record<string, unknown>) => {
     setGapLoading(true);
     try {
       const params: Record<string, unknown> = {};
       if (appliedDisease) params.disease = appliedDisease;
+      if (extraParams) Object.assign(params, extraParams);
       const data = await getDataGapAnalysis(Object.keys(params).length > 0 ? params : undefined);
       setGapData(data);
+      // 同时把 [地区×疾病] 覆盖度矩阵塞到 regionCovData（避免重复请求后端）
+      const mat = (data as any)?.region_disease_year_matrix as RegionDiseaseYearRow[] | undefined;
+      setRegionCovData(mat || []);
     } catch (err) {
       console.error('[Analysis] 数据覆盖度分析加载失败:', err);
       message.error('数据覆盖度分析加载失败');
@@ -236,11 +248,38 @@ const Analysis: React.FC = () => {
     }
   }, [appliedDisease]);
 
+  // 地区·疾病·时期覆盖度趋势：当用户切换省/市/疾病筛选时重新拉（后端现在支持 province/city filter_keys 快照区分）
+  const fetchRegionCov = useCallback(async () => {
+    // 三个筛选都空的话直接用已加载的全库数据（fetchGapData 已经带了 matrix）
+    if (!regionCovProvince && !regionCovCity && !regionCovDisease) return;
+    setRegionCovLoading(true);
+    try {
+      const params: Record<string, unknown> = {};
+      if (regionCovProvince) params.province = regionCovProvince;
+      if (regionCovCity) params.city = regionCovCity;
+      if (regionCovDisease) params.disease = regionCovDisease;
+      const data = await getDataGapAnalysis(params);
+      const mat = (data as any)?.region_disease_year_matrix as RegionDiseaseYearRow[] | undefined;
+      setRegionCovData(mat || []);
+    } catch (err) {
+      console.error('[Analysis] 地区覆盖度趋势加载失败:', err);
+      message.error('地区覆盖度趋势加载失败');
+    } finally {
+      setRegionCovLoading(false);
+    }
+  }, [regionCovProvince, regionCovCity, regionCovDisease]);
+
   useEffect(() => {
     if (activeTab === 'coverage') {
       fetchGapData();
     }
   }, [activeTab, fetchGapData]);
+
+  useEffect(() => {
+    if (activeTab === 'coverage') {
+      fetchRegionCov();
+    }
+  }, [activeTab, fetchRegionCov]);
 
   // 获取审核状态统计（按疾病）
   const fetchCoverageReviewData = useCallback(async () => {
@@ -1740,6 +1779,219 @@ const Analysis: React.FC = () => {
           ) : (
             <Empty description="无审核状态统计数据" />
           )}
+        </Spin>
+      </Card>
+
+      {/* ==== 2026-09-20 新增：地区·疾病·时期 覆盖度趋势 ==== */}
+      <Card
+        size="small"
+        style={{ marginBottom: 16 }}
+        title={
+          <Space>
+            <BarChartOutlined />
+            <span>地区 · 疾病 · 时期 覆盖度趋势（省→市下钻 + 三种指标）</span>
+          </Space>
+        }
+        extra={
+          <Space size={4}>
+            <Tag color="blue">省/市 × 疾病 × 年份</Tag>
+            <Tag color="cyan">三种指标可切换</Tag>
+          </Space>
+        }
+      >
+        {/* 筛选器行 */}
+        <Space wrap size={12} style={{ marginBottom: 12 }}>
+          <span style={{ color: '#888', fontSize: 13 }}>地区：</span>
+          <ProvinceSelector
+            value={regionCovProvince}
+            onChange={(v) => {
+              setRegionCovProvince(v as string);
+              // 切换省份时自动清空已选 city
+              setRegionCovCity('');
+            }}
+            allowClear
+            style={{ width: 150 }}
+          />
+          {/* 省→市下钻：选中 province 后自动列出有数据的 city */}
+          {regionCovProvince && (
+            <Select
+              showSearch
+              allowClear
+              placeholder="选择城市（可选）"
+              style={{ width: 180 }}
+              value={regionCovCity || undefined}
+              onChange={(v) => setRegionCovCity(v || '')}
+              options={Array.from(new Set(
+                (gapData?.city_year_matrix || [])
+                  .filter((r) => r.province === regionCovProvince && r.city)
+                  .map((r) => r.city!)
+              ))
+                .sort()
+                .map((c) => ({ label: c, value: c }))}
+            />
+          )}
+
+          <span style={{ color: '#888', fontSize: 13, marginLeft: 12 }}>疾病：</span>
+          <DiseaseSelector
+            value={regionCovDisease}
+            onChange={setRegionCovDisease}
+            allowClear
+            style={{ width: 160 }}
+          />
+
+          <span style={{ color: '#888', fontSize: 13, marginLeft: 12 }}>指标：</span>
+          <Radio.Group
+            value={regionCovMetric}
+            onChange={(e) => setRegionCovMetric(e.target.value)}
+            size="small"
+            buttonStyle="solid"
+          >
+            <Radio.Button value="quality_score">完整性评分 (a)</Radio.Button>
+            <Radio.Button value="threshold_pct">阈值达成率 (b)</Radio.Button>
+            <Radio.Button value="timespan_pct">时期覆盖度 (c)</Radio.Button>
+          </Radio.Group>
+        </Space>
+
+        {/* 数据加载状态 */}
+        <Spin spinning={regionCovLoading}>
+          {(() => {
+            // 前端二次筛选：regionCovData 可能包含多个省/疾病
+            let rows = regionCovData;
+            if (regionCovProvince) rows = rows.filter((r) => r.region.province === regionCovProvince);
+            if (regionCovCity) rows = rows.filter((r) => r.region.city === regionCovCity);
+            if (regionCovDisease) rows = rows.filter((r) => r.disease === regionCovDisease);
+
+            if (rows.length === 0) {
+              return <Empty description="无匹配数据，尝试调整筛选条件" style={{ padding: '40px 0' }} />;
+            }
+
+            // 按指标 key 构造 EChart option
+            const metricLabelMap: Record<CoverageMetricKey, { cn: string; unit: string }> = {
+              quality_score: { cn: '完整性评分', unit: '（0-100）' },
+              threshold_pct: { cn: '阈值达成率', unit: '%' },
+              timespan_pct: { cn: '时期覆盖度', unit: '%' },
+            };
+            const key: CoverageMetricKey = regionCovMetric;
+            const label = metricLabelMap[key];
+
+            const years = gapData?.overview.years || [];
+
+            // 折线图：每条线 = 一个 region×disease row
+            const lineSeries = rows.map((r, idx) => {
+              const yearsArr = years.map((y) => String(y));
+              const vals = yearsArr.map((y) => r.years[y]?.[`cov_${key}` as keyof typeof r.years[string]] as number | undefined);
+              return {
+                name: `${r.region.province}${r.region.city ? ' / ' + r.region.city : ''} · ${r.disease}`,
+                type: 'line' as const,
+                smooth: true,
+                showSymbol: true,
+                symbolSize: 6,
+                data: vals.map((v) => (v == null ? null : Number(v.toFixed(1)))),
+                lineStyle: { width: 2 },
+              };
+            });
+
+            const lineOption = {
+              tooltip: { trigger: 'axis' },
+              legend: { top: 0, type: 'scroll' },
+              grid: { top: 50, left: 50, right: 20, bottom: 30 },
+              xAxis: { type: 'category', data: years.map(String), name: '年份' },
+              yAxis: {
+                type: 'value',
+                name: `${label.cn}${label.unit}`,
+                min: 0,
+                max: key === 'quality_score' ? 100 : 100,
+              },
+              series: lineSeries,
+            };
+
+            // 堆叠柱：用 rows[0] 的数据 + 第一条折线叠加指标
+            const firstRow = rows[0];
+            const barYears = years.map(String);
+            const barTotal = barYears.map((y) => firstRow.years[y]?.total || 0);
+            const barApproved = barYears.map((y) => firstRow.years[y]?.approved || 0);
+            const barPending = barYears.map((y) => firstRow.years[y]?.pending || 0);
+            const barMetricLine = barYears.map((y) => {
+              const cell = firstRow.years[y];
+              if (!cell) return null;
+              return Number((cell as any)[`cov_${key}`]?.toFixed(1) ?? null);
+            });
+
+            const barTitleStr = `${firstRow.region.province}${firstRow.region.city ? ' / ' + firstRow.region.city : ''} · ${firstRow.disease}`;
+            const barOption = {
+              tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+              legend: { top: 0 },
+              grid: { top: 40, left: 60, right: 60, bottom: 30 },
+              xAxis: { type: 'category', data: barYears, name: '年份' },
+              yAxis: [
+                { type: 'value', name: '数据点数' },
+                { type: 'value', name: `${label.cn}${label.unit}`, min: 0, max: 100, position: 'right' },
+              ],
+              series: [
+                { name: '总计', type: 'bar', stack: 'total', data: barTotal, itemStyle: { color: '#91caff' } },
+                { name: '已通过', type: 'bar', stack: 'total', data: barApproved, itemStyle: { color: '#95de64' } },
+                { name: '待审核', type: 'bar', stack: 'total', data: barPending, itemStyle: { color: '#ffd666' } },
+                {
+                  name: label.cn, type: 'line', yAxisIndex: 1, smooth: true,
+                  data: barMetricLine, lineStyle: { width: 3, color: '#1677ff' },
+                  itemStyle: { color: '#1677ff' },
+                  showSymbol: true, symbolSize: 6,
+                },
+              ],
+            };
+
+            return (
+              <>
+                <Row gutter={16}>
+                  <Col span={14}>
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                      <LineChartOutlined /> {label.cn}{label.unit} 折线对比
+                      {regionCovProvince && <Tag style={{ marginLeft: 8 }}>{regionCovProvince}{regionCovCity ? ' · ' + regionCovCity : ''}</Tag>}
+                      {regionCovDisease && <Tag color="green">{regionCovDisease}</Tag>}
+                    </div>
+                    <div style={{ height: 340 }}>
+                      <ReactECharts option={lineOption} />
+                    </div>
+                  </Col>
+                  <Col span={10}>
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                      <BarChartOutlined /> 数据点堆叠 + {label.cn} 叠加
+                      <Tag style={{ marginLeft: 8 }}>{barTitleStr}</Tag>
+                    </div>
+                    <div style={{ height: 340 }}>
+                      <ReactECharts option={barOption} />
+                    </div>
+                  </Col>
+                </Row>
+
+                {/* 覆盖度汇总表 */}
+                <div style={{ marginTop: 16 }}>
+                  <Statistic
+                    title="命中地区×疾病组合"
+                    value={rows.length}
+                    suffix="组"
+                    style={{ display: 'inline-block', marginRight: 32 }}
+                  />
+                  {regionCovProvince && (
+                    <Statistic
+                      title={regionCovCity ? '城市下钻粒度' : '省下城市数'}
+                      value={firstRow?.region_summary?.cities?.length ?? 0}
+                      suffix="市"
+                      style={{ display: 'inline-block', marginRight: 32 }}
+                    />
+                  )}
+                  <Statistic
+                    title={label.cn + '均值'}
+                    value={Number(
+                      (rows.reduce((s, r) => s + (r.region_summary?.[`cov_${key}`] ?? 0), 0) / Math.max(rows.length, 1)).toFixed(1)
+                    )}
+                    suffix={label.unit}
+                    style={{ display: 'inline-block' }}
+                  />
+                </div>
+              </>
+            );
+          })()}
         </Spin>
       </Card>
     </Spin>

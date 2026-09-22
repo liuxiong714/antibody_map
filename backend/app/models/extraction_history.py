@@ -23,7 +23,8 @@ class ExtractionHistory(Base):
     )
     # 本次提取使用的模型
     model: Mapped[str | None] = mapped_column(String(100))
-    # 状态: success=提取到数据点, no_data=成功但无数据, failed=提取失败
+    # 状态: success=提取到数据点, no_data=成功但无数据, failed=提取失败,
+    #        processing=任务进行中的临时占位（F21 预创建，最终状态在流程尾部回填，提交前必被覆盖）
     status: Mapped[str] = mapped_column(String(20), default="failed", index=True)
     data_point_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
@@ -40,7 +41,7 @@ class ExtractionHistory(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('success','no_data','failed')",
+            "status IN ('success','no_data','failed','processing')",
             name="extraction_history_status_check",
         ),
     )

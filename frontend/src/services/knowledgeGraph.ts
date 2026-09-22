@@ -9,14 +9,14 @@ import type {
 const CACHE_STATIC = 120_000;
 const CACHE_FILTER = 30_000;
 
-export async function getKgOverview() {
+export async function getKgOverview(params?: Record<string, unknown>) {
   return cachedGet(
     async () => {
-      const { data } = await api.get<KgOverviewData>('/kg/overview');
+      const { data } = await api.get<KgOverviewData>('/kg/overview', { params });
       return data;
     },
     '/kg/overview',
-    undefined,
+    params,
     CACHE_STATIC,
   );
 }
@@ -36,7 +36,11 @@ export async function getKgOptions() {
 export async function getKgGraph(params: Record<string, unknown>) {
   return cachedGet(
     async () => {
-      const { data } = await api.get<KgGraphData>('/kg/graph', { params });
+      const { data } = await api.get<KgGraphData>('/kg/graph', {
+        params,
+        // indexes: null → 数组序列化成重复键 foo=a&foo=b（FastAPI list[str] Query 兼容）
+        paramsSerializer: { indexes: null },
+      });
       return data;
     },
     '/kg/graph',

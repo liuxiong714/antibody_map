@@ -258,9 +258,10 @@ def _numeric_grounding_forms(value) -> list[str]:
     """把单个数值格式化为多种可定位的字符串形态（用于边界感知匹配）。
 
     P0-4：追加千分位支持 + 边界感知（由调用方用正则做 (?<![0-9.]) / (?![0-9]) 包裹）。
+    P2-9：追加千分位（逗号/空格）与小数补零形态，兼容原文 "1 371.20" / "1,371.20" 写法。
 
-    - 整数（如 sample_size=1234）→ ["1234", "1,234"]
-    - 小数（如 84.3）→ ["84.3", "84.3%", "84.3％", "84.3 %"]
+    - 整数（如 sample_size=1234）→ ["1234", "1,234", "1 234"]
+    - 小数（如 84.3）→ ["84.3", "84.30", ...% 变体]
     - 不可解析的非数值（None / 空 / 非数字）→ 返回空列表（视为无需回验）
     """
     if value is None:
@@ -283,16 +284,44 @@ def _numeric_grounding_forms(value) -> list[str]:
         s = str(int(num)) if is_int else f"{num}"
 
     forms = [s]
-    # P0-4：整数追加千分位形态，支持 "1,234" 写法
-    if is_int and len(s) >= 4:
-        try:
-            forms.append(f"{int(s):,}")
-        except (ValueError, OverflowError):
-            pass
+    # P2-9：千分位（逗号 / 空格）与小数补零形态
+    try:
+        int_val = int(num)
+        int_part = str(int_val)
+        if is_int and len(s) >= 4:
+            comma = f"{int_val:,}"
+            forms += [comma, comma.replace(",", " ")]
+        elif "." in s:
+            dec = s.split(".", 1)[1]
+            dec2 = dec if len(dec) >= 2 else dec + "0"
+            # 补零到 2 位小数（兼容原文 371.20 写法）
+            forms.append(f"{int_part}.{dec2}")
+            # 千分位 + 原小数位 / 补零
+            comma = f"{int_val:,}.{dec}"
+            forms.append(comma)
+            forms.append(comma.replace(",", " "))
+            comma2 = f"{int_val:,}.{dec2}"
+            forms.append(comma2)
+            forms.append(comma2.replace(",", " "))
+    except (ValueError, OverflowError):
+        pass
+
     # 若含小数点，补充百分比形态（英文半角 % / 中文全角 ％ / 带空格 %）
     if "." in s:
-        forms += [f"{s}%", f"{s}％", f"{s} %"]
-    return forms
+        percent_forms = []
+        for f in list(forms):
+            if "." in f:
+                percent_forms += [f"{f}%", f"{f}％", f"{f} %"]
+        forms += percent_forms
+
+    # 去重保序
+    seen: set[str] = set()
+    unique: list[str] = []
+    for f in forms:
+        if f not in seen:
+            seen.add(f)
+            unique.append(f)
+    return unique
 
 
 def validate_numeric_grounding(dp: dict, text: str, extra_values: list | None = None) -> bool:
@@ -333,13 +362,26 @@ def validate_numeric_grounding(dp: dict, text: str, extra_values: list | None = 
         all_forms = list(forms) + extra_forms
         # P0-4：边界感知匹配——form 前后不能跟其他数字/小数点，
         # 但允许后跟 %、％、空格、汉字等（lookahead 仅拦截 [0-9]）
-        if not any(
-            any(
-                re.search(rf"(?<![0-9.]){re.escape(form)}(?![0-9])", haystack)
+        matched = False
+        for haystack in haystacks:
+            for form in all_forms:
+                if re.search(rf"(?<![0-9.]){re.escape(form)}(?![0-9])", haystack):
+                    matched = True
+                    break
+            if matched:
+                break
+        if not matched:
+            # P2-9：千分位/空白容错兜底——原文可能用 "1 371.20"/"1,371.20"，
+            # 而形态用 "1371.2/1371.20"。剥离原文中的空格与千分位逗号后，再按纯数字做回验，
+            # 以解决表格导出时数字带空格/千分位导致 grounded=False 的误杀。
+            strip_re = re.compile(r"[,\s\u00a0]")
+            stripped_haystacks = [strip_re.sub("", h) for h in haystacks]
+            matched = any(
+                re.search(rf"(?<![0-9.]){re.escape(form)}(?![0-9])", sh)
                 for form in all_forms
+                for sh in stripped_haystacks
             )
-            for haystack in haystacks
-        ):
+        if not matched:
             logger.warning(
                 f"[grounding] 数值回验失败: {key}={dp.get(key)!r} 未能在原文中定位 "
                 f"(forms={forms}, extra={extra_forms})"

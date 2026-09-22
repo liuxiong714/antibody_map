@@ -92,6 +92,34 @@ export async function downloadLiteratureFile(id: string, title?: string) {
   _triggerBlobDownload(resp.data as Blob, resp.headers, title || `literature_${id}`);
 }
 
+export interface ExportLiteraturesParams {
+  keyword?: string;
+  disease?: string;
+  province?: string;
+  year_start?: number;
+  year_end?: number;
+  journal?: string;
+  review_status?: string;
+  file_format?: string;
+  format: 'csv' | 'xlsx' | 'json';
+  include_data_points?: boolean;
+  /** 逗号分隔的文献 ID 列表（后端解析） */
+  literature_ids?: string;
+}
+
+/**
+ * 批量导出文献（列表页导出下拉菜单使用）。
+ * 走 axios → 自动携带 JWT → 触发 blob 下载。
+ * 替代原 window.open 裸跳转（裸跳转不带 Authorization，受保护端点会 401）。
+ */
+export async function exportLiteratures(params: ExportLiteraturesParams) {
+  const resp = await api.get<Blob>('/literatures/export', {
+    params,
+    responseType: 'blob',
+  });
+  _triggerBlobDownload(resp.data as Blob, resp.headers, `literatures_export_${params.format}`);
+}
+
 // ===== 文献详情页三个导出（F-1：替代裸 window.open 避免 401） =====
 
 export async function exportExtractionCsv(literatureId: string) {
@@ -320,6 +348,10 @@ export interface ExtractionHistoryItem {
 export async function getExtractionHistory(literatureId: string): Promise<ExtractionHistoryItem[]> {
   const { data } = await api.get<ExtractionHistoryItem[]>(`/literatures/${literatureId}/extraction/history`);
   return data;
+}
+
+export async function deleteExtractionHistory(historyId: string): Promise<void> {
+  await api.delete(`/extraction/history/${historyId}`);
 }
 
 export async function updateDataPoints(

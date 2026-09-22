@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Modal, Table, Input, Select, Space, Tag, Typography, Spin, Empty, Button, Alert,
+  Modal, Table, Input, Select, Space, Tag, Typography, Spin, Empty, Button, Alert, Tooltip,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ReloadOutlined } from '@ant-design/icons';
@@ -47,6 +47,7 @@ export default function LiteraturePicker({ open, onClose, onConfirm }: Props) {
   const [keyword, setKeyword] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [kgFilter, setKgFilter] = useState<boolean | undefined>(undefined);
+  const [hasTxtOnly, setHasTxtOnly] = useState(true);
   const [loading, setLoading] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
 
@@ -64,8 +65,12 @@ export default function LiteraturePicker({ open, onClose, onConfirm }: Props) {
         if (kgFilter !== undefined) params.kg_extracted = kgFilter;
         const res = await listLiterature(params, { signal: controller.signal });
         if (cancelled) return;
-        setItems(res.items);
-        setTotal(res.total);
+        // 客户端过滤：hasTxtOnly=true 时只显示有 txt 缓存的文献
+        const items = hasTxtOnly
+          ? res.items.filter((it) => it.has_txt_cache !== false)
+          : res.items;
+        setItems(items);
+        setTotal(hasTxtOnly ? items.length : res.total);
       } catch {
         if (!cancelled) { setItems([]); setTotal(0); }
       } finally {
@@ -73,7 +78,7 @@ export default function LiteraturePicker({ open, onClose, onConfirm }: Props) {
       }
     })();
     return () => { cancelled = true; controller.abort(); };
-  }, [open, page, pageSize, province, keyword, kgFilter]);
+  }, [open, page, pageSize, province, keyword, kgFilter, hasTxtOnly]);
 
   const resetFilters = () => {
     setPage(1);
@@ -81,6 +86,7 @@ export default function LiteraturePicker({ open, onClose, onConfirm }: Props) {
     setSearchInput('');
     setProvince(undefined);
     setKgFilter(undefined);
+    setHasTxtOnly(true);
   };
 
   const handleConfirm = () => {
@@ -125,13 +131,22 @@ export default function LiteraturePicker({ open, onClose, onConfirm }: Props) {
       title: 'KG抽取',
       dataIndex: 'kg_extracted',
       key: 'kg_extracted',
-      width: 90,
+      width: 130,
       render: (v: boolean, r: Literature) => (
-        v ? (
-          <Tag color="purple">已抽取 {r.kg_triple_count ?? ''}</Tag>
-        ) : (
-          <Tag>未抽取</Tag>
-        )
+        <Space size={2} wrap>
+          {r.has_txt_cache === false ? (
+            <Tooltip title="无文本缓存，不能抽取">
+              <Tag color="default" style={{ margin: 0, opacity: 0.6 }}>无缓存</Tag>
+            </Tooltip>
+          ) : (
+            <Tag color="cyan" style={{ margin: 0 }}>可抽</Tag>
+          )}
+          {v ? (
+            <Tag color="purple">{r.kg_triple_count ? `${r.kg_triple_count}边` : '已抽'}</Tag>
+          ) : (
+            <Tag>未抽</Tag>
+          )}
+        </Space>
       ),
     },
   ];
@@ -153,7 +168,7 @@ export default function LiteraturePicker({ open, onClose, onConfirm }: Props) {
         style={{ marginBottom: 12 }}
         type="info"
         showIcon
-        message="勾选需要定向抽取的文献（可跨页累计）。抽取具有幂等性，已在知识库中抽取过的文献会被自动跳过。"
+        message="勾选需要定向抽取的文献（可跨页累计）。只有跑过数据点提取的文献才有文本缓存用于 KG 抽取。已在知识库中抽取过的会被自动跳过。"
       />
       <Space style={{ width: '100%', marginBottom: 12 }} align="center">
         <Select
@@ -184,6 +199,10 @@ export default function LiteraturePicker({ open, onClose, onConfirm }: Props) {
           onSearch={(v) => { setPage(1); setKeyword(v.trim()); }}
         />
         <Button icon={<ReloadOutlined />} onClick={resetFilters}>重置</Button>
+        <label style={{ marginLeft: 8, fontSize: 12, color: '#666', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={hasTxtOnly} onChange={(e) => setHasTxtOnly(e.target.checked)} style={{ marginRight: 4 }} />
+          仅显示可抽取（有缓存）
+        </label>
       </Space>
 
       <Spin spinning={loading}>

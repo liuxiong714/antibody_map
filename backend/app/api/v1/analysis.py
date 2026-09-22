@@ -668,19 +668,28 @@ async def get_approved_data_points(
     ))
 
 
-@router.get("/analysis/data-gaps", response_model=ApiResponse, summary="数据覆盖度分析", description="分析各省份各年份的数据点分布，识别需要审核和补充的数据缺口，支持按疾病筛选")
-@with_snapshot("data_gaps", filter_keys=("disease",), review_status=None)
+@router.get("/analysis/data-gaps", response_model=ApiResponse, summary="数据覆盖度分析", description="分析各省份各年份的数据点分布，识别需要审核和补充的数据缺口，支持按疾病 / 省份 / 城市筛选")
+@with_snapshot("data_gaps", filter_keys=("disease", "province", "city"), review_status=None)
 async def get_data_gaps(
     disease: str | None = Query(None, description="疾病筛选（不传则分析全库）"),
+    province: str | None = Query(None, description="省份筛选（用于省→市下钻；不传则返回全库覆盖度）"),
+    city: str | None = Query(None, description="城市筛选（精确匹配或 contains；需配合 province 使用更精准）"),
     db: AsyncSession = Depends(get_db),
 ):
-    """数据覆盖度分析：统计各省份各年份的数据点分布，识别需要审核和补充的数据缺口"""
+    """数据覆盖度分析：统计各省份各年份的数据点分布，识别需要审核和补充的数据缺口。
+    新增 region_disease_year_matrix 返回 [地区×疾病]×年份 的覆盖度矩阵，每个单元格同时返回三种覆盖度指标：
+      a. cov_quality_score 完整性评分 / b. cov_threshold_pct 质量阈值达成率 / c. cov_timespan_pct 时期覆盖度。
+    省份级 region_summary 追加 cities 列表，支持省→市下钻。
+    """
     data = await analysis_service.get_data_gap_analysis(
         db=db,
         disease=disease,
+        province=province,
+        city=city,
     )
     return ApiResponse(data=_attach_methodology_note(
-        data, "data_gaps", {"disease": disease},
+        data, "data_gaps",
+        {"disease": disease, "province": province, "city": city},
     ))
 
 

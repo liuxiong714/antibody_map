@@ -33,6 +33,20 @@ class DataPointCreate(BaseModel):
     is_grounded: bool = False
     confidence: str = Field("medium", pattern=r"^(high|medium|low)$")
     review_status: str = Field("pending", pattern=r"^(pending|approved|rejected)$")
+    # —— Phase 0 多域扩展（全部 optional，向后兼容）——
+    data_domain: str | None = Field("immunology", pattern=r"^(immunology|epidemiology|pathogen)$")
+    indicator: str | None = None
+    numerator: float | None = None
+    denominator: float | None = None
+    period_type: str | None = Field("year", pattern=r"^(year|quarter|month|week)$")
+    period_month: int | None = None
+    pathogen: str | None = None
+    serotype: str | None = None
+    genotype: str | None = None
+    lineage: str | None = None
+    typing_method: str | None = None
+    specimen_type: str | None = None
+    extra: dict | None = None
 
 
 class DataPointUpdate(BaseModel):
@@ -63,6 +77,20 @@ class DataPointUpdate(BaseModel):
     is_grounded: bool | None = None
     confidence: str | None = Field(None, pattern=r"^(high|medium|low)$")
     review_status: str | None = Field(None, pattern=r"^(pending|approved|rejected)$")
+    # —— Phase 0 多域扩展（全部 optional，向后兼容）——
+    data_domain: str | None = Field(None, pattern=r"^(immunology|epidemiology|pathogen)$")
+    indicator: str | None = None
+    numerator: float | None = None
+    denominator: float | None = None
+    period_type: str | None = Field(None, pattern=r"^(year|quarter|month|week)$")
+    period_month: int | None = None
+    pathogen: str | None = None
+    serotype: str | None = None
+    genotype: str | None = None
+    lineage: str | None = None
+    typing_method: str | None = None
+    specimen_type: str | None = None
+    extra: dict | None = None
 
 
 class DataPointResponse(BaseModel):
@@ -95,6 +123,20 @@ class DataPointResponse(BaseModel):
     is_grounded: bool
     confidence: str
     review_status: str
+    # —— Phase 0 多域扩展 ——
+    data_domain: str = "immunology"
+    indicator: str | None = None
+    numerator: float | None = None
+    denominator: float | None = None
+    period_type: str = "year"
+    period_month: int | None = None
+    pathogen: str | None = None
+    serotype: str | None = None
+    genotype: str | None = None
+    lineage: str | None = None
+    typing_method: str | None = None
+    specimen_type: str | None = None
+    extra: dict = {}
     created_at: datetime
     updated_at: datetime
 

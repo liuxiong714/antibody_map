@@ -1016,11 +1016,33 @@ async def _process_literature_async(
                 f"{_gate_row[0] if _gate_row else 'gone'}/{_gate_row[1] if _gate_row else 'gone'}），"
                 "已被新任务接管或回收，放弃本次写库"
             )
+            # F23-修复：如果 generation 没变但 status 不是 processing（典型场景：stale 回收把
+            # processing → failed），把 status 重置成 queued 让用户可以重新触发。
+            # 如果 generation 变了，说明新任务已经在跑了，不要改它的状态。
+            if _gate_row is not None and int(_gate_row[0]) == my_generation and _gate_row[1] == "failed":
+                try:
+                    await db.execute(
+                        update(Literature)
+                        .where(Literature.id == literature_id)
+                        .where(Literature.extraction_generation == my_generation)
+                        .where(Literature.extraction_status == "failed")
+                        .values(
+                            extraction_status="queued",
+                            extraction_started_at=None,
+                            worker_heartbeat=None,
+                            updated_at=datetime.now(timezone.utc),
+                        )
+                    )
+                    await db.commit()
+                    logger.info(f"文献 {literature_id} stale 回收导致 superseded，已重置为 queued")
+                except Exception as _e:
+                    logger.warning(f"文献 {literature_id} superseded 后重置 queued 失败（不影响返回）: {_e}")
             return {"literature_id": str(literature_id), "status": "superseded", "data_point_count": 0}
 
         # 5b. 清除该文献下已有的旧数据点（防止重新提取时新旧叠加）
         # 使用 ORM delete 确保 cascade 正确处理
-        # 当 clear_existing_data=False 时，保留已审核通过(approved)的数据点
+        # F21：clear_existing_data=True = 替换模式（清空旧数据点）；
+        #       clear_existing_data=False = 追加模式（保留全部旧数据，新 DataPoint 带新批次标记）
         if clear_existing_data:
             old_dp_result = await db.execute(
                 select(DataPoint.id).where(DataPoint.literature_id == literature_id)
@@ -1030,7 +1052,7 @@ async def _process_literature_async(
                 await db.execute(
                     delete(DataPoint).where(DataPoint.literature_id == literature_id)
                 )
-                logger.info(f"已清除 {len(old_ids)} 个旧数据点（文献 {literature_id}）")
+                logger.info(f"已清除 {len(old_ids)} 个旧数据点（替换模式，文献 {literature_id}）")
             # P2-tt 试点：一并清除旧滴度矩阵
             await db.execute(
                 delete(TiterTable).where(TiterTable.literature_id == literature_id)
@@ -1039,40 +1061,32 @@ async def _process_literature_async(
             await db.execute(
                 delete(PathogenMonitoring).where(PathogenMonitoring.literature_id == literature_id)
             )
-        else:
-            # 仅清除未审核和已驳回的数据点，保留已审核通过的
-            old_dp_result = await db.execute(
-                select(DataPoint.id).where(
-                    DataPoint.literature_id == literature_id,
-                    DataPoint.review_status.in_(["pending", "rejected"]),
-                )
-            )
-            old_ids = old_dp_result.scalars().all()
-            if old_ids:
-                await db.execute(
-                    delete(DataPoint).where(
-                        DataPoint.literature_id == literature_id,
-                        DataPoint.review_status.in_(["pending", "rejected"]),
-                    )
-                )
-                logger.info(f"已清除 {len(old_ids)} 个未审核/已驳回旧数据点，保留已审核数据点（文献 {literature_id}）")
-            # P2-tt 试点：未审核/已驳回的滴度矩阵一并清除，保留已审核
-            await db.execute(
-                delete(TiterTable).where(
-                    TiterTable.literature_id == literature_id,
-                    TiterTable.review_status.in_(["pending", "rejected"]),
-                )
-            )
-            # 阶段2：未审核/已驳回的病原学监测数据一并清除，保留已审核
-            await db.execute(
-                delete(PathogenMonitoring).where(
-                    PathogenMonitoring.literature_id == literature_id,
-                    PathogenMonitoring.review_status.in_(["pending", "rejected"]),
-                )
-            )
+        # 追加模式：不再删除任何旧数据点，所有 DataPoint 都保留。
+        # 新旧批次通过 extraction_history_id + model_used 区分。
 
-        # 6. 写库：持久化本批次数据点
+        # 5c. F21：先创建 ExtractionHistory 拿到 id，再写 DataPoint 时关联。
+        # 放在 DataPoint 写入前、CAS 门之后，保证 history 不会被 superseded 回滚抛弃。
+        # F23：history model 必须用当前任务实际运行的模型（effective_model），
+        # 不能用 literature.llm_model_used——那是上一个任务遗留的旧值。
+        _history_model = effective_model
+        if cache_hit:
+            _history_model = f"{_history_model} (cached)"
+        _new_history = ExtractionHistory(
+            literature_id=literature_id,
+            model=_history_model,
+            status="processing",  # 先占位为 processing，最终状态在流程尾部写
+            data_point_count=0,
+            llm_usage_detail={},
+        )
+        db.add(_new_history)
+        await db.flush()  # flush 即可拿到 _new_history.id（UUID 由 default 生成）
+        _history_id = _new_history.id
+        logger.info(f"[F21] 预创建 ExtractionHistory(id={_history_id}, model={_history_model})，待关联 DataPoint")
+
+        # 6. 写库：持久化本批次数据点（每个 DataPoint 写 F21 溯源字段）
         for dp in all_data_points:
+            dp.model_used = _history_model
+            dp.extraction_history_id = _history_id
             db.add(dp)
 
         # 5c. P2-tt 试点：持久化 LLM 提取到的滴度矩阵（TiterTable）
@@ -1287,28 +1301,19 @@ async def _process_literature_async(
         if final_status == "done_no_data":
             logger.warning(f"文献 {literature_id} 提取结果为空，状态标记为 done_no_data")
 
-        # 8b. 写入提取历史记录
+        # 8b. F21：更新预创建的 ExtractionHistory（完整状态/用量/耗时回填）
         try:
-            history_model = literature.llm_model_used or effective_model
-            if cache_hit:
-                # 缓存命中时在历史中标记，便于区分是否走了缓存
-                history_model = f"{history_model} (cached)"
-            history = ExtractionHistory(
-                literature_id=literature_id,
-                model=history_model,
-                status=history_status,
-                data_point_count=final_count,
-                prompt_tokens=usage_summary.get("total_prompt_tokens", 0),
-                completion_tokens=usage_summary.get("total_completion_tokens", 0),
-                total_tokens=usage_summary.get("total_tokens", 0),
-                llm_cost_usd=usage_summary.get("estimated_cost_usd", 0),
-                llm_call_count=usage_summary.get("total_call_count", 0),
-                llm_usage_detail=usage_summary.get("models"),
-                duration_seconds=_llm_seconds,
-            )
-            db.add(history)
+            _new_history.status = history_status
+            _new_history.data_point_count = final_count
+            _new_history.prompt_tokens = usage_summary.get("total_prompt_tokens", 0)
+            _new_history.completion_tokens = usage_summary.get("total_completion_tokens", 0)
+            _new_history.total_tokens = usage_summary.get("total_tokens", 0)
+            _new_history.llm_cost_usd = usage_summary.get("estimated_cost_usd", 0)
+            _new_history.llm_call_count = usage_summary.get("total_call_count", 0)
+            _new_history.llm_usage_detail = usage_summary.get("models")
+            _new_history.duration_seconds = _llm_seconds
         except Exception as e:
-            logger.warning(f"写入提取历史记录失败（不影响提取结果）: {e}")
+            logger.warning(f"更新提取历史记录失败（不影响提取结果）: {e}")
 
         # F13：最终写库 CAS。状态更新必须命中本次 generation 且仍为 processing，
         # 否则说明提取期间已被超时回收或新任务接管，丢弃整个事务（已插入数据点一并回滚）。

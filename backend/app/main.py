@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import contextlib
 import subprocess
 import sys
@@ -56,7 +56,7 @@ def _run_migrations():
             logger.warning(f"Alembic migration chain has {len(real_heads)} heads (possible fork). Alembic will attempt to merge during upgrade. Heads: {real_heads}")
 
     result = subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "upgrade", "heads"],
         cwd=str(backend_dir),
         capture_output=True,
         text=True,
@@ -119,8 +119,9 @@ async def _seed_admin_user():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动时运行数据库迁移（在独立线程中执行，避免 asyncio.run() 嵌套）
+    # TODO: Phase 0 merge migration 临时跳过，DDL 已手动执行，后续恢复自动迁移
     try:
-        await asyncio.to_thread(_run_migrations)
+        pass  # await asyncio.to_thread(_run_migrations)  # Phase 0 临时禁用
     except Exception as e:
         logger.error(f"Database migration failed: {e}")
         raise
@@ -436,3 +437,4 @@ if settings.METRICS_ENABLED and HAS_PROMETHEUS:
     )
 
 app.include_router(api_v1_router, prefix="/api/v1")
+

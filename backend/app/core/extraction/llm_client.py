@@ -413,14 +413,20 @@ class LLMClientMixin:
             "timeout": self._llm_timeout,
             "stream": True,
         }
-        # P2-2：通过 provider 注册中心查询是否支持 response_format
-        if self._supports_response_format(self.model):
-            kwargs["response_format"] = {"type": "json_object"}
-
         # 本地 Ollama 模型优化（按实际使用的 URL 判定，兼容多候选链）：
         # client.base_url 是 openai.URL 对象而非 str，需先转字符串再判定
         _raw_url = getattr(client, "base_url", None) or self._resolved_url
-        if self._is_ollama_model(str(_raw_url)):
+        _is_ollama = self._is_ollama_model(str(_raw_url))
+
+        # P2-2：通过 provider 注册中心查询是否支持 response_format。
+        # ⚠️ 本地 Ollama 禁用 response_format：Ollama 已通过 extra_body.format
+        # 提供原生 JSON Schema 强约束（P2-3），再叠加 OpenAI 兼容层的
+        # response_format={"type":"json_object"} 会造成双 JSON 约束冲突，
+        # 导致部分模型（如 glm-4.7-flash）直接返回 finish_reason=length + 0 字符。
+        if self._supports_response_format(self.model) and not _is_ollama:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        if _is_ollama:
             kwargs["extra_body"] = {
                 "options": {
                     "num_ctx": settings.LLM_CTX_TOKENS,
@@ -614,8 +620,11 @@ class LLMClientMixin:
             "max_tokens": settings.LLM_MAX_TOKENS,
             "stream": True,
         }
-        # P2-2：通过 provider 注册中心查询是否支持 response_format
-        if self._supports_response_format(self.model):
+        # P2-2：通过 provider 注册中心查询是否支持 response_format。
+        # ⚠️ Ollama 禁用 response_format：同 _chat_once，避免与 P2-3 format 双约束冲突。
+        if self._supports_response_format(self.model) and not any(
+            self._is_ollama_model(u) for u in url_chain
+        ):
             payload["response_format"] = {"type": "json_object"}
 
         first_timeout = float(getattr(settings, "LLM_FIRST_TOKEN_TIMEOUT", 60) or 60)

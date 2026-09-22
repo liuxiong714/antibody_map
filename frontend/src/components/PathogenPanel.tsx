@@ -38,8 +38,8 @@ const PathogenPanel: React.FC<{ literatureId: string }> = ({ literatureId }) => 
     <Card
       size="small"
       title="病原学监测"
-      style={{ marginBottom: 8 }}
-      styles={{ body: { padding: 0 } }}
+      style={{ marginBottom: 8, flexShrink: 0 }}
+      styles={{ body: { padding: 0, maxHeight: 260, overflow: 'auto' } }}
     >
       {loading ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="加载中..." />

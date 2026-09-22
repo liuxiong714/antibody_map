@@ -12,7 +12,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.dialects.postgresql import JSON
+from sqlalchemy.dialects.postgresql import JSON, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.core.term_normalizer import normalize_province
@@ -93,6 +93,45 @@ class DataPoint(Base):
     llm_raw_snapshot: Mapped[dict | None] = mapped_column(JSON)
     # F19：截断标记（"<"=低于检出限 / ">"=高于检出限；无则 None），避免把截断值当精确值参与统计
     truncation: Mapped[str | None] = mapped_column(String(10))
+
+    # F21：提取批次溯源（2026-09-20 新增）
+    # model_used：该数据点由哪个模型提取，例 "qwen3.8:27b"（冗余直存，展示零 JOIN 开销）
+    model_used: Mapped[str | None] = mapped_column(String(100), index=True)
+    # extraction_history_id：外键到 extraction_history.id，用于追溯完整批次
+    # 允许 NULL（import/synthetic/手动录入路径无 ExtractionHistory）
+    extraction_history_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("extraction_history.id", ondelete="SET NULL"),
+        index=True,
+    )
+
+    # —— Phase 0: 多域数据扩展字段 ——
+    # data_domain: 数据域顶层分类，默认 immunology 保证旧数据零迁移
+    data_domain: Mapped[str] = mapped_column(
+        String(20), default="immunology", index=True,
+        comment="数据域：immunology(免疫)/epidemiology(流行)/pathogen(病原)",
+    )
+    # indicator: 具体指标名（data_type 的别名 + 扩展，支持更丰富的指标）
+    indicator: Mapped[str | None] = mapped_column(String(50), index=True)
+    # numerator/denominator: 分子分母（epi/pathogen 常用）
+    numerator: Mapped[float | None] = mapped_column(Numeric(14, 4))
+    denominator: Mapped[float | None] = mapped_column(Numeric(14, 4))
+    # period_type/period_month: 时间粒度（epi 周/月/季数据）
+    period_type: Mapped[str] = mapped_column(
+        String(20), default="year",
+        comment="时间粒度：year/quarter/month/week",
+    )
+    period_month: Mapped[int | None]  # 1-12
+    # —— 病原学字段（与 disease 解耦，支持 pathogen_monitoring 合并查询）——
+    pathogen: Mapped[str | None] = mapped_column(String(200), index=True)       # 病原体名
+    serotype: Mapped[str | None] = mapped_column(String(50))                    # 血清型
+    genotype: Mapped[str | None] = mapped_column(String(50), index=True)       # 基因型
+    lineage: Mapped[str | None] = mapped_column(String(50))                    # 谱系/变异株/clade
+    typing_method: Mapped[str | None] = mapped_column(String(100))             # 分型方法
+    specimen_type: Mapped[str | None] = mapped_column(String(100))             # 标本类型
+    # extra: 非常规维度兜底，避免字段爆炸
+    extra: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    # —— Phase 0 结束 ——
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -117,9 +156,12 @@ class DataPoint(Base):
         ),
         # 流行病学/病原学监测指标(阶段1):
         #   incidence=发病率 / case_count=发病人数 / mortality=死亡率/病死率 / death_count=死亡数
+        # Phase 0 扩展: proportion(构成比)/resistance_rate(耐药率)/positive_rate(检出阳性率)
+        #              /attack_rate(罹患率)/secondary_attack_rate(续发率)
         # 均为"加法",不触碰既有 seroprevalence/gmc 数据与逻辑
         CheckConstraint(
-            "data_type IN ('seroprevalence','gmc','incidence','case_count','mortality','death_count')",
+            "data_type IN ('seroprevalence','gmc','incidence','case_count','mortality','death_count',"
+            "'proportion','resistance_rate','positive_rate','attack_rate','secondary_attack_rate')",
             name="dp_data_type_check",
         ),
         CheckConstraint(

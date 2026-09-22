@@ -1196,6 +1196,26 @@ async def get_history(
         raise HTTPException(status_code=404, detail=str(e)) from e
 
 
+@router.delete("/extraction/history/{history_id}", response_model=ApiResponse, summary="删除单次提取历史（管理员）", description="管理员专用：删除指定的 AI 提取历史记录。该记录关联的数据点不受影响（仅 extraction_history_id 会被置空）。")
+async def delete_history(
+    history_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    from sqlalchemy import select as _sel
+    row = (await db.execute(_sel(ExtractionHistory).where(ExtractionHistory.id == history_id))).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="提取历史记录不存在")
+
+    # 置空关联 data_point 的外键（data_point.model_used / created_at 保留不变）
+    from sqlalchemy import text as _text
+    await db.execute(_text("UPDATE data_point SET extraction_history_id = NULL WHERE extraction_history_id = :hid"), {"hid": str(history_id)})
+
+    await db.delete(row)
+    await db.commit()
+    return ApiResponse(message="提取历史已删除", data={"history_id": str(history_id)})
+
+
 @router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse, summary="批量重置卡住的提取（管理员）", description="管理员专用：批量重置所有卡在processing或queued状态的文献为failed，并强制终止运行中的Celery提取任务，清空队列，用于服务器重启后恢复状态")
 async def reset_stuck_extractions(
     db: AsyncSession = Depends(get_db),

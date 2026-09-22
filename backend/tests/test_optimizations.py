@@ -228,6 +228,41 @@ def test_reground_method_exists():
     assert hasattr(LLMExtractor, "reground_source_context")
 
 
+# ── P2-9：数值 grounding 千分位/空白容错 ────────────
+def test_numeric_forms_include_thousands_and_pad():
+    """P2-9：_numeric_grounding_forms 生成千分位、空格、补零形态。"""
+    from app.core.extraction_grounding import _numeric_grounding_forms
+    fps = _numeric_grounding_forms(1371.2)
+    for want in ("1371.2", "1,371.20", "1 371.20", "1371.20", "1,371.20%", "1 371.20％"):
+        assert want in fps, f"missing {want!r} in {fps}"
+    fint = _numeric_grounding_forms(1234)
+    assert "1,234" in fint and "1 234" in fint
+
+
+def test_numeric_grounding_tolerates_space_thousands():
+    """P2-9：原文 "1 371.20" 应通过 gmc_value=1371.2 回验。"""
+    from app.core.extraction_grounding import validate_numeric_grounding
+    text = "≥ 15 ~< 20 岁 | 25 | 23 | 92.00 | 1 371.20"
+    assert validate_numeric_grounding({"gmc_value": 1371.2, "source_context": text}, text)
+
+
+def test_numeric_grounding_tolerates_comma_thousands_and_pad():
+    """P2-9：原文 "1,371.20" 应通过 gmc_value=1371.2 回验。"""
+    from app.core.extraction_grounding import validate_numeric_grounding
+    text = "GMC: 1,371.20"
+    assert validate_numeric_grounding({"gmc_value": 1371.2, "source_context": text}, text)
+    # 未补零的形态也应命中（原文 1109.09，LLM 报 1109.09）
+    text2 = "gmc 1 109.09"
+    assert validate_numeric_grounding({"gmc_value": 1109.09, "source_context": text2}, text2)
+
+
+def test_numeric_grounding_still_rejects_missing():
+    """P2-9：数值确实缺失时仍应失败（不误放行）。"""
+    from app.core.extraction_grounding import validate_numeric_grounding
+    text = "全部为阴性，无具体数值。"
+    assert validate_numeric_grounding({"gmc_value": 9999.99, "source_context": text}, text) is False
+
+
 # ── 配置项验证 ──────────────────────────────────────
 def test_config_has_optimization_settings():
     """所有优化配置项存在"""
