@@ -9,6 +9,7 @@ data_management / export 七个分析子模块共同导入（自 analysis_servic
 
 import logging
 import math
+from functools import lru_cache
 
 from sqlalchemy import select
 
@@ -63,6 +64,36 @@ def _load_disease_note(disease_key: str | None) -> str | None:
     return (entry or {}).get("note") if isinstance(entry, dict) else None
 
 
+@lru_cache(maxsize=1)
+def _load_ref_constants_json() -> dict:
+    """加载 immune_barrier_constants.json（含 WHO/R0/NIP 三大 section + 元数据）。
+
+    模块级立即调用一次后缓存；后续三大常量直接从该 dict 派生，保持原
+    dict.get(key) 接口——缺键自然返回 None，与旧硬编码行为一致。
+    """
+    import json as _json
+    import os as _os
+    _p = _os.path.join(
+        _os.path.dirname(__file__), "..", "..", "core", "reference_data",
+        "immune_barrier_constants.json"
+    )
+    try:
+        with open(_p, encoding="utf-8") as _f:
+            return _json.load(_f)
+    except (OSError, ValueError):
+        logger.error(f"[_load_ref_constants_json] 读取免疫屏障常量 JSON 失败: {_p}")
+        return {}
+
+
+_const = _load_ref_constants_json()
+
+# WHO 免疫屏障阈值（阳性率百分比）——从 JSON 的 who_thresholds[*].value 提取
+WHO_THRESHOLDS: dict[str, float] = {
+    k: float(v["value"])
+    for k, v in _const.get("who_thresholds", {}).items()
+}
+
+
 # 服务层年龄段（AGE_GROUPS）→ 标准人口年龄组映射（权重聚合，因 15-59/≥60 为粗分组，
 # 55-64 组整段计入 15-59，60-64 段归入 15-59 属近似，权重合计仍归一为 1）
 _STD_BAND_MAP: dict[str, list[str]] = {
@@ -71,26 +102,6 @@ _STD_BAND_MAP: dict[str, list[str]] = {
     "5-14岁": ["5-14"],
     "15-59岁": ["15-24", "25-34", "35-44", "45-54", "55-64"],
     "≥60岁": ["65-74", "75-84", "85+"],
-}
-
-
-# WHO 免疫屏障阈值（阳性率百分比）
-WHO_THRESHOLDS = {
-    "measles": 95,
-    "rubella": 95,
-    "mumps": 90,
-    "polio": 95,
-    "diphtheria": 90,
-    "tetanus": 90,
-    "pertussis": 90,
-    "hepatitis_b": 90,
-    "hepatitis_a": 90,
-    "influenza": 65,
-    "covid19": 75,
-    "meningitis": 85,
-    "varicella": 85,
-    "hfmd": 75,
-    "rotavirus": 80,
 }
 
 
@@ -487,23 +498,10 @@ DEFAULT_LIFE_EXPECTANCY = 75.0
 
 # 按疾病预设的参考 R0（Anderson & May 经典值 + 文献典型范围）
 # 用于计算 HIT = 1 - 1/R0，并作为 FOI 合理性校验的先验
+# 从 immune_barrier_constants.json → r0_reference[*].value(typical) + .range[low,high] 派生
 R0_REFERENCE: dict[str, tuple[float, float]] = {
-    # disease: (R0_typical, R0_range_low..high)
-    "measles":     (15.0, 12.0, 18.0),   # 麻疹：极强传染性
-    "mumps":        (5.5,  4.0,  7.0),   # 腮腺炎
-    "rubella":      (6.0,  5.0,  7.0),   # 风疹
-    "pertussis":   (15.0, 12.0, 17.0),   # 百日咳
-    "diphtheria":   (6.5,  4.0,  8.0),   # 白喉
-    "polio":        (5.0,  4.0,  6.0),   # 脊髓灰质炎
-    "smallpox":     (5.0,  3.5,  6.0),   # 天花（参考）
-    "hepatitis_b":  (4.0,  2.0,  6.0),   # 乙肝
-    "hepatitis_a":  (3.5,  2.0,  5.0),   # 甲肝
-    "varicella":    (6.5,  5.0,  9.0),   # 水痘
-    "influenza":    (2.5,  1.4,  3.5),   # 季节性流感
-    "covid19":      (3.0,  2.0,  5.0),   # 新冠（原始株）
-    "meningitis":   (1.5,  1.1,  2.0),   # 流脑
-    "hfmd":         (3.0,  2.0,  4.5),   # 手足口
-    "rotavirus":    (3.0,  2.0,  4.0),   # 轮状病毒
+    k: (float(v["value"]), float(v["range"][0]), float(v["range"][1]))
+    for k, v in _const.get("r0_reference", {}).items()
 }
 
 
@@ -692,32 +690,119 @@ def _resolve_hit_target(
     return None, "none"
 
 
+def _build_hit_threshold_families(
+    dis_key: str | None,
+    foi_hit: float | None = None,
+    lit_hit: float | None = None,
+    who_hit: float | None = None,
+    province: str | None = None,
+    foi_ci: tuple[float, float] | None = None,
+) -> dict:
+    """构造三族阈值字典（theoretical / coverage_target / administrative）。
+
+    每族都带 source / citation / year，从 immune_barrier_constants.json 读取
+    元数据（如加载失败则 citation=None）。缺省回退：某个值 None → 对应子项保留
+    在族里（值=None），但整族仍存在，保证前端总能遍历到三族结构。
+
+    NIP coverage_target 按传入 province 优先命中省级条目；命中失败或该疾病
+    不在 NIP_COVERAGE_REFERENCE 里 → 使用 "__national__" 国家值。
+
+    返回结构：
+        {
+          "theoretical": {
+            "mle_foi":       {"value": float|None, "source": "mle_foi",
+                              "ci": [low,high]|None, "citation": None, "year": None},
+            "literature_r0": {"value": float|None, "source": "literature_r0",
+                              "ci": None, "citation": str|None, "year": int|None},
+          },
+          "coverage_target": {
+            "nip":           {"value": float|None, "source": "nip",
+                              "citation": str|None, "year": int|None},
+          },
+          "administrative": {
+            "who":           {"value": float|None, "source": "who",
+                              "citation": str|None, "year": int|None},
+          },
+        }
+    """
+    # 延迟加载：首次调用时读 JSON（lru_cache 缓存）
+    try:
+        _const = _load_ref_constants_json()
+    except Exception:  # noqa: BLE001
+        _const = {}
+
+    who_meta = {}
+    r0_meta = {}
+    nip_meta = {}
+    if dis_key:
+        who_meta = _const.get("who_thresholds", {}).get(dis_key, {})
+        r0_meta = _const.get("r0_reference", {}).get(dis_key, {})
+        nip_meta = _const.get("nip_coverage_reference", {}).get(dis_key, {})
+
+    # NIP 覆盖目标值（省级优先 → 国家回退）
+    nip_value: float | None = None
+    if dis_key and nip_meta:
+        _v = nip_meta.get("value")
+        if isinstance(_v, dict):
+            if province and province in _v and _v[province] is not None:
+                nip_value = float(_v[province])
+            elif "__national__" in _v and _v["__national__"] is not None:
+                nip_value = float(_v["__national__"])
+        elif _v is not None:
+            nip_value = float(_v)
+
+    theoretical = {
+        "mle_foi": {
+            "value": float(foi_hit) if foi_hit is not None else None,
+            "source": "mle_foi",
+            "ci": [float(foi_ci[0]), float(foi_ci[1])] if foi_ci else None,
+            "citation": None,    # FOI MLE 是服务层动态算的，无固定 citation
+            "year": None,
+        },
+        "literature_r0": {
+            "value": float(lit_hit) if lit_hit is not None else None,
+            "source": "literature_r0",
+            "ci": None,
+            "citation": r0_meta.get("citation"),
+            "year": r0_meta.get("year"),
+        },
+    }
+
+    coverage_target = {
+        "nip": {
+            "value": nip_value,
+            "source": "nip",
+            "citation": nip_meta.get("citation"),
+            "year": nip_meta.get("year"),
+        },
+    }
+
+    administrative = {
+        "who": {
+            "value": float(who_hit) if who_hit is not None else None,
+            "source": "who",
+            "citation": who_meta.get("citation"),
+            "year": who_meta.get("year"),
+        },
+    }
+
+    return {
+        "theoretical": theoretical,
+        "coverage_target": coverage_target,
+        "administrative": administrative,
+    }
+
+
 # ============================================================
 # 疫苗效果 (VE) 与接种率 (Coverage)
 # ============================================================
 
 # ---- 国家免疫规划 (NIP) 典型接种率（按疾病，参考 2020-2024 年 CDC/WHO 报告）
 # 单位：%，值为全国估计平均值
+# 从 immune_barrier_constants.json → nip_coverage_reference[*].value(dict of province→percent) 派生
 NIP_COVERAGE_REFERENCE: dict[str, dict[str, float]] = {
-    # disease: {province: coverage_percent, "__national__": fallback}
-    "measles": {
-        "__national__": 95.0,
-        "北京": 97.0, "上海": 97.5, "江苏": 96.5, "浙江": 96.0, "广东": 95.5,
-        "河南": 94.5, "山东": 95.5, "河北": 94.0, "四川": 93.5, "湖北": 94.0,
-    },
-    "mumps": {"__national__": 90.0},
-    "rubella": {"__national__": 92.0},
-    "pertussis": {"__national__": 95.0},
-    "diphtheria": {"__national__": 95.0},
-    "polio": {"__national__": 96.0},
-    "hepatitis_b": {"__national__": 95.0},
-    "hepatitis_a": {"__national__": 70.0},  # 非强制，部分省
-    "varicella": {"__national__": 55.0},    # 二类苗
-    "influenza": {"__national__": 3.5},     # 成人低覆盖
-    "covid19": {"__national__": 89.0},
-    "meningitis": {"__national__": 75.0},
-    "hfmd": {"__national__": 35.0},         # EV71 疫苗
-    "rotavirus": {"__national__": 30.0},    # 口服轮状
+    k: {pk: float(pv) for pk, pv in v["value"].items()}
+    for k, v in _const.get("nip_coverage_reference", {}).items()
 }
 
 

@@ -101,8 +101,12 @@ class UsageTrackerMixin:
     # 类级共享常量映射，仅读取不修改。
     _MODEL_PRICING_OVERRIDES: dict[str, tuple[float, float]] = {  # noqa: RUF012
         # DeepSeek（reasoner 在 chat 之前，避免误匹配）
-        "deepseek-reasoner": (0.55, 2.19),
-        "deepseek-chat":     (0.14, 0.28),
+        # 官方已弃用 deepseek-chat / deepseek-reasoner，主推 deepseek-flash / deepseek-v4-pro；
+        # 新旧模型沿用同款价格，保留旧条目以兼容现有用户配置。
+        "deepseek-v4-pro":  (0.55, 2.19),
+        "deepseek-flash":   (0.14, 0.28),
+        "deepseek-reasoner": (0.55, 2.19),  # 弃用，兼容旧配置
+        "deepseek-chat":     (0.14, 0.28),  # 弃用，兼容旧配置
         # OpenAI（mini 变体在基础模型之前，避免 gpt-4o 误匹配 gpt-4o-mini）
         "gpt-4o-mini":       (0.15, 0.60),
         "gpt-4o":            (2.50, 10.00),

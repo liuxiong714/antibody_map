@@ -10,23 +10,25 @@
 
 ## 核心功能
 
-- **文献管理** — PDF/CAJ/DOCX/EPUB/PPTX/XLSX/TXT/HTML 上传，URL 导入，RIS/EndNote/PubMed/WoS 题录批量导入，PDF 在线预览，重复检测与合并，回收站
-- **AI 数据提取** — LLM 自动提取血清阳性率/GMC 等数据点，支持 DeepSeek/OpenAI/Qwen/本地 Ollama，长文档分块并行，精确字符级溯源，强 Schema 校验，历次提取历史可追溯（模型/耗时/Token/费用）；**追加模式安全**：强制 append 禁用 replace，防止误删既有数据点；**enable_thinking** 开关贯通 API→Ollama extra_body，gemma4:26b 提供无思维链 Modelfile 直接 pull
-- **数据审核** — 人工审核（通过/驳回），行内编辑，批量操作，「LLM 原始 vs 人工修改」diff 留痕
-- **地图可视化** — 全国/省/市/区县四级交互式抗体热力地图，时间序列动画，热点分析
-- **数据分析** — 逐年趋势、区域对比、分区对比、年龄分层、FOI 感染力、VE 疫苗效果、Meta 分析（森林图/漏斗图）、空间热点/冷点（Moran's I + Getis-Ord Gi*）、免疫屏障模拟与达标概率、出生队列、省间公平性
-- **流行特征（流行病学 + 病原学）** — 发病率/发病人数/死亡率/死亡数聚合展示；独立病原学监测表存储基因型/血清型/谱系/变异位点/检出率，与血清抗体数据互补；PathogenPanel 嵌入文献详情
-- **多域数据扩展** — 单一 data_point Schema 覆盖 immunology / epidemiology / pathogen 三大领域，病原学字段与 disease 解耦
-- **抗原图谱** — HI/VNT/ELISA 滴度矩阵 metric MDS 降维，2D 抗原图谱
-- **知识图谱** — 13 种实体 + 18 种关系的多维语义网络，计算式推导 + LLM 抽取（特性开关），ECharts 力导向图可视化，实体搜索、路径推理、智能咨询问答
-- **报告生成** — 抗体分析 / 疫苗接种策略 / 免疫屏障评估三类报告，后台异步生成，支持在线编辑与 Markdown/Word/PDF 下载
-- **PDF 解析增强** — MinerU（GPU 加速）+ AnyDoc（Rust，毫秒级转 GFM Markdown）+ pdf-inspector（损坏修复），自动回退
-- **数据库备份与还原** — pg_dump 逻辑备份；**后台自动备份**（每 60 分钟一次，保留 48 份）；PostgreSQL WAL 安全加固（fsync=on + stop_grace_period 120s），容器被 SIGKILL 也不丢最近写入；跨设备数据迁移
-- **文献批量选中与编组** — 支持从 TXT/CSV 导入匹配（UUID 精确 / 标题-作者模糊匹配），批量打 Tag 分组，便于大规模文献筛选与分析
-- **提取历史一致性审计** — 管理员可一键扫描 extraction_history 声明的数据点数 vs data_point 实际行数，自动标记 `[DP_DROPPED]` 并修正
-- **AI 准确度自测** — 合成文献批量产出含已知答案，由多模型（**串行：一个模型跑完全部文献再切下一个**，确保 100% GPU 驻留）走真实提取链路；新建 `synthetic_run` 表保留全部评测运行历史（峰值显存/耗时/效率指标）；支持直接指定已编组 Tag 作为测试文献来源
+### 端到端工作流
 
-> 完整功能细节见 [核心功能文档](https://antibody-map.readthedocs.io/zh-cn/latest/guide/features/)，版本演进见 [变更日志](https://antibody-map.readthedocs.io/zh-cn/latest/changelog/)。
+![学术主题工作流](docs/screenshots/workflow-academic-navy.svg)
+
+五步闭环：**文献与数据导入 → AI 自动提取 → 人工审核修订 → 地图可视化与多维分析 → 报告生成与导出**。完整功能细节见 [核心功能文档](docs/guide/features.md)。
+
+上图为高保真学术主题设计稿，重点刻画五个阶段的关键能力：
+
+| 阶段 | 输入 / 模型 / 输出 | 核心说明 |
+|------|---------------------|----------|
+| ① 文献与数据导入 | PDF · CAJ · DOCX · XLSX · URL | 支持主流学术文献格式 + CNKI CAJ 专属解析器，URL 批量抓取；TXT/CSV 导入匹配 + 批量 Tag 编组 |
+| ② AI 自动提取 | Qwen3.8 · DeepSeek · OpenAI · Muse · Ollama | **策略模式模型注册表**：按任务自动路由最佳模型，GPU 可用 MinerU / AnyDoc 加速文档解析；**追加模式安全**（禁用 replace）+ enable_thinking 思维链开关 |
+| ③ 人工审核修订 | 通过 / 驳回 / 编辑 / 补充 | 多人协作审核工作台，版本留痕，字段级差异对比；提取历史 vs 数据点一致性审计（自动修正 `[DP_DROPPED]`） |
+| ④ 地图可视化与多维分析 | 知识图谱 · 空间统计 · Meta 分析 · 抗原图谱 | 六类分析端点 + **免疫屏障 R_eff NGM 残差法**（真正 R_eff < 1 判据）+ 多情景批量模拟 × VE 疫苗效率 + 参考常量 JSON 化（WHO HIT / R0 / NIP 全覆盖 citation） |
+| ⑤ 报告生成与导出 | Word · PDF · Markdown | 可配置报告模板，自动引用 HIT 阈值三族 citation、R_eff 补种缺口等定量结论 |
+
+> 平台价值：**把文献数据变成结构化数据，把数据变成地图和分析结果，帮助更快完成研判与报告。**
+
+> 版本演进见 [变更日志](docs/changelog.md)。
 
 ## 技术栈
 
@@ -49,6 +51,49 @@
 - NVIDIA GPU（可选，用于 MinerU 文档解析加速；无 GPU 自动退回 CPU 模式）
 
 ### 启动
+
+#### Windows 安装：磁盘路径与空间预留（必读）
+
+本项目基于 Docker Compose（WSL2 模式），磁盘占用分布在**四个不同位置**，单一克隆目录映射无法全部挪到 D 盘。下表帮你提前规划：
+
+| 组件 | 默认位置 | 占用规模 | 是否可改到 D 盘 |
+|------|----------|----------|------------------|
+| ① WSL2 发行版（Ubuntu） | `C:\Users\<你>\AppData\Local\Packages\Canonical...Ubuntu-22.04` | 首次 ~8 GB，含 Postgres/Redis/MinIO 数据 | ⚠️ 需用 `wsl --export` + `wsl --import` 迁移发行版 |
+| ② Docker Desktop 镜像层 | `C:\Users\<你>\AppData\Local\Docker\wsl` | ~3-5 GB（全部镜像下载完） | ✅ Docker Desktop Settings → Resources → Disk image location |
+| ③ Ollama 模型缓存 | Windows 原生：`C:\Users\<你>\.ollama`<br>WSL 内：`~/.ollama` | **每模型 2-31 GB**（qwen3.8:27b 约 15 GB） | ✅ Windows 设系统环境变量 `OLLAMA_MODELS=D:\ollama`；WSL 内 `export OLLAMA_MODELS=/mnt/d/ollama` |
+| ④ 项目代码 + MinIO 数据卷 | 由你 `git clone` 路径决定 | ~300 MB 代码 + 用户上传文献 | ✅ 直接 clone 到 D 盘即可 |
+
+**首次安装建议预留空间**：
+- 不跑 GPU 加速（仅 CPU）：**D 盘至少 15 GB**（发行版迁移 + 镜像 + 1 个中等模型）
+- 跑 MinerU GPU 解析：**D 盘至少 25 GB**（额外 MinerU 模型 ~8 GB）
+- 额外模型（如 qwen3.8:27b）：每加一个 +15 GB
+
+**典型安装耗时参考**（首次，网络正常）：
+
+| 步骤 | 耗时 | 说明 |
+|------|------|------|
+| Docker Desktop + WSL2 安装 | 30-60 分钟 | 取决于下载速度，期间可能需要重启 |
+| `docker compose up -d` 拉镜像 | 10-30 分钟 | 7 个镜像，总计约 3 GB |
+| `ollama pull qwen3.8:27b` | 10-20 分钟 | 仅需首次下载，后续启动秒级 |
+
+**三步骤把 Docker + WSL2 挪到 D 盘**（避免 C 盘暴增）：
+
+```powershell
+# 步骤 1：Docker Desktop 镜像目录改到 D 盘
+# Settings → Resources → Disk image location → D:\docker-data
+# 改完点 Apply & Restart
+
+# 步骤 2：WSL2 发行版整体迁移到 D 盘
+wsl --shutdown
+wsl --export Ubuntu-22.04 D:\wsl\Ubuntu-22.04.tar
+wsl --unregister Ubuntu-22.04
+wsl --import Ubuntu-22.04 D:\wsl\Ubuntu-22.04 D:\wsl\Ubuntu-22.04.tar --version 2
+del D:\wsl\Ubuntu-22.04.tar
+```
+
+> 💡 如果不想折腾上述路径迁移，**TraeCode / Docker Desktop 一键式安装**（保持默认 C 盘位置）也是可行的——对于小型测试场景（1-2 个模型、几十篇文献），C 盘 20 GB 预留即可。只有模型数量多、文献规模大时才需要认真规划 D 盘。
+
+#### 克隆项目与配置
 
 ```bash
 git clone https://github.com/liuxiong714/antibody_map.git

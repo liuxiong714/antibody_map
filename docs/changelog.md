@@ -1,5 +1,57 @@
 ## 变更日志
 
+## v1.31.0 (2026-09-25)
+
+### 核心新功能
+
+- **免疫屏障 R_eff NGM 残差法**（`backend/app/core/effective_immunity.py` 新增 `r_eff()` 函数）：
+  - 旧 `effective_barrier()`（接触矩阵加权汇总阳性率）标记 `@deprecated`
+  - 新函数用**新世代矩阵（Next Generation Matrix, Diekmann & Heesterbeek 2000）**直接计算免疫后基本再生数 `R_eff`：
+    ```
+    K = NGM · diag(1 − p)    # 免疫后残差 NGM
+    R_eff = r0 · ρ(K) / ρ(NGM)   # 归一化到传入的参考 R0
+    ```
+  - R_eff < 1 才是真正的群体免疫判据——effective_barrier 加权汇总阳性率并不直接等价于"是否阻断传播"
+- **免疫屏障模拟 × VE 疫苗效率**（`infectious_disease.py` / `analysis.py`）：
+  - `GET /analysis/simulation` 新增 `ve` 参数（默认 1.0 兼容旧行为）
+  - 新公式 `protective = coverage × VE`；加强针作用于未被保护者：`effective = protective + (1 − protective/100) × booster`
+  - 返回 protective_coverage_percent、ve_used、gain_from_booster_percent
+- **多情景批量模拟 API**（`GET /analysis/barrier-scenarios`）：
+  - 传入 `scenarios_json: [{"name":"baseline","coverage":80,"booster":0,"ve":1}]` 批量评估
+  - 每条情景同时计算 effective、R_eff、是否达 HIT、反推所需覆盖、补种人数（七普全国总人口粗估）
+- **参考常量 JSON 化（透明可审计）** — 新建 `backend/app/core/reference_data/immune_barrier_constants.json`：
+  - `who_thresholds`：15 种疾病 HIT 阈值（measles 95%、mumps 90%、influenza 65% 等），每条带 `value / range / source / year / citation / applicable_population / version` 7 字段
+  - `r0_reference`：15 种疾病 R0（含 range，measles 15 ± 3、influenza 2.5 ± 1.1 等）
+  - `nip_coverage_reference`：中国 NIP 报告分省接种覆盖
+  - 后端通过 `_load_ref_constants_json() + lru_cache` 加载，对外保持原字典接口，下游消费代码零改动；报告自动引用 citation 出处
+- **出生队列加权投影** — `project_barrier()` 新增 `weights` 参数：
+  - 可传接触矩阵 Perron-Frobenius 主特征向量权重、标准人口权重等，基线屏障 `= Σ w_i p_i / Σ w_i`
+  - 缺省仍退化为各年龄组简单平均（保持旧行为不变）
+- **HIT 阈值按家族分组** — 新增 `_build_hit_threshold_families()` 工具（GOAL/WHO 文献阈值 + R0 反算 + WHO 标准三族）
+
+### 定价更新
+
+- **DeepSeek 官方弃用 deepseek-chat / deepseek-reasoner**，主推 **deepseek-flash / deepseek-v4-pro**
+- `.env.example` / `config.py` 默认模型改为 `deepseek-flash`
+- `usage_tracker.py` / `deepseek_provider.py` 新模型名沿用同款价格，旧名保留兼容
+
+### 测试覆盖
+
+- 新增 6 个单元测试：`test_r_eff.py`（NGM 残差法）、`test_barrier_probability.py`（达标概率）、`test_barrier_scenarios.py`（多情景）、`test_hit_threshold_families.py`（阈值家族）、`test_projection_weights.py`（出生队列权重）、`test_ref_constants_json.py`（常量 JSON 加载）、`test_simulation_ve.py`（VE 模拟）
+
+### 文档（同步更新）
+
+- **README.md** — 重构为端到端工作流（五步闭环 + 表格），阶段 ④ 补充 R_eff / 多情景模拟 / 参考常量
+- **docs/guide/features.md** — 新增功能速览（按五大模块归类）；§5 免疫屏障评估重写为 6 小节（核心内容 / R_eff NGM / VE × 多情景模拟 / 参考常量 JSON / 使用步骤 / DeepSeek 定价）
+- **docs/index.md** — 智能特性区同步更新
+- **docs/changelog.md** — 本 v1.31.0 条目
+
+### 新增静态资源
+
+- `docs/screenshots/workflow-academic-navy.svg` — 学术主题高保真端到端工作流设计稿（供 README 引用）
+
+---
+
 ## v1.30.0 (2026-09-24)
 
 ### 新增

@@ -1356,7 +1356,7 @@ const LiteratureDetail: React.FC = () => {
                       <Input value={String(editForm.journal ?? '')} onChange={(e) => setEditForm((f) => ({ ...f, journal: e.target.value }))} />
                     </Col>
                     <Col span={6}>
-                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>年份</div>
+                      <div style={{ marginBottom: 4, fontSize: 12, color: '#888' }}>发表年份</div>
                       <Input value={editForm.pub_year != null ? String(editForm.pub_year) : ''} onChange={(e) => setEditForm((f) => ({ ...f, pub_year: e.target.value }))} />
                     </Col>
                     <Col span={6}>
@@ -1382,7 +1382,7 @@ const LiteratureDetail: React.FC = () => {
                       <Descriptions.Item label="作者">{literature?.authors || '-'}</Descriptions.Item>
                       <Descriptions.Item label="作者单位">{literature?.author_affiliations || '-'}</Descriptions.Item>
                       <Descriptions.Item label="期刊">{literature?.journal || '-'}</Descriptions.Item>
-                      <Descriptions.Item label="年份">{literature?.pub_year || '-'}</Descriptions.Item>
+                      <Descriptions.Item label="发表年份">{literature?.pub_year || '-'}</Descriptions.Item>
                       <Descriptions.Item label="DOI">{literature?.doi || '-'}</Descriptions.Item>
                       <Descriptions.Item label="省份">{literature?.province || '-'}</Descriptions.Item>
                       <Descriptions.Item label="提取状态">

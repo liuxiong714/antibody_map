@@ -1,3 +1,4 @@
+import json
 import time
 import uuid
 
@@ -467,6 +468,42 @@ async def get_simulation(
         data, "simulate",
         {"disease": disease, "province": province,
          "assumed_coverage": assumed_coverage, "booster_rate": booster_rate},
+    ))
+
+
+@router.get("/analysis/barrier-scenarios", response_model=ApiResponse,
+            summary="免疫屏障多情景模拟",
+            description="对每个情景 {coverage, booster, ve} 计算 effective barrier、R_eff、是否达 HIT，"
+                        "并给出达到 HIT 所需的最小 coverage 与补种人数（分母用七普全国总人口粗估）。"
+                        "scenarios 传 JSON 字符串；不传则使用默认三条基线情景。")
+@with_snapshot("barrier_scenarios", filter_keys=("disease", "province"))
+async def get_barrier_scenarios_api(
+    disease: str | None = Query(None, description="疾病筛选"),
+    province: str | None = Query(None, description="省份筛选"),
+    scenarios_json: str | None = Query(None, description='情景列表 JSON 字符串，如 [{"name":"baseline","coverage":80,"booster":0,"ve":1}]；不传则用默认三条'),
+    db: AsyncSession = Depends(get_db),
+):
+    """多情景免疫屏障模拟"""
+    scenarios: list[dict] | None = None
+    if scenarios_json:
+        try:
+            _parsed = json.loads(scenarios_json)
+            if isinstance(_parsed, list) and all(isinstance(x, dict) for x in _parsed):
+                scenarios = _parsed
+            else:
+                logger.warning(f"[BarrierScenarios] scenarios JSON 非法，回退默认: {scenarios_json[:80]}")
+        except (ValueError, json.JSONDecodeError):
+            logger.warning(f"[BarrierScenarios] scenarios JSON 解析失败，回退默认: {scenarios_json[:80]}")
+
+    data = await analysis_service.get_barrier_scenarios(
+        db=db,
+        disease=disease,
+        province=province,
+        scenarios=scenarios,
+    )
+    return ApiResponse(data=_attach_methodology_note(
+        data, "barrier_scenarios",
+        {"disease": disease, "province": province, "scenarios_count": len(data.get("scenarios", []))},
     ))
 
 

@@ -53,6 +53,7 @@ def project_barrier(
     waning_rate: float = DEFAULT_WANING_RATE,
     years: int = DEFAULT_PROJECTION_YEARS,
     birth_cohort_size: float = DEFAULT_BIRTH_COHORT_SIZE,
+    weights: dict[str, float] | None = None,
 ) -> list:
     """递推未来若干年的有效免疫屏障轨迹。
 
@@ -67,35 +68,69 @@ def project_barrier(
         预测年数（默认 10）。
     birth_cohort_size : float
         每年新出生且零保护的人口占比（默认 0.012，即每年新增约 1.2% 零保护者）。
+    weights : dict | None
+        各年龄组的权重 ``{标签: 权重}``，非负、可任意尺度（内部会归一化）。
+        典型值：接触矩阵 Perron-Frobenius 主导特征向量权重、标准人口权重等。
+        当为 ``None`` 时（默认）退化为各年龄组简单平均，**保持旧行为完全不变**。
+        当提供但与 ``age_seropositivity`` 键完全无交集时也退化为简单平均。
+        键 ``weights[key]`` 不在 ``age_seropositivity`` 中则跳过；反之亦然。
 
     返回
     ----
     list[float]
-        有效免疫屏障轨迹，长度为 ``years + 1``：首元素为当前基线屏障
-        （各年龄组阳性率的简单平均），后续元素依次为第 1、2、...、years 年的预测值。
+        有效免疫屏障轨迹，长度为 ``years + 1``：首元素为当前基线屏障，
+        后续元素依次为第 1、2、...、years 年的预测值。
         每个值均为 0~1 的比例（已四舍五入到 4 位小数）。
+
+    基线屏障口径
+    ----------
+    ``weights`` 提供时：
+        baseline = Σ w_i · p_i / Σ w_i   （w_i 为权重，p_i 为 0~1 保护比例）
+    ``weights`` 缺省时：
+        baseline = (1/n) · Σ p_i         （各年龄组简单平均，旧行为）
 
     模型递推（第 t 年）：
         barrier[t] = barrier[t-1] × (1 - waning_rate) × (1 - birth_cohort_size)
 
     说明
     ----
-    - 当前基线屏障取各年龄组阳性率的简单平均，未按实际人口年龄结构加权；
-    - ``(1 - birth_cohort_size)`` 表示新增零保护出生队列对整体屏障的稀释；
-    - 自然死亡与老化的年龄结构演化暂忽略——即假设各年龄组比例在预测期内保持
-      恒定，不区分人群进入/退出带来的结构变化；后续可扩展为基于实际人口金字塔
-      的年龄转移矩阵。
+    - 递推公式与基线权重解耦：一旦基线确定（简单平均或加权），后续每年按比例
+      等比衰减 × 出生稀释；
+    - 自然死亡与老化的年龄结构演化暂忽略；
+    - 建议 ``weights`` 同时覆盖 ``age_seropositivity`` 的所有键；部分缺失时缺失组
+      将被静默跳过，不会报错。
     """
-    values: list[float] = []
-    for v in age_seropositivity.values():
+    # 归一化阳性率为 0~1 比例
+    fracs: dict[str, float] = {}
+    for k, v in age_seropositivity.items():
         f = _as_fraction(v)
         if f is not None:
-            values.append(f)
-    if not values:
+            fracs[k] = f
+
+    if not fracs:
         logger.warning("[ImmunityDynamics] project_barrier 无有效阳性率，返回空轨迹")
         return []
 
-    baseline = max(0.0, min(1.0, sum(values) / len(values)))
+    if weights is None:
+        # 默认：各年龄组简单平均（旧行为，保持逐位相等）
+        baseline = max(0.0, min(1.0, sum(fracs.values()) / len(fracs)))
+    else:
+        # 加权平均：仅对交集键做 Σw_i·p_i / Σw_i；交集为空 → 回退简单平均
+        num = 0.0
+        den = 0.0
+        for k, p in fracs.items():
+            w = float(weights.get(k, 0.0))
+            if w > 0.0:
+                num += w * p
+                den += w
+        if den <= 0.0:
+            logger.warning(
+                f"[ImmunityDynamics] project_barrier weights 与年龄组阳性率无有效交集，"
+                f"回退简单平均（keys={list(fracs.keys())}, weights_keys={list(weights.keys())}）"
+            )
+            baseline = max(0.0, min(1.0, sum(fracs.values()) / len(fracs)))
+        else:
+            baseline = max(0.0, min(1.0, num / den))
 
     w = max(0.0, min(1.0, float(waning_rate)))
     b = max(0.0, float(birth_cohort_size))

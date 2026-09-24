@@ -98,6 +98,8 @@ def barrier_probability(
     sampled_positivity: np.ndarray,
     hit_thresholds: dict,
     weights: Sequence[float] | None = None,
+    hit_distributions: dict[str, tuple[float, float]] | None = None,
+    rng: np.random.Generator | None = None,
 ) -> dict:
     """把采样矩阵与 HIT 候选阈值比较，输出达标概率。
 
@@ -107,15 +109,23 @@ def barrier_probability(
             如 {"foi": 0.88, "who": 0.95, "r0_lit": 0.92}，顺序按优先级。
         weights: 每列（年龄组）的权重，长度须等于 n_groups（无需归一，内部归一化）；
             为 None 时等权平均。
+        hit_distributions: 可选的阈值不确定性分布，形如
+            {"foi": (0.88, 0.03), "who": (0.95, 0.02)}，每个 value 为 (mean, sd)。
+            提供后，每次 MC 采样会对每个阈值也抽一个样本（正态截断到 [0, 1]）再
+            比较，pass_probability 同时反映"阳性率不确定性"和"HIT 阈值不确定性"。
+            sd=0、缺失、或 hit_distributions=None 时行为与旧版完全一致（点值比较）。
+        rng: 可选 numpy 随机数生成器（便于复现/测试阈值采样）。
 
     返回：
         {
           "thresholds_used": {"foi": {"threshold": 0.88, "pass_probability": 0.63,
-                              "data_points": ...}, ...},
+                              "threshold_mean": 0.88, "threshold_sd": 0.03,
+                              "threshold_sampled": True}, ...},
           "primary_threshold": "foi",
           "pass_probability": 0.63,          # 主阈值（优先级最高者）达标概率
           "weighted_mean": 0.86,             # 采样加权总阳性率均值（0-1）
           "weighted_ci": [0.82, 0.90],       # 采样加权总阳性率 95% 区间
+          "threshold_sampling_used": True,    # bool — 是否启用了阈值不确定性采样
         }
     """
     if sampled_positivity.ndim != 2 or sampled_positivity.shape[0] == 0:
@@ -136,15 +146,51 @@ def barrier_probability(
     # 每次采样的加权总阳性率（0-1）
     totals = sampled_positivity @ w  # (n_samples,)
 
+    _gen = rng or np.random.default_rng()
+    _dist = hit_distributions or {}
+
     thresholds_used = {}
+    any_sampling = False
     for key, thr in hit_thresholds.items():
-        t = _to_proportion(thr)
-        if t is None:
+        t_point = _to_proportion(thr)
+        if t_point is None:
             continue
-        pass_prob = float(np.mean(totals >= t))
+
+        dist_entry = _dist.get(key)
+        sampled_flag = False
+        if (
+            dist_entry is not None
+            and isinstance(dist_entry, (tuple, list))
+            and len(dist_entry) >= 2
+        ):
+            mean_t = _to_proportion(dist_entry[0])
+            sd_t = float(dist_entry[1]) if dist_entry[1] is not None else 0.0
+            if mean_t is not None and sd_t > 0 and np.isfinite(sd_t):
+                # 正态样本截断到 [0, 1]，shape (n_samples,) 与 totals 逐元素比较
+                t_samples = _gen.normal(loc=mean_t, scale=sd_t, size=_n_samples)
+                t_samples = np.clip(t_samples, 0.0, 1.0)
+                pass_prob = float(np.mean(totals >= t_samples))
+                sampled_flag = True
+                any_sampling = True
+                # 元数据
+                t_meta = {
+                    "threshold_mean": round(mean_t, 4),
+                    "threshold_sd": round(sd_t, 6),
+                    "threshold_sampled": True,
+                }
+            else:
+                # sd=0 或 mean 非法 → 退化点值（用提供的 mean 或 thr）
+                pass_prob = float(np.mean(totals >= t_point))
+                t_meta = {"threshold_sampled": False}
+        else:
+            # 无 distributions 条目 → 点值比较
+            pass_prob = float(np.mean(totals >= t_point))
+            t_meta = {"threshold_sampled": False}
+
         thresholds_used[key] = {
-            "threshold": round(t, 4),
+            "threshold": round(t_point, 4),
             "pass_probability": round(pass_prob, 4),
+            **t_meta,
         }
 
     primary = next((k for k in _HIT_PRIORITY if k in thresholds_used), None)
@@ -161,6 +207,7 @@ def barrier_probability(
         "pass_probability": primary_prob,
         "weighted_mean": round(weighted_mean, 4),
         "weighted_ci": [round(float(ci[0]), 4), round(float(ci[1]), 4)],
+        "threshold_sampling_used": any_sampling,
     }
 
 

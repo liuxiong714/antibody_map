@@ -6,7 +6,14 @@ import ReactECharts from '../components/EChart';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import { getImmuneBarrier } from '../services/map';
+import { api } from '../services/api';
 import { ImmuneBarrierData, CatalyticModel } from '../types';
+
+// 多情景模拟默认三条 + 补种覆盖计算端点（后端新增）
+const BARRIER_SCENARIOS_ENDPOINT = '/analysis/barrier-scenarios';
+const DEFAULT_SCENARIOS_JSON = JSON.stringify([
+  { name: 'baseline', coverage: 80, booster: 0, ve: 1 },
+]);
 
 interface AssumptionState {
   life_expectancy: number;      // 期望寿命（年）
@@ -93,6 +100,10 @@ const Assessment: React.FC = () => {
   const [ageMax, setAgeMax] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ImmuneBarrierData | null>(null);
+  // 多情景模拟附加数据（R_eff / 补种缺口）—— 独立 fetch，失败不影响主结果
+  const [rEff, setREff] = useState<number | null>(null);
+  const [scenarioGap, setScenarioGap] = useState<number | null>(null);
+  const [scenarioPeople, setScenarioPeople] = useState<number | null>(null);
 
   // 假设与参数：三个控件即改即刷（防抖 500ms 后自动重查）
   const [assumptions, setAssumptions] = useState<AssumptionState>(DEFAULT_ASSUMPTIONS);
@@ -116,6 +127,7 @@ const Assessment: React.FC = () => {
     if (!diseases.length) { message.warning('请选择疾病'); return; }
     setLoading(true);
     setResult(null);
+    setREff(null); setScenarioGap(null); setScenarioPeople(null);
     try {
       const a = assumptionsRef.current;
       const isMulti = diseases.length > 1;
@@ -134,11 +146,38 @@ const Assessment: React.FC = () => {
       if (isMulti) params.skip_catalytic = true;  // 多疾病自动跳过催化模型
       const resp = await getImmuneBarrier(params);
       setResult(resp);
+
+      // 并行拉取多情景模拟（R_eff + 补种缺口）—— 失败不影响主结果
+      if (!isMulti && diseases.length === 1) {
+        fetchBarrierScenarios(diseases[0], provinces[0] ?? null).catch(() => { /* 静默降级 */ });
+      }
     } catch {
       message.error('查询失败');
     } finally {
       setLoading(false);
     }
+  };
+
+  // 多情景模拟：拉取单条 baseline(覆盖=80) 的 R_eff / 补种缺口
+  const fetchBarrierScenarios = async (disease: string, province: string | null) => {
+    const params: Record<string, string> = {
+      disease,
+      scenarios_json: DEFAULT_SCENARIOS_JSON,
+    };
+    if (province) params.province = province;
+    try {
+      const { data } = await api.get<{ scenarios?: Array<{
+        r_eff?: number;
+        vaccinate_gap_percent?: number;
+        vaccinate_people?: number;
+      }> }>(BARRIER_SCENARIOS_ENDPOINT, { params });
+      const sc = data?.scenarios?.[0];
+      if (sc) {
+        if (typeof sc.r_eff === 'number') setREff(sc.r_eff);
+        if (typeof sc.vaccinate_gap_percent === 'number') setScenarioGap(sc.vaccinate_gap_percent);
+        if (typeof sc.vaccinate_people === 'number') setScenarioPeople(sc.vaccinate_people);
+      }
+    } catch { /* 网络错误静默降级 */ }
   };
 
   // 当前假设串（灰色小字展示）
@@ -471,29 +510,45 @@ const Assessment: React.FC = () => {
                 </Col>
               </Row>
               <Row gutter={16}>
-                <Col span={6}>
+                <Col span={4}>
                   <Statistic
                     title="加权平均 FOI"
                     value={result?.summary?.weighted_avg_foi_per_year != null ? Number(result.summary.weighted_avg_foi_per_year).toFixed(4) : '-'}
                     suffix={result?.summary?.weighted_avg_foi_per_year != null ? '/年' : ''}
                   />
                 </Col>
-                <Col span={6}>
+                <Col span={4}>
                   <Statistic
                     title="估算 R0 (FOI)"
                     value={result?.summary?.estimated_r0_from_foi != null ? Number(result.summary.estimated_r0_from_foi).toFixed(2) : '-'}
                   />
                 </Col>
-                <Col span={6}>
+                <Col span={4}>
                   <Statistic
                     title="HIT (FOI 估算)"
                     value={result?.summary?.hit_from_foi_percent != null ? Number(result.summary.hit_from_foi_percent).toFixed(2) + '%' : '-'}
                   />
                 </Col>
-                <Col span={6}>
+                <Col span={4}>
                   <Statistic
                     title="HIT (文献 R0)"
                     value={result?.summary?.hit_from_reference_r0_percent != null ? Number(result.summary.hit_from_reference_r0_percent).toFixed(2) + '%' : '-'}
+                  />
+                </Col>
+                <Col span={4}>
+                  <Statistic
+                    title="R_eff (接触矩阵残差 NGM)"
+                    value={rEff != null ? rEff.toFixed(3) : '-'}
+                    valueStyle={rEff != null ? { color: rEff < 1 ? '#52c41a' : '#ff4d4f' } : undefined}
+                    suffix={rEff != null ? ` (${rEff < 1 ? '已达群体免疫' : '未达'})` : ''}
+                  />
+                </Col>
+                <Col span={4}>
+                  <Statistic
+                    title="补种缺口 (% / 亿人)"
+                    value={scenarioGap != null ? scenarioGap.toFixed(2) : '-'}
+                    suffix={scenarioGap != null ? `% / ${scenarioPeople != null ? (scenarioPeople / 1e8).toFixed(2) : '-'}亿` : ''}
+                    valueStyle={scenarioGap != null && scenarioGap > 0 ? { color: '#ff4d4f' } : undefined}
                   />
                 </Col>
               </Row>
@@ -501,6 +556,51 @@ const Assessment: React.FC = () => {
                 <div style={{ marginTop: 8, color: '#888', fontSize: 12 }}>
                   文献 R0 参考：典型 {result.r0_reference.typical}（区间 {result.r0_reference.range_low ?? '—'} ~ {result.r0_reference.range_high ?? '—'}）
                 </div>
+              )}
+              {/* 三族阈值折叠展示（不再被单一优先级链掩盖） */}
+              {result?.summary?.hit_thresholds_by_family && (
+                <Collapse
+                  ghost
+                  size="small"
+                  style={{ marginTop: 12 }}
+                  items={[
+                    {
+                      key: 'families',
+                      label: (
+                        <span style={{ fontSize: 12, color: '#888' }}>
+                          阈值三族分解（theoretical / coverage_target / administrative）
+                        </span>
+                      ),
+                      children: (() => {
+                        const families = result.summary.hit_thresholds_by_family;
+                        const rows = [
+                          { family: 'theoretical', key: 'mle_foi',            label: '理论·FOI MLE 反推',       ...families.theoretical?.mle_foi },
+                          { family: 'theoretical', key: 'literature_r0',      label: '理论·文献 R0',              ...families.theoretical?.literature_r0 },
+                          { family: 'coverage_target', key: 'nip',             label: '覆盖目标·国家免疫规划 NIP', ...families.coverage_target?.nip },
+                          { family: 'administrative', key: 'who',              label: '行政·WHO 官方阈值',         ...families.administrative?.who },
+                        ];
+                        return (
+                          <Table
+                            size="small"
+                            pagination={false}
+                            bordered
+                            dataSource={rows}
+                            rowKey={(r) => r.family + '.' + r.key}
+                            columns={[
+                              { title: '阈值族',   dataIndex: 'family',   width: 120, render: (v) => ({ theoretical: '理论 theoretical', coverage_target: '覆盖目标 coverage_target', administrative: '行政 administrative' }[v] ?? v) },
+                              { title: '子项',     dataIndex: 'label',   width: 200 },
+                              { title: '数值(%)',  dataIndex: 'value',   width: 100, render: (v) => v != null ? `${Number(v).toFixed(2)}%` : '-' },
+                              { title: '来源',     dataIndex: 'source',  width: 140, render: (v) => v ?? '-' },
+                              { title: 'citation', dataIndex: 'citation', ellipsis: true, render: (v) => v ?? '-' },
+                              { title: 'year',     dataIndex: 'year',    width: 80,  render: (v) => v ?? '-' },
+                              { title: 'ci',       dataIndex: 'ci',      width: 120, render: (v: any) => v ? `[${v[0]}, ${v[1]}]` : '-' },
+                            ]}
+                          />
+                        );
+                      })(),
+                    },
+                  ]}
+                />
               )}
             </Card>
 

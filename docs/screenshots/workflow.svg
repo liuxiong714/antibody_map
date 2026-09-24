@@ -1,0 +1,259 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 640" font-family="'PingFang SC','Microsoft YaHei','Helvetica Neue',sans-serif">
+  <defs>
+    <!-- Card shadow -->
+    <filter id="cardShadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+    <!-- Cyan glow for arrows -->
+    <filter id="cyanGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <!-- Arrow marker -->
+    <marker id="arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 Z" fill="#4ecdc4"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1600" height="640" fill="#1a2744"/>
+
+  <!-- Decorative dotted grid pattern (subtle) -->
+  <g opacity="0.03" fill="#4ecdc4">
+    <circle cx="40" cy="40" r="1.5"/><circle cx="120" cy="40" r="1.5"/><circle cx="200" cy="40" r="1.5"/><circle cx="280" cy="40" r="1.5"/><circle cx="360" cy="40" r="1.5"/><circle cx="440" cy="40" r="1.5"/><circle cx="520" cy="40" r="1.5"/><circle cx="600" cy="40" r="1.5"/><circle cx="680" cy="40" r="1.5"/><circle cx="760" cy="40" r="1.5"/><circle cx="840" cy="40" r="1.5"/><circle cx="920" cy="40" r="1.5"/><circle cx="1000" cy="40" r="1.5"/><circle cx="1080" cy="40" r="1.5"/><circle cx="1160" cy="40" r="1.5"/><circle cx="1240" cy="40" r="1.5"/><circle cx="1320" cy="40" r="1.5"/><circle cx="1400" cy="40" r="1.5"/><circle cx="1480" cy="40" r="1.5"/><circle cx="1560" cy="40" r="1.5"/>
+    <circle cx="40" cy="600" r="1.5"/><circle cx="120" cy="600" r="1.5"/><circle cx="200" cy="600" r="1.5"/><circle cx="280" cy="600" r="1.5"/><circle cx="360" cy="600" r="1.5"/><circle cx="440" cy="600" r="1.5"/><circle cx="520" cy="600" r="1.5"/><circle cx="600" cy="600" r="1.5"/><circle cx="680" cy="600" r="1.5"/><circle cx="760" cy="600" r="1.5"/><circle cx="840" cy="600" r="1.5"/><circle cx="920" cy="600" r="1.5"/><circle cx="1000" cy="600" r="1.5"/><circle cx="1080" cy="600" r="1.5"/><circle cx="1160" cy="600" r="1.5"/><circle cx="1240" cy="600" r="1.5"/><circle cx="1320" cy="600" r="1.5"/><circle cx="1400" cy="600" r="1.5"/><circle cx="1480" cy="600" r="1.5"/><circle cx="1560" cy="600" r="1.5"/>
+  </g>
+
+  <!-- Title -->
+  <text x="800" y="52" text-anchor="middle" fill="#ffffff" font-size="26" font-weight="700" letter-spacing="2">Antibody Map 核心功能流程图</text>
+  <line x1="660" y1="68" x2="940" y2="68" stroke="#4ecdc4" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="800" y="96" text-anchor="middle" fill="#8ea3c0" font-size="14" font-weight="400" letter-spacing="1">血清抗体流行病学数据可视化与分析平台</text>
+
+  <!-- Top-right decorative text -->
+  <text x="1540" y="130" text-anchor="end" fill="#4ecdc4" font-size="13" font-style="italic" opacity="0.6">让文献中的抗体数据被看见</text>
+
+  <!-- ===== 5 CARDS ===== -->
+  <!-- Card dimensions: w=270, h=380, gap=40, startX=55, y=140 -->
+
+  <!-- ===== STEP 1: 文献与数据导入 ===== -->
+  <g>
+    <rect x="55" y="140" width="270" height="380" rx="16" fill="#ffffff" filter="url(#cardShadow)"/>
+    <rect x="55" y="140" width="270" height="5" rx="2.5" fill="#4ecdc4"/>
+    <!-- Number badge -->
+    <circle cx="85" cy="138" r="20" fill="#1a2744" stroke="#4ecdc4" stroke-width="2.5"/>
+    <text x="85" y="144" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="700">1</text>
+    <!-- Icon: Upload document (line style, 2px stroke) -->
+    <g transform="translate(190, 200)" stroke="#4ecdc4" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Document outline -->
+      <path d="M -22 -20 L 8 -20 L 18 -10 L 18 22 L -22 22 Z"/>
+      <path d="M 8 -20 L 8 -10 L 18 -10"/>
+      <line x1="-14" y1="-4" x2="10" y2="-4"/>
+      <line x1="-14" y1="4" x2="10" y2="4"/>
+      <line x1="-14" y1="12" x2="4" y2="12"/>
+      <!-- Upload arrow -->
+      <line x1="-2" y1="40" x2="-2" y2="28"/>
+      <polyline points="-8,34 -2,28 4,34"/>
+    </g>
+    <!-- Title -->
+    <text x="190" y="285" text-anchor="middle" fill="#1a2744" font-size="17" font-weight="600">文献与数据导入</text>
+    <!-- Description -->
+    <text x="190" y="312" text-anchor="middle" fill="#718096" font-size="11.5">上传 PDF/CAJ/DOCX/XLSX 文献</text>
+    <text x="190" y="328" text-anchor="middle" fill="#718096" font-size="11.5">URL 导入，题录批量导入</text>
+    <text x="190" y="344" text-anchor="middle" fill="#718096" font-size="11.5">PDF 在线预览，重复检测合并</text>
+    <!-- Tag pill -->
+    <rect x="100" y="395" width="180" height="30" rx="15" fill="#4ecdc4" opacity="0.15"/>
+    <text x="190" y="414" text-anchor="middle" fill="#4ecdc4" font-size="11" font-weight="600">多种格式 · 批量导入</text>
+    <!-- File format tags -->
+    <g font-size="9" fill="#a0aec0">
+      <text x="190" y="455" text-anchor="middle">PDF · CAJ · DOCX · XLSX · URL · RIS</text>
+    </g>
+  </g>
+
+  <!-- Arrow 1→2 -->
+  <line x1="335" y1="330" x2="355" y2="330" stroke="#4ecdc4" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrowhead)" filter="url(#cyanGlow)"/>
+
+  <!-- ===== STEP 2: AI 自动提取 ===== -->
+  <g>
+    <rect x="365" y="140" width="270" height="380" rx="16" fill="#ffffff" filter="url(#cardShadow)"/>
+    <rect x="365" y="140" width="270" height="5" rx="2.5" fill="#4ecdc4"/>
+    <!-- Number badge -->
+    <circle cx="395" cy="138" r="20" fill="#1a2744" stroke="#4ecdc4" stroke-width="2.5"/>
+    <text x="395" y="144" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="700">2</text>
+    <!-- Icon: AI chip (line style) -->
+    <g transform="translate(500, 200)" stroke="#4ecdc4" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Chip body -->
+      <rect x="-20" y="-20" width="40" height="40" rx="6"/>
+      <!-- Inner "AI" text representation -->
+      <text x="0" y="6" text-anchor="middle" fill="#4ecdc4" stroke="none" font-size="14" font-weight="700">AI</text>
+      <!-- Chip pins -->
+      <line x1="-28" y1="-12" x2="-20" y2="-12"/>
+      <line x1="-28" y1="-4" x2="-20" y2="-4"/>
+      <line x1="-28" y1="4" x2="-20" y2="4"/>
+      <line x1="-28" y1="12" x2="-20" y2="12"/>
+      <line x1="20" y1="-12" x2="28" y2="-12"/>
+      <line x1="20" y1="-4" x2="28" y2="-4"/>
+      <line x1="20" y1="4" x2="28" y2="4"/>
+      <line x1="20" y1="12" x2="28" y2="12"/>
+      <line x1="-12" y1="-28" x2="-12" y2="-20"/>
+      <line x1="-4" y1="-28" x2="-4" y2="-20"/>
+      <line x1="4" y1="-28" x2="4" y2="-20"/>
+      <line x1="12" y1="-28" x2="12" y2="-20"/>
+      <line x1="-12" y1="20" x2="-12" y2="28"/>
+      <line x1="-4" y1="20" x2="-4" y2="28"/>
+      <line x1="4" y1="20" x2="4" y2="28"/>
+      <line x1="12" y1="20" x2="12" y2="28"/>
+      <!-- Sparkle -->
+      <path d="M 30 -25 L 32 -21 L 36 -19 L 32 -17 L 30 -13 L 28 -17 L 24 -19 L 28 -21 Z" fill="#f5a623" stroke="none"/>
+    </g>
+    <!-- Title -->
+    <text x="500" y="285" text-anchor="middle" fill="#1a2744" font-size="17" font-weight="600">AI 自动提取</text>
+    <!-- Description -->
+    <text x="500" y="312" text-anchor="middle" fill="#718096" font-size="11.5">自动提取血清阳性率、GMC 等</text>
+    <text x="500" y="328" text-anchor="middle" fill="#718096" font-size="11.5">结构化数据点；精确字符级溯源</text>
+    <text x="500" y="344" text-anchor="middle" fill="#718096" font-size="11.5">强 Schema 校验，提取历史可追溯</text>
+    <!-- Tag pill -->
+    <rect x="410" y="395" width="180" height="30" rx="15" fill="#4ecdc4" opacity="0.15"/>
+    <text x="500" y="414" text-anchor="middle" fill="#4ecdc4" font-size="11" font-weight="600">AI 赋能 · 高效准确</text>
+    <!-- Model tags -->
+    <g font-size="9" fill="#a0aec0">
+      <text x="500" y="455" text-anchor="middle">DeepSeek · OpenAI · Qwen · Ollama</text>
+    </g>
+  </g>
+
+  <!-- Arrow 2→3 -->
+  <line x1="645" y1="330" x2="665" y2="330" stroke="#4ecdc4" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrowhead)" filter="url(#cyanGlow)"/>
+
+  <!-- ===== STEP 3: 人工审核修订 ===== -->
+  <g>
+    <rect x="675" y="140" width="270" height="380" rx="16" fill="#ffffff" filter="url(#cardShadow)"/>
+    <rect x="675" y="140" width="270" height="5" rx="2.5" fill="#4ecdc4"/>
+    <!-- Number badge -->
+    <circle cx="705" cy="138" r="20" fill="#1a2744" stroke="#4ecdc4" stroke-width="2.5"/>
+    <text x="705" y="144" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="700">3</text>
+    <!-- Icon: Checklist with pencil (line style) -->
+    <g transform="translate(810, 200)" stroke="#4ecdc4" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Clipboard -->
+      <rect x="-22" y="-22" width="36" height="44" rx="4"/>
+      <rect x="-12" y="-26" width="16" height="8" rx="2" fill="#1a2744"/>
+      <!-- Check marks -->
+      <polyline points="-16,-8 -12,-4 -4,-12"/>
+      <polyline points="-16,4 -12,8 -4,0"/>
+      <line x1="0" y1="-8" x2="8" y2="-8"/>
+      <line x1="0" y1="4" x2="8" y2="4"/>
+      <line x1="-16" y1="14" x2="8" y2="14" stroke-dasharray="2,2"/>
+      <!-- Pencil -->
+      <line x1="16" y1="14" x2="26" y2="4"/>
+      <path d="M 14 16 L 16 14 L 26 4 L 28 6 L 18 16 Z"/>
+      <line x1="14" y1="16" x2="14" y2="20"/>
+    </g>
+    <!-- Title -->
+    <text x="810" y="285" text-anchor="middle" fill="#1a2744" font-size="17" font-weight="600">人工审核修订</text>
+    <!-- Description -->
+    <text x="810" y="312" text-anchor="middle" fill="#718096" font-size="11.5">人工通过/驳回/编辑/补充</text>
+    <text x="810" y="328" text-anchor="middle" fill="#718096" font-size="11.5">「LLM 原始 vs 人工修改」diff 留痕</text>
+    <text x="810" y="344" text-anchor="middle" fill="#718096" font-size="11.5">确保数据可靠</text>
+    <!-- Tag pill -->
+    <rect x="720" y="395" width="180" height="30" rx="15" fill="#4ecdc4" opacity="0.15"/>
+    <text x="810" y="414" text-anchor="middle" fill="#4ecdc4" font-size="11" font-weight="600">多重把关 · 专业可靠</text>
+    <!-- Sub features -->
+    <g font-size="9" fill="#a0aec0">
+      <text x="810" y="455" text-anchor="middle">行内编辑 · 批量操作 · 一致性审计</text>
+    </g>
+  </g>
+
+  <!-- Arrow 3→4 -->
+  <line x1="955" y1="330" x2="975" y2="330" stroke="#4ecdc4" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrowhead)" filter="url(#cyanGlow)"/>
+
+  <!-- ===== STEP 4: 地图可视化与多维分析 ===== -->
+  <g>
+    <rect x="985" y="140" width="270" height="380" rx="16" fill="#ffffff" filter="url(#cardShadow)"/>
+    <rect x="985" y="140" width="270" height="5" rx="2.5" fill="#4ecdc4"/>
+    <!-- Number badge -->
+    <circle cx="1015" cy="138" r="20" fill="#1a2744" stroke="#4ecdc4" stroke-width="2.5"/>
+    <text x="1015" y="144" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="700">4</text>
+    <!-- Icon: China map with data points (line style) -->
+    <g transform="translate(1120, 200)" stroke="#4ecdc4" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Simplified China map outline -->
+      <path d="M -20 -12 C -18 -18, -10 -20, -2 -18 C 8 -20, 16 -16, 20 -8 C 24 -2, 22 6, 16 12 C 10 18, 0 20, -8 16 C -16 12, -22 4, -20 -4 C -21 -8, -21 -10, -20 -12 Z"/>
+      <!-- Data points (orange) -->
+      <circle cx="-8" cy="-6" r="3" fill="#f5a623" stroke="none"/>
+      <circle cx="4" cy="0" r="3" fill="#f5a623" stroke="none"/>
+      <circle cx="-4" cy="8" r="3" fill="#f5a623" stroke="none"/>
+      <circle cx="10" cy="-10" r="2.5" fill="#f5a623" stroke="none" opacity="0.7"/>
+      <circle cx="-12" cy="4" r="2.5" fill="#f5a623" stroke="none" opacity="0.7"/>
+      <!-- Pulse rings on main point -->
+      <circle cx="-8" cy="-6" r="6" fill="none" stroke="#f5a623" stroke-width="1" opacity="0.4"/>
+      <circle cx="4" cy="0" r="6" fill="none" stroke="#f5a623" stroke-width="1" opacity="0.4"/>
+    </g>
+    <!-- Title -->
+    <text x="1120" y="285" text-anchor="middle" fill="#1a2744" font-size="17" font-weight="600">地图可视化与多维分析</text>
+    <!-- Description -->
+    <text x="1120" y="312" text-anchor="middle" fill="#718096" font-size="11.5">交互式中国地图，时间序列动画</text>
+    <text x="1120" y="328" text-anchor="middle" fill="#718096" font-size="11.5">趋势/区域/Meta/空间统计/抗原图谱</text>
+    <text x="1120" y="344" text-anchor="middle" fill="#718096" font-size="11.5">免疫屏障模拟与达标概率</text>
+    <!-- Tag pill -->
+    <rect x="1030" y="395" width="180" height="30" rx="15" fill="#4ecdc4" opacity="0.15"/>
+    <text x="1120" y="414" text-anchor="middle" fill="#4ecdc4" font-size="11" font-weight="600">多维分析 · 洞见全局</text>
+    <!-- Sub features -->
+    <g font-size="9" fill="#a0aec0">
+      <text x="1120" y="455" text-anchor="middle">知识图谱 · 病原学监测 · 出生队列</text>
+    </g>
+  </g>
+
+  <!-- Arrow 4→5 -->
+  <line x1="1265" y1="330" x2="1285" y2="330" stroke="#4ecdc4" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrowhead)" filter="url(#cyanGlow)"/>
+
+  <!-- ===== STEP 5: 报告生成与导出 ===== -->
+  <g>
+    <rect x="1295" y="140" width="270" height="380" rx="16" fill="#ffffff" filter="url(#cardShadow)"/>
+    <rect x="1295" y="140" width="270" height="5" rx="2.5" fill="#4ecdc4"/>
+    <!-- Number badge -->
+    <circle cx="1325" cy="138" r="20" fill="#1a2744" stroke="#4ecdc4" stroke-width="2.5"/>
+    <text x="1325" y="144" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="700">5</text>
+    <!-- Icon: Report with export (line style) -->
+    <g transform="translate(1430, 200)" stroke="#4ecdc4" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Document -->
+      <path d="M -18 -22 L 8 -22 L 14 -16 L 14 22 L -18 22 Z"/>
+      <path d="M 8 -22 L 8 -16 L 14 -16"/>
+      <line x1="-12" y1="-10" x2="8" y2="-10"/>
+      <line x1="-12" y1="-2" x2="8" y2="-2"/>
+      <line x1="-12" y1="6" x2="2" y2="6"/>
+      <!-- Export arrow down -->
+      <line x1="-2" y1="36" x2="-2" y2="28"/>
+      <polyline points="-8,32 -2,28 4,32"/>
+      <!-- Format badges: W, PDF, M↓ -->
+      <rect x="-22" y="38" width="14" height="10" rx="2" stroke-width="1.5"/>
+      <text x="-15" y="46" text-anchor="middle" fill="#4ecdc4" stroke="none" font-size="7" font-weight="600">W</text>
+      <rect x="-6" y="38" width="14" height="10" rx="2" stroke-width="1.5"/>
+      <text x="1" y="46" text-anchor="middle" fill="#4ecdc4" stroke="none" font-size="6" font-weight="600">PDF</text>
+      <rect x="10" y="38" width="14" height="10" rx="2" stroke-width="1.5"/>
+      <text x="17" y="46" text-anchor="middle" fill="#4ecdc4" stroke="none" font-size="6" font-weight="600">MD</text>
+    </g>
+    <!-- Title -->
+    <text x="1430" y="285" text-anchor="middle" fill="#1a2744" font-size="17" font-weight="600">报告生成与导出</text>
+    <!-- Description -->
+    <text x="1430" y="312" text-anchor="middle" fill="#718096" font-size="11.5">抗体分析/疫苗策略/免疫屏障评估</text>
+    <text x="1430" y="328" text-anchor="middle" fill="#718096" font-size="11.5">后台异步生成，支持在线编辑</text>
+    <text x="1430" y="344" text-anchor="middle" fill="#718096" font-size="11.5">导出 Word/PDF/Markdown</text>
+    <!-- Tag pill -->
+    <rect x="1340" y="395" width="180" height="30" rx="15" fill="#4ecdc4" opacity="0.15"/>
+    <text x="1430" y="414" text-anchor="middle" fill="#4ecdc4" font-size="11" font-weight="600">一键生成 · 灵活导出</text>
+    <!-- Report types -->
+    <g font-size="9" fill="#a0aec0">
+      <text x="1430" y="455" text-anchor="middle">三类报告 · 在线编辑 · 异步生成</text>
+    </g>
+  </g>
+
+  <!-- ===== Bottom: Value proposition ===== -->
+  <g transform="translate(800, 575)">
+    <!-- Orange diamond bullet -->
+    <path d="M -260 -6 L -254 0 L -260 6 L -266 0 Z" fill="#f5a623"/>
+    <text x="-246" y="5" fill="#4ecdc4" font-size="15" font-weight="500">从文献到洞见，让抗体数据创造更大价值</text>
+  </g>
+
+  <!-- Bottom-left brand -->
+  <text x="55" y="610" fill="#4a6080" font-size="11" font-weight="400">Antibody Map | 用数据连接人类健康</text>
+
+  <!-- Bottom-right decorative text -->
+  <text x="1545" y="610" text-anchor="end" fill="#4ecdc4" font-size="11" font-style="italic" opacity="0.4">更开放的数据，更健康的未来</text>
+</svg>

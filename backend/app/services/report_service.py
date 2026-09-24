@@ -126,6 +126,9 @@ IMMUNE_BARRIER_PROMPT_ZH = """你是一位免疫学和流行病学专家。请�
 - 覆盖省份：{province_count} 个
 - 总样本量：{total_samples} 人
 
+自动分析摘要（系统计算）：
+{analysis_digest}
+
 各省数据：
 {province_table}
 
@@ -138,6 +141,7 @@ IMMUNE_BARRIER_PROMPT_ZH = """你是一位免疫学和流行病学专家。请�
 请按以下结构输出报告（Markdown 格式）：
 ## 1. 免疫屏障总体评估
 - 基于人群抗体阳性率与样本量综合判断整体免疫屏障水平
+- 参考给定的 HIT 阈值三族（理论 / 覆盖目标 / 行政）与 R_eff 给出定量结论
 ## 2. 地区免疫屏障差异分析
 - 识别免疫屏障薄弱地区与高风险地区
 - 分析地区间抗体水平差异及其公共卫生意义
@@ -147,7 +151,7 @@ IMMUNE_BARRIER_PROMPT_ZH = """你是一位免疫学和流行病学专家。请�
 - 分析不同年龄段的抗体水平与免疫缺口
 ## 5. 免疫屏障缺口识别与干预建议
 - 综合评估人群免疫保护状况，指出薄弱环节与高风险人群
-- 给出加强免疫、监测与防控的具体建议
+- 结合补种缺口（gap% / 补种人数）给出加强免疫、监测与防控的具体建议
 
 请基于数据给出专业的免疫屏障评估，不要编造不存在的数据。"""
 
@@ -158,6 +162,9 @@ Data Overview:
 - Data Points: {point_count}
 - Provinces Covered: {province_count}
 - Total Sample Size: {total_samples}
+
+Automated Analysis Digest (system-computed):
+{analysis_digest}
 
 Province Data:
 {province_table}
@@ -780,6 +787,154 @@ async def _render_template_report(
     return "\n\n".join(blocks)
 
 
+async def _build_analysis_digest(
+    db: AsyncSession,
+    disease: str | None,
+    province: str | None,
+    language: str = "zh",
+) -> tuple[str, str]:
+    """拉取自动分析摘要。
+
+    调用两个新服务：
+    - get_immune_barrier_assessment → hit_thresholds_by_family 三族阈值
+    - get_barrier_scenarios        → 默认 baseline 情景的 R_eff + 补种缺口
+
+    返回 (prompt_visible_digest, methodology_citations_block)。
+    失败静默降级为 ("", "")，不阻断报告生成。
+    """
+    try:
+        from app.services.analysis.infectious_disease import (
+            get_immune_barrier_assessment,
+            get_barrier_scenarios,
+        )
+        assessment = await get_immune_barrier_assessment(db, disease, province)
+    except Exception as exc:  # noqa: BLE001 —— 分析服务失败不能阻断报告
+        logger.warning(f"[report] get_immune_barrier_assessment failed: {exc}")
+        assessment = {}
+
+    try:
+        scenario_data = await get_barrier_scenarios(db, disease, province)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[report] get_barrier_scenarios failed: {exc}")
+        scenario_data = {}
+
+    hit_target = assessment.get("summary", {}).get("hit_target_used_percent")
+    hit_source = assessment.get("summary", {}).get("hit_target_source")
+    families = assessment.get("summary", {}).get("hit_thresholds_by_family", {}) or {}
+
+    scenarios = scenario_data.get("scenarios", []) or []
+    baseline = scenarios[0] if scenarios else {}
+
+    # --- 摘要文本（注入 LLM prompt）---
+    if language == "zh":
+        digest_lines = []
+        if hit_target is not None:
+            digest_lines.append(f"- 主用 HIT 阈值: {hit_target}%（来源 {hit_source or 'unknown'}）")
+        if families:
+            digest_lines.append("- HIT 阈值三族分解:")
+            for fam, items in families.items():
+                for k, v in (items or {}).items():
+                    if isinstance(v, dict) and v.get("value") is not None:
+                        cit = v.get("citation") or ""
+                        yr  = v.get("year") or ""
+                        digest_lines.append(
+                            f"    · {fam}.{k}: {v['value']}% ({v.get('source','')})"
+                            + (f"  [{cit}" if cit else "")
+                            + (f", {yr}]" if yr else ("]" if cit else ""))
+                        )
+        if baseline:
+            if baseline.get("r_eff") is not None:
+                r = baseline["r_eff"]
+                digest_lines.append(
+                    f"- R_eff (接触矩阵残差 NGM): {r:.3f}"
+                    + ("（已达群体免疫）" if r < 1 else "（未达群体免疫）")
+                )
+            if baseline.get("vaccinate_gap_percent") is not None:
+                digest_lines.append(
+                    f"- 补种缺口 (baseline cov={baseline.get('coverage_percent','?')}%, booster={baseline.get('booster_percent','?')}%): "
+                    f"{baseline['vaccinate_gap_percent']}%"
+                    + (f" ≈ 补种 {baseline['vaccinate_people']} 人" if baseline.get("vaccinate_people") else "")
+                )
+            if baseline.get("protective_coverage_percent") is not None:
+                digest_lines.append(
+                    f"- protective coverage = coverage × VE = "
+                    f"{baseline['protective_coverage_percent']}%"
+                )
+            if baseline.get("effective_barrier_percent") is not None:
+                digest_lines.append(
+                    f"- effective barrier = protective + (1-protective)×booster = "
+                    f"{baseline['effective_barrier_percent']}%"
+                )
+        if not digest_lines:
+            digest_lines.append("- （自动分析暂不可用）")
+        digest = "\n".join(digest_lines)
+    else:  # EN
+        digest_lines = []
+        if hit_target is not None:
+            digest_lines.append(f"- Primary HIT threshold: {hit_target}% (source {hit_source or 'unknown'})")
+        if families:
+            digest_lines.append("- HIT threshold families decomposition:")
+            for fam, items in families.items():
+                for k, v in (items or {}).items():
+                    if isinstance(v, dict) and v.get("value") is not None:
+                        cit = v.get("citation") or ""
+                        yr  = v.get("year") or ""
+                        digest_lines.append(
+                            f"    · {fam}.{k}: {v['value']}% ({v.get('source','')})"
+                            + (f"  [{cit}" if cit else "")
+                            + (f", {yr}]" if yr else ("]" if cit else ""))
+                        )
+        if baseline:
+            if baseline.get("r_eff") is not None:
+                r = baseline["r_eff"]
+                digest_lines.append(
+                    f"- R_eff (contact-matrix residual NGM): {r:.3f}"
+                    + (" (herd immunity met)" if r < 1 else " (herd immunity NOT met)")
+                )
+            if baseline.get("vaccinate_gap_percent") is not None:
+                digest_lines.append(
+                    f"- Vaccination gap (baseline cov={baseline.get('coverage_percent','?')}%, booster={baseline.get('booster_percent','?')}%): "
+                    f"{baseline['vaccinate_gap_percent']}%"
+                    + (f" ≈ {baseline['vaccinate_people']} persons" if baseline.get("vaccinate_people") else "")
+                )
+        if not digest_lines:
+            digest_lines.append("- (automated analysis currently unavailable)")
+        digest = "\n".join(digest_lines)
+
+    # --- 方法学注脚：阈值版本 + 三族 citation ---
+    cit_lines: list[str] = []
+    if families:
+        cit_lines.append(
+            "HIT 阈值三族体系（immune_barrier_constants v1.0）："
+            "theoretical = FOI MLE 反推 + 文献 R0；"
+            "coverage_target = 国家免疫规划 NIP 官方目标；"
+            "administrative = WHO 官方推荐阈值。"
+        )
+        for fam_label, fam_display in (
+            ("theoretical", "theoretical"),
+            ("coverage_target", "coverage_target"),
+            ("administrative", "administrative"),
+        ):
+            items = families.get(fam_label, {}) or {}
+            for k, v in items.items():
+                if isinstance(v, dict) and v.get("citation"):
+                    cit_lines.append(
+                        f"- {fam_display}.{k}: {v.get('value','—')}% [{v['citation']}]"
+                        + (f" ({v['year']})" if v.get("year") else "")
+                    )
+        if language != "zh":
+            # 英文：把中文术语换成英文版本
+            cit_lines[0] = (
+                "HIT threshold families (immune_barrier_constants v1.0): "
+                "theoretical = FOI MLE + literature R0; "
+                "coverage_target = NIP official targets; "
+                "administrative = WHO official recommendations."
+            )
+    citations = "\n".join(cit_lines) if cit_lines else ""
+
+    return digest, citations
+
+
 def _build_legacy_inline_text(rows: list, language: str = "zh") -> tuple[str, str, str]:
     """按内置 Prompt 所需的文本格式，构建分省/分年/分年龄摘要（兜底路径）。"""
     province_lines = []
@@ -1067,6 +1222,10 @@ async def generate_immune_barrier_report(
                     provinces_set.add(p)
         total_sample = sum(r.sample_size or 0 for r in rows)
         province_table, year_trend, age_distribution = _build_legacy_inline_text(rows, language)
+
+        # 2.1 拉取自动分析摘要（三族阈值 + R_eff + 补种缺口）—— 失败静默降级
+        analysis_digest, analysis_digest_citations = await _build_analysis_digest(db, disease, province, language)
+
         if language == "zh":
             prompt = IMMUNE_BARRIER_PROMPT_ZH.format(
                 title=report_title,
@@ -1074,6 +1233,7 @@ async def generate_immune_barrier_report(
                 point_count=len(rows),
                 province_count=len(provinces_set),
                 total_samples=total_sample,
+                analysis_digest=analysis_digest,
                 province_table=province_table,
                 year_trend=year_trend,
                 age_distribution=age_distribution,
@@ -1085,6 +1245,7 @@ async def generate_immune_barrier_report(
                 point_count=len(rows),
                 province_count=len(provinces_set),
                 total_samples=total_sample,
+                analysis_digest=analysis_digest,
                 province_table=province_table,
                 year_trend=year_trend,
                 age_distribution=age_distribution,
@@ -1097,9 +1258,13 @@ async def generate_immune_barrier_report(
         {"disease": disease, "province": province, "data_type": data_type},
         {"n_estimates": len(rows), "n_literatures": len(lit_ids), "quality_grades": True},
     )
+    # 阈值方法学注脚：版本 + 三族阈值 citation（由 _build_analysis_digest 同步拉取）
+    threshold_methodology_block = analysis_digest_citations or ""
     content = (content or "").rstrip()
     if language == "zh":
         content += f"\n\n## 方法学\n\n{methodology_note}"
+        if threshold_methodology_block:
+            content += f"\n\n### HIT 阈值方法学与引用\n\n{threshold_methodology_block}"
         content += (
             f"\n\n## 引用\n\n"
             f"抗体地图数据库分析报告[EB/OL]. 抗体地图数据库（版本 v1.0）. "
@@ -1108,6 +1273,8 @@ async def generate_immune_barrier_report(
         )
     else:
         content += f"\n\n## Methodology\n\n{methodology_note}"
+        if threshold_methodology_block:
+            content += f"\n\n### HIT Threshold Methodology & Citations\n\n{threshold_methodology_block}"
         content += (
             f"\n\n## Citation\n\n"
             f"Antibody Map Database Analysis Report[EB/OL]. Antibody Map Database (Version v1.0). "

@@ -26,7 +26,7 @@ class ApiModelConfig(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     # 显示名称，如 "DeepSeek Chat"
     name: Mapped[str] = mapped_column(String(100))
-    # 模型名，如 "deepseek-chat"
+    # 模型名，如 "deepseek-flash"（旧名 deepseek-chat 仍兼容）
     model_name: Mapped[str] = mapped_column(String(100))
     # API Key 密文（列名保持 api_key 兼容历史数据，存储 Fernet 密文）
     _api_key_enc: Mapped[str] = mapped_column("api_key", String(500))

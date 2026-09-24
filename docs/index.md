@@ -53,6 +53,9 @@ PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML。解析采用**策略模式*
 - **流行特征模块**：流行病学指标（发病率/发病人数/死亡率/死亡数）聚合展示 + 独立病原学监测表（流行株基因型/血清型/谱系/变异位点），与血清抗体数据互补
 - **多域数据扩展**：单一 data_point Schema 覆盖 immunology/epidemiology/pathogen 三大数据域，病原学字段与 disease 解耦，extra JSONB 兜底非常规维度
 - **数据点溯源**：`model_used` + `extraction_history_id` 让每条数据点可反查产出模型与批次来源
+- **免疫屏障 R_eff NGM 残差法**：新世代矩阵（Next Generation Matrix）直接计算免疫后基本再生数 R_eff，R_eff < 1 才是真正群体免疫判据；旧 effective_barrier() 标记 @deprecated
+- **多情景免疫屏障模拟 × VE 疫苗效率**：批量情景 `{coverage, booster, ve}` 一次评估，同时返回 effective / R_eff / 是否达 HIT / 补种缺口；参考常量 JSON 化（WHO HIT / R0 / NIP，15 病种 × citation 透明可审计）
+- **出生队列加权投影**：接触矩阵 Perron-Frobenius 主特征向量权重基线屏障，替代简单平均；旧行为保持不变
 
 ## License
 

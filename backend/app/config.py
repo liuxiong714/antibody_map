@@ -269,8 +269,8 @@ class Settings(BaseSettings):
     GROUNDING_LLM_REGROUND: bool = True
 
     # B5：分级模型策略（留空则不启用，统一用 LLM_MODEL）
-    LLM_MODEL_LIGHT: str = ""   # 简单文献用（短文本+无表格），如 "deepseek-chat"
-    LLM_MODEL_STRONG: str = ""  # 复杂文献用（长文本+复杂表格），如 "deepseek-reasoner"
+    LLM_MODEL_LIGHT: str = ""   # 简单文献用（短文本+无表格），如 "deepseek-flash"
+    LLM_MODEL_STRONG: str = ""  # 复杂文献用（长文本+复杂表格），如 "deepseek-v4-pro"
 
     # A1：结构化表格优先提取（有表格时先单独从表格提取一轮）
     LLM_TABLE_FIRST_EXTRACTION: bool = True

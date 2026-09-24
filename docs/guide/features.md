@@ -8,7 +8,50 @@
 2. 输入账号和密码（默认管理员账号 `admin`）
 3. 点击「登录」进入科研工作台
 
-登录后，左侧菜单依次为：**地图总览 → 文献管理 → 数据分析 → 流行特征 → 免疫屏障评估 → 抗原图谱 → 知识图谱 → 报告生成 → AI 提取自测 → 文件夹监控 → PubMed 检索 → 用户管理 → 系统设置**。下面按此顺序逐一介绍。
+登录后，左侧菜单依次为：**地图总览 → 文献管理 → 数据分析 → 流行特征 → 免疫屏障评估 → 抗原图谱 → 知识图谱 → 报告生成 → AI 提取自测 → 文件夹监控 → PubMed 检索 → 用户管理 → 系统设置**。
+
+### 功能速览
+
+按五大模块归类，括号内为本文档对应章节：
+
+- **文献与数据导入**（§2 文献管理）
+  - PDF/CAJ/DOCX/EPUB/PPTX/XLSX/TXT/HTML 上传，URL 导入，RIS/EndNote/PubMed/WoS 题录批量导入
+  - 从 TXT/CSV 导入匹配（UUID 精确 / 标题-作者模糊），批量打 Tag 编组
+  - PDF 在线预览，重复检测与合并，回收站
+  - MinerU（GPU 加速）+ AnyDoc（Rust）+ pdf-inspector 损坏修复，自动回退
+
+- **AI 自动提取**（§2.3 AI 数据提取 + §9 AI 提取自测）
+  - LLM 自动提取血清阳性率/GMC 等数据点，支持 DeepSeek/OpenAI/Qwen/本地 Ollama
+  - 长文档分块并行，精确字符级溯源，强 Schema 校验
+  - 历次提取历史可追溯（模型/耗时/Token/费用）
+  - **追加模式安全**：强制 append 禁用 replace；**enable_thinking** 开关贯通 API→Ollama extra_body
+  - 合成自测：批量产出含已知答案的合成文献，多模型串行跑真实提取链路，产出召回率/精确率 CSV
+
+- **人工审核修订**（§2.4 数据审核）
+  - 通过/驳回，行内编辑，批量操作
+  - 「LLM 原始 vs 人工修改」diff 留痕
+  - 管理员一键扫描 extraction_history vs data_point 实际行数，自动修正 `[DP_DROPPED]`
+
+- **地图可视化与多维分析**（§1 地图总览 + §3 数据分析 + §4 流行特征 + §5 免疫屏障评估 + §6 抗原图谱 + §7 知识图谱）
+  - 全国/省/市/区县四级交互式抗体热力地图，时间序列动画，热点分析
+  - 逐年趋势、区域对比、分区对比、年龄分层、FOI 感染力、VE 疫苗效果
+  - Meta 分析（森林图/漏斗图）、空间热点/冷点（Moran's I + Getis-Ord Gi*）
+  - **免疫屏障 R_eff NGM 残差法**（新世代矩阵，真正 R_eff < 1 判据）+ 多情景批量模拟 × VE 疫苗效率 + 出生队列加权投影
+  - 参考常量 JSON 化：WHO HIT / R0 / NIP 覆盖（15 病种 × citation，透明可审计）
+  - 多域扩展：单一 data_point Schema 覆盖 immunology / epidemiology / pathogen
+  - HI/VNT/ELISA 滴度矩阵 metric MDS 降维抗原图谱
+  - 13 实体 + 18 关系多维语义知识图谱，计算式推导 + LLM 抽取，智能咨询问答
+
+- **报告生成与导出**（§8 报告生成）
+  - 抗体分析 / 疫苗接种策略 / 免疫屏障评估三类报告
+  - 后台异步生成，在线编辑，支持 Markdown / Word / PDF 下载
+
+- **系统运维**（§10 文件夹监控 + §11 PubMed 检索 + §12 用户管理 + §13 系统设置）
+  - pg_dump 逻辑备份 + 每 60 分钟自动备份（保留 48 份）+ PostgreSQL WAL 加固
+  - 文件夹监控自动扫入新文献、PubMed 检索批量导入
+  - 管理员 / 操作员 / 只读三档权限划分
+
+下面按左侧菜单顺序逐一介绍。
 
 ---
 
@@ -683,16 +726,74 @@ VE = 1 - (1 - SP_v) / (1 - SP_u)
 [![免疫屏障评估页面](../screenshots/immune_barrier.png)](../screenshots/immune_barrier.png)
 
 ### 5.1 核心内容
-- **群体免疫阈值（HIT）**：基于 R0 反算阻断传播所需的免疫人群比例
-- **免疫屏障模拟**：将实际抗体阳性率/滴度分布与阈值对比，评估是否达标
-- **出生队列评估**：结合代际免疫解释屏障水平
-- **FOI 支撑**：结合感染力分析解释屏障形成的驱动力
 
-### 5.2 使用步骤
-1. 选择疾病、地区、年龄段
-2. 设置 R0 / 阈值参数（或用系统默认）
-3. 点击「查询」生成免疫屏障评估结果与可视化
-4. 结合结果判断该人群是否需要补种或调整免疫策略
+- **HIT（群体免疫阈值）三族**：WHO 标准（measles 95%、mumps 90%、influenza 65% 等 15 种）、经典 R0 反算、GOAL/WHO 文献阈值，按病种家族分组（`_build_hit_threshold_families`）
+- **有效再生数 R_eff（NGM 残差法，新）**：新世代矩阵（Next Generation Matrix）直接计算免疫后基本再生数，**R_eff < 1 才是真正的群体免疫判据**（Diekmann & Heesterbeek 2000），取代旧的 `effective_barrier` 加权汇总
+- **免疫屏障模拟 × VE 疫苗效率（新）**：基础覆盖 × VE + 加强针，模拟实际保护比例，反推达标所需覆盖
+- **多情景批量模拟（新）**：`GET /analysis/barrier-scenarios` 对每条情景 `{coverage, booster, ve}` 同时计算 effective、R_eff、是否达 HIT、补种缺口
+- **出生队列加权投影**：接触矩阵 Perron-Frobenius 主特征向量作权重（`project_barrier(weights=...)`），替代简单平均
+
+### 5.2 R_eff NGM 残差法（核心）
+
+`effective_barrier`（接触矩阵主导特征向量加权汇总阳性率）回答的是"抗体阳性率加权后是多少"——但这并不直接等价于"是否真的阻断传播"。新函数 **`r_eff()`** 直接把免疫衰减注入传播矩阵：
+
+```
+NGM_ij = C_ij · d_j                    # i→j 传播贡献，C 接触矩阵，d 相对易感性
+K = NGM · diag(1 − p)                  # 免疫后残差 NGM（p 为有效保护 0~1）
+ρ(K) = max(Re(λ))                      # 谱半径（主导特征值实部）
+R_eff = r0 · ρ(K) / ρ(NGM)             # 归一化到传入的参考 R0
+```
+
+**为什么归一化**：传入的 `r0` 通常是文献/FOI 估计的人群平均基本再生数（如麻疹 15），而 `ρ(NGM)` 是数值谱半径，两者有标度差。除以 `ρ(NGM)` 后 R_eff 数值量级与 R0 对齐，直接判断 **R_eff < 1** 是否成立。
+
+> 旧 `effective_barrier()` 已标记 `@deprecated`，调用方迁移到 `r_eff()`。
+
+### 5.3 VE 疫苗效率 × 多情景模拟
+
+免疫屏障模拟新增 **疫苗保护效率 VE** 参数（默认 1.0，兼容旧行为）：
+
+```
+protective = coverage × VE
+effective  = protective + (1 − protective/100) × booster
+gain_from_booster = effective − protective
+```
+
+API：`GET /analysis/simulation` 新增 `ve` 参数；`GET /analysis/barrier-scenarios` 支持批量情景 JSON：
+
+```json
+[{"name":"baseline","coverage":80,"booster":0,"ve":1},
+ {"name":"realistic_ve0.85","coverage":95,"booster":10,"ve":0.85}]
+```
+
+返回每条情景的 effective、R_eff、是否达 HIT、反推所需覆盖、补种人数（用七普全国总人口粗估）。
+
+### 5.4 参考常量 JSON 化（透明可审计）
+
+所有免疫屏障评估常量从 `_common.py` 硬编码迁移到 **`backend/app/core/reference_data/immune_barrier_constants.json`**，每条带 7 字段：
+
+```json
+"measles": {"value": 95, "range": null, "source": "WHO/GVAP",
+            "year": 2018, "citation": "...",
+            "applicable_population": "全球儿童", "version": "GVAP-2018"}
+```
+
+- `who_thresholds`：15 种疾病 HIT 阈值
+- `r0_reference`：15 种疾病 R0（含 range）
+- `nip_coverage_reference`：中国 NIP 报告分省接种覆盖
+
+后端通过 `_load_ref_constants_json() + lru_cache` 加载，对外保持原字典接口——下游消费代码零改动，同时前端报告自动引用 citation 出处，**每个定量结论都有文献依据**。
+
+### 5.5 使用步骤
+
+1. 在左侧选择「免疫屏障评估」
+2. 选择疾病、省份、年龄段
+3. 系统自动拉取 WHO HIT / 参考 R0 / NIP 覆盖（均带 citation）
+4. 可切换模拟视图：单情景覆盖/加强针/VE → 多情景批量 JSON → 出生队列投影（加权/简单平均）
+5. 报告自动引用阈值 citation、R_eff 补种缺口等定量结论
+
+### 5.6 DeepSeek 定价更新
+
+DeepSeek 官方弃用 `deepseek-chat` / `deepseek-reasoner`，主推 `deepseek-flash` / `deepseek-v4-pro`。`usage_tracker.py` 与 `deepseek_provider.py` 同步更新，旧模型名保留兼容，新旧价格一致。
 
 ---
 

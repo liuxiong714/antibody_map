@@ -1,0 +1,719 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1100" width="1600" height="1100">
+  <defs>
+    <!-- Background gradient -->
+    <radialGradient id="bgGradient" cx="15%" cy="10%" r="120%">
+      <stop offset="0%" stop-color="#123a7a"/>
+      <stop offset="45%" stop-color="#0a2e6c"/>
+      <stop offset="100%" stop-color="#071f4d"/>
+    </radialGradient>
+
+    <!-- Card gradient -->
+    <linearGradient id="cardGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="rgba(102,204,255,0.12)"/>
+      <stop offset="100%" stop-color="rgba(102,204,255,0.04)"/>
+    </linearGradient>
+
+    <!-- Card alt gradient (teal accent) -->
+    <linearGradient id="cardAltGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="rgba(14,116,144,0.15)"/>
+      <stop offset="100%" stop-color="rgba(14,116,144,0.05)"/>
+    </linearGradient>
+
+    <!-- Number badge gradient -->
+    <radialGradient id="badgeGradient" cx="50%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#66ccff"/>
+      <stop offset="100%" stop-color="#2b7fd4"/>
+    </radialGradient>
+
+    <!-- Gold gradient -->
+    <linearGradient id="goldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fcd34d"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+
+    <!-- Glow filters -->
+    <filter id="techGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="strongGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="cardShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="20" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+
+    <!-- Arrow gradient -->
+    <linearGradient id="arrowGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#66ccff"/>
+      <stop offset="100%" stop-color="#0e7490"/>
+    </linearGradient>
+
+    <!-- Value section gradient -->
+    <linearGradient id="valueGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="rgba(102,204,255,0.08)"/>
+      <stop offset="100%" stop-color="rgba(102,204,255,0.02)"/>
+    </linearGradient>
+
+    <!-- Value icon bg gradient -->
+    <radialGradient id="valueIconBg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#66ccff"/>
+      <stop offset="100%" stop-color="#0e7490"/>
+    </radialGradient>
+
+    <!-- Title gradient -->
+    <linearGradient id="titleGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="50%" stop-color="#66ccff"/>
+      <stop offset="100%" stop-color="#0e7490"/>
+    </linearGradient>
+
+    <!-- Subtitle pill gradient -->
+    <linearGradient id="pillGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="rgba(102,204,255,0.15)"/>
+      <stop offset="100%" stop-color="rgba(14,116,144,0.15)"/>
+    </linearGradient>
+
+    <!-- Tag pill gradient -->
+    <linearGradient id="tagGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="rgba(102,204,255,0.1)"/>
+      <stop offset="100%" stop-color="rgba(102,204,255,0.05)"/>
+    </linearGradient>
+
+    <!-- Wave bottom -->
+    <linearGradient id="waveGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="rgba(102,204,255,0.03)"/>
+      <stop offset="100%" stop-color="rgba(7,31,77,0)"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1600" height="1100" fill="url(#bgGradient)"/>
+
+  <!-- Grid pattern -->
+  <g opacity="0.4">
+    <pattern id="gridPattern" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M 44 0 L 0 0 0 44" fill="none" stroke="rgba(102,204,255,0.05)" stroke-width="1"/>
+    </pattern>
+    <rect width="1600" height="1100" fill="url(#gridPattern)" mask="url(#gridMask)"/>
+    <mask id="gridMask">
+      <radialGradient id="maskGrad" cx="40%" cy="40%" r="60%">
+        <stop offset="0%" stop-color="rgba(0,0,0,0.9)"/>
+        <stop offset="75%" stop-color="transparent"/>
+      </radialGradient>
+      <rect width="1600" height="1100" fill="url(#maskGrad)"/>
+    </mask>
+  </g>
+
+  <!-- Floating particles -->
+  <g fill="#8fd4ff" filter="url(#techGlow)">
+    <circle cx="120" cy="180" r="2.5" opacity="0.7"/>
+    <circle cx="280" cy="120" r="2" opacity="0.5"/>
+    <circle cx="450" cy="200" r="3" opacity="0.8"/>
+    <circle cx="620" cy="90" r="2" opacity="0.6"/>
+    <circle cx="800" cy="160" r="2.5" opacity="0.7"/>
+    <circle cx="980" cy="110" r="2" opacity="0.5"/>
+    <circle cx="1150" cy="190" r="3" opacity="0.8"/>
+    <circle cx="1320" cy="130" r="2.5" opacity="0.6"/>
+    <circle cx="1480" cy="170" r="2" opacity="0.5"/>
+    <circle cx="180" cy="880" r="2.5" opacity="0.6"/>
+    <circle cx="380" cy="950" r="2" opacity="0.5"/>
+    <circle cx="1250" cy="920" r="3" opacity="0.7"/>
+    <circle cx="1420" cy="870" r="2" opacity="0.5"/>
+    <circle cx="80" cy="500" r="2.5" opacity="0.6"/>
+    <circle cx="1520" cy="450" r="2" opacity="0.5"/>
+  </g>
+
+  <!-- Decorative hexagon / tech elements -->
+  <g opacity="0.08" stroke="#66ccff" stroke-width="1" fill="none">
+    <polygon points="100,80 130,97 130,131 100,148 70,131 70,97" transform="scale(0.8)"/>
+    <polygon points="1450,750 1480,767 1480,801 1450,818 1420,801 1420,767"/>
+    <circle cx="1500" cy="150" r="30"/>
+    <circle cx="100" cy="700" r="20"/>
+  </g>
+
+  <!-- Title Section -->
+  <g text-anchor="middle">
+    <!-- Main title -->
+    <text x="800" y="85" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="52" font-weight="700" fill="url(#titleGradient)" letter-spacing="1">
+      Antibody Map 核心功能流程图
+    </text>
+
+    <!-- Subtitle pill -->
+    <rect x="520" y="105" width="560" height="44" rx="22" fill="url(#pillGradient)" stroke="rgba(102,204,255,0.2)" stroke-width="1"/>
+    <text x="800" y="134" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="18" fill="rgba(255,255,255,0.75)" letter-spacing="2">
+      血清抗体流行病学数据可视化与分析平台
+    </text>
+  </g>
+
+  <!-- Decorative tagline (top right) -->
+  <g transform="translate(1380, 60)">
+    <text font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="14" fill="rgba(102,204,255,0.6)" font-style="italic" text-anchor="end">
+      让文献中的
+    </text>
+    <text y="22" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="14" fill="rgba(102,204,255,0.6)" font-style="italic" text-anchor="end">
+      抗体数据被看见
+    </text>
+    <path d="M -20 30 Q 60 20 100 32" fill="none" stroke="rgba(102,204,255,0.3)" stroke-width="1.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- Five Step Cards -->
+  <g id="step-cards">
+    <!-- Card 1: 文献与数据导入 -->
+    <g transform="translate(40, 190)">
+      <!-- Card body -->
+      <rect x="0" y="0" width="280" height="460" rx="20" fill="url(#cardGradient)" stroke="rgba(102,204,255,0.2)" stroke-width="1.5" filter="url(#cardShadow)"/>
+
+      <!-- Number badge -->
+      <circle cx="140" cy="0" r="30" fill="url(#badgeGradient)" filter="url(#techGlow)"/>
+      <text x="140" y="10" font-family="'Inter',sans-serif" font-size="24" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+
+      <!-- Title -->
+      <text x="140" y="65" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="22" font-weight="600" fill="#ffffff" text-anchor="middle">文献与数据导入</text>
+
+      <!-- Icons area - file types -->
+      <g transform="translate(45, 100)">
+        <!-- PDF icon -->
+        <rect x="0" y="10" width="50" height="64" rx="4" fill="#fff" opacity="0.95"/>
+        <rect x="0" y="0" width="50" height="20" rx="4" fill="#dc2626"/>
+        <text x="25" y="14" font-family="'Inter',sans-serif" font-size="9" font-weight="700" fill="#fff" text-anchor="middle">PDF</text>
+        <rect x="8" y="30" width="34" height="3" rx="1.5" fill="#d1d5db"/>
+        <rect x="8" y="40" width="34" height="3" rx="1.5" fill="#e5e7eb"/>
+        <rect x="8" y="50" width="24" height="3" rx="1.5" fill="#e5e7eb"/>
+
+        <!-- CAJ icon -->
+        <rect x="65" y="10" width="50" height="64" rx="4" fill="#fff" opacity="0.95"/>
+        <rect x="65" y="0" width="50" height="20" rx="4" fill="#0e7490"/>
+        <text x="90" y="14" font-family="'Inter',sans-serif" font-size="9" font-weight="700" fill="#fff" text-anchor="middle">CAJ</text>
+        <rect x="73" y="30" width="34" height="3" rx="1.5" fill="#d1d5db"/>
+        <rect x="73" y="40" width="34" height="3" rx="1.5" fill="#e5e7eb"/>
+        <rect x="73" y="50" width="24" height="3" rx="1.5" fill="#e5e7eb"/>
+
+        <!-- DOCX icon -->
+        <rect x="0" y="88" width="50" height="64" rx="4" fill="#fff" opacity="0.95"/>
+        <rect x="0" y="78" width="50" height="20" rx="4" fill="#2b7fd4"/>
+        <text x="25" y="92" font-family="'Inter',sans-serif" font-size="9" font-weight="700" fill="#fff" text-anchor="middle">DOCX</text>
+        <rect x="8" y="108" width="34" height="3" rx="1.5" fill="#d1d5db"/>
+        <rect x="8" y="118" width="34" height="3" rx="1.5" fill="#e5e7eb"/>
+        <rect x="8" y="128" width="24" height="3" rx="1.5" fill="#e5e7eb"/>
+
+        <!-- XLSX icon -->
+        <rect x="65" y="88" width="50" height="64" rx="4" fill="#fff" opacity="0.95"/>
+        <rect x="65" y="78" width="50" height="20" rx="4" fill="#10b981"/>
+        <text x="90" y="92" font-family="'Inter',sans-serif" font-size="9" font-weight="700" fill="#fff" text-anchor="middle">XLSX</text>
+        <rect x="73" y="108" width="34" height="3" rx="1.5" fill="#d1d5db"/>
+        <rect x="73" y="118" width="34" height="3" rx="1.5" fill="#e5e7eb"/>
+        <rect x="73" y="128" width="24" height="3" rx="1.5" fill="#e5e7eb"/>
+
+        <!-- URL link icon -->
+        <g transform="translate(135, 30)">
+          <rect x="0" y="0" width="50" height="70" rx="6" fill="rgba(102,204,255,0.1)" stroke="rgba(102,204,255,0.4)" stroke-width="1.5"/>
+          <path d="M 25 18 L 25 22 M 15 22 L 35 22" stroke="#66ccff" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M 17 32 Q 17 28 21 28 L 29 28 Q 33 28 33 32 L 33 44 Q 33 48 29 48 L 21 48 Q 17 48 17 44 Z" fill="none" stroke="#66ccff" stroke-width="2"/>
+          <path d="M 20 38 Q 20 36 22 36 L 28 36 Q 30 36 30 38" fill="none" stroke="#66ccff" stroke-width="1.5"/>
+          <text x="25" y="62" font-family="'Inter',sans-serif" font-size="9" fill="#66ccff" text-anchor="middle">URL</text>
+        </g>
+      </g>
+
+      <!-- Upload cloud icon -->
+      <g transform="translate(105, 290)" filter="url(#techGlow)">
+        <ellipse cx="35" cy="40" rx="35" ry="18" fill="rgba(102,204,255,0.2)"/>
+        <path d="M 10 35 Q 10 20 25 20 Q 30 10 45 12 Q 58 8 65 20 Q 75 22 75 35 Q 80 42 75 50 L 0 50 Q -5 42 10 35 Z" fill="#66ccff"/>
+        <path d="M 35 48 L 35 32 M 28 39 L 35 32 L 42 39" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </g>
+
+      <!-- Description text -->
+      <text x="140" y="380" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        上传 PDF / CAJ /
+      </text>
+      <text x="140" y="402" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        DOCX / XLSX 等文献，
+      </text>
+      <text x="140" y="424" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        或通过 URL、题录批量
+      </text>
+      <text x="140" y="446" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        导入
+      </text>
+
+      <!-- Bottom tag -->
+      <rect x="20" y="470" width="240" height="36" rx="18" fill="url(#tagGradient)" stroke="rgba(102,204,255,0.15)" stroke-width="1"/>
+      <text x="140" y="493" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="14" fill="#66ccff" text-anchor="middle" font-weight="500">
+        多种格式 · 批量导入
+      </text>
+    </g>
+
+    <!-- Arrow 1 -> 2 -->
+    <g transform="translate(320, 400)">
+      <path d="M 0 0 L 35 0" stroke="url(#arrowGradient)" stroke-width="3" stroke-linecap="round"/>
+      <path d="M 28 -7 L 40 0 L 28 7" fill="none" stroke="#0e7490" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <!-- Card 2: AI自动提取 (teal accent card) -->
+    <g transform="translate(355, 190)">
+      <!-- Card body -->
+      <rect x="0" y="0" width="280" height="500" rx="20" fill="url(#cardAltGradient)" stroke="rgba(14,116,144,0.25)" stroke-width="1.5" filter="url(#cardShadow)"/>
+
+      <!-- Number badge (teal) -->
+      <circle cx="140" cy="0" r="30" fill="#0e7490" filter="url(#techGlow)"/>
+      <circle cx="140" cy="0" r="30" fill="none" stroke="rgba(102,204,255,0.4)" stroke-width="1"/>
+      <text x="140" y="10" font-family="'Inter',sans-serif" font-size="24" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+
+      <!-- Title -->
+      <text x="140" y="65" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="22" font-weight="600" fill="#ffffff" text-anchor="middle">AI 自动提取</text>
+
+      <!-- AI Robot icon -->
+      <g transform="translate(75, 100)">
+        <!-- Robot body -->
+        <rect x="15" y="50" width="100" height="80" rx="20" fill="url(#badgeGradient)" filter="url(#techGlow)"/>
+        <!-- Robot head -->
+        <rect x="25" y="0" width="80" height="60" rx="16" fill="url(#badgeGradient)"/>
+        <!-- Antenna -->
+        <line x1="65" y1="-10" x2="65" y2="0" stroke="#66ccff" stroke-width="3" stroke-linecap="round"/>
+        <circle cx="65" cy="-14" r="5" fill="#fcd34d" filter="url(#techGlow)"/>
+        <!-- Eyes -->
+        <circle cx="48" cy="28" r="8" fill="#0a2e6c"/>
+        <circle cx="82" cy="28" r="8" fill="#0a2e6c"/>
+        <circle cx="50" cy="26" r="3" fill="#66ccff"/>
+        <circle cx="84" cy="26" r="3" fill="#66ccff"/>
+        <!-- Smile -->
+        <path d="M 52 42 Q 65 50 78 42" fill="none" stroke="#0a2e6c" stroke-width="2.5" stroke-linecap="round"/>
+        <!-- AI label -->
+        <text x="65" y="100" font-family="'Inter',sans-serif" font-size="20" font-weight="700" fill="#fff" text-anchor="middle">AI</text>
+        <!-- Chest light -->
+        <circle cx="65" cy="112" r="4" fill="#fcd34d" opacity="0.9"/>
+
+        <!-- Document icon next to robot -->
+        <g transform="translate(115, 30)">
+          <rect x="0" y="0" width="45" height="60" rx="4" fill="#fff" opacity="0.95"/>
+          <rect x="0" y="0" width="45" height="16" rx="4" fill="#0e7490"/>
+          <rect x="7" y="24" width="31" height="2.5" rx="1" fill="#d1d5db"/>
+          <rect x="7" y="32" width="31" height="2.5" rx="1" fill="#e5e7eb"/>
+          <rect x="7" y="40" width="24" height="2.5" rx="1" fill="#e5e7eb"/>
+          <rect x="7" y="48" width="28" height="2.5" rx="1" fill="#e5e7eb"/>
+        </g>
+
+        <!-- Sparkle stars -->
+        <g fill="#fcd34d" filter="url(#techGlow)">
+          <path d="M 140 5 L 143 14 L 152 17 L 143 20 L 140 29 L 137 20 L 128 17 L 137 14 Z" opacity="0.9"/>
+          <path d="M 160 30 L 162 36 L 168 38 L 162 40 L 160 46 L 158 40 L 152 38 L 158 36 Z" opacity="0.7" transform="scale(0.7)"/>
+        </g>
+      </g>
+
+      <!-- Description text -->
+      <text x="140" y="335" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        自动提取血清阳性率、
+      </text>
+      <text x="140" y="357" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        GMC 等结构化数据点
+      </text>
+
+      <!-- Multi-model showcase -->
+      <text x="140" y="375" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="11.5" fill="rgba(102,204,255,0.6)" text-anchor="middle" letter-spacing="1">
+        支持多模型架构
+      </text>
+
+      <!-- Model chips row 1 -->
+      <g transform="translate(18, 383)">
+        <!-- Qwen model -->
+        <g transform="translate(0, 0)">
+          <rect x="0" y="0" width="82" height="26" rx="13" fill="rgba(102,204,255,0.12)" stroke="rgba(102,204,255,0.35)" stroke-width="1"/>
+          <circle cx="13" cy="13" r="8" fill="rgba(102,204,255,0.25)"/>
+          <text x="13" y="16" font-family="'Inter',sans-serif" font-size="7.5" font-weight="700" fill="#66ccff" text-anchor="middle">Q</text>
+          <text x="45" y="16" font-family="'Inter',sans-serif" font-size="9" font-weight="600" fill="#66ccff" text-anchor="start">Qwen3.8</text>
+        </g>
+        <!-- DeepSeek model -->
+        <g transform="translate(92, 0)">
+          <rect x="0" y="0" width="78" height="26" rx="13" fill="rgba(14,116,144,0.2)" stroke="rgba(45,212,191,0.3)" stroke-width="1"/>
+          <circle cx="13" cy="13" r="8" fill="rgba(45,212,191,0.25)"/>
+          <text x="13" y="16" font-family="'Inter',sans-serif" font-size="7" font-weight="700" fill="#2dd4bf" text-anchor="middle">DS</text>
+          <text x="45" y="16" font-family="'Inter',sans-serif" font-size="9" font-weight="600" fill="#2dd4bf" text-anchor="start">DeepSeek</text>
+        </g>
+      </g>
+
+      <!-- Model chips row 2 -->
+      <g transform="translate(18, 416)">
+        <!-- OpenAI model -->
+        <g transform="translate(0, 0)">
+          <rect x="0" y="0" width="76" height="26" rx="13" fill="rgba(16,185,129,0.15)" stroke="rgba(16,185,129,0.3)" stroke-width="1"/>
+          <circle cx="13" cy="13" r="8" fill="rgba(16,185,129,0.25)"/>
+          <text x="13" y="16" font-family="'Inter',sans-serif" font-size="6.5" font-weight="700" fill="#34d399" text-anchor="middle">OAI</text>
+          <text x="43" y="16" font-family="'Inter',sans-serif" font-size="9" font-weight="600" fill="#34d399" text-anchor="start">OpenAI</text>
+        </g>
+        <!-- Muse model -->
+        <g transform="translate(86, 0)">
+          <rect x="0" y="0" width="68" height="26" rx="13" fill="rgba(252,211,77,0.12)" stroke="rgba(252,211,77,0.3)" stroke-width="1"/>
+          <circle cx="13" cy="13" r="8" fill="rgba(252,211,77,0.25)"/>
+          <text x="13" y="16" font-family="'Inter',sans-serif" font-size="7.5" font-weight="700" fill="#fcd34d" text-anchor="middle">M</text>
+          <text x="43" y="16" font-family="'Inter',sans-serif" font-size="9" font-weight="600" fill="#fcd34d" text-anchor="start">Muse</text>
+        </g>
+      </g>
+
+      <!-- Model chips row 3 - 27B + Ollama -->
+      <g transform="translate(18, 449)">
+        <!-- 27B badge -->
+        <g transform="translate(0, 0)">
+          <rect x="0" y="0" width="60" height="26" rx="13" fill="rgba(59,130,246,0.15)" stroke="rgba(59,130,246,0.3)" stroke-width="1"/>
+          <circle cx="13" cy="13" r="8" fill="rgba(59,130,246,0.25)"/>
+          <text x="13" y="16" font-family="'Inter',sans-serif" font-size="6.5" font-weight="700" fill="#60a5fa" text-anchor="middle">27B</text>
+          <text x="39" y="16" font-family="'Inter',sans-serif" font-size="8.5" font-weight="600" fill="#60a5fa" text-anchor="start">大模型</text>
+        </g>
+        <!-- Ollama -->
+        <g transform="translate(70, 0)">
+          <rect x="0" y="0" width="84" height="26" rx="13" fill="rgba(124,58,237,0.12)" stroke="rgba(167,139,250,0.3)" stroke-width="1"/>
+          <circle cx="13" cy="13" r="8" fill="rgba(167,139,250,0.25)"/>
+          <text x="13" y="16" font-family="'Inter',sans-serif" font-size="7.5" font-weight="700" fill="#a78bfa" text-anchor="middle">O</text>
+          <text x="45" y="16" font-family="'Inter',sans-serif" font-size="9" font-weight="600" fill="#a78bfa" text-anchor="start">Ollama</text>
+        </g>
+      </g>
+
+      <!-- Bottom tag -->
+      <rect x="20" y="490" width="240" height="32" rx="16" fill="rgba(14,116,144,0.2)" stroke="rgba(102,204,255,0.2)" stroke-width="1"/>
+      <text x="140" y="510" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13" fill="#2dd4bf" text-anchor="middle" font-weight="500">
+        AI 赋能 · 高效准确
+      </text>
+    </g>
+
+    <!-- Arrow 2 -> 3 -->
+    <g transform="translate(635, 400)">
+      <path d="M 0 0 L 35 0" stroke="url(#arrowGradient)" stroke-width="3" stroke-linecap="round"/>
+      <path d="M 28 -7 L 40 0 L 28 7" fill="none" stroke="#0e7490" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <!-- Card 3: 人工审核修订 -->
+    <g transform="translate(670, 190)">
+      <rect x="0" y="0" width="280" height="460" rx="20" fill="url(#cardGradient)" stroke="rgba(102,204,255,0.2)" stroke-width="1.5" filter="url(#cardShadow)"/>
+
+      <circle cx="140" cy="0" r="30" fill="url(#badgeGradient)" filter="url(#techGlow)"/>
+      <text x="140" y="10" font-family="'Inter',sans-serif" font-size="24" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+
+      <text x="140" y="65" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="22" font-weight="600" fill="#ffffff" text-anchor="middle">人工审核修订</text>
+
+      <!-- Audit checklist + pen icon -->
+      <g transform="translate(60, 105)">
+        <!-- Clipboard / document -->
+        <rect x="0" y="10" width="120" height="150" rx="8" fill="#fff" opacity="0.95"/>
+        <rect x="0" y="0" width="120" height="30" rx="8" fill="#66ccff"/>
+        <rect x="0" y="15" width="120" height="15" fill="#66ccff"/>
+
+        <!-- Check items -->
+        <!-- Check 1 (pass - green) -->
+        <rect x="12" y="48" width="22" height="22" rx="5" fill="#10b981"/>
+        <path d="M 17 59 L 22 64 L 30 53" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <rect x="42" y="54" width="60" height="4" rx="2" fill="#d1d5db"/>
+        <rect x="42" y="64" width="50" height="4" rx="2" fill="#e5e7eb"/>
+
+        <!-- Check 2 (fail - red) -->
+        <rect x="12" y="82" width="22" height="22" rx="5" fill="#ef4444"/>
+        <path d="M 18 90 L 28 100 M 28 90 L 18 100" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+        <rect x="42" y="88" width="60" height="4" rx="2" fill="#d1d5db"/>
+        <rect x="42" y="98" width="45" height="4" rx="2" fill="#e5e7eb"/>
+
+        <!-- Check 3 (pass - green) -->
+        <rect x="12" y="116" width="22" height="22" rx="5" fill="#10b981"/>
+        <path d="M 17 127 L 22 132 L 30 121" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <rect x="42" y="122" width="60" height="4" rx="2" fill="#d1d5db"/>
+        <rect x="42" y="132" width="40" height="4" rx="2" fill="#e5e7eb"/>
+
+        <!-- Pen icon -->
+        <g transform="translate(100, 90)" filter="url(#techGlow)">
+          <rect x="0" y="20" width="35" height="12" rx="3" fill="#66ccff" transform="rotate(-30 17.5 26)"/>
+          <path d="M 8 24 L 2 32 L 12 36 L 18 28 Z" fill="#2b7fd4" transform="rotate(-30 10 28)"/>
+          <circle cx="42" cy="16" r="4" fill="#fcd34d"/>
+        </g>
+      </g>
+
+      <!-- Description -->
+      <text x="140" y="340" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        人工通过 / 驳回 / 编辑 /
+      </text>
+      <text x="140" y="362" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        补充，确保数据可靠
+      </text>
+
+      <!-- Bottom tag -->
+      <rect x="20" y="470" width="240" height="36" rx="18" fill="url(#tagGradient)" stroke="rgba(102,204,255,0.15)" stroke-width="1"/>
+      <text x="140" y="493" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="14" fill="#66ccff" text-anchor="middle" font-weight="500">
+        多重把关 · 专业可靠
+      </text>
+    </g>
+
+    <!-- Arrow 3 -> 4 -->
+    <g transform="translate(950, 400)">
+      <path d="M 0 0 L 35 0" stroke="url(#arrowGradient)" stroke-width="3" stroke-linecap="round"/>
+      <path d="M 28 -7 L 40 0 L 28 7" fill="none" stroke="#0e7490" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <!-- Card 4: 地图可视化与多维分析 (teal accent) -->
+    <g transform="translate(985, 190)">
+      <rect x="0" y="0" width="280" height="460" rx="20" fill="url(#cardAltGradient)" stroke="rgba(14,116,144,0.25)" stroke-width="1.5" filter="url(#cardShadow)"/>
+
+      <circle cx="140" cy="0" r="30" fill="#0e7490" filter="url(#techGlow)"/>
+      <circle cx="140" cy="0" r="30" fill="none" stroke="rgba(102,204,255,0.4)" stroke-width="1"/>
+      <text x="140" y="10" font-family="'Inter',sans-serif" font-size="24" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+
+      <text x="140" y="65" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="22" font-weight="600" fill="#ffffff" text-anchor="middle">地图可视化与多维分析</text>
+
+      <!-- Map + chart icon -->
+      <g transform="translate(15, 95)">
+        <!-- Real China map (from login page, scaled down) -->
+        <g filter="url(#techGlow)" transform="scale(0.19)">
+          <!-- Mainland path -->
+          <path d="M715.3,288.4L704.0,278.8L699.0,281.4L700.9,284.7L689.6,289.2L693.0,294.7L684.8,299.4L685.8,308.1L706.3,308.1L706.2,299.3L715.3,297.3L715.3,288.4ZM722.0,312.0L724.7,308.5L717.9,302.0L722.2,298.8L716.4,295.0L712.5,307.1L706.6,307.7L705.6,324.9L721.4,326.4L726.9,315.4L718.1,312.9L722.0,312.0ZM717.2,287.0L713.3,292.6L722.2,298.8L718.0,301.1L720.0,307.9L733.7,321.8L756.0,300.8L751.0,289.0L739.5,283.6L745.8,273.7L731.4,273.1L730.6,258.8L722.3,247.6L708.4,251.9L706.4,260.4L695.1,264.5L690.9,261.2L680.7,268.6L675.2,268.0L675.2,258.0L670.3,257.3L665.0,269.7L659.3,271.4L658.4,278.0L669.8,293.1L659.8,299.7L670.5,308.5L666.9,318.5L659.6,318.6L654.2,328.8L663.5,346.5L652.7,365.8L657.0,372.7L676.0,379.0L685.2,377.0L681.8,370.1L693.2,353.3L722.1,337.3L725.1,332.5L720.0,327.5L705.6,324.9L706.6,307.7L700.6,311.1L684.5,305.0L684.8,299.4L693.0,294.7L689.6,289.2L703.5,278.9L717.2,287.0ZM713.1,298.4L706.2,299.3L709.1,307.1L713.1,298.4ZM722.3,312.5L718.1,312.9L722.3,312.5ZM602.9,408.0L655.2,387.3L657.0,372.7L652.7,365.8L663.5,346.5L654.2,328.8L659.6,318.6L666.9,318.5L670.5,308.5L659.8,299.7L669.8,293.1L663.5,285.3L654.2,293.0L634.0,294.9L628.0,307.5L615.2,311.8L610.9,330.9L605.0,336.2L609.6,348.8L603.0,359.6L606.6,387.4L600.5,402.4L602.9,408.0ZM389.9,244.1L400.8,266.9L397.2,271.2L408.6,281.6L408.8,288.6L437.2,282.5L438.2,294.4L426.5,302.3L449.1,311.9L451.1,321.1L464.1,326.8L469.0,322.2L466.2,317.8L484.0,318.0L501.5,311.6L503.2,320.2L490.6,331.9L489.7,339.2L503.0,351.9L528.4,344.0L531.8,321.8L542.0,312.5L547.9,319.5L540.0,333.6L564.9,347.0L577.1,346.3L581.5,331.3L599.2,310.9L606.9,314.7L615.1,308.3L614.3,312.5L618.3,311.6L620.9,306.8L628.0,307.5L634.0,294.9L662.3,289.4L659.2,271.7L665.0,269.7L670.3,257.3L675.2,258.0L675.2,268.0L680.7,268.6L690.9,261.2L695.1,264.5L706.4,260.4L708.4,251.9L722.3,247.6L730.6,258.8L727.9,265.3L731.9,273.8L745.1,274.3L748.7,268.6L745.8,256.0L750.0,252.2L759.6,266.1L765.6,257.9L789.3,246.2L815.7,239.9L812.7,216.8L808.5,209.8L794.7,214.9L791.1,201.7L794.2,194.5L784.6,185.0L787.8,179.5L802.3,185.9L803.1,178.5L809.3,175.0L806.5,168.5L816.2,166.2L811.3,160.0L806.5,165.4L797.1,153.0L826.8,129.3L831.1,137.1L835.6,117.7L842.3,116.2L842.9,97.9L855.8,79.1L840.8,66.8L829.1,74.6L806.5,73.8L800.4,58.7L803.0,55.0L793.0,49.7L785.7,53.6L777.1,48.0L786.9,39.6L785.2,35.2L771.3,34.6L758.6,44.5L769.9,49.3L770.8,56.8L759.5,66.4L744.0,92.2L747.6,96.7L722.7,109.6L705.1,103.1L686.0,136.9L692.6,146.3L706.3,142.0L715.9,147.2L722.8,139.7L735.0,140.2L753.5,156.1L756.6,166.6L716.5,168.4L715.7,172.8L703.0,174.1L696.4,186.2L670.2,192.3L655.3,205.1L627.5,199.0L619.6,212.9L628.2,226.1L589.4,250.5L555.9,250.8L516.3,268.3L449.4,246.6L389.9,244.1ZM815.1,304.2L825.0,305.1L834.5,292.6L849.8,284.6L851.5,276.6L843.5,263.5L846.6,257.3L836.8,237.3L830.1,243.1L819.3,230.2L810.1,243.4L789.3,246.2L765.6,257.9L759.6,266.1L755.5,255.7L746.5,254.8L748.4,270.6L739.5,283.6L751.0,289.0L755.7,300.2L766.0,296.0L776.2,282.6L787.4,282.1L794.3,289.6L777.8,308.9L785.9,312.7L776.4,325.5L815.1,304.2ZM912.9,251.7L918.6,239.8L929.8,251.5L925.9,245.4L937.8,241.3L940.6,230.0L926.0,226.9L925.2,219.1L901.3,229.2L893.1,209.7L883.6,218.6L880.0,208.5L871.8,208.7L870.4,197.4L854.8,196.8L849.8,189.7L829.0,191.2L822.6,184.6L821.9,174.2L803.1,178.5L802.3,185.9L786.5,180.0L784.6,185.0L794.2,194.5L791.1,201.7L794.7,214.9L808.5,209.8L813.2,231.8L820.3,230.8L830.1,243.1L836.8,237.3L846.6,257.3L843.8,266.5L851.5,276.6L848.1,282.2L855.5,281.4L869.9,263.7L875.1,270.3L888.9,272.7L892.2,268.5L887.6,260.0L902.5,259.5L912.9,251.7ZM815.6,175.5L821.9,174.2L822.6,184.6L829.0,191.2L849.8,189.7L854.8,196.8L870.4,197.4L871.8,208.7L880.0,208.5L883.6,218.6L893.1,209.7L901.3,229.2L925.2,219.1L926.0,226.9L937.8,231.5L940.5,219.1L934.9,203.0L949.8,193.2L970.0,197.5L982.4,174.9L986.7,153.5L996.4,145.7L994.8,134.9L1001.5,131.2L969.8,137.3L960.6,145.6L936.0,146.1L930.1,137.9L930.3,122.4L923.2,122.6L911.6,111.5L884.1,108.1L879.5,103.5L880.7,95.2L869.7,78.8L863.8,57.3L848.6,38.3L814.8,28.8L785.4,32.1L782.2,33.3L787.4,38.8L777.1,48.0L787.8,54.3L793.0,49.7L803.0,55.0L800.4,58.7L806.5,73.8L829.1,74.6L840.8,66.8L855.8,79.1L842.9,97.9L842.3,116.2L835.6,117.7L831.1,137.1L826.8,129.3L797.1,153.0L806.9,165.6L811.3,160.0L816.2,162.2L816.2,166.2L806.5,168.5L809.3,175.0L815.6,175.5ZM772.6,479.7L778.6,486.5L790.2,482.7L779.7,469.8L772.6,479.7ZM789.9,467.7L776.1,464.8L787.4,471.2L789.9,467.7ZM787.0,473.4L782.4,470.4L787.0,473.4ZM787.1,472.9L792.3,473.9L787.1,472.9ZM714.7,408.8L712.4,411.3L706.3,400.5L700.1,403.0L710.4,417.0L719.8,419.4L721.8,425.8L728.4,425.3L724.9,435.5L729.3,436.2L731.9,445.6L739.5,440.9L744.9,443.5L743.3,450.9L735.0,448.3L737.1,453.4L732.2,458.5L739.7,467.5L738.6,475.4L756.8,476.6L766.2,484.8L780.2,468.9L777.4,463.3L789.9,467.7L781.1,451.4L773.6,447.8L763.1,413.9L745.8,404.0L746.6,397.7L739.7,399.5L731.9,411.7L725.0,406.4L714.7,408.8ZM732.8,534.2L738.7,535.2L740.4,550.8L751.7,546.5L754.3,553.8L762.3,551.3L766.0,557.3L770.6,544.5L777.3,543.5L775.1,538.1L784.3,535.0L784.0,516.6L789.8,518.9L787.6,506.9L792.6,502.0L775.7,489.7L778.6,485.5L774.0,479.7L766.2,484.8L752.0,477.4L745.8,487.8L748.4,492.5L740.0,493.7L737.8,505.2L726.5,515.8L732.8,534.2ZM793.0,500.2L789.6,496.3L793.0,500.2ZM789.4,484.5L792.5,488.1L789.4,484.5ZM703.2,419.7L696.1,425.8L688.0,418.8L682.1,437.4L675.9,437.4L680.7,448.2L687.5,451.9L692.1,448.7L692.2,463.7L683.4,473.0L694.5,479.7L689.7,486.3L695.7,503.6L704.3,498.5L708.1,501.0L705.2,508.7L713.2,501.5L718.4,508.2L730.9,511.5L740.2,501.2L740.0,493.7L748.4,492.5L745.8,487.8L752.2,479.6L747.6,474.0L738.6,475.4L739.7,467.5L731.7,461.4L737.1,453.4L735.0,448.3L743.3,450.9L744.9,443.5L739.5,440.9L731.9,445.6L729.3,436.2L724.9,435.5L728.4,425.3L721.8,425.8L719.8,419.4L699.6,407.2L696.2,410.8L703.2,419.7ZM742.0,600.6L740.6,594.9L743.9,599.7L748.1,595.0L745.5,590.6L755.9,590.9L749.7,587.4L751.7,576.6L757.3,572.9L751.3,567.6L760.3,567.2L758.9,562.7L765.5,557.2L762.3,551.3L754.3,553.8L751.7,546.5L740.4,550.8L738.7,535.2L732.6,534.2L709.7,547.5L712.4,554.2L702.4,563.2L703.2,572.5L691.5,600.8L706.7,606.9L714.6,629.0L728.4,614.6L727.8,608.6L735.7,609.6L736.3,603.1L742.0,600.6ZM728.9,512.1L713.2,501.5L705.2,508.7L708.1,501.0L704.3,498.5L698.1,504.2L685.7,503.2L660.5,518.1L665.4,533.6L654.5,549.1L663.0,568.6L660.7,577.0L665.1,577.0L660.0,585.2L661.6,594.5L673.3,594.5L664.0,606.2L667.8,610.0L684.1,604.1L691.0,608.8L702.4,563.2L712.4,554.2L709.7,547.5L733.5,533.5L726.4,518.0L728.9,512.1ZM699.6,407.2L706.3,400.5L712.4,411.3L725.0,406.4L731.9,411.7L763.0,380.6L761.0,375.9L769.6,377.5L771.7,367.6L798.9,362.0L801.6,351.6L783.4,351.2L769.9,343.3L761.7,346.1L753.9,357.3L747.2,357.7L741.0,349.5L746.6,342.6L740.5,337.2L724.1,334.0L716.8,342.9L706.5,343.0L683.2,367.5L682.8,384.1L695.2,377.8L674.5,399.0L686.3,408.6L699.6,407.2ZM640.6,452.8L657.0,451.8L658.9,463.1L670.7,464.8L674.7,470.8L680.1,467.9L682.3,472.3L691.7,464.5L692.1,448.7L687.5,451.9L680.7,448.2L675.9,437.4L682.3,437.0L687.2,419.4L697.8,425.4L703.9,422.1L702.9,414.7L674.5,399.0L695.2,377.8L683.3,384.4L684.9,376.6L676.0,379.0L657.0,372.7L655.2,387.3L647.2,393.4L630.0,394.4L622.1,403.1L602.9,408.0L617.0,442.3L631.5,452.5L640.6,452.8ZM613.6,436.6L587.7,437.0L599.3,444.7L588.6,454.0L590.1,465.5L600.0,476.8L598.1,484.0L586.4,490.3L581.3,486.9L571.4,490.2L570.5,503.2L575.1,502.9L582.9,516.6L593.2,504.8L605.9,505.7L604.8,498.9L610.5,497.5L633.7,509.7L643.6,504.2L647.5,511.0L654.4,503.0L659.6,519.4L685.7,503.2L695.7,503.6L691.4,477.0L680.1,467.9L674.7,470.8L670.7,464.8L661.1,465.0L657.0,451.8L634.3,453.6L622.2,448.1L613.6,436.6ZM629.4,605.2L632.0,596.4L643.1,602.1L642.8,593.2L660.4,591.2L665.1,577.0L660.7,577.0L663.0,568.6L654.5,549.1L665.4,533.6L663.8,523.4L656.4,518.5L654.4,503.0L646.4,511.2L645.6,504.5L633.7,509.7L626.0,502.0L608.8,497.7L604.8,498.9L605.9,505.7L594.7,504.5L587.6,509.4L583.8,527.3L588.1,548.6L577.3,558.3L588.3,557.3L590.3,564.9L585.2,566.0L585.0,573.4L591.7,582.4L596.3,576.1L600.9,580.8L606.6,573.3L617.4,574.6L616.0,580.9L620.7,582.8L612.4,600.5L617.3,597.0L620.2,606.7L629.4,605.2ZM654.2,655.8L656.1,645.5L659.6,651.1L667.4,648.0L669.5,651.2L672.7,644.2L675.6,649.2L680.5,643.6L686.7,647.0L688.0,642.7L701.7,641.4L712.8,628.8L706.7,606.9L691.8,601.3L691.0,608.8L684.1,604.1L668.2,610.3L664.0,606.2L673.2,597.6L670.0,591.7L661.9,595.0L661.3,591.1L654.6,593.9L648.8,589.8L642.8,593.2L643.1,602.1L632.0,596.4L618.7,642.2L608.9,648.9L607.7,656.5L602.4,656.1L603.1,662.1L592.6,667.7L595.6,695.8L605.5,691.6L599.7,682.2L603.6,676.2L644.0,663.2L646.6,657.5L649.5,662.6L654.2,655.8ZM642.8,665.2L641.5,668.7L642.8,665.2ZM637.6,668.3L639.7,665.7L637.6,668.3ZM603.8,676.6L607.0,675.8L603.8,676.6ZM605.1,678.4L600.0,681.2L605.1,678.4ZM706.0,684.6L707.5,688.2L706.0,684.6ZM588.4,579.4L586.1,585.4L579.0,585.7L581.0,589.8L575.6,587.5L574.6,593.8L570.1,589.3L560.7,597.5L551.7,587.8L532.7,607.3L519.6,600.1L507.9,606.9L511.4,613.6L517.9,611.7L520.3,618.8L533.1,618.2L534.5,628.6L526.4,631.9L525.4,638.7L545.8,643.9L541.3,650.9L543.5,660.8L554.6,668.1L593.3,670.9L595.9,663.1L603.1,662.1L602.4,656.1L607.7,656.5L608.9,648.9L618.7,642.2L619.4,630.6L628.1,620.2L629.4,605.2L620.2,606.7L617.3,597.0L612.4,600.5L620.7,582.8L616.0,580.9L617.4,574.6L606.6,573.3L600.9,580.8L596.3,576.1L593.2,582.7L588.4,579.4ZM598.5,699.5L585.5,701.6L574.9,713.0L574.9,730.3L579.8,733.7L590.1,737.1L604.8,727.0L613.6,704.7L607.9,696.7L598.5,699.5ZM538.3,529.5L539.9,523.3L543.7,531.0L548.6,522.3L554.6,523.0L554.9,516.3L560.5,516.0L562.4,520.8L569.5,518.4L573.9,533.1L576.0,530.0L576.4,535.4L582.0,536.3L585.8,519.2L575.1,502.9L570.5,503.2L571.4,490.2L581.3,486.9L586.4,490.3L598.1,484.0L598.7,471.8L571.0,456.1L573.3,466.7L562.1,484.1L556.2,483.2L549.3,499.2L528.9,491.5L524.8,496.9L528.0,502.2L521.1,509.4L538.3,529.5ZM454.3,556.0L461.8,575.5L469.5,578.6L483.8,572.6L482.0,554.0L498.0,533.7L497.6,526.7L506.9,527.5L504.9,539.0L509.2,543.2L517.1,538.1L521.1,545.9L537.2,543.8L535.6,537.3L526.4,533.5L531.7,524.8L538.4,530.4L535.6,521.9L529.0,521.3L521.5,511.2L528.0,502.2L524.8,496.9L529.4,491.3L549.3,499.1L556.2,483.2L562.1,484.1L573.3,466.7L568.7,460.7L572.7,455.1L564.2,457.1L549.5,445.8L539.1,447.7L533.0,442.7L525.7,446.0L523.7,441.4L519.1,447.6L510.4,446.8L504.7,443.3L506.8,433.5L502.9,428.0L486.5,423.9L482.4,413.7L469.9,420.7L475.5,429.1L471.0,435.5L464.9,437.6L465.2,427.9L461.8,438.0L453.6,435.6L454.2,446.8L445.9,449.5L441.9,444.9L437.3,447.2L433.5,439.1L430.9,445.4L423.7,442.4L409.7,418.3L397.8,417.5L393.1,423.6L399.3,431.8L392.7,442.1L406.8,453.2L417.5,472.5L412.9,476.2L418.7,484.7L422.0,531.5L425.4,536.4L430.9,523.1L440.5,545.5L446.5,541.5L454.3,556.0ZM585.1,530.1L582.0,536.3L577.0,535.7L569.5,518.4L562.4,520.8L555.5,515.9L554.6,523.0L548.6,522.3L543.7,531.0L539.9,523.3L538.4,530.4L531.7,524.8L526.2,529.6L536.6,538.7L536.2,544.7L521.8,545.0L514.1,554.2L498.9,551.1L493.6,558.8L496.2,568.3L506.8,565.8L511.0,572.5L505.0,587.0L513.3,595.3L508.5,605.4L511.8,607.6L519.6,600.1L532.7,607.3L551.7,587.8L561.9,597.7L569.5,589.5L574.6,593.8L575.6,587.5L581.0,589.8L579.0,585.7L586.1,585.4L589.0,558.8L577.3,558.3L588.1,548.6L585.1,530.1ZM521.1,545.9L517.1,538.1L508.2,542.4L506.9,527.5L497.6,526.7L498.0,533.7L482.0,554.0L483.5,573.2L465.1,579.1L446.5,541.5L440.5,545.5L430.9,523.1L425.4,536.4L421.2,515.6L418.9,523.4L413.3,520.8L414.7,535.4L409.5,537.7L406.6,532.8L405.4,540.2L408.3,549.6L414.6,548.9L414.6,582.9L398.7,598.4L395.6,621.5L417.4,617.0L414.0,624.0L417.6,635.8L428.4,641.5L421.9,656.8L435.0,658.9L438.2,670.3L453.6,664.6L455.2,675.3L463.9,677.0L462.5,650.5L472.1,651.6L476.0,644.5L484.4,651.2L489.1,643.8L499.4,650.0L501.9,643.8L511.9,643.5L514.2,636.7L521.4,632.2L524.9,636.3L534.5,628.6L532.2,617.6L520.3,618.8L517.9,611.7L509.3,611.5L513.3,595.3L505.0,587.0L510.7,571.3L506.8,565.8L497.1,569.4L493.6,558.8L498.9,551.1L502.8,554.7L505.9,550.6L519.1,552.7L521.1,545.9ZM269.5,378.1L249.5,370.4L232.7,371.5L214.2,376.6L203.4,387.0L194.4,385.0L180.0,392.8L163.3,392.0L160.8,386.6L152.7,385.6L140.1,395.3L119.9,391.0L109.7,410.4L97.4,411.6L91.3,418.3L101.7,448.1L96.3,453.4L92.6,445.9L87.0,449.4L92.8,472.9L131.2,499.7L135.8,491.6L146.8,493.1L170.9,516.5L179.3,514.3L185.2,525.3L195.6,526.5L195.4,533.1L205.2,532.6L209.7,541.9L212.8,536.7L216.4,541.9L221.0,538.0L229.5,543.7L254.3,538.6L257.8,555.8L270.8,535.2L290.7,542.9L297.8,539.9L299.8,549.2L307.5,552.2L308.2,562.9L335.8,559.5L343.2,548.4L368.3,534.1L388.1,545.1L393.3,542.3L396.3,529.2L405.5,537.2L408.1,532.3L409.5,537.7L413.3,536.7L413.3,520.8L418.9,523.4L421.2,515.6L420.5,501.4L412.9,476.2L417.5,472.5L406.8,453.2L392.9,448.7L392.1,458.5L382.6,459.7L383.5,466.5L374.0,461.9L373.5,467.9L370.7,463.7L363.1,465.0L358.4,452.1L348.6,446.5L330.9,450.5L280.7,434.8L268.3,419.0L272.1,403.8L265.3,395.5L271.0,383.0L264.6,379.7L269.5,378.1ZM602.9,408.0L600.5,402.4L606.6,387.4L603.0,359.6L609.6,348.8L605.0,336.2L611.4,329.6L615.1,308.3L608.1,314.5L599.2,310.9L600.3,314.4L595.2,314.6L581.5,331.3L577.1,346.3L566.7,347.6L559.4,342.2L553.4,347.8L553.4,361.7L575.0,372.3L574.4,393.4L560.4,393.8L562.3,400.0L556.8,401.8L541.0,398.3L537.3,408.4L543.8,412.6L538.9,421.8L541.6,428.5L530.7,428.9L530.9,440.1L524.2,441.8L525.2,445.5L549.5,445.8L552.6,451.9L555.4,449.4L564.2,457.1L572.1,454.6L590.1,465.5L590.8,448.0L600.1,447.3L588.9,435.2L608.1,438.1L613.3,433.4L602.9,408.0ZM540.4,385.2L538.1,395.2L530.6,391.7L522.3,384.1L518.8,360.1L490.4,342.8L490.6,331.9L503.2,320.2L501.5,311.6L484.0,318.0L466.2,317.8L469.0,322.2L464.1,326.8L451.1,321.1L449.1,311.9L426.5,302.3L438.2,294.4L437.2,282.5L408.8,288.6L408.6,281.6L397.2,271.2L400.8,266.9L389.9,244.1L372.6,247.9L371.9,261.3L347.3,269.9L334.8,286.7L321.4,288.5L312.4,318.8L324.4,316.4L325.5,321.5L344.7,324.7L347.8,333.0L366.2,332.0L375.2,337.1L388.0,328.1L386.5,316.0L404.7,324.3L416.4,318.3L437.5,335.4L436.5,329.6L454.9,343.1L467.7,345.5L478.1,358.0L475.0,360.6L484.9,375.7L483.0,383.4L466.4,402.5L471.9,412.9L467.0,417.8L450.8,412.3L447.8,416.4L454.3,426.8L465.9,428.4L465.6,437.9L475.2,431.0L469.9,420.7L482.4,413.7L486.5,423.9L502.9,428.0L506.8,433.5L504.7,443.3L510.4,446.8L517.9,448.1L522.8,441.6L530.0,441.2L530.7,428.9L541.6,428.5L538.9,421.8L543.8,412.6L537.3,408.4L541.0,398.3L552.5,402.4L562.0,400.4L560.4,393.8L573.9,394.1L575.0,372.3L551.3,357.1L542.2,357.3L538.2,369.0L547.7,378.2L546.7,384.8L540.4,385.2ZM481.1,372.7L475.0,360.6L477.4,356.5L467.7,345.5L454.9,343.1L436.5,329.6L437.5,335.4L416.4,318.3L404.7,324.3L386.5,316.0L388.0,328.1L375.2,337.1L366.2,332.0L347.8,333.0L344.7,324.7L325.5,321.5L324.4,316.4L315.3,317.8L276.0,330.4L282.8,333.6L282.6,345.4L291.5,350.5L295.2,359.8L286.0,363.5L291.6,378.2L274.2,374.4L273.2,378.6L264.8,379.1L271.0,383.0L265.3,395.5L272.1,403.8L268.3,419.0L285.6,437.3L330.9,450.5L348.6,446.5L358.4,452.1L363.1,465.0L370.7,463.7L374.3,468.0L375.1,461.4L383.5,466.5L382.6,459.7L392.1,458.5L392.5,449.2L398.9,449.5L392.7,442.1L399.3,431.8L393.1,423.2L400.2,415.8L409.7,418.3L423.7,442.4L430.9,445.4L433.5,439.1L438.8,447.9L454.2,446.8L453.6,435.6L461.8,438.0L464.2,429.3L454.3,426.8L448.7,413.7L463.5,418.4L471.9,412.9L466.4,402.5L474.3,396.4L472.5,391.5L480.8,388.8L484.9,375.7L481.1,372.7ZM552.7,358.0L553.4,347.8L559.0,343.1L540.0,333.6L547.6,321.2L544.4,312.4L531.8,321.8L528.4,344.0L504.6,351.4L518.8,360.1L522.3,384.1L538.1,395.2L539.3,386.2L547.2,383.8L547.3,377.2L538.1,368.5L542.7,365.5L542.0,357.4L552.7,358.0ZM377.2,245.4L360.1,219.4L361.5,214.0L350.4,213.2L330.8,200.6L288.4,196.2L285.1,188.4L291.2,165.6L280.4,147.1L241.5,128.5L239.0,116.5L224.0,117.4L219.0,129.2L203.0,136.2L202.4,158.8L192.8,162.8L161.7,155.7L149.5,187.6L154.2,195.9L141.7,192.3L111.1,201.8L119.4,207.4L125.9,236.4L119.0,239.4L122.6,242.1L117.1,243.4L115.2,259.3L83.3,272.3L77.1,279.5L62.7,279.5L53.8,293.1L43.7,294.4L41.9,286.8L29.7,289.6L30.8,293.2L16.5,298.3L14.0,310.3L8.1,312.3L12.9,327.8L30.0,330.3L34.5,352.9L24.2,358.6L46.3,366.7L51.0,383.5L57.4,381.5L67.7,389.6L82.9,390.1L84.1,405.6L95.2,412.9L109.7,410.4L119.9,391.0L140.1,395.3L152.7,385.6L160.8,386.6L163.3,392.0L180.0,392.8L194.4,385.0L203.4,387.0L212.7,377.4L231.7,371.6L249.5,370.4L287.9,379.7L292.3,377.7L286.0,363.5L294.8,356.7L282.6,345.4L282.8,333.6L276.0,330.4L313.2,319.8L321.4,288.5L334.8,286.7L347.3,269.9L371.9,261.3L370.6,251.3L377.2,245.4ZM765.2,651.2L771.8,662.3L790.5,600.0L783.6,593.8L774.6,599.2L759.7,626.0L758.4,638.5L765.2,651.2ZM661.8,649.9L658.9,656.2L665.6,656.0L667.8,651.3L661.8,649.9ZM798.7,630.8L803.1,608.3L798.7,630.8ZM777.0,683.9L788.8,665.9L777.0,683.9ZM749.6,739.9L758.4,719.2L749.6,739.9ZM743.1,799.2L742.9,778.9L743.1,799.2ZM594.0,795.4L585.4,775.8L594.0,795.4Z"
+                fill="rgba(102,204,255,0.08)" stroke="#66ccff" stroke-width="5" stroke-linejoin="round"/>
+          <!-- Islands -->
+          <path d="M649.5,937.5L650.9,933.9L649.5,937.5ZM659.6,947.9L667.2,947.2L670.0,941.1L659.6,947.9Z"
+                fill="rgba(102,204,255,0.15)" stroke="#66ccff" stroke-width="4" stroke-linejoin="round"/>
+
+          <!-- Data points on map -->
+          <circle cx="220" cy="420" r="10" fill="#66ccff" opacity="0.9"/>
+          <circle cx="400" cy="380" r="12" fill="#2b7fd4" opacity="0.9"/>
+          <circle cx="550" cy="320" r="11" fill="#66ccff" opacity="0.9"/>
+          <circle cx="620" cy="480" r="14" fill="#2b7fd4" opacity="0.9"/>
+          <circle cx="480" cy="550" r="10" fill="#66ccff" opacity="0.9"/>
+          <circle cx="280" cy="520" r="8" fill="#2b7fd4" opacity="0.7"/>
+          <circle cx="720" cy="350" r="8" fill="#66ccff" opacity="0.7"/>
+          <circle cx="350" cy="280" r="7" fill="#66ccff" opacity="0.6"/>
+          <circle cx="580" cy="220" r="8" fill="#2b7fd4" opacity="0.7"/>
+
+          <!-- Gold hotspot (Beijing area) -->
+          <circle cx="580" cy="260" r="10" fill="#fcd34d" filter="url(#strongGlow)"/>
+          <circle cx="580" cy="260" r="18" fill="none" stroke="rgba(252,211,77,0.5)" stroke-width="3"/>
+        </g>
+
+        <!-- Bar chart icon -->
+        <g transform="translate(150, 80)">
+          <rect x="0" y="40" width="55" height="4" rx="2" fill="rgba(102,204,255,0.3)"/>
+          <rect x="5" y="20" width="10" height="20" rx="2" fill="#66ccff"/>
+          <rect x="20" y="10" width="10" height="30" rx="2" fill="#2b7fd4"/>
+          <rect x="35" y="25" width="10" height="15" rx="2" fill="#66ccff"/>
+          <rect x="50" y="5" width="10" height="35" rx="2" fill="#0e7490"/>
+          <!-- Trend line -->
+          <path d="M 5 15 Q 20 5 35 20 Q 45 10 55 2" stroke="#fcd34d" stroke-width="2" fill="none" stroke-linecap="round" filter="url(#techGlow)"/>
+          <circle cx="55" cy="2" r="3" fill="#fcd34d"/>
+        </g>
+      </g>
+
+      <!-- Description -->
+      <text x="140" y="320" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        在交互式中国地图上展示
+      </text>
+      <text x="140" y="342" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        抗体数据
+      </text>
+      <text x="140" y="364" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        支持趋势分析、区域对比、
+      </text>
+      <text x="140" y="386" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        Meta 分析、空间统计、
+      </text>
+      <text x="140" y="408" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        抗原图谱等
+      </text>
+
+      <!-- Feature pills -->
+      <g transform="translate(20, 420)">
+        <rect x="0" y="0" width="240" height="28" rx="14" fill="rgba(102,204,255,0.08)" stroke="rgba(102,204,255,0.15)" stroke-width="1"/>
+        <!-- Knowledge graph icon -->
+        <g transform="translate(12, 5)">
+          <circle cx="6" cy="4" r="3" fill="#66ccff"/>
+          <circle cx="14" cy="8" r="3" fill="#66ccff"/>
+          <circle cx="8" cy="14" r="3" fill="#66ccff"/>
+          <line x1="8" y1="6" x2="12" y2="7" stroke="#66ccff" stroke-width="1" opacity="0.6"/>
+          <line x1="9" y1="7" x2="9" y2="12" stroke="#66ccff" stroke-width="1" opacity="0.6"/>
+        </g>
+        <text x="40" y="19" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="11.5" fill="rgba(255,255,255,0.7)">知识图谱与问答</text>
+      </g>
+      <g transform="translate(20, 454)">
+        <rect x="0" y="0" width="240" height="28" rx="14" fill="rgba(102,204,255,0.08)" stroke="rgba(102,204,255,0.15)" stroke-width="1"/>
+        <!-- Database icon -->
+        <g transform="translate(12, 5)">
+          <ellipse cx="8" cy="4" rx="7" ry="3" fill="#66ccff"/>
+          <path d="M 1 4 L 1 14 Q 1 17 8 17 Q 15 17 15 14 L 15 4" fill="none" stroke="#66ccff" stroke-width="1.5"/>
+          <ellipse cx="8" cy="10" rx="7" ry="2" fill="none" stroke="#66ccff" stroke-width="1" opacity="0.5"/>
+        </g>
+        <text x="40" y="19" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="11.5" fill="rgba(255,255,255,0.7)">数据库备份与还原</text>
+      </g>
+
+      <!-- Bottom tag -->
+      <rect x="20" y="470" width="240" height="36" rx="18" fill="rgba(14,116,144,0.2)" stroke="rgba(102,204,255,0.2)" stroke-width="1"/>
+      <text x="140" y="493" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="14" fill="#2dd4bf" text-anchor="middle" font-weight="500">
+        多维分析 · 洞见全局
+      </text>
+    </g>
+
+    <!-- Arrow 4 -> 5 -->
+    <g transform="translate(1265, 400)">
+      <path d="M 0 0 L 35 0" stroke="url(#arrowGradient)" stroke-width="3" stroke-linecap="round"/>
+      <path d="M 28 -7 L 40 0 L 28 7" fill="none" stroke="#0e7490" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <!-- Card 5: 报告生成与导出 -->
+    <g transform="translate(1300, 190)">
+      <rect x="0" y="0" width="280" height="460" rx="20" fill="url(#cardGradient)" stroke="rgba(102,204,255,0.2)" stroke-width="1.5" filter="url(#cardShadow)"/>
+
+      <circle cx="140" cy="0" r="30" fill="url(#badgeGradient)" filter="url(#techGlow)"/>
+      <text x="140" y="10" font-family="'Inter',sans-serif" font-size="24" font-weight="700" fill="#fff" text-anchor="middle">5</text>
+
+      <text x="140" y="65" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="22" font-weight="600" fill="#ffffff" text-anchor="middle">报告生成与导出</text>
+
+      <!-- Report document + chart icon -->
+      <g transform="translate(80, 105)">
+        <!-- Main report doc -->
+        <rect x="0" y="10" width="100" height="130" rx="6" fill="#fff" opacity="0.95" filter="drop-shadow(0 4px 12px rgba(0,0,0,0.2))"/>
+        <rect x="0" y="0" width="100" height="28" rx="6" fill="#66ccff"/>
+        <rect x="0" y="14" width="100" height="14" fill="#66ccff"/>
+
+        <!-- Chart inside report -->
+        <rect x="15" y="45" width="70" height="45" rx="3" fill="#f8fafc"/>
+        <rect x="22" y="68" width="10" height="18" rx="2" fill="#66ccff"/>
+        <rect x="38" y="58" width="10" height="28" rx="2" fill="#2b7fd4"/>
+        <rect x="54" y="50" width="10" height="36" rx="2" fill="#0e7490"/>
+        <rect x="70" y="62" width="10" height="24" rx="2" fill="#66ccff"/>
+
+        <!-- Text lines -->
+        <rect x="15" y="100" width="70" height="3" rx="1.5" fill="#d1d5db"/>
+        <rect x="15" y="110" width="60" height="3" rx="1.5" fill="#e5e7eb"/>
+        <rect x="15" y="120" width="50" height="3" rx="1.5" fill="#e5e7eb"/>
+      </g>
+
+      <!-- Export format icons -->
+      <g transform="translate(30, 290)">
+        <!-- Word -->
+        <g>
+          <rect x="0" y="0" width="42" height="52" rx="4" fill="#fff" opacity="0.95"/>
+          <rect x="0" y="0" width="42" height="16" rx="4" fill="#2b7fd4"/>
+          <text x="21" y="12" font-family="'Inter',sans-serif" font-size="8" font-weight="700" fill="#fff" text-anchor="middle">W</text>
+          <text x="21" y="38" font-family="'Inter',sans-serif" font-size="7" fill="#6b7280" text-anchor="middle">Word</text>
+        </g>
+        <!-- PDF -->
+        <g transform="translate(55, 0)">
+          <rect x="0" y="0" width="42" height="52" rx="4" fill="#fff" opacity="0.95"/>
+          <rect x="0" y="0" width="42" height="16" rx="4" fill="#dc2626"/>
+          <text x="21" y="12" font-family="'Inter',sans-serif" font-size="7" font-weight="700" fill="#fff" text-anchor="middle">PDF</text>
+          <text x="21" y="38" font-family="'Inter',sans-serif" font-size="7" fill="#6b7280" text-anchor="middle">PDF</text>
+        </g>
+        <!-- Markdown -->
+        <g transform="translate(110, 0)">
+          <rect x="0" y="0" width="42" height="52" rx="4" fill="#fff" opacity="0.95"/>
+          <rect x="0" y="0" width="42" height="16" rx="4" fill="#4b5563"/>
+          <text x="21" y="12" font-family="'Inter',sans-serif" font-size="7" font-weight="700" fill="#fff" text-anchor="middle">M↓</text>
+          <text x="21" y="38" font-family="'Inter',sans-serif" font-size="7" fill="#6b7280" text-anchor="middle">MD</text>
+        </g>
+      </g>
+
+      <!-- Description -->
+      <text x="140" y="390" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        生成抗体分析报告，
+      </text>
+      <text x="140" y="412" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        并支持在线编辑及导出
+      </text>
+      <text x="140" y="434" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13.5" fill="rgba(255,255,255,0.75)" text-anchor="middle">
+        Word / PDF / Markdown
+      </text>
+
+      <!-- Bottom tag -->
+      <rect x="20" y="470" width="240" height="36" rx="18" fill="url(#tagGradient)" stroke="rgba(102,204,255,0.15)" stroke-width="1"/>
+      <text x="140" y="493" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="14" fill="#66ccff" text-anchor="middle" font-weight="500">
+        一键生成 · 灵活导出
+      </text>
+    </g>
+  </g>
+
+  <!-- Platform Value Section -->
+  <g transform="translate(40, 720)">
+    <!-- Section background -->
+    <rect x="0" y="0" width="1520" height="200" rx="24" fill="url(#valueGradient)" stroke="rgba(102,204,255,0.15)" stroke-width="1.5"/>
+
+    <!-- Left: 平台价值 title -->
+    <g transform="translate(40, 50)">
+      <!-- Diamond icon -->
+      <g filter="url(#strongGlow)">
+        <circle cx="30" cy="35" r="32" fill="rgba(102,204,255,0.1)"/>
+        <path d="M 30 10 L 48 35 L 30 60 L 12 35 Z" fill="url(#valueIconBg)"/>
+        <path d="M 30 18 L 42 35 L 30 52 L 18 35 Z" fill="rgba(255,255,255,0.15)"/>
+      </g>
+
+      <text x="80" y="38" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="32" font-weight="700" fill="#ffffff">平台价值</text>
+      <text x="80" y="62" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13" fill="rgba(255,255,255,0.55)">
+        从文献到洞见，让抗体数据创造更大价值
+      </text>
+    </g>
+
+    <!-- Value point 1 -->
+    <g transform="translate(380, 55)">
+      <rect x="0" y="0" width="340" height="90" rx="45" fill="rgba(255,255,255,0.04)" stroke="rgba(102,204,255,0.15)" stroke-width="1"/>
+      <!-- Icon circle -->
+      <circle cx="45" cy="45" r="30" fill="rgba(102,204,255,0.15)" stroke="rgba(102,204,255,0.3)" stroke-width="1.5"/>
+      <!-- Document icon -->
+      <g transform="translate(33, 33)">
+        <rect x="0" y="0" width="24" height="24" rx="3" fill="none" stroke="#66ccff" stroke-width="2"/>
+        <rect x="5" y="6" width="14" height="2" rx="1" fill="#66ccff"/>
+        <rect x="5" y="11" width="14" height="2" rx="1" fill="#66ccff" opacity="0.6"/>
+        <rect x="5" y="16" width="10" height="2" rx="1" fill="#66ccff" opacity="0.4"/>
+      </g>
+      <text x="90" y="40" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="16" font-weight="600" fill="#ffffff">把文献数据变成</text>
+      <text x="90" y="62" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="16" font-weight="600" fill="#66ccff">结构化数据</text>
+    </g>
+
+    <!-- Value point 2 -->
+    <g transform="translate(750, 55)">
+      <rect x="0" y="0" width="340" height="90" rx="45" fill="rgba(255,255,255,0.04)" stroke="rgba(102,204,255,0.15)" stroke-width="1"/>
+      <circle cx="45" cy="45" r="30" fill="rgba(14,116,144,0.2)" stroke="rgba(102,204,255,0.3)" stroke-width="1.5"/>
+      <!-- Map pin icon -->
+      <g transform="translate(33, 30)">
+        <path d="M 12 0 C 5 0 0 6 0 12 C 0 20 12 28 12 28 C 12 28 24 20 24 12 C 24 6 19 0 12 0 Z" fill="#10b981"/>
+        <circle cx="12" cy="12" r="5" fill="#fff" opacity="0.9"/>
+      </g>
+      <text x="90" y="40" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="16" font-weight="600" fill="#ffffff">把数据变成地图和</text>
+      <text x="90" y="62" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="16" font-weight="600" fill="#2dd4bf">分析结果</text>
+    </g>
+
+    <!-- Value point 3 -->
+    <g transform="translate(1120, 55)">
+      <rect x="0" y="0" width="340" height="90" rx="45" fill="rgba(255,255,255,0.04)" stroke="rgba(102,204,255,0.15)" stroke-width="1"/>
+      <circle cx="45" cy="45" r="30" fill="rgba(102,204,255,0.15)" stroke="rgba(102,204,255,0.3)" stroke-width="1.5"/>
+      <!-- Chart bars icon -->
+      <g transform="translate(33, 32)">
+        <rect x="0" y="12" width="5" height="12" rx="1.5" fill="#66ccff"/>
+        <rect x="8" y="6" width="5" height="18" rx="1.5" fill="#2b7fd4"/>
+        <rect x="16" y="0" width="5" height="24" rx="1.5" fill="#0e7490"/>
+      </g>
+      <text x="90" y="40" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="16" font-weight="600" fill="#ffffff">帮助更快完成</text>
+      <text x="90" y="62" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="16" font-weight="600" fill="#66ccff">研判与报告</text>
+    </g>
+  </g>
+
+  <!-- Bottom wave decoration -->
+  <g opacity="0.4">
+    <path d="M 0 1000 Q 200 960 400 990 T 800 985 T 1200 995 T 1600 980 L 1600 1100 L 0 1100 Z" fill="url(#waveGradient)"/>
+  </g>
+
+  <!-- Bottom tagline (right) -->
+  <g transform="translate(1560, 1030)">
+    <text font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13" fill="rgba(102,204,255,0.5)" font-style="italic" text-anchor="end">
+      更开放的数据，
+    </text>
+    <text y="20" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="13" fill="rgba(102,204,255,0.5)" font-style="italic" text-anchor="end">
+      更健康的未来
+    </text>
+    <path d="M -60 28 Q 10 18 60 32" fill="none" stroke="rgba(102,204,255,0.25)" stroke-width="1.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- Footer -->
+  <g transform="translate(40, 1065)">
+    <text font-family="'Inter',sans-serif" font-size="11" fill="rgba(255,255,255,0.35)" font-weight="600" letter-spacing="1">Antibody Map</text>
+    <text x="110" font-family="'Inter','PingFang SC','Microsoft YaHei',sans-serif" font-size="11" fill="rgba(255,255,255,0.25)">| 用数据连接人类健康</text>
+  </g>
+</svg>

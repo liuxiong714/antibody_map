@@ -392,6 +392,19 @@ export interface ImmuneBarrierData {
     hit_from_reference_r0_percent?: number | null;
     hit_target_used_percent?: number | null;
     hit_target_source?: string;
+    // 三族阈值（theoretical / coverage_target / administrative）—— 不再被单一优先级链掩盖
+    hit_thresholds_by_family?: {
+      theoretical: {
+        mle_foi: { value: number | null; source: 'mle_foi'; ci: [number, number] | null; citation: string | null; year: number | null };
+        literature_r0: { value: number | null; source: 'literature_r0'; ci: null; citation: string | null; year: number | null };
+      };
+      coverage_target: {
+        nip: { value: number | null; source: 'nip'; citation: string | null; year: number | null };
+      };
+      administrative: {
+        who: { value: number | null; source: 'who'; citation: string | null; year: number | null };
+      };
+    };
     // 催化模型族 MLE 拟合 + 模型比较（新）
     models?: CatalyticModel[];
     recommended_model?: string | null;

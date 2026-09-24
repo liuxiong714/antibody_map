@@ -31,6 +31,7 @@ from app.services.analysis._common import (
     _barrier_status_with_message,
     _build_base_query,
     _build_catalytic_records,
+    _build_hit_threshold_families,
     _calc_foi_from_sp,
     _calc_hit_from_r0,
     _calc_r0_from_foi,
@@ -54,19 +55,23 @@ async def get_simulation(
     province: str | None = None,
     assumed_coverage: float = 90.0,
     booster_rate: float = 0.0,
+    ve: float = 1.0,
 ) -> dict:
     """免疫屏障模拟（复用 FOI 催化模型反推）。
 
     1. 用观测血清阳性率经催化模型反推平均 FOI → 估计 R0 → HIT；
-    2. 给定假设接种覆盖（assumed_coverage）与加强针比例（booster_rate），
-       模拟有效免疫比例 effective = cov + (1-cov)·booster；
-    3. 对比 HIT 判定屏障状态，并反推「需达到的覆盖/加强组合」。
+    2. 给定假设接种覆盖（assumed_coverage）、加强针比例（booster_rate）
+       与疫苗保护效率（ve，默认 1.0），模拟有效免疫比例：
+         protective = cov·ve                          # 疫苗实际贡献的保护比例 (%)
+         effective  = protective + (1 − protective/100) × booster  # 加强针作用于未被基础覆盖者
+    3. 对比 HIT 判定屏障状态，并反推「需达到的基础覆盖」。
     """
     empty = {
         "disease": disease,
         "province": province,
         "assumed_coverage_percent": assumed_coverage,
         "booster_rate_percent": booster_rate,
+        "ve_used": ve,
         "current": None,
         "simulated": None,
         "required_coverage_to_reach_hit": None,
@@ -132,39 +137,48 @@ async def get_simulation(
         "status": current_status,
     }
 
-    # 模拟有效免疫比例（加强针只作用于尚未免疫者）
+    # 模拟有效免疫比例（基础接种仅 ve 部分真正提供保护；加强针作用于未被保护者）
     cov = max(0.0, min(100.0, float(assumed_coverage)))
     boost = max(0.0, min(100.0, float(booster_rate)))
-    effective = cov + (1.0 - cov / 100.0) * boost  # 单位 %
+    v_clamped = max(0.0, min(1.0, float(ve)))         # VE 钳位 [0, 1]
+    protective = cov * v_clamped                       # 基础接种贡献的保护比例 (%)
+    effective = protective + (1.0 - protective / 100.0) * boost   # 单位 %
     sim_status = _status(effective, hit_target)
-    gain = effective - cov
+    gain = effective - protective                      # 加强针带来的额外保护
     simulated = {
         "effective_coverage_percent": round(effective, 2),
+        "protective_coverage_percent": round(protective, 2),
+        "ve_used": v_clamped,
         "hit_percent": hit_target,
         "gap_to_hit_percent": round(hit_target - effective, 2) if hit_target is not None else None,
         "gain_from_booster_percent": round(gain, 2),
         "status": sim_status,
     }
 
-    # 反推：给定 booster 下达到 HIT 所需的基础覆盖
+    # 反推：给定 booster + ve 下达到 HIT 所需的基础覆盖
+    # h = cv + (1−cv)·b  →  c = (h − b) / (v·(1 − b))
     required = None
     if hit_target is not None:
         hit_ratio = hit_target / 100.0
         b_ratio = boost / 100.0
-        if b_ratio >= 1.0:
+        if v_clamped <= 0:
+            required = None  # VE=0，任何覆盖都没用
+        elif b_ratio >= 1.0:
             required = 0.0 if hit_ratio <= 1.0 else None
         elif hit_ratio <= b_ratio:
             required = 0.0
         else:
-            required = round((hit_ratio - b_ratio) / (1.0 - b_ratio) * 100.0, 2)
+            required = round((hit_ratio - b_ratio) / (v_clamped * (1.0 - b_ratio)) * 100.0, 2)
             if required > 100.0:
-                required = None  # 仅靠基础接种无法达标
+                required = None  # 仅靠基础接种无法达标（即使 100% 也不够）
 
     notes = []
     if hit_target is None:
         notes.append("无法估计 HIT（无 FOI 数据且无 GOAL/WHO/文献阈值），屏障状态为 undetermined")
+    if v_clamped >= 0.999:
+        notes.append("VE=1.0 为兼容旧行为的默认值；实际各病种疫苗保护效率不同，建议按病种传入更合理的 ve（如 0.7~0.9）")
     if current_status != "reached" and sim_status == "reached":
-        notes.append(f"在当前假设（覆盖 {cov}% + 加强 {boost}%）下模拟可达群体免疫（≥{hit_target}%）")
+        notes.append(f"在当前假设（覆盖 {cov}% × VE {v_clamped:.2f} + 加强 {boost}%）下模拟可达群体免疫（≥{hit_target}%）")
     if (
         hit_from_foi is not None and r0_ref and estimated_r0 is not None
         and (estimated_r0 < r0_ref[1] * 0.3 or estimated_r0 > r0_ref[2] * 2)
@@ -176,12 +190,287 @@ async def get_simulation(
         "province": province,
         "assumed_coverage_percent": cov,
         "booster_rate_percent": boost,
+        "ve_used": v_clamped,
         "current": current,
         "simulated": simulated,
         "required_coverage_to_reach_hit": required,
         "notes": notes,
     }
 
+
+# 七普 2020 全国总人口（官方，单位：人）——用于补种人数分母粗估
+# 注：省级/分年龄总人口不在当前数据集，补种人数为全国平均近似
+_POP_2020_NATIONAL = 1_411_780_000.0
+
+
+async def get_barrier_scenarios(
+    db: AsyncSession,
+    disease: str | None = None,
+    province: str | None = None,
+    scenarios: list[dict] | None = None,
+) -> dict:
+    """多情景免疫屏障模拟：对每个 {coverage, booster, ve} 计算 effective、R_eff、是否达 HIT。
+
+    VE 口径（复用 get_simulation）：
+        protective = coverage × ve                (%)
+        effective  = protective + (1 − protective/100) × booster
+    R_eff 口径（复用 core.effective_immunity.r_eff）：
+        构造 NGM 残差矩阵 K = NGM · diag(1 − p)，p 为各年龄组有效保护比例，
+        R_eff = r0 × ρ(K) / ρ(NGM)
+
+    补种人数：
+        gap = max(0, required_coverage_for_hit − scenario.coverage) (%)
+        补种人数 = gap / 100 × POP_2020_NATIONAL
+        注：分母为七普全国总人口（省级/年龄分层人口暂无数据），属全国平均粗估。
+    """
+    empty = {
+        "disease": disease,
+        "province": province,
+        "scenarios": [],
+        "hit_target_percent": None,
+        "hit_target_source": "none",
+        "r0_estimated_from_foi": None,
+        "r0_reference": None,
+        "population_used": _POP_2020_NATIONAL,
+        "population_note": (
+            "补种人数分母基于七普 2020 全国总人口 14.12 亿的全国平均粗估；"
+            "省级/年龄分层人口暂无数据，结果仅供参考"
+        ),
+        "notes": [],
+    }
+
+    # 默认情景（前端不传时的内置三条：基线 / 高覆盖 / 加强）
+    if not scenarios:
+        scenarios = [
+            {"name": "baseline",  "coverage": 80.0, "booster": 0.0,  "ve": 1.0},
+            {"name": "high_cov",  "coverage": 95.0, "booster": 0.0,  "ve": 1.0},
+            {"name": "booster",   "coverage": 80.0, "booster": 50.0, "ve": 1.0},
+        ]
+
+    # 情景清洗（缺失字段钳位）
+    cleaned: list[dict] = []
+    for idx, s in enumerate(scenarios):
+        name = s.get("name") or f"scenario_{idx + 1}"
+        cov = max(0.0, min(100.0, float(s.get("coverage", 0.0))))
+        boost = max(0.0, min(100.0, float(s.get("booster", 0.0))))
+        ve = max(0.0, min(1.0, float(s.get("ve", 1.0))))
+        cleaned.append({"name": name, "coverage": cov, "booster": boost, "ve": ve})
+
+    # --- 查血清流行数据 → FOI 反推 → R0 → HIT（复用 get_simulation 口径）---
+    query = _build_base_query(
+        disease, province, None, None, None, None,
+        data_type="seroprevalence", review_status="approved", include_subgroups=False,
+    )
+    result = await db.execute(query)
+    rows = result.scalars().all()
+    dis_key = normalize_disease(disease or "") or (disease or "")
+
+    foi_avg: float | None = None
+    estimated_r0: float | None = None
+    hit_from_foi: float | None = None
+    r0_ref = R0_REFERENCE.get(dis_key)
+    reference_hit = _calc_hit_from_r0(r0_ref[0]) if r0_ref else None
+    goal_threshold = await get_goal_threshold(db, dis_key)
+    who_threshold = WHO_THRESHOLDS.get(dis_key)
+    hit_target: float | None
+    hit_source: str
+
+    if rows:
+        foi_tuples = []
+        for r in rows:
+            if r.value is None:
+                continue
+            mid = _midpoint_age(r.age_min, r.age_max)
+            if mid is None:
+                continue
+            foi = _calc_foi_from_sp(float(r.value), mid)
+            if foi is not None:
+                foi_tuples.append((foi, float(r.sample_size or 1)))
+        if foi_tuples:
+            w = sum(wt for _, wt in foi_tuples)
+            foi_avg = round(sum(v * wt for v, wt in foi_tuples) / w, 6) if w > 0 else None
+        estimated_r0 = _calc_r0_from_foi(foi_avg) if foi_avg is not None else None
+        hit_from_foi = _calc_hit_from_r0(estimated_r0) if estimated_r0 is not None else None
+        hit_target, hit_source = _resolve_hit_target(
+            hit_from_foi, who_threshold, reference_hit, dis_key,
+        )
+    else:
+        hit_target = goal_threshold or who_threshold or reference_hit
+        # _resolve_hit_target 没拿到 rows 给的 foi_hit → 简化处理
+        if hit_target is goal_threshold:
+            hit_source = "goal"
+        elif hit_target is who_threshold:
+            hit_source = "who"
+        elif hit_target is reference_hit:
+            hit_source = "literature_r0"
+        else:
+            hit_source = "none"
+
+    # --- 加载接触矩阵（用于 r_eff 计算）---
+    C = None
+    age_groups_contact: list[str] = []
+    try:
+        from app.core.effective_immunity import (
+            AGE_GROUPS_CONTACT,
+            load_contact_matrix,
+            r_eff,
+        )
+        C = load_contact_matrix()
+        age_groups_contact = list(AGE_GROUPS_CONTACT)
+    except Exception as _exc:  # noqa: BLE001
+        logger.info(f"[BarrierScenarios] 未加载接触矩阵: {_exc.__class__.__name__}: {_exc}")
+
+    scenario_results: list[dict] = []
+    any_r_eff_computed = False
+    for sc in cleaned:
+        cov = sc["coverage"]
+        boost = sc["booster"]
+        ve = sc["ve"]
+
+        # VE 口径（与 get_simulation 完全一致）
+        protective = cov * ve                                      # %
+        effective_percent = protective + (1.0 - protective / 100.0) * boost  # %
+        effective_ratio = effective_percent / 100.0                 # 0-1
+
+        # --- required_coverage 反推（复用 get_simulation 公式）---
+        required_cov: float | None = None
+        if hit_target is not None:
+            h = hit_target / 100.0
+            b = boost / 100.0
+            if ve <= 0:
+                required_cov = None
+            elif b >= 1.0:
+                required_cov = 0.0 if h <= 1.0 else None
+            elif h <= b:
+                required_cov = 0.0
+            else:
+                required_cov = round((h - b) / (ve * (1.0 - b)) * 100.0, 2)
+                if required_cov > 100.0:
+                    required_cov = None
+
+        # --- 补种人数 ---
+        vaccinate_gap = None
+        vaccinate_people = None
+        if required_cov is not None:
+            vaccinate_gap = max(0.0, required_cov - cov)
+            vaccinate_people = round(vaccinate_gap / 100.0 * _POP_2020_NATIONAL)
+
+        # --- R_eff（用接触矩阵残差 NGM）---
+        r_eff_val: float | None = None
+        met: bool | None = None
+        r_eff_details: dict = {}
+        if C is not None and estimated_r0 is not None and age_groups_contact:
+            # 均匀免疫近似：scenario 未指定年龄异质 → 所有年龄组 p = effective_ratio
+            # （实际传播中儿童/成人的暴露率、易感人群结构不同，这里做同质性假设）
+            pos_dict = {g: effective_ratio * 100.0 for g in age_groups_contact}
+            res = r_eff(pos_dict, C, r0=float(estimated_r0))
+            r_eff_val = res["r_eff"]
+            met = res["herd_immunity_met"]
+            r_eff_details = {
+                "r_eff": r_eff_val,
+                "herd_immunity_met": met,
+                "rho_ngm": res.get("rho_ngm"),
+                "rho_k": res.get("rho_k"),
+                "assumption": (
+                    "各年龄组有效免疫比例取均匀值（scenario 未指定年龄异质，"
+                    "假设基础接种与加强针在各年龄组等比例覆盖）"
+                ),
+            }
+            any_r_eff_computed = True
+        elif rows and estimated_r0 is not None:
+            # 没有接触矩阵 → 用均匀免疫解析解 R_eff = r0 × (1 − p)
+            r_eff_val = round(float(estimated_r0) * (1.0 - effective_ratio), 4)
+            met = r_eff_val < 1.0
+            r_eff_details = {
+                "r_eff": r_eff_val,
+                "herd_immunity_met": met,
+                "assumption": (
+                    "无接触矩阵 → 用均匀免疫解析解 R_eff = R0 × (1 − p)"
+                ),
+            }
+            any_r_eff_computed = True
+
+        scenario_results.append({
+            "name": sc["name"],
+            "coverage_percent": cov,
+            "booster_percent": boost,
+            "ve_used": ve,
+            "protective_coverage_percent": round(protective, 2),
+            "effective_barrier_percent": round(effective_percent, 2),
+            "effective_barrier_ratio": round(effective_ratio, 6),
+            "r_eff": r_eff_val,
+            "herd_immunity_met": met,
+            "hit_target_percent": hit_target,
+            "hit_gap_percent": (
+                round(hit_target - effective_percent, 2)
+                if hit_target is not None else None
+            ),
+            "status": _scenario_status(effective_percent, hit_target),
+            "required_coverage_to_reach_hit": required_cov,
+            "vaccinate_gap_percent": round(vaccinate_gap, 2) if vaccinate_gap is not None else None,
+            "vaccinate_people": vaccinate_people,
+            **r_eff_details,
+        })
+
+    # --- 返回结构 ---
+    return {
+        "disease": dis_key,
+        "province": province,
+        "hit_target_percent": hit_target,
+        "hit_target_source": hit_source,
+        "r0_estimated_from_foi": estimated_r0,
+        "r0_reference": {
+            "typical": r0_ref[0] if r0_ref else None,
+            "range_low": r0_ref[1] if r0_ref else None,
+            "range_high": r0_ref[2] if r0_ref else None,
+        },
+        "foi_avg_per_year": foi_avg,
+        "population_used": _POP_2020_NATIONAL,
+        "population_note": (
+            "补种人数分母基于七普 2020 全国总人口 14.12 亿的全国平均粗估；"
+            "省级/年龄分层人口暂无数据，结果仅供参考"
+        ),
+        "r_eff_contact_matrix_used": C is not None,
+        "scenarios": scenario_results,
+        "notes": _build_scenarios_notes(
+            hit_target=hit_target, hit_source=hit_source,
+            any_r_eff=any_r_eff_computed, rows_count=len(rows) if rows else 0,
+        ),
+    }
+
+
+def _scenario_status(effective_percent: float | None, hit_target: float | None) -> str:
+    if effective_percent is None or hit_target is None:
+        return "undetermined"
+    if effective_percent >= hit_target:
+        return "reached"
+    if effective_percent >= hit_target - 10:
+        return "near"
+    return "not_reached"
+
+
+def _build_scenarios_notes(
+    hit_target: float | None,
+    hit_source: str,
+    any_r_eff: bool,
+    rows_count: int,
+) -> list[str]:
+    notes: list[str] = []
+    if rows_count == 0:
+        notes.append("无已审核通过的血清阳性率数据，R0 无法从 FOI 反推，补种人数与 r_eff 基于文献 R0")
+    if hit_target is None:
+        notes.append("无法确定 HIT 阈值（无 FOI 反推结果、无 GOAL/WHO/文献 R0）")
+    else:
+        src_map = {"mle_foi": "FOI 反推", "who": "WHO 官方阈值",
+                   "literature_r0": "文献 R0", "goal": "目标阈值", "none": "无"}
+        notes.append(f"HIT 阈值来源：{src_map.get(hit_source, hit_source)}")
+    if not any_r_eff:
+        notes.append("R_eff 未能计算（缺接触矩阵或 R0 估计），补种人数基于 HIT 反推覆盖率直接换算")
+    notes.append(
+        "r_eff 按均匀免疫假设计算（scenario 未区分年龄组免疫异质性）；"
+        "实际年龄异质免疫下 r_eff 可能不同"
+    )
+    return notes
 
 
 async def get_immunity_projection(
@@ -323,15 +612,70 @@ async def get_immunity_projection(
             "notes": ["最近年份无有效年龄-阳性率数据，无法投影屏障轨迹"],
         }
 
+    # --- 可选：加载接触矩阵，用 Perron-Frobenius 主导特征向量加权基线 ---
+    # 口径与平台"有效免疫屏障"评估保持一致；加载失败或命中组太少则回退简单平均。
+    weights_to_pass: dict[str, float] | None = None
+    age_seropositivity_for_projection = age_seropositivity
+    try:
+        from app.core.effective_immunity import (
+            AGE_GROUPS_CONTACT,
+            load_contact_matrix,
+            map_age_to_group,
+        )
+        _C = load_contact_matrix()
+        # 重新按接触矩阵年龄组分箱（样本量加权）
+        _cbuckets: dict[str, dict] = {}
+        for r in latest_rows:
+            _c_label = map_age_to_group(r.age_min, r.age_max)
+            if _c_label is None:
+                continue
+            _b = _cbuckets.setdefault(_c_label, {"sp_sum": 0.0, "ss": 0})
+            _ss = float(r.sample_size or 0)
+            if _ss > 0:
+                _b["sp_sum"] += float(r.value) * _ss
+                _b["ss"] += _ss
+        _age_sp_contact: dict[str, float] = {}
+        for _k, _b in _cbuckets.items():
+            if _b["ss"] > 0:
+                _age_sp_contact[_k] = round(_b["sp_sum"] / _b["ss"], 4)
+        # 至少命中 3/5 个接触矩阵年龄组才靠谱
+        if len(_age_sp_contact) >= 3:
+            import numpy as _np  # 局部导入避免顶层污染
+            _eigvals, _eigvecs = _np.linalg.eig(_C)
+            _idx = int(_np.argmax(_np.real(_eigvals)))
+            _w_raw = _np.abs(_np.real(_eigvecs[:, _idx]))
+            _w_sum = float(_w_raw.sum())
+            _w_norm = (
+                _np.ones(len(AGE_GROUPS_CONTACT)) / len(AGE_GROUPS_CONTACT)
+                if _w_sum <= 0
+                else _w_raw / _w_sum
+            )
+            weights_to_pass = {
+                AGE_GROUPS_CONTACT[i]: float(_w_norm[i])
+                for i in range(len(AGE_GROUPS_CONTACT))
+            }
+            age_seropositivity_for_projection = _age_sp_contact
+            notes.append("基线屏障使用接触矩阵 Perron-Frobenius 主导特征向量加权"
+                         "（口径与平台有效免疫屏障一致）")
+        else:
+            logger.info(
+                f"[ImmunityProjection] 接触矩阵分箱命中不足 3 组"
+                f"（{len(_age_sp_contact)}），回退简单平均"
+            )
+    except Exception as _exc:  # noqa: BLE001 — 故意吞掉加载失败（非关键路径）
+        logger.info(
+            f"[ImmunityProjection] 未启用接触加权基线"
+            f"（{_exc.__class__.__name__}: {_exc}）"
+        )
+
     trajectory = project_barrier(
-        age_seropositivity,
+        age_seropositivity_for_projection,
         waning_rate=_waning_rate,
         years=projection_years,
         birth_cohort_size=birth_cohort_size,
+        weights=weights_to_pass,
     )
     baseline_barrier = trajectory[0] if trajectory else None
-
-    # 首次跌破阈值的年份（trajectory[0] 为基线年，从未来年 i>=1 开始判定）
     threshold = max(0.0, min(1.0, float(barrier_threshold)))
     below_offset: int | None = None
     for i, val in enumerate(trajectory[1:], start=1):
@@ -789,6 +1133,11 @@ async def get_immune_barrier_assessment(
         f"provinces={len(province_matrix)}, comparison_blocks={len(comparison_blocks) if comparison_blocks else 0}"
     )
 
+    hit_families = _build_hit_threshold_families(
+        dis_key, foi_hit_percent, literature_hit, who_threshold,
+        province=province,
+    )
+
     return {
         "disease": dis_key or disease,
         "who_threshold": who_threshold,
@@ -806,6 +1155,9 @@ async def get_immune_barrier_assessment(
             "hit_from_reference_r0_percent": literature_hit,
             "hit_target_used_percent": hit_target,
             "hit_target_source": hit_source,
+            # 三族阈值（theoretical / coverage_target / administrative）
+            # 每条含 citation / year / source，缺省回退 None，整族始终存在
+            "hit_thresholds_by_family": hit_families,
             # 新增：催化模型族 MLE 拟合 + 模型比较
             "models": models_out,
             "recommended_model": recommended_model,
@@ -1280,6 +1632,12 @@ async def get_foi_analysis(
 
         logger.info(f"[FOI] [{dis_key}] 疾病分析完成: 年龄组数={len(foi_by_age)}, 省份数={len(prov_map)}")
 
+        # 三族阈值（与 get_immune_barrier_assessment 口径一致）
+        hit_families = _build_hit_threshold_families(
+            dis_key, foi_hit_percent, literature_hit, who_threshold,
+            province=province,
+        )
+
         summary_block = {
             "disease": dis_key,
             "total_data_points": len(dis_rows),
@@ -1296,6 +1654,9 @@ async def get_foi_analysis(
             "who_threshold_percent": who_threshold,
             "hit_target_used_percent": hit_target,
             "hit_target_source": hit_source,
+            # 三族阈值（theoretical / coverage_target / administrative）
+            # 每条含 citation / year / source，缺省回退 None，整族始终存在
+            "hit_thresholds_by_family": hit_families,
             "herd_immunity_status": herd_status,
             "life_expectancy_used": life_expectancy,
             "assumptions": assumptions or None,
