@@ -11,7 +11,7 @@
 ## 核心功能
 
 - **文献管理** — PDF/CAJ/DOCX/EPUB/PPTX/XLSX/TXT/HTML 上传，URL 导入，RIS/EndNote/PubMed/WoS 题录批量导入，PDF 在线预览，重复检测与合并，回收站
-- **AI 数据提取** — LLM 自动提取血清阳性率/GMC 等数据点，支持 DeepSeek/OpenAI/Qwen/本地 Ollama，长文档分块并行，精确字符级溯源，强 Schema 校验，历次提取历史可追溯（模型/耗时/Token/费用）；**追加模式安全**：强制 append 禁用 replace，防止误删既有数据点
+- **AI 数据提取** — LLM 自动提取血清阳性率/GMC 等数据点，支持 DeepSeek/OpenAI/Qwen/本地 Ollama，长文档分块并行，精确字符级溯源，强 Schema 校验，历次提取历史可追溯（模型/耗时/Token/费用）；**追加模式安全**：强制 append 禁用 replace，防止误删既有数据点；**enable_thinking** 开关贯通 API→Ollama extra_body，gemma4:26b 提供无思维链 Modelfile 直接 pull
 - **数据审核** — 人工审核（通过/驳回），行内编辑，批量操作，「LLM 原始 vs 人工修改」diff 留痕
 - **地图可视化** — 全国/省/市/区县四级交互式抗体热力地图，时间序列动画，热点分析
 - **数据分析** — 逐年趋势、区域对比、分区对比、年龄分层、FOI 感染力、VE 疫苗效果、Meta 分析（森林图/漏斗图）、空间热点/冷点（Moran's I + Getis-Ord Gi*）、免疫屏障模拟与达标概率、出生队列、省间公平性
@@ -21,10 +21,10 @@
 - **知识图谱** — 13 种实体 + 18 种关系的多维语义网络，计算式推导 + LLM 抽取（特性开关），ECharts 力导向图可视化，实体搜索、路径推理、智能咨询问答
 - **报告生成** — 抗体分析 / 疫苗接种策略 / 免疫屏障评估三类报告，后台异步生成，支持在线编辑与 Markdown/Word/PDF 下载
 - **PDF 解析增强** — MinerU（GPU 加速）+ AnyDoc（Rust，毫秒级转 GFM Markdown）+ pdf-inspector（损坏修复），自动回退
-- **数据库备份与还原** — pg_dump 逻辑备份，上传还原（前置备份 + 失败回滚），跨设备数据迁移
+- **数据库备份与还原** — pg_dump 逻辑备份；**后台自动备份**（每 60 分钟一次，保留 48 份）；PostgreSQL WAL 安全加固（fsync=on + stop_grace_period 120s），容器被 SIGKILL 也不丢最近写入；跨设备数据迁移
 - **文献批量选中与编组** — 支持从 TXT/CSV 导入匹配（UUID 精确 / 标题-作者模糊匹配），批量打 Tag 分组，便于大规模文献筛选与分析
-- **提取历史一致性审计** — 管理员可一键扫描 extraction_history 声明的数据点数 vs data_point 实际行数，自动标记并修正不一致记录
-- **文件夹监控 / PubMed 检索 / AI 准确度自测** — 文件夹自动监控导入、PubMed 检索批量纳入、合成文献自测多模型提取准确度
+- **提取历史一致性审计** — 管理员可一键扫描 extraction_history 声明的数据点数 vs data_point 实际行数，自动标记 `[DP_DROPPED]` 并修正
+- **AI 准确度自测** — 合成文献批量产出含已知答案，由多模型（**串行：一个模型跑完全部文献再切下一个**，确保 100% GPU 驻留）走真实提取链路；新建 `synthetic_run` 表保留全部评测运行历史（峰值显存/耗时/效率指标）；支持直接指定已编组 Tag 作为测试文献来源
 
 > 完整功能细节见 [核心功能文档](https://antibody-map.readthedocs.io/zh-cn/latest/guide/features/)，版本演进见 [变更日志](https://antibody-map.readthedocs.io/zh-cn/latest/changelog/)。
 

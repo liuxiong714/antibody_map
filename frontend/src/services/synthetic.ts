@@ -13,6 +13,8 @@ export interface SyntheticCreatePayload {
   literature_source: 'generated' | 'existing';
   /** existing 来源时：所选真实文献 id 列表 */
   literature_ids?: string[];
+  /** existing 来源时：按编组(tag)取该编组下全部文献（优先于 literature_ids） */
+  tag_id?: string;
   /** existing 来源时：产出基准(GT)的参考模型 */
   reference_model?: string;
 }
@@ -81,16 +83,102 @@ export interface SyntheticMultiProgressItem {
   points_count: number;
 }
 
+/** 字段级 P/R/F1 宏平均 */
+export interface SyntheticFieldPrfMacro {
+  precision: number;
+  recall: number;
+  f1: number;
+}
+
+/** 一次运行（单模型 × 全部文献）的进度与效率汇总 */
+export interface SyntheticRunItem {
+  literature_id: string;
+  title: string;
+  status: string;
+  error: string | null;
+  updated_at: string | null;
+  points_count: number;
+  duration_ms?: number | null;
+  json_ok?: boolean | null;
+}
+
+export interface SyntheticRun {
+  id: string;
+  model: string;
+  run_index: number;
+  status: string;
+  literatures_total: number;
+  literatures_done: number;
+  literatures_failed: number;
+  peak_vram_mb?: number | null;
+  duration_seconds?: number | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  summary?: SyntheticRunEfficiency | null;
+  items?: SyntheticRunItem[];
+}
+
+/** 运行效率指标汇总 */
+export interface SyntheticRunEfficiency {
+  literatures_total?: number;
+  success?: number;
+  no_data?: number;
+  failed?: number;
+  success_rate?: number | null;
+  total_points?: number | null;
+  avg_points_per_literature?: number | null;
+  avg_duration_s?: number | null;
+  avg_first_token_ms?: number | null;
+  avg_tokens_per_sec?: number | null;
+  json_ok_rate?: number | null;
+  grounded_rate?: number | null;
+  hallucination_rate?: number | null;
+  peak_vram_mb?: number | null;
+}
+
+/** 同一模型多次运行的稳定性（均值 ± 标准差） */
+export interface SyntheticStability {
+  model: string;
+  runs: number;
+  run_labels: string[];
+  metrics: Record<string, { mean: number | null; std: number | null }>;
+}
+
 export interface SyntheticComparisonItem {
   model: string;
+  base_model?: string;
+  run_index?: number | null;
+  literatures_total?: number;
+  literatures_done?: number;
   clean_total: number;
   clean_matched: number;
   clean_recall: number;
   value_exact_rate: number;
+  value_accuracy?: number;
   noise_total: number;
   noise_rejected: number;
   noise_rejection_rate: number;
   field_accuracy?: Record<string, number>;
+  field_prf_macro?: SyntheticFieldPrfMacro;
+  field_precision?: Record<string, number>;
+  field_recall?: Record<string, number>;
+  field_f1?: Record<string, number>;
+  hallucination_rate?: number | null;
+  grounded_rate?: number | null;
+  extra_rate?: number | null;
+  extracted_total?: number;
+  success?: number | null;
+  no_data?: number | null;
+  failed?: number | null;
+  success_rate?: number | null;
+  total_points?: number | null;
+  avg_points_per_literature?: number | null;
+  avg_duration_s?: number | null;
+  avg_first_token_ms?: number | null;
+  avg_tokens_per_sec?: number | null;
+  json_ok_rate?: number | null;
+  peak_vram_mb?: number | null;
+  run_seconds?: number | null;
 }
 
 export interface SyntheticMultiLitModelInfo {
@@ -110,8 +198,12 @@ export interface SyntheticMultiLitRow {
 
 export interface SyntheticMultiModel {
   models: string[];
+  /** GT 口径：implanted=程序植入真值 / reference_model=参考模型产出 */
+  gt_source?: 'implanted' | 'reference_model';
   comparison?: SyntheticComparisonItem[];
   by_literature?: SyntheticMultiLitRow[];
+  /** 同一模型多次运行的稳定性（均值 ± 标准差） */
+  stability?: SyntheticStability[];
 }
 
 export interface SyntheticTask {
@@ -124,6 +216,7 @@ export interface SyntheticTask {
   extractor_model: string | null;
   reference_model: string | null;
   models: string[] | null;
+  tag_id?: string | null;
   noise_ratio: number;
   seed: number;
   output_format: string;
@@ -136,6 +229,8 @@ export interface SyntheticTask {
   report?: SyntheticReport | null;
   literature_progress?: SyntheticLitProgress[];
   multi_progress?: SyntheticMultiProgressItem[];
+  /** 按运行（单模型 × 全部文献）分组的进度与效率指标 */
+  runs?: SyntheticRun[];
   report_by_literature?: SyntheticLitRow[];
   report_per_noise?: Record<string, SyntheticPerNoise>;
   multi_model?: SyntheticMultiModel | null;

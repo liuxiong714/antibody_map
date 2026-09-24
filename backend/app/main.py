@@ -182,7 +182,23 @@ async def lifespan(app: FastAPI):
         from app.core.metrics import start_metrics_background_tasks
         metrics_tasks = start_metrics_background_tasks()
 
+    # 启动数据库自动备份后台任务（每 AUTO_BACKUP_INTERVAL_MINUTES 分钟 pg_dump 一次）
+    # 双重保险：fsync=on 保证 commit 刷盘 + 定时 SQL 快照保证极端情况可恢复
+    auto_backup_task: asyncio.Task | None = None
+    if getattr(settings, "AUTO_BACKUP_ENABLED", True):
+        try:
+            from app.services.db_backup_service import _auto_backup_loop
+            auto_backup_task = asyncio.create_task(_auto_backup_loop())
+        except Exception as e:
+            logger.error(f"启动数据库自动备份任务失败: {e}")
+
     yield
+
+    # 停止数据库自动备份后台任务
+    if auto_backup_task:
+        auto_backup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await auto_backup_task
 
     # 停止 Prometheus 指标后台采集任务
     for metrics_task in metrics_tasks:

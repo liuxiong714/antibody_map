@@ -192,6 +192,11 @@ class Settings(BaseSettings):
     # 仅作用于连接错误，不消耗 token；非连接错误不重试。
     LLM_CONNECT_RETRIES: int = 2
 
+    # AI 提取自测（编组 × 多模型批量评测）：单个「模型 × 文献」纯抽取的耗时上限（秒）。
+    # 本地大模型较慢（实测 27B/30B 单篇 100~800s，个别小模型可达 750s+），
+    # 默认 1800s 给足余量，避免正常的慢模型被误判为超时失败。
+    SYN_MULTI_MODEL_TIMEOUT: int = 1800
+
     # P2：长文档分块阈值（字符数），超过此值触发分块并发提取
     # 调优记录（2026-09-05）：本地 27B 模型对 15000 字符块推理常超 600s 读超时，
     # 且大块上下文易误提取方法学/判定阈值段。阈值/块长改小、重叠加大，
@@ -375,6 +380,12 @@ class Settings(BaseSettings):
     BACKUP_DIR: str = "/app/backend/backups"
     # 单次备份超时（秒）
     BACKUP_TIMEOUT: int = 300
+    # 是否启用后台自动备份（每 AUTO_BACKUP_INTERVAL_MINUTES 分钟一次）
+    AUTO_BACKUP_ENABLED: bool = True
+    # 自动备份间隔（分钟），默认每 60 分钟一次 —— 确保最近 1 小时内的数据都有磁盘快照
+    AUTO_BACKUP_INTERVAL_MINUTES: int = 60
+    # 自动备份保留份数（超过此数的旧备份自动删除），默认保留最近 48 份（约 2 天）
+    AUTO_BACKUP_KEEP_LAST: int = 48
 
     # ===== Prometheus 指标 =====
     # 是否启用 /metrics 端点与指标采集；关闭后 endpoint 不注册且访问返回 403

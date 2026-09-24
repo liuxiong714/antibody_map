@@ -108,7 +108,10 @@ def _build_base_query(disease, province, year_start, year_end, age_min, age_max,
     quality_grades: 可选，仅返回指定质量等级（如 {"A","B"}）的数据点；
     默认 None 不过滤。
     """
-    query = select(DataPoint).where(DataPoint.review_status == review_status)
+    query = select(DataPoint)
+    # review_status: "approved" 仅已审核 / "all" 含待审核 / 其他值精确匹配
+    if review_status and review_status != "all":
+        query = query.where(DataPoint.review_status == review_status)
     # 排除软删除文献的数据点（LEFT JOIN 保留无文献的中性孤儿数据点）
     query = query.outerjoin(Literature, DataPoint.literature_id == Literature.id)
     query = query.where(Literature.deleted_at.is_(None))
@@ -120,9 +123,14 @@ def _build_base_query(disease, province, year_start, year_end, age_min, age_max,
         query = query.where(DataPoint.quality_grade.in_(list(quality_grades)))
 
     if disease:
-        # 标准化疾病名称，数据库中的 disease 字段已统一为标准 key
-        normalized = normalize_disease(disease)
-        query = query.where(DataPoint.disease == normalized)
+        # 支持逗号分隔的多疾病筛选（与多省份对称），如 "dengue,ebola,nipah"
+        diseases = [d.strip() for d in disease.split(",") if d.strip()]
+        if len(diseases) == 1:
+            normalized = normalize_disease(diseases[0])
+            query = query.where(DataPoint.disease == normalized)
+        else:
+            norm_list = [normalize_disease(d) for d in diseases]
+            query = query.where(DataPoint.disease.in_(norm_list))
     if province:
         # 支持逗号分隔的多省份筛选（前端多选省份），如 "北京市,上海市,广东省"
         provinces = [p.strip() for p in province.split(",") if p.strip()]

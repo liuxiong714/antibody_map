@@ -1,5 +1,55 @@
 ## 变更日志
 
+## v1.30.0 (2026-09-24)
+
+### 新增
+
+- **SyntheticRun 新表 — 多模型串行评测历史**（`backend/app/models/synthetic_run.py`）：
+  - 每次「单模型跑完全部文献」产生一条记录，不可覆盖；历史运行轨迹完整保留
+  - 字段覆盖：task_id / model / run_index / 状态（pending/running/done/partial/failed）/ literatures_done+failed / **peak_vram_mb**（Ollama /api/ps 采样）/ summary_json（成功率、单篇耗时、首 token 延迟、tokens/s、数据点数等）/ 起止时间
+  - 对应 Alembic 迁移 `add_synthetic_run_and_metrics.py`
+- **多模型串行评测**（`backend/app/services/synthetic_service.py` + API `trigger_serial_multi_extraction`）：
+  - 旧实现：多模型并行跑每个「模型×文献」批次 → 本地大模型 27B/30B 会 CPU 卸载、GPU 争抢
+  - 新实现：**一个模型跑完全部文献 → 切换下一个**，确保 100% GPU 驻留；`SYN_MULTI_MODEL_TIMEOUT` 单模型×单文献纯抽取默认 1800s（config.py 新增）
+  - 结果按 synthetic_run 分别存 synthetic_extraction，不互相覆盖
+- **enable_thinking 模型原生推理开关**（贯通四层）：
+  - API 层：`ExtractionRequest` / `BatchExtractionRequest` 新增 `enable_thinking: bool = False`
+  - orchestrator 层：`LLMExtractor.extract_from_text()` 与 `extract_with_retry()` 新增参数并写入实例
+  - `llm_client.py`：`_chat_once()` 透传到 Ollama extra_body（同时写顶层 `think` 与 options `think`，兼容 gemma4/granite 不同实现）
+  - 新建 **gemma4-nothink.Modelfile**：`FROM gemma4:26b / PARAMETER think false`，供 gemma4 用户直接 pull 避免每次手动关闭思维链
+- **效率指标埋点**（`llm_client.py`）：
+  - `LLMClientMixin._record_timing()` 累加首 token 延迟、decode 时长、completion_tokens
+  - `get_timing_summary()` 返回 calls / avg_first_token_ms / gen_seconds / tokens_per_sec
+  - 自测报告 / 横向对比读取这些指标
+- **自测支持编组 Tag 作为文献来源**（`synthetic.py` + `services/synthetic_service.resolve_literature_ids_by_tag()`）：
+  - existing 来源可传 `tag_id`（UUID），系统自动拉取编组内全部文献；优先级：tag_id > 显式 literature_ids
+  - 与 v1.29.0 新增的「文献批量选中与编组」模块打通，形成闭环
+
+### 运维加固
+
+- **PostgreSQL WAL 刷盘安全加固**：
+  - `backend/scripts/postgresql.conf` 新建：显式 `fsync=on` + `synchronous_commit=on`
+  - `docker-compose.yml`：postgres 挂载 conf + `command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]` + `stop_grace_period: 120s`
+  - 容器被 SIGKILL/WSL 快速启动时最近写入也不丢
+- **后台自动备份**（`backend/app/services/db_backup_service.py`）：
+  - backend 启动时随 lifespan 启动后台循环（`AUTO_BACKUP_ENABLED=True` 默认开启）
+  - 每 `AUTO_BACKUP_INTERVAL_MINUTES=60` 分钟执行一次 pg_dump，输出到 `BACKUP_DIR=backend/backups/`
+  - 自动清理超过 `AUTO_BACKUP_KEEP_LAST=48` 份的旧备份（约保留 2 天）
+  - 与 WAL 形成两层保险（最近 COMMIT 刷盘 + 每 1h SQL 快照），即便容器被强制终止也可恢复
+
+### 迁移
+
+- `backend/alembic/versions/add_synthetic_run_and_metrics.py` — 新建 `synthetic_run` 表 + 索引
+
+### 文档
+
+- **README.md** — AI 提取补充 enable_thinking；自测重写为串行 + SyntheticRun + tag_id；备份条目新增后台自动备份 + WAL；新增 gemma4 Modelfile 说明
+- **docs/index.md** — 智能特性新增 4 条（串行评测、enable_thinking、WAL 加固、自动备份）
+- **docs/guide/features.md** — 第 9 节（AI 自测）补充多模型串行、SyntheticRun 历史表、效率指标表、enable_thinking 小节（9.1）、gemma4 无思维链版本、tag_id 编组来源；第 13.4 节（备份）新增 WAL 刷盘加固和后台自动备份
+- **docs/changelog.md** — 本 v1.30.0 条目
+
+---
+
 ## v1.29.0 (2026-09-22)
 
 ### 新增

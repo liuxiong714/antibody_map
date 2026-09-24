@@ -371,20 +371,34 @@ async def get_immune_barrier_assessment(
     life_expectancy: float = 75.0,
     seroreversion_mu: float | None = None,
     hit_source_override: str | None = None,
+    review_status: str = "approved",
+    skip_catalytic: bool = False,
 ) -> dict:
     """免疫屏障评估（复用 FOI 模块的 R0/HIT 计算）。
 
     优化点（参考 serotracker）：
-      1. 复用 FOI 催催化模型 λ = -ln(1-SP)/age 估算 FOI；
+      1. 复用 FOI 催化模型 λ = -ln(1-SP)/age 估算 FOI；
       2. 反推 R0 ≈ λ·L，计算 HIT = 1 - 1/R0；
       3. HIT 阈值优先级：FOI 估计 > WHO 硬编码 > 文献 R0；
       4. 新增年龄分层分析（age_groups）；
       5. 新增省份对比矩阵（province_matrix）。
+      6. 支持多疾病（逗号分隔）+ 多省份横向对比；多疾病场景自动跳过催化模型
+         并额外返回 comparison_blocks（每个疾病独立的简化评估块）。
+      7. review_status: approved 仅已审核；all 含待审核。
     """
     logger.info(
         f"[ImmuneBarrier] 开始评估: disease={disease}, province={province}, "
-        f"year_start={year_start}, year_end={year_end}, age_min={age_min}, age_max={age_max}"
+        f"year_start={year_start}, year_end={year_end}, age_min={age_min}, age_max={age_max}, "
+        f"review_status={review_status}, skip_catalytic={skip_catalytic}"
     )
+
+    # --- 多疾病检测 ---
+    diseases = [d.strip() for d in (disease or "").split(",") if d.strip()] if disease else []
+    is_multi_disease = len(diseases) > 1
+    # 多疾病自动跳过催化模型（性能），除非显式要求
+    if is_multi_disease and not skip_catalytic:
+        skip_catalytic = True
+        logger.info("[ImmuneBarrier] 多疾病场景 → 自动启用 skip_catalytic=True")
 
     # 收集本次评估使用的显式参数假设（用于响应透明展示）
     assumptions = {}
@@ -394,9 +408,11 @@ async def get_immune_barrier_assessment(
         assumptions["seroreversion_mu"] = seroreversion_mu
     if hit_source_override:
         assumptions["hit_source_override"] = hit_source_override
+    if review_status != "approved":
+        assumptions["review_status"] = review_status
 
     query = _build_base_query(disease, province, year_start, year_end, age_min, age_max,
-                              review_status="approved")
+                              review_status=review_status)
     result = await db.execute(query)
     rows = result.scalars().all()
 
@@ -445,6 +461,9 @@ async def get_immune_barrier_assessment(
             "assessment": "暂无审核通过的数据可供评估。",
             "life_expectancy_used": life_expectancy,
             "assumptions": assumptions or None,
+            "comparison_blocks": None,
+            "is_multi_disease": is_multi_disease,
+            "skip_catalytic": skip_catalytic,
         }
 
     # --- 1) 总体加权阳性率 ---
@@ -478,20 +497,40 @@ async def get_immune_barrier_assessment(
         legacy_foi = None
 
     # 新引擎：M1/M2/M3 催化模型族 MLE 拟合 + 模型比较 + 理论修正
-    catalytic_records = _build_catalytic_records(sp_rows)
-    catalytic_result = fit_catalytic_models(catalytic_records, mu_fixed=seroreversion_mu)
-    models_out = catalytic_result.get("models") or []
-    recommended_model = catalytic_result.get("recommended_model")
-    recommended_params = catalytic_result.get("recommended_params") or {}
-    fitted_curve = catalytic_result.get("fitted_curve") or []
-    catalytic_notes = catalytic_result.get("modeling_notes") or []
+    models_out: list = []
+    recommended_model: str | None = None
+    recommended_params: dict = {}
+    fitted_curve: list = []
+    catalytic_notes: list = []
+    rec_foi: float | None = None
+    r0_to_hit: float | None = None
+    literature_hit: float | None = None
+    r0_assumption_note: str | None = None
+    catalytic_result: dict = {}  # 默认空，避免 skip_catalytic=True 时未定义
 
-    r0_hit_info = _catalytic_r0_hit(catalytic_result, dis_key, life_exp=life_expectancy,
-                                    mu_fixed=seroreversion_mu)
-    rec_foi = r0_hit_info["foi_avg"]
-    r0_to_hit = r0_hit_info["r0_to_hit"]
-    literature_hit = r0_hit_info["literature_hit"]
-    r0_assumption_note = r0_hit_info["r0_assumption_note"]
+    if not skip_catalytic:
+        catalytic_records = _build_catalytic_records(sp_rows)
+        catalytic_result = fit_catalytic_models(catalytic_records, mu_fixed=seroreversion_mu)
+        models_out = catalytic_result.get("models") or []
+        recommended_model = catalytic_result.get("recommended_model")
+        recommended_params = catalytic_result.get("recommended_params") or {}
+        fitted_curve = catalytic_result.get("fitted_curve") or []
+        catalytic_notes = catalytic_result.get("modeling_notes") or []
+
+        r0_hit_info = _catalytic_r0_hit(catalytic_result, dis_key, life_exp=life_expectancy,
+                                        mu_fixed=seroreversion_mu)
+        rec_foi = r0_hit_info["foi_avg"]
+        r0_to_hit = r0_hit_info["r0_to_hit"]
+        literature_hit = r0_hit_info["literature_hit"]
+        r0_assumption_note = r0_hit_info["r0_assumption_note"]
+    else:
+        # 跳过催化模型：用旧口径 legacy_foi 估算 R0/HIT
+        if legacy_foi is not None:
+            r0_to_hit = _calc_r0_from_foi(legacy_foi, life_expectancy)
+            rec_foi = legacy_foi
+        literature_hit = reference_hit  # 已在上方从 r0_ref 算好
+        if literature_hit or r0_to_hit:
+            catalytic_notes.append("已跳过催化模型拟合（多疾病聚合模式），使用 legacy 口径 FOI/R0")
 
     # 兼容旧字段：foi/r0 取 recommended_model 参数重算；无催化结果时回退旧加权平均
     weighted_avg_foi = rec_foi if rec_foi is not None else legacy_foi
@@ -634,10 +673,120 @@ async def get_immune_barrier_assessment(
     # --- 6) 总体状态判定 ---
     status, assessment = _barrier_status_with_message(weighted_rate, hit_target, hit_source)
 
+    # --- 7) 多疾病 comparison_blocks（每个疾病独立简化评估，跳过催化模型） ---
+    comparison_blocks: dict[str, dict] | None = None
+    if is_multi_disease and rows:
+        # 按 disease 分组
+        disease_groups: dict[str, list[DataPoint]] = {}
+        for r in rows:
+            d = r.disease or "未知"
+            if d not in disease_groups:
+                disease_groups[d] = []
+            disease_groups[d].append(r)
+
+        comparison_blocks = {}
+        for d_key, d_rows in sorted(disease_groups.items()):
+            # 基础汇总
+            _wpr_d = _calc_weighted_positivity(d_rows)
+            d_rate = _wpr_d["weighted_positivity"]
+            d_samples = _wpr_d["total_sample"]
+            d_lit_ids = {str(r.literature_id) for r in d_rows if r.literature_id}
+
+            # FOI 旧口径（多疾病跳过催化模型）
+            foi_tuples_d: list[tuple[float, float]] = []
+            for r in d_rows:
+                if r.data_type != "seroprevalence" or r.value is None:
+                    continue
+                age_mid = _midpoint_age(r.age_min, r.age_max)
+                if age_mid is None:
+                    continue
+                foi = _calc_foi_from_sp(float(r.value), age_mid)
+                if foi is not None:
+                    foi_tuples_d.append((foi, float(r.sample_size or 1)))
+            if foi_tuples_d:
+                w_d = sum(w for _, w in foi_tuples_d)
+                d_foi = round(sum(v * w for v, w in foi_tuples_d) / w_d, 6) if w_d > 0 else None
+            else:
+                d_foi = None
+
+            d_r0 = _calc_r0_from_foi(d_foi, life_expectancy) if d_foi is not None else None
+            dis_d = normalize_disease(d_key) or d_key
+            r0_ref_d = R0_REFERENCE.get(dis_d)
+            lit_hit_d = _calc_hit_from_r0(r0_ref_d[0]) if r0_ref_d else None
+            who_d = WHO_THRESHOLDS.get(dis_d)
+            foi_hit_d = _calc_hit_from_r0(d_r0) if d_r0 is not None else None
+            d_hit, d_hit_src = _resolve_hit_target(
+                foi_hit_d, who_d, lit_hit_d, dis_d,
+                hit_source_override=hit_source_override,
+            )
+
+            # 省份矩阵
+            prov_map_d: dict[str, dict] = {}
+            for r in d_rows:
+                if r.data_type != "seroprevalence" or r.value is None:
+                    continue
+                prov_raw = r.province or "未知"
+                for p in prov_raw.split(";"):
+                    p = p.strip() or "未知"
+                    if p not in prov_map_d:
+                        prov_map_d[p] = {"sp_sum": 0.0, "sample_sum": 0, "dp_count": 0, "foi_values": []}
+                    pm = prov_map_d[p]
+                    sp = float(r.value)
+                    ss = float(r.sample_size or 0)
+                    if ss > 0:
+                        pm["sp_sum"] += sp * ss
+                        pm["sample_sum"] += ss
+                    pm["dp_count"] += 1
+                    age_mid = _midpoint_age(r.age_min, r.age_max)
+                    foi = _calc_foi_from_sp(sp, age_mid) if age_mid is not None else None
+                    if foi is not None:
+                        pm["foi_values"].append((foi, ss or 1))
+            pm_list: list[dict] = []
+            for prov_name, pm in prov_map_d.items():
+                if pm["dp_count"] == 0:
+                    continue
+                w_sp_p = round(pm["sp_sum"] / pm["sample_sum"], 2) if pm["sample_sum"] > 0 else None
+                if pm["foi_values"]:
+                    fw_p = sum(w for _, w in pm["foi_values"])
+                    prov_foi_p = round(sum(v * w for v, w in pm["foi_values"]) / fw_p, 6) if fw_p > 0 else None
+                else:
+                    prov_foi_p = None
+                prov_r0_p = _calc_r0_from_foi(prov_foi_p, life_expectancy) if prov_foi_p is not None else None
+                prov_status_p = _barrier_status_from_rate(w_sp_p, d_hit)
+                pm_list.append({
+                    "province": prov_name,
+                    "data_point_count": pm["dp_count"],
+                    "total_samples": pm["sample_sum"],
+                    "weighted_positivity_rate": w_sp_p,
+                    "weighted_avg_foi_per_year": prov_foi_p,
+                    "estimated_r0_from_foi": prov_r0_p,
+                    "hit_target_percent": d_hit,
+                    "status": prov_status_p,
+                })
+            pm_list.sort(key=lambda x: x["province"])
+
+            d_status, d_assessment = _barrier_status_with_message(d_rate, d_hit, d_hit_src)
+
+            comparison_blocks[d_key] = {
+                "summary": {
+                    "total_data_points": len(d_rows),
+                    "total_literatures": len(d_lit_ids),
+                    "total_samples": d_samples,
+                    "weighted_positivity_rate": d_rate,
+                    "weighted_avg_foi_per_year": d_foi,
+                    "estimated_r0_from_foi": d_r0,
+                    "hit_target_used_percent": d_hit,
+                    "hit_target_source": d_hit_src,
+                },
+                "province_matrix": pm_list,
+                "status": d_status,
+                "assessment": d_assessment,
+            }
+
     logger.info(
         f"[ImmuneBarrier] 评估完成: status={status}, weighted_rate={weighted_rate}%, "
         f"hit_target={hit_target}%, age_groups={len(age_groups_out)}, "
-        f"provinces={len(province_matrix)}"
+        f"provinces={len(province_matrix)}, comparison_blocks={len(comparison_blocks) if comparison_blocks else 0}"
     )
 
     return {
@@ -674,6 +823,10 @@ async def get_immune_barrier_assessment(
         "assessment": assessment,
         "life_expectancy_used": life_expectancy,
         "assumptions": assumptions or None,
+        # 多疾病对比块（每个疾病独立的简化评估，跳过催化模型）
+        "comparison_blocks": comparison_blocks,
+        "is_multi_disease": is_multi_disease,
+        "skip_catalytic": skip_catalytic,
     }
 
 

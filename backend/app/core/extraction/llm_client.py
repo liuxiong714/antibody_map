@@ -8,6 +8,7 @@
 import asyncio
 import contextlib
 import logging
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -227,6 +228,56 @@ def _is_connection_error(exc: Exception) -> bool:
 class LLMClientMixin:
     """LLM 调用封装：API 配置解析、URL 链容错、客户端构建与单次调用。"""
 
+    # ===== 效率指标埋点（首 token 延迟 / decode 速度）=====
+    # 纯附加统计，不改变任何返回值与调用语义，供自测评测模块读取。
+
+    def _record_timing(
+        self,
+        first_token_ms: int | None = None,
+        gen_ms: int | None = None,
+        completion_tokens: int = 0,
+    ) -> None:
+        """累加单次 LLM 调用的时延统计到实例。"""
+        t = getattr(self, "_timing", None)
+        if t is None:
+            t = {
+                "calls": 0,
+                "first_token_ms_sum": 0,
+                "first_token_count": 0,
+                "gen_ms_sum": 0,
+                "completion_tokens_sum": 0,
+            }
+            self._timing = t
+        t["calls"] += 1
+        if first_token_ms is not None:
+            t["first_token_ms_sum"] += int(first_token_ms)
+            t["first_token_count"] += 1
+        if gen_ms:
+            t["gen_ms_sum"] += int(gen_ms)
+        t["completion_tokens_sum"] += int(completion_tokens or 0)
+
+    def get_timing_summary(self) -> dict:
+        """返回本次实例累计的时延统计。
+
+        - avg_first_token_ms: 平均首 token 延迟（ms）
+        - gen_seconds:        decode 阶段总时长（秒，首 token 之后）
+        - tokens_per_sec:     平均生成速度（tokens/s）
+        """
+        t = getattr(self, "_timing", None) or {}
+        calls = int(t.get("calls", 0) or 0)
+        ft_count = int(t.get("first_token_count", 0) or 0)
+        ft_sum = int(t.get("first_token_ms_sum", 0) or 0)
+        gen_ms = int(t.get("gen_ms_sum", 0) or 0)
+        ct = int(t.get("completion_tokens_sum", 0) or 0)
+        gen_seconds = round(gen_ms / 1000.0, 3) if gen_ms else 0.0
+        return {
+            "calls": calls,
+            "avg_first_token_ms": round(ft_sum / ft_count) if ft_count else None,
+            "gen_seconds": gen_seconds,
+            "completion_tokens": ct,
+            "tokens_per_sec": round(ct / gen_seconds, 2) if gen_seconds > 0 else None,
+        }
+
     # P2-2：旧的前缀映射表保留用于向后兼容（_resolve_api_config_legacy），
     # 新代码通过 providers 注册中心自动匹配。
     # 类级共享常量映射，仅读取不修改（各实例复用同一份，禁止原地变更）。
@@ -390,7 +441,7 @@ class LLMClientMixin:
             max_retries=0,
         )
 
-    async def _chat_once(self, client: AsyncOpenAI, prompt: str, system_prompt: str) -> str:
+    async def _chat_once(self, client: AsyncOpenAI, prompt: str, system_prompt: str, enable_thinking: bool = False) -> str:
         """对指定客户端执行一次 chat.completions 调用并累加 token 用量。
 
         B6：支持 system prompt 分离，启用 prompt caching。返回值仍为 str。
@@ -427,12 +478,16 @@ class LLMClientMixin:
             kwargs["response_format"] = {"type": "json_object"}
 
         if _is_ollama:
+            _think_on = bool(enable_thinking)
             kwargs["extra_body"] = {
                 "options": {
                     "num_ctx": settings.LLM_CTX_TOKENS,
                     "num_predict": settings.LLM_MAX_TOKENS,
-                    "think": False,
+                    "think": _think_on,
+                    "enable_thinking": _think_on,
                 },
+                # gemma4/granite 等模型可能只认顶层 think 参数（Ollama 版本差异）
+                "think": _think_on,
                 # P2-3：Ollama 原生 JSON Schema 结构化输出强约束（顶层字段）
                 "format": EXTRACTION_JSON_SCHEMA,
             }
@@ -448,6 +503,8 @@ class LLMClientMixin:
         usage_dict: dict | None = None
         actual_model: str | None = None
         finish_reason: str | None = None
+        _t_start = time.monotonic()
+        _first_token_at: float | None = None
         try:
             while True:
                 try:
@@ -477,6 +534,8 @@ class LLMClientMixin:
                     if fr:
                         finish_reason = fr
                 if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                    if _first_token_at is None:
+                        _first_token_at = time.monotonic()
                     content_parts.append(chunk.choices[0].delta.content)
                 if getattr(chunk, "model", None):
                     actual_model = chunk.model
@@ -485,11 +544,18 @@ class LLMClientMixin:
             with contextlib.suppress(Exception):
                 await stream.close()
 
+        _t_end = time.monotonic()
         content = "".join(content_parts)
         # 优先用 chunk.model（实际使用的模型，可能与请求不同，如自动路由）
         if not actual_model:
             actual_model = getattr(stream, "model", None) or self.model
         self._accumulate_usage(actual_model, usage_dict)
+        # 效率指标：首 token 延迟 + decode 速度（附加统计，不影响返回值）
+        self._record_timing(
+            first_token_ms=int((_first_token_at - _t_start) * 1000) if _first_token_at else None,
+            gen_ms=int((_t_end - _first_token_at) * 1000) if _first_token_at else None,
+            completion_tokens=(usage_dict or {}).get("completion_tokens", 0) or 0,
+        )
         # F11：日配额熔断。响应已返回（已实际消耗 token），按本次用量计数并检查日配额。
         if usage_dict:
             await _consume_daily_quota(usage_dict["total_tokens"])
@@ -527,7 +593,7 @@ class LLMClientMixin:
                 f"（已安装: {', '.join(sorted(installed))}）。此错误不会自动重试。"
             )
 
-    async def _call_llm_api(self, prompt: str, system_prompt: str = "") -> str:
+    async def _call_llm_api(self, prompt: str, system_prompt: str = "", enable_thinking: bool | None = None) -> str:
         """调用 LLM API 获取响应。B6：支持 system prompt 分离，启用 prompt caching。
 
         连接容错增强：
@@ -537,7 +603,14 @@ class LLMClientMixin:
 
         Token 用量会通过 _accumulate_usage 累加到实例，后续可通过 get_usage_summary() 获取。
         返回值仍为 str（保持向后兼容）；usage 单向累加，不破坏调用方签名。
+
+        enable_thinking：控制 Ollama 是否开启模型原生 thinking/推理模式。
+            None（默认）→ 读实例属性 self._enable_thinking，再回退到 False。
+            True → 开启（让模型先推理再输出，部分模型会占更多 num_predict）。
+            False → 关闭（推荐，抽取任务不需要推理，避免截断风险）。
         """
+        if enable_thinking is None:
+            enable_thinking = bool(getattr(self, "_enable_thinking", False))
         url_chain = self._url_chain or [self._resolved_url or settings.LLM_BASE_URL]
         last_conn_exc: Exception | None = None
 
@@ -552,7 +625,7 @@ class LLMClientMixin:
             await sem.acquire()
         try:
             return await self._call_llm_api_locked(
-                url_chain, prompt, system_prompt, last_conn_exc
+                url_chain, prompt, system_prompt, last_conn_exc, enable_thinking
             )
         finally:
             if sem is not None:
@@ -564,13 +637,14 @@ class LLMClientMixin:
         prompt: str,
         system_prompt: str,
         last_conn_exc: Exception | None,
+        enable_thinking: bool = False,
     ) -> str:
         """持有全局并发信号量时执行实际的 LLM 调用（见 _call_llm_api）。"""
         for attempt in range(self._connect_retries + 1):
             for url in url_chain:
                 try:
                     client = self._build_client(url)
-                    return await self._chat_once(client, prompt, system_prompt)
+                    return await self._chat_once(client, prompt, system_prompt, enable_thinking)
                 except Exception as e:
                     err = _classify_llm_error(e)
                     if err["type"] in ("connection_error", "ollama_unreachable"):
@@ -588,7 +662,7 @@ class LLMClientMixin:
                         raise e
                     # 非连接/超时错误（认证/HTTP/JSON 等）：走 HTTP 兜底，与历史行为一致
                     logger.warning(f"LLM API 调用失败（非连接错误）: {err['message'][:300]}，尝试 HTTP 兜底...")
-                    return await self._fallback_http_call(prompt, system_prompt)
+                    return await self._fallback_http_call(prompt, system_prompt, enable_thinking)
             # 本轮所有候选 URL 均连接失败：短退避后重试
             if attempt < self._connect_retries:
                 await asyncio.sleep(2 * (attempt + 1))
@@ -598,9 +672,9 @@ class LLMClientMixin:
             f"LLM 所有候选地址连接失败（{len(url_chain)} 个）: "
             f"{_classify_llm_error(last_conn_exc)['message'][:300] if last_conn_exc else 'unknown'}"
         )
-        return await self._fallback_http_call(prompt, system_prompt)
+        return await self._fallback_http_call(prompt, system_prompt, enable_thinking)
 
-    async def _fallback_http_call(self, prompt: str, system_prompt: str = "") -> str:
+    async def _fallback_http_call(self, prompt: str, system_prompt: str = "", enable_thinking: bool = False) -> str:
         """HTTP 兜底调用（不依赖 OpenAI SDK）。B6：支持 system prompt。
 
         连接容错增强：按候选 URL 链逐个尝试，首个成功的地址返回。
@@ -637,13 +711,17 @@ class LLMClientMixin:
                 # 同步 Ollama 原生参数（兜底路径，num_ctx 需在嵌套 options 中）
                 p = dict(payload)
                 if self._is_ollama_model(url):
+                    _think_on = bool(enable_thinking)
                     p["max_tokens"] = settings.LLM_MAX_TOKENS
                     p["temperature"] = 0.05
                     p["options"] = {
                         "num_ctx": settings.LLM_CTX_TOKENS,
                         "num_predict": settings.LLM_MAX_TOKENS,
-                        "think": False,
+                        "think": _think_on,
+                        "enable_thinking": _think_on,
                     }
+                    # gemma4/granite 等模型可能只认顶层 think 参数
+                    p["think"] = _think_on
                     # P2-3：Ollama 原生 JSON Schema 结构化输出强约束（顶层字段，不放 options 里）
                     p["format"] = EXTRACTION_JSON_SCHEMA
 
@@ -662,6 +740,8 @@ class LLMClientMixin:
                         content_parts: list[str] = []
                         usage_dict: dict | None = None
                         resp_model: str | None = None
+                        _t_start = time.monotonic()
+                        _first_token_at: float | None = None
                         it = resp.aiter_lines()
                         while True:
                             try:
@@ -696,7 +776,10 @@ class LLMClientMixin:
                                 if choices:
                                     delta = (choices[0].get("delta") or {}).get("content")
                                     if delta:
+                                        if _first_token_at is None:
+                                            _first_token_at = time.monotonic()
                                         content_parts.append(delta)
+                    _t_end = time.monotonic()
                     content = "".join(content_parts)
                     # 捕获 usage 并累加
                     if usage_dict:
@@ -712,6 +795,12 @@ class LLMClientMixin:
                         await _consume_daily_quota(
                             int(usage_dict.get("total_tokens", 0) or 0)
                         )
+                    # 效率指标：首 token 延迟 + decode 速度（附加统计，不影响返回值）
+                    self._record_timing(
+                        first_token_ms=int((_first_token_at - _t_start) * 1000) if _first_token_at else None,
+                        gen_ms=int((_t_end - _first_token_at) * 1000) if _first_token_at else None,
+                        completion_tokens=(usage_dict or {}).get("completion_tokens", 0) or 0,
+                    )
                     return content
             except Exception as e:
                 last_exc = e

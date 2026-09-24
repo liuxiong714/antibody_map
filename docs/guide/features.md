@@ -1,4 +1,4 @@
-﻿# 核心功能
+# 核心功能
 
 本文档以**入门教程**的方式介绍 Antibody Map 的核心功能，配合截图让您快速上手。
 
@@ -830,11 +830,32 @@ VE = 1 - (1 - SP_v) / (1 - SP_u)
 支持**两种文献来源**：
 
 - **生成模型模拟**：模型 A 批量产出学术风格合成文献（可配置载体 `output_format`：正文 text 或 PDF；是否含表格 `include_table`）。
-- **数据库已有文献**：从库中勾选真实文献，由参考模型产出基准 GT，评估模型在真实文献上的提取表现。
+- **数据库已有文献**：从库中勾选真实文献，或**直接指定已编组 Tag**（系统自动拉取编组内全部文献），由参考模型产出基准 GT，评估模型在真实文献上的提取表现。
 
-并支持**多模型对比**：可同时选择多个提取模型，每个「模型×文献」的结果独立存储（`synthetic_extraction` 表），输出各模型精确率/容差匹配率/噪声拒绝率的水平对比表，以及逐文献 GT vs 各模型的展开对比，结果不写入正式数据点、不互相覆盖。
+并支持**多模型串行对比**：可同时选择多个提取模型，触发后按「**一个模型跑完全部文献 → 切换下一个**」串行执行（避免 GPU/CPU 争抢；本地大模型 27B/30B 单篇耗时 100~800s，串行可确保 100% GPU 驻留）。每个「模型×文献」的结果独立存储（`synthetic_extraction` 表）；每次「单模型批量运行」在新建的 `synthetic_run` 表留下一条**不可覆盖的历史记录**，含运行状态、峰值显存（采样自 Ollama /api/ps）、耗时、效率指标汇总（见下文），便于回看完整评测轨迹。输出各模型精确率/容差匹配率/噪声拒绝率的水平对比表，以及逐文献 GT vs 各模型的展开对比，结果不写入正式数据点。
 
-### 9.1 使用步骤
+**效率指标埋点**（每次模型运行自动采集，供自测报告和横向对比使用）：
+
+| 指标 | 来源 | 说明 |
+|---|---|---|
+| 平均首 token 延迟 | LLM 客户端 | 衡量模型"思考/准备"阶段耗时（ms） |
+| decode 总时长 | LLM 客户端 | 首 token 之后的生成阶段耗时（秒） |
+| tokens/s | 计算 | completion_tokens / decode_seconds，衡量生成速度 |
+| 峰值显存 | Ollama /api/ps 采样 | 提取过程中的 GPU 显存占用峰值（MB） |
+
+> 单模型 × 单文献的纯抽取默认 **1800s 超时**（`SYN_MULTI_MODEL_TIMEOUT`），给 27B/30B 慢模型留足余量，避免正常运行被误判为失败。
+
+### 9.1 enable_thinking 模型原生推理开关
+
+多数本地/远程模型默认关闭思维链。开启 `enable_thinking=True` 后：
+
+- **Ollama**：同时写入顶层 `think` 与 options `think` 字段（兼容 gemma4/granite 等不同实现）
+- **API**：在 `ExtractionRequest` 和 `BatchExtractionRequest` 均可独立配置
+- **代价**：思维链会显著拉长首 token 延迟与 decode 时长，且思维 token 不计入数据点，通常不建议在提取任务中开启；适合需要深度推理的复杂任务
+
+系统内置 **gemma4:26b 无思维链版本**（`gemma4-nothink.Modelfile` → `PARAMETER think false`），供 gemma4 用户直接 pull 使用，避免每次都显式关闭思维链。
+
+### 9.2 使用步骤
 
 1. 在左侧选择「AI 提取自测」，新建自测任务：选择**疾病**、**篇数**、**每篇数据点数**、**生成模型 A**、**噪声比例**（如 0.2）、随机**种子**，以及文献来源与载体选项
 2. 点击「开始生成」，后台用模型 A（或参考模型）产出 GT 与合成文献并直接入库
@@ -961,14 +982,27 @@ loguru 按日落盘，支持文件切换、级别筛选、关键字搜索，便�
 
 ### 13.4 数据备份与还原
 
-用于**跨设备迁移**：把一台电脑的数据带走，在新电脑（新客户端）还原，实现文献库等数据的完整迁移。
+用于**跨设备迁移**和**防止断电丢失**。系统同时提供三层保险：**PostgreSQL WAL 刷盘 → 后台自动备份 → 手动/退出时备份**。
 
-#### 备份
+#### PostgreSQL WAL 刷盘安全加固（容器内）
+
+- `backend/scripts/postgresql.conf` 显式开启 `fsync=on` + `synchronous_commit=on`，确保每个 `COMMIT` 都刷盘后才返回，容器被强制终止（SIGKILL / WSL 快速启动）时最近写入也不丢
+- `docker-compose.yml` 给 postgres 设置 `stop_grace_period: 120s`（默认 10s），主机快速关机时给 postgres 留足 checkpoint + WAL 刷盘时间
+- 配置文件挂载到容器 `/etc/postgresql/postgresql.conf` 并以 `command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]` 启动
+
+#### 后台自动备份（每 60 分钟一次）
+
+- backend 启动时随 lifespan 启动**后台循环**（`db_backup_service.py`），每 `AUTO_BACKUP_INTERVAL_MINUTES=60` 分钟执行一次 `pg_dump`，输出到 `BACKUP_DIR=backend/backups/`
+- 备份完成后立即同步更新 `latest_backup.sql` 软链/副本，方便一键恢复
+- 自动清理超过 `AUTO_BACKUP_KEEP_LAST=48` 份的旧备份（约保留 2 天），避免磁盘无限增长
+- 关闭浏览器、退出 backend 进程等场景不触发问题：备份文件已在宿主机磁盘；即便容器被强制终止，最近 1 小时内的数据也有 SQL 快照可恢复
+- 可通过 `AUTO_BACKUP_ENABLED=False` 关闭（默认开启）
+
+#### 手动/退出时备份
 
 - 对 PostgreSQL 执行 `pg_dump` 逻辑备份，生成带时间戳的 `.sql` 文件，存于 `backend/backups/`
 - 点击「立即备份」手动生成（管理员操作）；**退出登录时系统会自动备份一次**（弹窗展示备份文件名）
-- 备份列表展示名称、大小、生成时间，可下载复制到其他电脑；备份创建 / 列表 / 下载均需管理员权限（API 端点已加 
-equire_admin 依赖）
+- 备份列表展示名称、大小、生成时间，可下载复制到其他电脑；备份创建 / 列表 / 下载均需管理员权限
 
 #### 还原（仅管理员）
 

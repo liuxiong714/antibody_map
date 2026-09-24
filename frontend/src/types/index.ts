@@ -424,6 +424,35 @@ export interface ImmuneBarrierData {
   }>;
   status: string;
   assessment: string;
+  life_expectancy_used?: number;
+  assumptions?: Record<string, unknown> | null;
+  // 多疾病对比
+  comparison_blocks?: Record<string, {
+    summary: {
+      total_data_points: number;
+      total_literatures: number;
+      total_samples: number;
+      weighted_positivity_rate: number | null;
+      weighted_avg_foi_per_year: number | null;
+      estimated_r0_from_foi: number | null;
+      hit_target_used_percent: number | null;
+      hit_target_source: string;
+    };
+    province_matrix?: Array<{
+      province: string;
+      data_point_count: number;
+      total_samples: number;
+      weighted_positivity_rate: number | null;
+      weighted_avg_foi_per_year: number | null;
+      estimated_r0_from_foi: number | null;
+      hit_target_percent: number | null;
+      status: string;
+    }>;
+    status: string;
+    assessment: string;
+  }> | null;
+  is_multi_disease?: boolean;
+  skip_catalytic?: boolean;
 }
 
 // ===== 数据覆盖度分析 =====

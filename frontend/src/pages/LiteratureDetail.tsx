@@ -90,6 +90,8 @@ const LiteratureDetail: React.FC = () => {
   // 2026-09-22：彻底禁用 replace 模式，clearExistingData 状态已移除
   // 是否强制跳过 LLM 缓存（重新跑 LLM 获取新鲜结果）
   const [forceRefreshCache, setForceRefreshCache] = useState<boolean>(false);
+  // 是否开启模型原生 thinking/推理模式（默认关，抽取任务不需要推理）
+  const [enableThinking, setEnableThinking] = useState<boolean>(false);
   // 是否在本次提取完成后显示 token/费用/模型信息
   const [showUsageOnComplete, setShowUsageOnComplete] = useState<boolean>(() => {
     try { return localStorage.getItem('lit_show_usage_on_complete') === '1'; } catch { return false; }
@@ -585,9 +587,10 @@ const LiteratureDetail: React.FC = () => {
           baseUrl: extractBaseUrl || undefined,
           // clearExistingData 已移除（2026-09-22 彻底禁用 replace 模式，后端 API 也强制 append）
           useCache: !forceRefreshCache,  // 勾选强制刷新时跳过 LLM 缓存
+          enableThinking,
         });
       } else {
-        await triggerExtraction(id, { model: '', useCache: !forceRefreshCache });
+        await triggerExtraction(id, { model: '', useCache: !forceRefreshCache, enableThinking });
       }
       message.success('AI 提取任务已提交，正在轮询进度...');
       // F-2：统一轮询 hook 启动 —— 先停旧轮询（幂等），再开始新的
@@ -1978,6 +1981,14 @@ const LiteratureDetail: React.FC = () => {
             onChange={(e) => setForceRefreshCache(e.target.checked)}
           >
             强制重新跑 LLM（跳过已有缓存，重新调用模型获取新鲜结果）
+          </Checkbox>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <Checkbox
+            checked={enableThinking}
+            onChange={(e) => setEnableThinking(e.target.checked)}
+          >
+            开启模型推理（thinking）—— 让模型先思考再输出，耗时更长，抽取任务建议保持关闭
           </Checkbox>
         </div>
         <div style={{ marginTop: 8 }}>

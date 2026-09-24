@@ -37,6 +37,10 @@ PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML。解析采用**策略模式*
 - **提取模式安全**：强制 append 模式禁用 replace，API 层拦截 clear_existing_data=True，防止误删已有数据点
 - **提取历史一致性审计**：管理员一键扫描 extraction_history 声明的数据点数 vs data_point 实际行数，自动标记 `[DP_DROPPED]` 并修正
 - **文献批量选中与编组**：TXT/CSV 导入匹配（UUID 精确 + 标题-作者模糊匹配），批量打 Tag 分组
+- **多模型串行评测 + SyntheticRun**：AI 自测多模型串行执行（一个模型跑完全部文献再切下一个，确保 100% GPU 驻留）；新建 synthetic_run 表保留每次运行的峰值显存/耗时/效率指标（首 token 延迟 / decode 速度 / tokens/s），不可覆盖
+- **enable_thinking 模型原生推理开关**：贯通 API → orchestrator → Ollama extra_body；gemma4:26b 提供无思维链 Modelfile
+- **PostgreSQL WAL 安全加固**：fsync=on + synchronous_commit=on + stop_grace_period 120s，容器被 SIGKILL 不丢最近写入
+- **后台自动备份**：每 60 分钟 pg_dump 一次，保留 48 份，配合 WAL 形成两层保险
 - **文献重复检测**：DOI、标题、作者、PDF 哈希多维度自动检测
 - **文件夹自动监控**：配置后自动监测新文件并导入提取
 - **扫描件 OCR 兜底**：Tesseract OCR（中文+英文）+ 百度 OCR 云端回退

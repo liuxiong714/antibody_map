@@ -7,13 +7,16 @@
 4. 提取完成后，将提取数据点与 GT 比对，产出精确/容差/噪声感知三级评估。
 """
 import asyncio
+import contextlib
 import logging
 import random
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+import httpx
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -21,12 +24,15 @@ from app.core.timeutil import iso_ts
 from app.models.base import async_session
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
+from app.models.synthetic_extraction import SyntheticExtraction
+from app.models.synthetic_run import SyntheticRun
 from app.models.synthetic_task import SyntheticTask
 from app.services.extraction_service import trigger_extraction
 from app.services.report_service import _call_llm
 
+from app.core.extraction.json_parser import LLMJSONParseError
 from app.core.extraction.orchestrator import LLMExtractor
-from app.models.synthetic_extraction import SyntheticExtraction
+from app.core.extraction_grounding import ground_extraction
 from app.services.literature._common import LOCAL_STORAGE_DIR
 
 logger = logging.getLogger("uvicorn")
@@ -433,6 +439,10 @@ def assess_task(db_data: dict) -> dict:
     clean_matched = 0
     clean_exact = 0
     noise_rejected = 0
+    all_ex = 0            # 模型产出的全部数据点（precision 分母）
+    all_matched_ex = 0    # 命中到某个 GT 点的产出点（用于计算额外识别率）
+    grounded_total = 0    # 带溯源判定的产出点
+    all_grounded = 0      # 原文可溯源的产出点
     field_totals: dict[str, int] = {}
     field_correct: dict[str, int] = {}
     per_noise = {k: {"total": 0, "rejected": 0} for k in NOISE_KINDS}
@@ -508,6 +518,14 @@ def assess_task(db_data: dict) -> dict:
         clean_matched += m_clean
         clean_exact += m_exact
         noise_rejected += r_noise
+        # 产出点规模 / 命中量 / 溯源统计（准确度指标分母）
+        all_ex += len(exts)
+        all_matched_ex += sum(1 for slot in ex_gtslot if slot is not None)
+        for ex in exts:
+            if "grounded" in ex:
+                grounded_total += 1
+                if ex.get("grounded"):
+                    all_grounded += 1
 
         gt_rows = [
             {
@@ -552,6 +570,30 @@ def assess_task(db_data: dict) -> dict:
     def _recall(n, d):
         return round(n / d, 4) if d else 0.0
 
+    def _prf(correct: int, pred_n: int, gt_n: int) -> tuple[float, float, float]:
+        """字段级 P/R/F1：P=正确数/模型产出点数，R=正确数/GT 清洁点数，F1 为二者调和均值。"""
+        p = correct / pred_n if pred_n else 0.0
+        r = correct / gt_n if gt_n else 0.0
+        f1 = (2 * p * r / (p + r)) if (p + r) else 0.0
+        return round(p, 4), round(r, 4), round(f1, 4)
+
+    field_precision: dict[str, float] = {}
+    field_recall: dict[str, float] = {}
+    field_f1: dict[str, float] = {}
+    for f in field_totals:
+        p, r, f1 = _prf(field_correct.get(f, 0), all_ex, all_clean)
+        field_precision[f] = p
+        field_recall[f] = r
+        field_f1[f] = f1
+
+    def _macro(d: dict[str, float]) -> float:
+        return round(sum(d.values()) / len(d), 4) if d else 0.0
+
+    # 幻觉率代理：模型产出点中「原文无法溯源」的比例（1 - grounded 率）。
+    # 未采集溯源信息（如历史数据）时为 None。
+    grounded_rate = round(all_grounded / grounded_total, 4) if grounded_total else None
+    hallucination_rate = round(1 - grounded_rate, 4) if grounded_rate is not None else None
+
     summary = {
         "disease": disease,
         "clean_total": all_clean,
@@ -559,13 +601,30 @@ def assess_task(db_data: dict) -> dict:
         "clean_recall": _recall(clean_matched, all_clean),
         "value_exact_rate": _recall(clean_exact, all_clean),
         "value_tolerance_rate": all_clean and _recall(clean_matched, all_clean) or 0.0,
+        # 值级准确度（5% 相对误差口径，与容差匹配一致）
+        "value_accuracy": all_clean and _recall(clean_matched, all_clean) or 0.0,
         "noise_total": all_noise,
         "noise_rejected": noise_rejected,
         "noise_rejection_rate": _recall(noise_rejected, all_noise),
+        # ===== 字段级 P/R/F1 =====
         "field_accuracy": {
             f: round(field_correct.get(f, 0) / field_totals[f], 4) if field_totals.get(f) else 0
             for f in field_totals
         },
+        "field_precision": field_precision,
+        "field_recall": field_recall,
+        "field_f1": field_f1,
+        "field_prf_macro": {
+            "precision": _macro(field_precision),
+            "recall": _macro(field_recall),
+            "f1": _macro(field_f1),
+        },
+        # ===== 产出规模 / 幻觉率 =====
+        "extracted_total": all_ex,
+        "matched_total": all_matched_ex,
+        "extra_rate": round((all_ex - all_matched_ex) / all_ex, 4) if all_ex else 0.0,
+        "grounded_rate": grounded_rate,
+        "hallucination_rate": hallucination_rate,
         "per_noise_type": {
             k: {
                 "total": v["total"],
@@ -701,11 +760,11 @@ def _norm_extract_points(cleaned: dict) -> list[dict]:
     return out
 
 
-async def _extract_lit_points(model: str, lit: Literature) -> list[dict]:
-    """用指定模型对一篇文献纯抽取（不写库、不动 data_point），返回归一化点数组。
+def _resolve_lit_text(lit: Literature) -> str:
+    """解析一篇文献的可提取文本。
 
-    文本来源依次回退：data/pdfs/{id}.txt 缓存全文 → 无缓存但有内容时用库内
-    title + journal + pub_year + abstract 拼装的提取文本。两者皆不足 100 字符才抛错。
+    优先 data/pdfs/{id}.txt 缓存全文；无缓存时用库内 title + journal + pub_year
+    + abstract 拼装。不足 100 字符时抛错。
     """
     txt_path = _lit_text_path(lit.id)
     text = ""
@@ -722,6 +781,12 @@ async def _extract_lit_points(model: str, lit: Literature) -> list[dict]:
         text = "\n".join(p for p in parts if p)
     if len(text) < 100:
         raise ValueError("文献无可提取文本（无缓存全文且无有效摘要/正文）")
+    return text
+
+
+async def _extract_lit_points(model: str, lit: Literature) -> list[dict]:
+    """用指定模型对一篇文献纯抽取（不写库、不动 data_point），返回归一化点数组。"""
+    text = _resolve_lit_text(lit)
     extractor = LLMExtractor(model=model)
     raw = await extractor.extract_with_retry(
         text, title=lit.title, journal=getattr(lit, "journal", None),
@@ -732,6 +797,58 @@ async def _extract_lit_points(model: str, lit: Literature) -> list[dict]:
         if isinstance(rc, dict):
             points.extend(_norm_extract_points(rc))
     return points
+
+
+async def _extract_lit_points_with_metrics(model: str, lit: Literature) -> tuple[list[dict], dict]:
+    """纯抽取一篇文献，并采集效率指标与原文溯源信息（不写库、不动 data_point）。
+
+    返回 (归一化数据点数组, 指标 dict)。指标含首 token 延迟、生成速度、输出 token 数、
+    数据点总数与可溯源点数（幻觉率代理）。JSON 解析失败会向上抛 LLMJSONParseError，
+    由调用方按 json_ok=False 记录。
+    """
+    text = _resolve_lit_text(lit)
+    extractor = LLMExtractor(model=model)
+    raw = await extractor.extract_with_retry(
+        text, title=lit.title, journal=getattr(lit, "journal", None),
+        pub_year=getattr(lit, "pub_year", None),
+    )
+    points: list[dict] = []
+    for rc in raw:
+        if not isinstance(rc, dict):
+            continue
+        # 原文溯源：定位该数据点在全文中的依据（幻觉率 = 1 - 可溯源率）
+        grounded = ground_extraction(
+            source_text=text,
+            source_context=rc.get("source_context"),
+            extract_item=rc,
+        ).is_grounded
+        for p in _norm_extract_points(rc):
+            p["grounded"] = bool(grounded)
+            points.append(p)
+
+    timing = extractor.get_timing_summary()
+    usage = extractor.get_usage_summary()
+    metrics = {
+        "first_token_ms": timing.get("avg_first_token_ms"),
+        "gen_tokens": usage.get("total_completion_tokens"),
+        "tokens_per_sec": timing.get("tokens_per_sec"),
+        "points_total": len(points),
+        "grounded_points": sum(1 for p in points if p.get("grounded")),
+    }
+    return points, metrics
+
+
+async def resolve_literature_ids_by_tag(db: AsyncSession, tag_id: uuid.UUID) -> list[str]:
+    """按编组(tag)取该编组下全部在库文献 id（不受分页/页大小限制）。"""
+    from app.models.literature_tag import literature_tag
+
+    rows = (await db.execute(
+        select(Literature.id)
+        .join(literature_tag, literature_tag.c.literature_id == Literature.id)
+        .where(literature_tag.c.tag_id == tag_id, Literature.deleted_at.is_(None))
+        .order_by(Literature.created_at)
+    )).scalars().all()
+    return [str(x) for x in rows]
 
 
 async def trigger_reference_gt(db: AsyncSession, task_id: uuid.UUID,
@@ -785,75 +902,244 @@ async def trigger_reference_gt(db: AsyncSession, task_id: uuid.UUID,
     return {"literatures": len(per_lit), "reference_model": model}
 
 
-async def _run_multi_extraction(task_id: str) -> None:
-    """后台：对任务内每个 (模型 × 文献) 依次纯抽取，结果写入 synthetic_extraction。"""
-    async with async_session() as db:
+# ===================== 编组 × 多模型批量评测（串行运行） =====================
+
+def _ollama_base_url() -> str:
+    """Ollama 原生 API 基址（用于 /api/ps 显存采样）。"""
+    return (
+        (getattr(settings, "OLLAMA_BASE_URL", "") or "").strip().rstrip("/")
+        or (getattr(settings, "LLM_BASE_URL", "") or "").strip().rstrip("/")
+    )
+
+
+async def _sample_peak_vram(model: str, stop: asyncio.Event, out: dict) -> None:
+    """周期性采样 Ollama /api/ps，记录该模型驻留显存峰值（MB）。
+
+    仅对本地 Ollama 有效；不可达或非本地模型时 out["peak_vram_mb"] 保持 None，
+    不影响任务执行。
+    """
+    base = _ollama_base_url()
+    if ":11434" not in base:
+        return
+    target = LLMExtractor._strip_vendor_prefix(model).lower()
+    target_family = target.split(":")[0]
+    while not stop.is_set():
         try:
-            tid = uuid.UUID(task_id)
-            task = await _get_task(db, tid)
-            if not task:
-                return
-            rows = (await db.execute(
-                select(SyntheticExtraction).where(
-                    SyntheticExtraction.task_id == tid,
-                    SyntheticExtraction.status == "pending",
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{base}/api/ps")
+                if resp.status_code == 200:
+                    for m in (resp.json() or {}).get("models", []):
+                        name = str(m.get("name") or m.get("model") or "").lower()
+                        if name and (name == target or name.split(":")[0] == target_family):
+                            vram = int(m.get("size_vram") or 0) // (1024 * 1024)
+                            if vram > (out.get("peak_vram_mb") or 0):
+                                out["peak_vram_mb"] = vram
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            continue
+
+
+def _summarize_run_efficiency(rows: list, peak_vram_mb: int | None) -> dict:
+    """汇总一次运行（一个模型 × 全部文献）的效率指标。"""
+    done = [r for r in rows if r.status == "done"]
+    failed = [r for r in rows if r.status == "failed"]
+    no_data = [r for r in done if not (r.points_json or [])]
+
+    def _avg(vals):
+        vals = [v for v in vals if v is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    avg_dur_ms = _avg([r.duration_ms for r in done])
+    avg_first = _avg([r.first_token_ms for r in done])
+    avg_tps = _avg([r.tokens_per_sec for r in done])
+    json_flags = [r.json_ok for r in rows if r.json_ok is not None]
+    total_pts = sum(len(r.points_json or []) for r in done)
+    grounded = sum(int(r.grounded_points or 0) for r in done)
+    return {
+        "literatures_total": len(rows),
+        "success": len(done) - len(no_data),
+        "no_data": len(no_data),
+        "failed": len(failed),
+        "success_rate": round(len(done) / len(rows), 4) if rows else 0.0,
+        "total_points": total_pts,
+        "avg_points_per_literature": round(total_pts / len(done), 2) if done else None,
+        "avg_duration_s": round(avg_dur_ms / 1000, 1) if avg_dur_ms is not None else None,
+        "avg_first_token_ms": round(avg_first) if avg_first is not None else None,
+        "avg_tokens_per_sec": round(avg_tps, 2) if avg_tps is not None else None,
+        "json_ok_rate": round(sum(1 for f in json_flags if f) / len(json_flags), 4) if json_flags else None,
+        "grounded_rate": round(grounded / total_pts, 4) if total_pts else None,
+        "hallucination_rate": round(1 - grounded / total_pts, 4) if total_pts else None,
+        "peak_vram_mb": peak_vram_mb,
+    }
+
+
+async def _run_one_synthetic_run(task_id: uuid.UUID, run_id: uuid.UUID) -> None:
+    """执行一次「单模型 × 全部文献」的运行（串行；短会话，不跨 LLM 调用持有连接）。"""
+    timeout = float(settings.SYN_MULTI_MODEL_TIMEOUT)
+
+    async with async_session() as db:
+        run = (await db.execute(
+            select(SyntheticRun).where(SyntheticRun.id == run_id)
+        )).scalar_one_or_none()
+        if not run:
+            return
+        model = run.model
+        run.status = "running"
+        run.started_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    stop = asyncio.Event()
+    vram: dict = {"peak_vram_mb": None}
+    sampler = asyncio.create_task(_sample_peak_vram(model, stop, vram))
+
+    async with async_session() as db:
+        row_ids = [str(x) for x in (await db.execute(
+            select(SyntheticExtraction.id)
+            .where(SyntheticExtraction.run_id == run_id)
+            .order_by(SyntheticExtraction.created_at, SyntheticExtraction.id)
+        )).scalars().all()]
+
+    done = failed = 0
+    try:
+        for row_id in row_ids:
+            # 读文献 + 置 running（短会话）
+            async with async_session() as db:
+                row = (await db.execute(
+                    select(SyntheticExtraction).where(SyntheticExtraction.id == uuid.UUID(row_id))
+                )).scalar_one_or_none()
+                if not row:
+                    continue
+                lit = (await db.execute(
+                    select(Literature).where(Literature.id == row.literature_id)
+                )).scalar_one_or_none()
+                row.status = "running"
+                row.started_at = datetime.now(timezone.utc)
+                await db.commit()
+
+            t0 = time.monotonic()
+            pts: list[dict] | None = None
+            metrics: dict = {}
+            err: str | None = None
+            json_ok: bool | None = True
+            try:
+                if lit is None:
+                    raise ValueError("文献不存在或已删除")
+                pts, metrics = await asyncio.wait_for(
+                    _extract_lit_points_with_metrics(model, lit), timeout=timeout,
                 )
+            except asyncio.TimeoutError:
+                err = f"提取超时（超过 {timeout:.0f}s 上限）"
+                json_ok = None
+            except LLMJSONParseError as e:
+                err = f"JSON 解析失败: {e}"[:1900]
+                json_ok = False
+            except Exception as e:  # noqa: BLE001
+                err = str(e)[:1900]
+                json_ok = None
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if err:
+                failed += 1
+            else:
+                done += 1
+
+            # 写回结果与指标（短会话）
+            async with async_session() as db:
+                row = (await db.execute(
+                    select(SyntheticExtraction).where(SyntheticExtraction.id == uuid.UUID(row_id))
+                )).scalar_one_or_none()
+                if row:
+                    row.finished_at = datetime.now(timezone.utc)
+                    row.duration_ms = duration_ms
+                    if err:
+                        row.status = "failed"
+                        row.points_json = None
+                        row.error = err
+                    else:
+                        row.status = "done"
+                        row.points_json = pts
+                        row.error = None
+                    row.json_ok = json_ok
+                    row.first_token_ms = metrics.get("first_token_ms")
+                    row.gen_tokens = metrics.get("gen_tokens")
+                    row.tokens_per_sec = metrics.get("tokens_per_sec")
+                    row.points_total = metrics.get("points_total") or 0
+                    row.grounded_points = metrics.get("grounded_points") or 0
+                run = (await db.execute(
+                    select(SyntheticRun).where(SyntheticRun.id == run_id)
+                )).scalar_one_or_none()
+                if run:
+                    run.literatures_done = done
+                    run.literatures_failed = failed
+                await db.commit()
+    finally:
+        stop.set()
+        with contextlib.suppress(Exception):
+            await sampler
+
+    # 收尾：峰值显存、耗时、状态与效率汇总
+    async with async_session() as db:
+        run = (await db.execute(
+            select(SyntheticRun).where(SyntheticRun.id == run_id)
+        )).scalar_one_or_none()
+        if run:
+            run.peak_vram_mb = vram.get("peak_vram_mb")
+            run.finished_at = datetime.now(timezone.utc)
+            if done == 0:
+                run.status = "failed"
+            elif failed > 0:
+                run.status = "partial"
+            else:
+                run.status = "done"
+            if run.started_at:
+                run.duration_seconds = round(
+                    (run.finished_at - run.started_at).total_seconds(), 1
+                )
+            rows = (await db.execute(
+                select(SyntheticExtraction).where(SyntheticExtraction.run_id == run_id)
             )).scalars().all()
-            # 预取文献元信息
-            for lit_id in {r.literature_id for r in rows}:
-                pass
-            infos: dict = {}
-            for r in rows:
-                if r.literature_id not in infos:
-                    lit = (await db.execute(
-                        select(Literature).where(Literature.id == r.literature_id)
-                    )).scalar_one_or_none()
-                    infos[r.literature_id] = lit
-            for r in rows:
-                r.status = "running"
-                await db.commit()
-                try:
-                    lit = infos.get(r.literature_id)
-                    if lit is None:
-                        raise ValueError("文献不存在或已删除")
-                    # 多模型对比：给单篇提取限定耗时上限，避免慢/卡死模型占用过久，
-                    # 使能正常响应的模型（如 qwen2.5:14b）快速产出，对比仍可拿到结果
-                    timeout = float(getattr(settings, "SYN_MULTI_MODEL_TIMEOUT", 300))
-                    pts = await asyncio.wait_for(
-                        _extract_lit_points(r.model, lit), timeout=timeout,
-                    )
-                    r.points_json = pts
-                    r.status = "done"
-                    r.error = None
-                except asyncio.TimeoutError:
-                    r.status = "failed"
-                    r.points_json = None
-                    r.error = f"提取超时（超过 {timeout:.0f}s 上限）"
-                except Exception as e:  # noqa: BLE001
-                    r.status = "failed"
-                    r.points_json = None
-                    r.error = str(e)[:1900]
-                await db.commit()
-            # 全部完成后更新时间戳
-            task.extracted_at = datetime.now(timezone.utc)
-            task.status = "extracting"
+            run.summary_json = _summarize_run_efficiency(list(rows), run.peak_vram_mb)
             await db.commit()
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"[Synthetic] 多模型提取任务失败: {e}", exc_info=True)
 
 
-async def trigger_multi_extraction(db: AsyncSession, task_id: uuid.UUID,
-                                   models: list[str]) -> dict:
-    """对任务内文献按多个模型分别触发纯抽取（多模型对比）。
+async def _run_serial_multi_extraction(task_id: str) -> None:
+    """后台：严格串行执行——某个模型跑完全部文献后，再切换到下一个模型。"""
+    try:
+        tid = uuid.UUID(task_id)
+        async with async_session() as db:
+            run_ids = [str(x) for x in (await db.execute(
+                select(SyntheticRun.id).where(
+                    SyntheticRun.task_id == tid,
+                    SyntheticRun.status.in_(["pending", "running"]),
+                ).order_by(SyntheticRun.run_index)
+            )).scalars().all()]
+        for run_id in run_ids:
+            await _run_one_synthetic_run(tid, uuid.UUID(run_id))
+        async with async_session() as db:
+            task = await _get_task(db, tid)
+            if task:
+                task.extracted_at = datetime.now(timezone.utc)
+                task.status = "extracting"
+                await db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[Synthetic] 串行多模型提取失败: {e}", exc_info=True)
 
-    - 结果存 synthetic_extraction，不写 data_point（不污染真实文献数据）。
-    - existing 任务必须先完成参考 GT 生成。
-    - 触发后在后台依次执行全部 (模型 × 文献) 组合。
+
+async def trigger_serial_multi_extraction(db: AsyncSession, task_id: uuid.UUID,
+                                          models: list[str]) -> dict:
+    """触发「编组 × 多模型」批量评测：为每个模型建一条运行记录并依次串行执行。
+
+    - 结果存 synthetic_extraction（按 run 区分，不写 data_point，不污染真实文献）。
+    - 每次触发都是全新运行（跳过已有缓存），同一模型的多次运行各自保留、互不覆盖。
+    - existing 任务必须先完成参考基准(GT)生成。
     """
     task = await _get_task(db, task_id)
     if not task:
         raise ValueError("任务不存在")
-    if task.status not in ("ready", "assessed", "extracting"):
+    if task.status not in ("ready", "assessed", "extracting", "failed"):
         raise ValueError(f"任务当前状态 {task.status}，无法触发提取")
     if task.literature_source == "existing" and not task.gt_json:
         raise ValueError("existing 任务需先生成参考基准(GT)后再进行多模型提取")
@@ -864,24 +1150,24 @@ async def trigger_multi_extraction(db: AsyncSession, task_id: uuid.UUID,
     if not models:
         raise ValueError("请至少选择一个提取模型")
 
-    for lid_str in task.literature_ids:
-        lit_id = uuid.UUID(lid_str)
-        for m in models:
-            row = (await db.execute(
-                select(SyntheticExtraction).where(
-                    SyntheticExtraction.task_id == task_id,
-                    SyntheticExtraction.literature_id == lit_id,
-                    SyntheticExtraction.model == m,
-                )
-            )).scalar_one_or_none()
-            if row:
-                row.status = "pending"
-                row.points_json = None
-                row.error = None
-            else:
-                db.add(SyntheticExtraction(
-                    task_id=task_id, literature_id=lit_id, model=m, status="pending"
-                ))
+    max_idx = int((await db.execute(
+        select(func.max(SyntheticRun.run_index)).where(SyntheticRun.task_id == task_id)
+    )).scalar() or 0)
+    lit_ids = [uuid.UUID(x) for x in task.literature_ids]
+
+    for m in models:
+        max_idx += 1
+        run = SyntheticRun(
+            task_id=task_id, model=m, run_index=max_idx,
+            status="pending", literatures_total=len(lit_ids),
+        )
+        db.add(run)
+        await db.flush()
+        for lit_id in lit_ids:
+            db.add(SyntheticExtraction(
+                task_id=task_id, literature_id=lit_id, model=m,
+                run_id=run.id, status="pending",
+            ))
 
     task.models = models
     task.extractor_model = models[0]
@@ -891,23 +1177,93 @@ async def trigger_multi_extraction(db: AsyncSession, task_id: uuid.UUID,
     await db.commit()
 
     tid = str(task.id)
-    bg = asyncio.create_task(_run_multi_extraction(tid))
+    bg = asyncio.create_task(_run_serial_multi_extraction(tid))
     _bg_multi_tasks.add(bg)
     bg.add_done_callback(_bg_multi_tasks.discard)
 
     return {
-        "submitted": len(models) * len(task.literature_ids),
+        "submitted": len(models) * len(lit_ids),
         "models": models,
-        "literatures": len(task.literature_ids),
+        "literatures": len(lit_ids),
+        "runs": len(models),
     }
 
 
-async def compute_multi_assessment(db: AsyncSession, task_id: uuid.UUID) -> dict:
-    """多模型对比评估：对每个完成模型各跑一次 assess_task，产出横向指标 + 逐篇对比。
+async def runs_progress(db: AsyncSession, task_id: uuid.UUID) -> list[dict]:
+    """返回任务内各次运行（模型 × 运行序号）的进度与效率指标（供前端轮询）。"""
+    runs = (await db.execute(
+        select(SyntheticRun).where(SyntheticRun.task_id == task_id)
+        .order_by(SyntheticRun.run_index)
+    )).scalars().all()
+    if not runs:
+        return []
+    rows = (await db.execute(
+        select(SyntheticExtraction).where(SyntheticExtraction.task_id == task_id)
+        .order_by(SyntheticExtraction.model, SyntheticExtraction.updated_at)
+    )).scalars().all()
+    lit_meta: dict[str, str] = {}
+    if rows:
+        lit_ids = list({r.literature_id for r in rows})
+        for lit in (await db.execute(
+            select(Literature).where(Literature.id.in_(lit_ids))
+        )).scalars().all():
+            lit_meta[str(lit.id)] = lit.title or ""
 
-    GT 取自 task.gt_json（合成=植入值；existing=参考模型产出）。结果为每个模型的
-    提取点 vs 同一 GT 的比对。顶层 by_literature/summary 取首个已完成模型，保持与
-    现有单模型前端渲染兼容；完整多模型结果放 report_json.multi_model。
+    out = []
+    for run in runs:
+        items = [
+            {
+                "literature_id": str(r.literature_id),
+                "title": lit_meta.get(str(r.literature_id), ""),
+                "status": r.status,
+                "error": r.error,
+                "updated_at": iso_ts(r.updated_at),
+                "points_count": len(r.points_json or []),
+                "duration_ms": r.duration_ms,
+                "json_ok": r.json_ok,
+            }
+            for r in rows if r.run_id == run.id
+        ]
+        out.append({
+            "id": str(run.id),
+            "model": run.model,
+            "run_index": run.run_index,
+            "status": run.status,
+            "literatures_total": run.literatures_total,
+            "literatures_done": run.literatures_done,
+            "literatures_failed": run.literatures_failed,
+            "peak_vram_mb": run.peak_vram_mb,
+            "duration_seconds": run.duration_seconds,
+            "started_at": iso_ts(run.started_at),
+            "finished_at": iso_ts(run.finished_at),
+            "summary": run.summary_json,
+            "items": items,
+        })
+    return out
+
+
+def _mean_std(vals: list) -> tuple[float | None, float | None]:
+    """均值与总体标准差（忽略 None；无有效值时返回 (None, None)）。"""
+    nums = [float(v) for v in vals if v is not None]
+    if not nums:
+        return None, None
+    mean = sum(nums) / len(nums)
+    if len(nums) == 1:
+        return round(mean, 4), 0.0
+    var = sum((x - mean) ** 2 for x in nums) / len(nums)
+    return round(mean, 4), round(var ** 0.5, 4)
+
+
+async def compute_multi_assessment(db: AsyncSession, task_id: uuid.UUID) -> dict:
+    """多模型批量评测评估：按运行(run)分组评估，产出效率指标 + 准确度指标 + 逐篇对比。
+
+    - GT 取自 task.gt_json（generated=程序植入真值；existing=参考模型产出），
+      报告里以 gt_source 标注口径。
+    - 每个运行（单模型 × 全部文献）各跑一次 assess_task，得到准确度指标；
+      效率指标取自 synthetic_run.summary_json（或按行回算）。
+    - 同一模型的多次运行另给「均值 ± 标准差」稳定性汇总。
+    - 顶层 by_literature/summary 取首个已完成分组，保持既有前端渲染兼容；
+      完整结果放 report_json.multi_model。
     """
     task = await _get_task(db, task_id)
     if not task:
@@ -917,19 +1273,35 @@ async def compute_multi_assessment(db: AsyncSession, task_id: uuid.UUID) -> dict
     if not task.models:
         raise ValueError("该任务未配置多模型对比，请先触发多模型提取")
 
-    # 按模型分组读取提取点
+    runs = (await db.execute(
+        select(SyntheticRun).where(SyntheticRun.task_id == task_id)
+        .order_by(SyntheticRun.run_index)
+    )).scalars().all()
     rows = (await db.execute(
         select(SyntheticExtraction).where(SyntheticExtraction.task_id == task_id)
     )).scalars().all()
-    by_model_lit: dict[str, dict[str, list[dict]]] = {}
-    done_cnt: dict[str, int] = {}
-    lit_cnt: dict[str, int] = {}
-    for r in rows:
-        lit_cnt[r.model] = lit_cnt.get(r.model, 0) + 1
-        if r.status == "done":
-            done_cnt[r.model] = done_cnt.get(r.model, 0) + 1
-        dm = by_model_lit.setdefault(r.model, {})
-        dm[str(r.literature_id)] = r.points_json or []
+
+    # 评估分组：优先按运行(run)；历史任务无 run 记录时按模型分组（兼容旧数据）
+    if runs:
+        groups = [
+            {
+                "label": f"{r.model}#{r.run_index}",
+                "model": r.model,
+                "run_index": r.run_index,
+                "run": r,
+                "rows": [x for x in rows if x.run_id == r.id],
+            }
+            for r in runs
+        ]
+    else:
+        legacy_models = list(dict.fromkeys(r.model for r in rows)) or list(task.models)
+        groups = [
+            {
+                "label": m, "model": m, "run_index": None, "run": None,
+                "rows": [x for x in rows if x.model == m],
+            }
+            for m in legacy_models
+        ]
 
     lit_meta: dict[str, dict] = {}
     lit_index: dict[str, str] = {}
@@ -943,53 +1315,83 @@ async def compute_multi_assessment(db: AsyncSession, task_id: uuid.UUID) -> dict
 
     gt_by_lit = {f"lit{i}": pts for i, pts in enumerate(task.gt_json)}
 
-    done_models = [m for m in task.models if done_cnt.get(m, 0) >= 1]
-    if not done_models:
+    done_groups = [g for g in groups if any(r.status == "done" for r in g["rows"])]
+    if not done_groups:
         pending_txt = ", ".join(
-            f"{m}(done {done_cnt.get(m, 0)}/{lit_cnt.get(m, 0)})" for m in task.models
+            f"{g['label']}(done {sum(1 for r in g['rows'] if r.status == 'done')}/{len(g['rows'])})"
+            for g in groups
         )
-        raise RuntimeError("没有已完成的模型提取结果可评估，当前模型完成情况：" + pending_txt)
+        raise RuntimeError("没有已完成的提取结果可评估，当前完成情况：" + pending_txt)
 
-    per_model_report: dict[str, dict] = {}
-    for m in done_models:
-        ex_by_lit = {
-            key: by_model_lit[m].get(lit_id, [])
-            for lit_id, key in lit_index.items()
-        }
-        per_model_report[m] = assess_task({
+    per_group_report: dict[str, dict] = {}
+    for g in done_groups:
+        ex_by_lit: dict[str, list[dict]] = {key: [] for key in lit_index.values()}
+        for r in g["rows"]:
+            key = lit_index.get(str(r.literature_id))
+            if key and r.status == "done":
+                ex_by_lit[key] = r.points_json or []
+        per_group_report[g["label"]] = assess_task({
             "disease": task.disease,
             "gt_by_literature": gt_by_lit,
             "ex_by_literature": ex_by_lit,
             "lit_meta": lit_meta,
         })
 
-    first = per_model_report[done_models[0]]
+    labels = [g["label"] for g in done_groups]
+    first = per_group_report[labels[0]]
 
-    # 横向指标
+    # 横向指标：效率 + 准确度
     comparison = []
-    for m in done_models:
-        s = per_model_report[m]["summary"]
+    for g in done_groups:
+        s = per_group_report[g["label"]]["summary"]
+        run = g["run"]
+        eff = dict(run.summary_json) if (run and run.summary_json) else _summarize_run_efficiency(g["rows"], None)
         comparison.append({
-            "model": m,
-            "literatures_total": lit_cnt.get(m, 0),
-            "literatures_done": done_cnt.get(m, 0),
+            "model": g["label"],
+            "base_model": g["model"],
+            "run_index": g["run_index"],
+            # ===== 准确度指标 =====
             "clean_total": s["clean_total"],
             "clean_matched": s["clean_matched"],
             "clean_recall": s["clean_recall"],
             "value_exact_rate": s["value_exact_rate"],
+            "value_accuracy": s["value_accuracy"],
             "noise_total": s["noise_total"],
             "noise_rejected": s["noise_rejected"],
             "noise_rejection_rate": s["noise_rejection_rate"],
             "field_accuracy": s["field_accuracy"],
+            "field_prf_macro": s["field_prf_macro"],
+            "field_precision": s["field_precision"],
+            "field_recall": s["field_recall"],
+            "field_f1": s["field_f1"],
+            "hallucination_rate": s["hallucination_rate"],
+            "grounded_rate": s["grounded_rate"],
+            "extra_rate": s["extra_rate"],
+            "extracted_total": s["extracted_total"],
+            # ===== 效率指标 =====
+            "literatures_total": eff.get("literatures_total", len(g["rows"])),
+            "literatures_done": (eff.get("success") or 0) + (eff.get("no_data") or 0),
+            "success": eff.get("success"),
+            "no_data": eff.get("no_data"),
+            "failed": eff.get("failed"),
+            "success_rate": eff.get("success_rate"),
+            "total_points": eff.get("total_points"),
+            "avg_points_per_literature": eff.get("avg_points_per_literature"),
+            "avg_duration_s": eff.get("avg_duration_s"),
+            "avg_first_token_ms": eff.get("avg_first_token_ms"),
+            "avg_tokens_per_sec": eff.get("avg_tokens_per_sec"),
+            "json_ok_rate": eff.get("json_ok_rate"),
+            "peak_vram_mb": eff.get("peak_vram_mb"),
+            "run_seconds": (run.duration_seconds if run else None),
         })
 
-    # 逐篇：GT + 各模型提取点/命中
+    # 逐篇：GT + 各分组提取点/命中
     multi_bl = []
     for i, row in enumerate(first["by_literature"]):
         models_info = {}
-        for m in done_models:
-            bl = per_model_report[m]["by_literature"][i]
-            models_info[m] = {
+        for lbl in labels:
+            bl = per_group_report[lbl]["by_literature"][i]
+            models_info[lbl] = {
                 "extracted_points": bl["extracted_points"],
                 "clean_total": bl["clean_total"],
                 "clean_matched": bl["clean_matched"],
@@ -1003,10 +1405,40 @@ async def compute_multi_assessment(db: AsyncSession, task_id: uuid.UUID) -> dict
             "models": models_info,
         })
 
+    # 稳定性：同一 base_model 多次运行的 均值 ± 标准差
+    metric_getters = {
+        "clean_recall": lambda c: c.get("clean_recall"),
+        "value_accuracy": lambda c: c.get("value_accuracy"),
+        "field_f1_macro": lambda c: (c.get("field_prf_macro") or {}).get("f1"),
+        "hallucination_rate": lambda c: c.get("hallucination_rate"),
+        "success_rate": lambda c: c.get("success_rate"),
+        "avg_duration_s": lambda c: c.get("avg_duration_s"),
+        "avg_tokens_per_sec": lambda c: c.get("avg_tokens_per_sec"),
+    }
+    by_base: dict[str, list[dict]] = {}
+    for c in comparison:
+        if c["run_index"] is not None:
+            by_base.setdefault(c["base_model"], []).append(c)
+    stability = []
+    for base, items in by_base.items():
+        if len(items) < 2:
+            continue
+        stability.append({
+            "model": base,
+            "runs": len(items),
+            "run_labels": [x["model"] for x in items],
+            "metrics": {
+                k: dict(zip(("mean", "std"), _mean_std([fn(x) for x in items])))
+                for k, fn in metric_getters.items()
+            },
+        })
+
     multi = {
-        "models": done_models,
+        "models": labels,
+        "gt_source": "implanted" if task.literature_source == "generated" else "reference_model",
         "comparison": comparison,
         "by_literature": multi_bl,
+        "stability": stability,
     }
     report = dict(first)
     report["multi_model"] = multi

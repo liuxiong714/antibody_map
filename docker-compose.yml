@@ -2,6 +2,9 @@ services:
   postgres:
     image: postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f
     container_name: antibody-postgres
+    # 使用显式 postgresql.conf，确保 fsync=on / synchronous_commit=on
+    # 防止容器被强制终止（SIGKILL/WSL 快速启动）时最近写入的 WAL 未刷盘
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
     ports:
       # 仅绑定回环地址，禁止暴露到公网
       - "127.0.0.1:5432:5432"
@@ -12,12 +15,16 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+      - ./backend/scripts/postgresql.conf:/etc/postgresql/postgresql.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U antibody"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # 容器正常关闭给 120 秒宽限期，让 postgres 完成 checkpoint + WAL 刷盘
+    # 默认 10 秒不够，主机快速关机时 postgres 可能来不及优雅退出
+    stop_grace_period: 120s
     deploy:
       resources:
         limits:

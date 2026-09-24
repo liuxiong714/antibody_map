@@ -189,6 +189,8 @@ class ExtractionRequest(BaseModel):
     clear_existing_data: bool = False
     # 是否使用 Redis 提取结果缓存；False 时强制重新提取（跳过 LLM 缓存）
     use_cache: bool = True
+    # 是否开启模型原生 thinking/推理模式；默认 False（抽取任务不需要推理，避免截断）
+    enable_thinking: bool = False
 
 
 class BatchExtractionRequest(BaseModel):
@@ -201,6 +203,8 @@ class BatchExtractionRequest(BaseModel):
     clear_existing_data: bool = False
     # 是否使用 Redis 提取结果缓存；False 时强制重新提取
     use_cache: bool = True
+    # 是否开启模型原生 thinking/推理模式；默认 False
+    enable_thinking: bool = False
 
 
 class CreateDataPointRequest(BaseModel):
@@ -256,7 +260,8 @@ async def start_extraction(
         # 防止 replace 模式误删已有数据点；synthetic 任务在服务内部直接调 trigger_extraction 不受此限制
         clear_existing = False
         use_cache = req.use_cache if req else True
-        result = await trigger_extraction(db, literature_id, model, api_key, base_url, model_config_id, clear_existing, use_cache)
+        enable_thinking = req.enable_thinking if req else False
+        result = await trigger_extraction(db, literature_id, model, api_key, base_url, model_config_id, clear_existing, use_cache, enable_thinking)
         return ApiResponse(message="提取任务已提交", data=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -325,6 +330,7 @@ async def start_batch_extraction(
                 model_config_id=req.model_config_id,
                 clear_existing_data=False,
                 use_cache=req.use_cache,
+                enable_thinking=req.enable_thinking,
             )
             submitted.append({
                 "id": str(lit_id),

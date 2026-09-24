@@ -17,6 +17,8 @@ from app.models.pathogen_monitoring import PathogenMonitoring
 from app.models.reference_import_log import ReferenceImportLog
 from app.models.report import Report
 from app.models.report_template import ReportTemplate
+from app.models.synthetic_extraction import SyntheticExtraction
+from app.models.synthetic_run import SyntheticRun
 from app.models.synthetic_task import SyntheticTask
 from app.models.titer_table import TiterTable
 from app.models.user import User
@@ -41,6 +43,8 @@ __all__ = [
     "ReferenceImportLog",
     "Report",
     "ReportTemplate",
+    "SyntheticExtraction",
+    "SyntheticRun",
     "SyntheticTask",
     "Tag",
     "TiterTable",

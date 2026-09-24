@@ -581,6 +581,7 @@ async def _process_literature_async(
     model_config_id: str | None = None,
     clear_existing_data: bool = False,
     use_cache: bool = True,
+    enable_thinking: bool = False,
 ) -> dict:
     """异步文献处理：PDF 解析 → LLM 提取 → 保存数据点（含精确溯源和强 Schema）"""
     async with async_session() as db:
@@ -865,6 +866,7 @@ async def _process_literature_async(
                     pub_year=literature.pub_year,
                     tables_md=tables_md,
                     extraction_passes=passes,
+                    enable_thinking=enable_thinking,
                 )
             except Exception:
                 # 记录提取失败耗时与结局（非阻塞，绝不影响失败回抛）
@@ -1444,12 +1446,13 @@ def process_literature(
     model_config_id: str | None = None,
     clear_existing_data: bool = False,
     use_cache: bool = True,
+    enable_thinking: bool = False,
 ):
     """Celery 任务：文献处理（PDF 解析 + AI 提取）"""
     try:
         result = run_async(
             _process_literature_async(
-                literature_id, model, model_config_id, clear_existing_data, use_cache
+                literature_id, model, model_config_id, clear_existing_data, use_cache, enable_thinking
             )
         )
         # 正常完成路径返回带 extracted_count；竞态保护/被取代等跳过路径仅返回 status，此处安全取值，避免 KeyError

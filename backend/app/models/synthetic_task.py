@@ -35,6 +35,8 @@ class SyntheticTask(Base):
     reference_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # 本次选定的多个提取模型列表（多模型对比）
     models: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # 测试文献来源编组（existing 来源时记录所选编组 tag.id，便于追溯）
+    tag_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     # 每篇中混入噪声的数据点比例（0~1）
     noise_ratio: Mapped[float] = mapped_column(Float, default=0.2)
     # 随机种子（保证 ground truth 可复现）

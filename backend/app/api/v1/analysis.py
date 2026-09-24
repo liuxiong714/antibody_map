@@ -531,8 +531,8 @@ async def get_summary(
 @router.get("/analysis/immune-barrier", response_model=ApiResponse, summary="免疫屏障评估", description="评估免疫屏障状态，分析各省份各年龄组的抗体保护水平，判断免疫缺口")
 @with_snapshot("immune_barrier")
 async def get_immune_barrier(
-    disease: str | None = Query(None, description="疾病筛选"),
-    province: str | None = Query(None, description="省份筛选"),
+    disease: str | None = Query(None, description="疾病筛选（多疾病用逗号分隔，如 dengue,ebola）"),
+    province: str | None = Query(None, description="省份筛选（多省份用逗号分隔）"),
     year_start: int | None = Query(None, description="起始年份"),
     year_end: int | None = Query(None, description="结束年份"),
     age_min: int | None = Query(None, description="最小年龄"),
@@ -540,6 +540,8 @@ async def get_immune_barrier(
     life_expectancy: float = Query(75.0, ge=50, le=100, description="期望寿命（年），默认75"),
     seroreversion_mu: float | None = Query(None, ge=0, le=0.2, description="血清转阴率 μ（0/0.01/0.02，留空则按数据估计）"),
     hit_source_override: str | None = Query(None, pattern="^(who|literature|foi)$", description="HIT 阈值来源覆盖（who|literature|foi）"),
+    review_status: str = Query("approved", pattern="^(approved|all)$", description="数据审核状态：approved 仅已审核通过（默认）；all 含待审核"),
+    skip_catalytic: bool = Query(False, description="跳过催化模型 MLE 拟合（多疾病场景自动启用，加速聚合分组统计）"),
     db: AsyncSession = Depends(get_db),
 ):
     """免疫屏障评估"""
@@ -554,12 +556,14 @@ async def get_immune_barrier(
         life_expectancy=life_expectancy,
         seroreversion_mu=seroreversion_mu,
         hit_source_override=hit_source_override,
+        review_status=review_status,
+        skip_catalytic=skip_catalytic,
     )
     return ApiResponse(data=_attach_methodology_note(
         data, "immune_barrier",
         {"disease": disease, "province": province, "year_start": year_start, "year_end": year_end,
          "life_expectancy": life_expectancy, "seroreversion_mu": seroreversion_mu,
-         "hit_source_override": hit_source_override},
+         "hit_source_override": hit_source_override, "review_status": review_status},
     ))
 
 

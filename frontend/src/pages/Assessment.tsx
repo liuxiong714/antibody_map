@@ -76,9 +76,17 @@ interface ProvinceMatrixRow {
   status: string;
 }
 
+const thStyle: React.CSSProperties = {
+  padding: '8px 12px', textAlign: 'left', fontWeight: 600, fontSize: 12,
+};
+const tdStyle: React.CSSProperties = {
+  padding: '8px 12px',
+};
+
 const Assessment: React.FC = () => {
-  const [disease, setDisease] = useState('');
-  const [province, setProvince] = useState('');
+  const [diseases, setDiseases] = useState<string[]>([]);
+  const [provinces, setProvinces] = useState<string[]>([]);
+  const [reviewStatus, setReviewStatus] = useState<'approved' | 'all'>('approved');
   const [yearStart, setYearStart] = useState<number | null>(null);
   const [yearEnd, setYearEnd] = useState<number | null>(null);
   const [ageMin, setAgeMin] = useState<number | null>(null);
@@ -91,8 +99,8 @@ const Assessment: React.FC = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const assumptionsRef = useRef(assumptions);
   assumptionsRef.current = assumptions; // 每次渲染同步最新值，供防抖回调读取
-  const diseaseRef = useRef(disease);
-  diseaseRef.current = disease;
+  const diseasesRef = useRef(diseases);
+  diseasesRef.current = diseases;
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleAssumptionChange = (patch: Partial<AssumptionState>) => {
@@ -100,18 +108,22 @@ const Assessment: React.FC = () => {
     // 防抖 500ms：参数连续调整时只发最后一次请求
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      if (diseaseRef.current) handleQuery();
+      if (diseasesRef.current.length > 0) handleQuery();
     }, 500);
   };
 
   const handleQuery = async () => {
-    if (!disease) { message.warning('请选择疾病'); return; }
+    if (!diseases.length) { message.warning('请选择疾病'); return; }
     setLoading(true);
     setResult(null);
     try {
       const a = assumptionsRef.current;
-      const params: Record<string, unknown> = { disease };
-      if (province) params.province = province;
+      const isMulti = diseases.length > 1;
+      const params: Record<string, unknown> = {
+        disease: diseases.join(','),
+        review_status: reviewStatus,
+      };
+      if (provinces.length) params.province = provinces.join(',');
       if (yearStart) params.year_start = yearStart;
       if (yearEnd) params.year_end = yearEnd;
       if (ageMin != null) params.age_min = ageMin;
@@ -119,6 +131,7 @@ const Assessment: React.FC = () => {
       if (a.life_expectancy !== DEFAULT_ASSUMPTIONS.life_expectancy) params.life_expectancy = a.life_expectancy;
       if (a.seroreversion_mu > 0) params.seroreversion_mu = a.seroreversion_mu;
       if (a.hit_source_override !== 'default') params.hit_source_override = a.hit_source_override;
+      if (isMulti) params.skip_catalytic = true;  // 多疾病自动跳过催化模型
       const resp = await getImmuneBarrier(params);
       setResult(resp);
     } catch {
@@ -318,8 +331,19 @@ const Assessment: React.FC = () => {
       <Card style={{ marginBottom: 16 }}>
         <Row gutter={[12, 12]} align="middle">
           <Col><strong style={{ color: '#ff4d4f' }}>* </strong></Col>
-          <Col><DiseaseSelector value={disease} onChange={setDisease} allowClear={false} /></Col>
-          <Col><ProvinceSelector value={province} onChange={setProvince} /></Col>
+          <Col><DiseaseSelector multiple value={diseases} onChange={setDiseases} allowClear={false} /></Col>
+          <Col><ProvinceSelector multiple value={provinces} onChange={setProvinces} /></Col>
+          <Col>
+            <Select
+              style={{ width: 160 }}
+              value={reviewStatus}
+              onChange={(v) => setReviewStatus(v as 'approved' | 'all')}
+              options={[
+                { value: 'approved', label: '仅已审核通过' },
+                { value: 'all', label: '含待审核数据' },
+              ]}
+            />
+          </Col>
           <Col><InputNumber placeholder="起始年份" value={yearStart} onChange={setYearStart} style={{ width: 110 }} /></Col>
           <Col><InputNumber placeholder="结束年份" value={yearEnd} onChange={setYearEnd} style={{ width: 110 }} /></Col>
           <Col><InputNumber placeholder="最小年龄" value={ageMin} onChange={setAgeMin} min={0} max={120} style={{ width: 110 }} /></Col>
@@ -338,6 +362,15 @@ const Assessment: React.FC = () => {
         <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
           当前假设：{assumptionText}（在右侧「假设与参数」面板调整，500ms 自动刷新）
         </div>
+        {reviewStatus === 'all' && (
+          <Alert
+            style={{ marginTop: 8 }}
+            type="warning"
+            showIcon
+            message="包含待审核数据"
+            description="当前查询包含待审核通过的数据点，评估结论的可靠性可能下降。建议审核完成后再进行最终评估。"
+          />
+        )}
       </Card>
 
       <Spin spinning={loading}>
@@ -345,6 +378,49 @@ const Assessment: React.FC = () => {
           <Empty description="请选择疾病并点击查询" />
         ) : (
           <>
+            {/* 多疾病对比视图 */}
+            {result.is_multi_disease && result.comparison_blocks && Object.keys(result.comparison_blocks).length > 0 && (
+              <Card title="多疾病免疫屏障对比" style={{ marginBottom: 16 }}>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ background: '#fafafa' }}>
+                        <th style={thStyle}>疾病</th>
+                        <th style={thStyle}>状态</th>
+                        <th style={thStyle}>数据点</th>
+                        <th style={thStyle}>文献</th>
+                        <th style={thStyle}>总样本</th>
+                        <th style={thStyle}>加权阳性率</th>
+                        <th style={thStyle}>HIT 阈值</th>
+                        <th style={thStyle}>HIT 来源</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(result.comparison_blocks).map(([name, block]) => {
+                        const cs = STATUS_CONFIG[block.status] || STATUS_CONFIG.no_data;
+                        return (
+                          <tr key={name} style={{ borderTop: '1px solid #f0f0f0' }}>
+                            <td style={tdStyle}><strong>{name}</strong></td>
+                            <td style={tdStyle}><Tag color={cs.color}>{cs.label}</Tag></td>
+                            <td style={tdStyle}>{block.summary.total_data_points}</td>
+                            <td style={tdStyle}>{block.summary.total_literatures}</td>
+                            <td style={tdStyle}>{block.summary.total_samples?.toLocaleString?.() ?? 0}</td>
+                            <td style={{ ...tdStyle, color: cs.color }}>
+                              {block.summary.weighted_positivity_rate != null
+                                ? `${block.summary.weighted_positivity_rate}%`
+                                : '-'}
+                            </td>
+                            <td style={tdStyle}>{block.summary.hit_target_used_percent ?? '-'}%</td>
+                            <td style={tdStyle}>{HIT_SOURCE_LABEL[block.summary.hit_target_source] ?? block.summary.hit_target_source}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            )}
+
             <Row gutter={16} style={{ marginBottom: 16 }}>
               <Col span={6}>
                 <Card><Statistic title="数据点数" value={result?.summary?.total_data_points ?? 0} /></Card>

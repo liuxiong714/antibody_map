@@ -16,6 +16,8 @@ class SyntheticCreate(BaseModel):
     literature_source: str = Field("generated", pattern="^(generated|existing)$", description="测试文献来源")
     # existing 来源时：所选真实文献 id 列表
     literature_ids: list[str] | None = Field(None, description="existing 来源时选择的数据库已有文献 id")
+    # existing 来源时：按编组(tag)取该编组下全部文献（与 literature_ids 二选一，优先 tag_id）
+    tag_id: str | None = Field(None, description="existing 来源时选择的文献编组(tag) id")
     # existing 来源时：产出基准(GT)的参考模型
     reference_model: str | None = Field(None, description="existing 来源时产出 GT 的参考模型")
 

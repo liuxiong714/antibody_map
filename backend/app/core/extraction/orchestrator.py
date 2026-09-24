@@ -338,6 +338,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         complement_mode: bool = False,
         table_only: bool = False,
         focus_results: bool = False,
+        enable_thinking: bool = False,
     ) -> list[dict]:
         """从文本中提取结构化数据（返回数据点列表）
 
@@ -349,6 +350,9 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
             focus_results: C-2026-09-05 聚焦结果模式，重试耗尽仍无有效数据点时启用，
                            指令要求只在【结果/数据】部分查找，忽略方法学/判定阈值说明
         """
+        # 将 thinking 模式写入实例
+        self._enable_thinking = bool(enable_thinking)
+
         # B6：使用 system prompt（静态部分分离，启用 API 端 prompt caching）
         system_prompt = SYSTEM_PROMPT_ZH if language == "zh" else PROMPT_EN.format(
             province_list_en=PROVINCE_LIST_EN, text=""
@@ -590,6 +594,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         max_retries: int = 3,
         tables_md: str = "",
         extraction_passes: int = 1,
+        enable_thinking: bool = False,
     ) -> list[dict]:
         """带重试的提取。P2：长文档（>20000字符）自动分块并行提取+合并去重。
 
@@ -600,6 +605,9 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
         - B8：多趟提取智能调度（覆盖率>90%跳过后续趟）
         """
         has_tables = bool(tables_md and tables_md.strip())
+
+        # 将 thinking 模式写入实例，整条内部调用链自动继承
+        self._enable_thinking = bool(enable_thinking)
 
         # P2-tt 试点：每次完整提取前重置滴度矩阵累加器
         self._titer_tables = []

@@ -27,10 +27,12 @@ from app.services.synthetic_service import (
     compute_multi_assessment,
     extraction_progress,
     generate_ground_truth,
+    resolve_literature_ids_by_tag,
     run_generation,
+    runs_progress,
     trigger_extraction_for_task,
-    trigger_multi_extraction,
     trigger_reference_gt,
+    trigger_serial_multi_extraction,
 )
 from app.services.literature.crud import _cleanup_txt_cache
 
@@ -60,6 +62,7 @@ def _task_dict(t: SyntheticTask) -> dict:
         "extractor_model": t.extractor_model,
         "reference_model": t.reference_model,
         "models": t.models,
+        "tag_id": str(t.tag_id) if t.tag_id else None,
         "noise_ratio": t.noise_ratio,
         "seed": t.seed,
         "output_format": t.output_format,
@@ -94,17 +97,29 @@ async def _run_reference_gt(task_id: uuid.UUID, reference_model: str | None):
             await db.commit()
 
 
-@router.post("/synthetic", response_model=ApiResponse, summary="创建自测任务", description="创建 AI 提取准确度自测任务。generated 来源：后台用生成模型 A 生成含已知答案的合成文献；existing 来源：用参考模型对所选已有文献产出基准(GT)")
+@router.post("/synthetic", response_model=ApiResponse, summary="创建自测任务", description="创建 AI 提取准确度自测任务。generated 来源：后台用生成模型 A 生成含已知答案的合成文献；existing 来源：用参考模型对所选已有文献（可传 literature_ids 或按编组 tag_id）产出基准(GT)")
 async def create_synthetic(
     req: SyntheticCreate,
     db: AsyncSession = Depends(get_db),
 ):
     if req.literature_source == "existing":
-        if not req.literature_ids:
-            raise HTTPException(status_code=400, detail="existing 来源必须选择数据库已有文献")
+        # 测试文献来源：优先按编组(tag)取该编组下全部文献，否则用显式选择的文献 id
+        literature_ids = list(req.literature_ids or [])
+        tag_id = None
+        if req.tag_id:
+            try:
+                tag_uuid = uuid.UUID(req.tag_id)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail="tag_id 格式非法") from e
+            literature_ids = await resolve_literature_ids_by_tag(db, tag_uuid)
+            tag_id = tag_uuid
+            if not literature_ids:
+                raise HTTPException(status_code=400, detail="该编组下没有可用文献")
+        if not literature_ids:
+            raise HTTPException(status_code=400, detail="existing 来源必须选择编组或数据库已有文献")
         task = SyntheticTask(
             disease=req.disease,
-            n_literatures=len(req.literature_ids),
+            n_literatures=len(literature_ids),
             points_per_literature=req.points_per_literature,
             literature_source="existing",
             generator_model=req.generator_model,
@@ -112,8 +127,9 @@ async def create_synthetic(
             seed=req.seed,
             output_format=req.output_format,
             include_table=req.include_table,
-            literature_ids=req.literature_ids,
+            literature_ids=literature_ids,
             reference_model=req.reference_model,
+            tag_id=tag_id,
             status="queued",
         )
         db.add(task)
@@ -152,7 +168,7 @@ async def create_synthetic(
     return ApiResponse(message="自测任务已创建，正在后台生成合成文献", data=_task_dict(task))
 
 
-@router.post("/synthetic/{task_id}/extract", response_model=ApiResponse, summary="触发提取", description="单模型：用提取模型 B 走现有提取链路写库；多模型：models 传入时对各文献依次用多个模型纯抽取（结果存 synthetic_extraction，不污染真实数据）")
+@router.post("/synthetic/{task_id}/extract", response_model=ApiResponse, summary="触发提取", description="单模型：用提取模型 B 走现有提取链路写库；多模型：models 传入时按「一个模型跑完全部文献再切换下一个」串行纯抽取（跳过缓存、结果按运行分别存 synthetic_extraction、不污染真实数据）")
 async def extract_synthetic(
     task_id: uuid.UUID,
     req: SyntheticExtract,
@@ -160,8 +176,8 @@ async def extract_synthetic(
 ):
     try:
         if req.models:
-            result = await trigger_multi_extraction(db, task_id, req.models)
-            message = f"已提交 {result['submitted']} 次提取（{len(result['models'])} 个模型 × {result['literatures']} 篇）"
+            result = await trigger_serial_multi_extraction(db, task_id, req.models)
+            message = f"已提交 {result['submitted']} 次提取（{len(result['models'])} 个模型 × {result['literatures']} 篇，串行执行）"
         else:
             if not req.model:
                 raise ValueError("请提供单模型 model 或多模型 models")
@@ -191,33 +207,38 @@ async def get_synthetic(
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     data = _task_dict(task)
+    # 按运行（单模型 × 全部文献）分组的进度与效率指标
+    runs = await runs_progress(db, task_id)
+    if runs:
+        data["runs"] = runs
     if task.literature_ids:
         if task.literature_source == "existing" or task.models:
-            # 多模型对比：逐 (模型×文献) 提取进度
-            rows = (await db.execute(
-                select(SyntheticExtraction).where(
-                    SyntheticExtraction.task_id == task_id
-                ).order_by(SyntheticExtraction.model, SyntheticExtraction.updated_at)
-            )).scalars().all()
-            meta = {
-                str(lit.id): lit.title for lit in (
-                    await db.execute(select(Literature).where(Literature.id.in_(
-                        [uuid.UUID(x) for x in task.literature_ids]
-                    )))
-                ).scalars().all()
-            }
-            data["multi_progress"] = [
-                {
-                    "model": r.model,
-                    "literature_id": str(r.literature_id),
-                    "title": meta.get(str(r.literature_id), ""),
-                    "status": r.status,
-                    "error": r.error,
-                    "updated_at": iso_ts(r.updated_at),
-                    "points_count": len(r.points_json or []),
+            # 多模型对比：逐 (模型×文献) 提取进度（无 run 记录的历史任务才回退该口径）
+            if not runs:
+                rows = (await db.execute(
+                    select(SyntheticExtraction).where(
+                        SyntheticExtraction.task_id == task_id
+                    ).order_by(SyntheticExtraction.model, SyntheticExtraction.updated_at)
+                )).scalars().all()
+                meta = {
+                    str(lit.id): lit.title for lit in (
+                        await db.execute(select(Literature).where(Literature.id.in_(
+                            [uuid.UUID(x) for x in task.literature_ids]
+                        )))
+                    ).scalars().all()
                 }
-                for r in rows
-            ]
+                data["multi_progress"] = [
+                    {
+                        "model": r.model,
+                        "literature_id": str(r.literature_id),
+                        "title": meta.get(str(r.literature_id), ""),
+                        "status": r.status,
+                        "error": r.error,
+                        "updated_at": iso_ts(r.updated_at),
+                        "points_count": len(r.points_json or []),
+                    }
+                    for r in rows
+                ]
         else:
             data["literature_progress"] = await extraction_progress(db, task_id)
     if task.report_json:
@@ -294,13 +315,34 @@ async def export_synthetic(
     if multi:
         writer.writerow([])
         writer.writerow(["==== 多模型横向对比 ===="])
-        writer.writerow(["模型", "clean_total", "clean_matched", "clean_recall", "value_exact_rate",
-                         "noise_total", "noise_rejected", "noise_rejection_rate", "field_accuracy"])
+        writer.writerow(["模型(运行)", "基础模型", "运行序号", "GT口径",
+                         "清洁点", "命中", "召回率", "值级准确度", "字段P", "字段R", "字段F1",
+                         "噪声点", "拒噪", "噪声拒绝率", "额外识别率", "幻觉率", "JSON合法率",
+                         "成功率", "总数据点", "单篇均耗时(s)", "平均首token延迟(ms)", "平均生成速度(t/s)", "峰值显存(MB)"])
+        gt_source = multi.get("gt_source") or ""
         for c in multi.get("comparison", []):
-            writer.writerow([c.get("model"), c.get("clean_total"), c.get("clean_matched"),
-                             c.get("clean_recall"), c.get("value_exact_rate"),
-                             c.get("noise_total"), c.get("noise_rejected"),
-                             c.get("noise_rejection_rate"), c.get("field_accuracy")])
+            prf = c.get("field_prf_macro") or {}
+            writer.writerow([
+                c.get("model"), c.get("base_model"), c.get("run_index"), gt_source,
+                c.get("clean_total"), c.get("clean_matched"), c.get("clean_recall"),
+                c.get("value_accuracy"), prf.get("precision"), prf.get("recall"), prf.get("f1"),
+                c.get("noise_total"), c.get("noise_rejected"), c.get("noise_rejection_rate"),
+                c.get("extra_rate"), c.get("hallucination_rate"), c.get("json_ok_rate"),
+                c.get("success_rate"), c.get("total_points"), c.get("avg_duration_s"),
+                c.get("avg_first_token_ms"), c.get("avg_tokens_per_sec"), c.get("peak_vram_mb"),
+            ])
+
+        # 同一模型多次运行的稳定性（均值 ± 标准差）
+        stability = multi.get("stability") or []
+        if stability:
+            writer.writerow([])
+            writer.writerow(["==== 同一模型多次运行稳定性（均值 ± 标准差）===="])
+            writer.writerow(["模型", "运行次数", "指标", "均值", "标准差"])
+            for s in stability:
+                for k, mv in (s.get("metrics") or {}).items():
+                    writer.writerow([s.get("model"), s.get("runs"), k,
+                                     (mv or {}).get("mean"), (mv or {}).get("std")])
+
         for lit in multi.get("by_literature", []):
             writer.writerow([])
             writer.writerow([f"【多模型·文献】 {lit.get('title')}  ({lit.get('literature_id')})"])

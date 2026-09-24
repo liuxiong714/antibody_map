@@ -14,8 +14,9 @@ import {
   createSynthetic, listSynthetic, triggerExtractSynthetic, getSynthetic,
   assessSynthetic, exportSynthetic, deleteSynthetic, SyntheticTask,
   SyntheticPerNoise, SyntheticPoint, SyntheticLitRow, SyntheticMultiModel, SyntheticMultiLitModelInfo, SyntheticMultiLitRow,
+  SyntheticRun, SyntheticComparisonItem,
 } from '../services/synthetic';
-import { listLiterature } from '../services/literature';
+import { listLiterature, listTags, TagItem } from '../services/literature';
 import type { Literature } from '../types';
 import { buildModelOptions, ExtendedModelOption } from '../utils/modelOptions';
 
@@ -60,9 +61,17 @@ const ExtractionSelfTest: React.FC = () => {
   const [litKeyword, setLitKeyword] = useState('');
   // 每行多模型对比选中
   const [activeModels, setActiveModels] = useState<Record<string, string[]>>({});
+  // existing 来源：按编组选择（推荐）
+  const [tagOptions, setTagOptions] = useState<TagItem[]>([]);
+  const [selectedTagId, setSelectedTagId] = useState<string | undefined>();
+  const [tagLitCount, setTagLitCount] = useState<number | null>(null);
+  // 创建任务后待自动触发的批量评测（等 GT 就绪后串行跑多模型）
+  const pendingRunRef = useRef<{ id: string; models: string[] } | null>(null);
+  const autoTriggeredRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     buildModelOptions().then(setModelOptions);
+    listTags().then(setTagOptions).catch(() => setTagOptions([]));
     form.setFieldsValue({ disease: '麻疹', n_literatures: 20, points_per_literature: 20, noise_ratio: 0.2, seed: 42, output_format: 'text', include_table: true });
   }, [form]);
 
@@ -95,6 +104,25 @@ const ExtractionSelfTest: React.FC = () => {
 
   useEffect(() => { fetchTasks(false); }, [fetchTasks]);
 
+  // 创建任务并选定模型后：等参考基准(GT)就绪（status=ready）即自动触发串行多模型批量评测
+  useEffect(() => {
+    const pending = pendingRunRef.current;
+    if (!pending) return;
+    const t = tasks.find(x => x.id === pending.id);
+    if (!t) return;
+    if (t.status === 'failed') {
+      pendingRunRef.current = null;
+      return;
+    }
+    if (t.status === 'ready' && !autoTriggeredRef.current.has(pending.id)) {
+      autoTriggeredRef.current.add(pending.id);
+      triggerExtractSynthetic(pending.id, null, pending.models)
+        .then(() => message.success(`已开始串行批量评测：${pending.models.length} 个模型将依次跑完全部文献`))
+        .catch((e: any) => message.error(e?.response?.data?.detail || '批量评测触发失败'))
+        .finally(() => { pendingRunRef.current = null; fetchTasks(false); });
+    }
+  }, [tasks, fetchTasks]);
+
   // 轮询：存在 排队/生成/提取 状态时每 4 秒刷新一次
   useEffect(() => {
     const busy = tasks.some(t => ['queued', 'generating', 'extracting'].includes(t.status));
@@ -112,17 +140,18 @@ const ExtractionSelfTest: React.FC = () => {
     setSubmitting(true);
     try {
       if (litSource === 'existing') {
-        if (selectedLits.length === 0) {
-          message.warning('请先选择已有文献');
+        if (!selectedTagId && selectedLits.length === 0) {
+          message.warning('请先选择文献编组（推荐）或手动选择已有文献');
           return;
         }
         if (!values.reference_model) {
           message.warning('请选择参考模型（用于产出基准GT）');
           return;
         }
-        await createSynthetic({
+        const models: string[] = values.extract_models || [];
+        const created = await createSynthetic({
           disease: values.disease,
-          n_literatures: selectedLits.length,
+          n_literatures: selectedTagId ? (tagLitCount ?? 0) : selectedLits.length,
           points_per_literature: values.points_per_literature ?? 20,
           // existing 模式表单未渲染生成模型A，用参考模型兜底（existing 不真正生成文献，仅占位）
           generator_model: values.reference_model,
@@ -131,10 +160,16 @@ const ExtractionSelfTest: React.FC = () => {
           output_format: 'text',
           include_table: true,
           literature_source: 'existing',
-          literature_ids: selectedLits.map(l => l.id),
+          literature_ids: selectedTagId ? undefined : selectedLits.map(l => l.id),
+          tag_id: selectedTagId,
           reference_model: values.reference_model,
         });
-        message.success('自测任务已创建，正在用参考模型产出基准(GT)');
+        if (models.length > 0) {
+          pendingRunRef.current = { id: created.id, models };
+          message.success(`自测任务已创建，正在产出基准(GT)，就绪后将自动用 ${models.length} 个模型串行批量评测`);
+        } else {
+          message.success('自测任务已创建，正在用参考模型产出基准(GT)');
+        }
       } else {
         await createSynthetic({
           disease: values.disease,
@@ -219,6 +254,8 @@ const ExtractionSelfTest: React.FC = () => {
     try {
       await deleteSynthetic(task.id);
       message.success('已删除失败任务');
+      if (pendingRunRef.current?.id === task.id) pendingRunRef.current = null;
+      autoTriggeredRef.current.delete(task.id);
       await fetchTasks(false);
       if (detail?.id === task.id) setDetailOpen(false);
     } catch (e: any) {
@@ -475,6 +512,14 @@ const ExtractionSelfTest: React.FC = () => {
       );
     };
 
+    const runs = (t.runs || []) as SyntheticRun[];
+    const stability = multi?.stability || [];
+    const pct = (v?: number | null) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
+    const num = (v?: number | null, digits = 1) => (v == null ? '—' : Number(v).toFixed(digits));
+    const gtSourceLabel = multi?.gt_source === 'reference_model'
+      ? `参考模型一致性（GT=${t.reference_model || '参考模型'}）`
+      : '程序植入真值（严格口径）';
+
     return (
       <>
         <Row gutter={16} style={{ marginBottom: 16 }}>
@@ -484,43 +529,146 @@ const ExtractionSelfTest: React.FC = () => {
             </Card>
           </Col>
           <Col span={6}>
-            <Card size="small"><Statistic title="对比模型" value={comp.length} suffix="个" /></Card>
+            <Card size="small">
+              <Statistic title="对比模型（运行数）" value={comp.length} suffix="次" />
+            </Card>
           </Col>
           <Col span={6}>
-            <Card size="small"><Statistic title="参考模型(GT)" value={t.reference_model || '—'} valueStyle={{ fontSize: 14 }} /></Card>
+            <Card size="small">
+              <Statistic title="GT 口径" value={gtSourceLabel} valueStyle={{ fontSize: 12 }} />
+            </Card>
           </Col>
           <Col span={6}>
             <Card size="small"><Statistic title="总耗时" value={fmtDur(t.total_seconds)} /></Card>
           </Col>
         </Row>
 
-        <Card size="small" title="多模型横向指标对比" style={{ marginBottom: 12 }}>
+        {runs.length > 0 && (
+          <Card size="small" title="运行进度（每个模型跑完全部文献后再切换下一个）" style={{ marginBottom: 12 }}>
+            <Table
+              rowKey="id"
+              size="small"
+              pagination={false}
+              dataSource={runs}
+              expandable={{
+                expandedRowRender: (r: SyntheticRun) => (
+                  <Table
+                    rowKey={(x: any) => x.literature_id}
+                    size="small"
+                    pagination={false}
+                    dataSource={r.items || []}
+                    columns={[
+                      { title: '文献', dataIndex: 'title', ellipsis: true },
+                      { title: '状态', dataIndex: 'status', width: 90 },
+                      { title: '数据点', dataIndex: 'points_count', width: 70 },
+                      { title: '耗时(s)', width: 80, render: (_: any, x: any) => (x.duration_ms == null ? '—' : (x.duration_ms / 1000).toFixed(1)) },
+                      { title: 'JSON', dataIndex: 'json_ok', width: 70, render: (v?: boolean | null) => (v == null ? '—' : v ? <Tag color="green">合法</Tag> : <Tag color="red">失败</Tag>) },
+                      { title: '错误', dataIndex: 'error', ellipsis: true, render: (v?: string | null) => v || '—' },
+                    ]}
+                  />
+                ),
+              }}
+              columns={[
+                { title: '#', dataIndex: 'run_index', width: 46 },
+                { title: '模型', dataIndex: 'model', render: (m: string, r: SyntheticRun) => <Tag color={modelColors[(r.run_index - 1) % modelColors.length]}>{m}</Tag> },
+                {
+                  title: '状态', dataIndex: 'status', width: 90,
+                  render: (v: string) => {
+                    const map: Record<string, { color: string; text: string }> = {
+                      pending: { color: 'default', text: '待运行' },
+                      running: { color: 'processing', text: '运行中' },
+                      done: { color: 'success', text: '已完成' },
+                      partial: { color: 'warning', text: '部分失败' },
+                      failed: { color: 'error', text: '失败' },
+                    };
+                    const s = map[v] || { color: 'default', text: v };
+                    return <Tag color={s.color}>{s.text}</Tag>;
+                  },
+                },
+                { title: '进度', width: 100, render: (_: any, r: SyntheticRun) => `${r.literatures_done}/${r.literatures_total}${r.literatures_failed ? ` · 失败${r.literatures_failed}` : ''}` },
+                { title: '数据点', width: 80, render: (_: any, r: SyntheticRun) => r.summary?.total_points ?? '—' },
+                { title: '耗时', width: 90, render: (_: any, r: SyntheticRun) => fmtDur(r.duration_seconds) },
+              ]}
+              scroll={{ x: 700 }}
+            />
+            <Alert
+              style={{ marginTop: 8 }}
+              type={runs.every(r => ['done', 'failed', 'partial'].includes(r.status)) ? 'success' : 'info'}
+              showIcon
+              message={
+                runs.every(r => ['done', 'failed', 'partial'].includes(r.status))
+                  ? '全部模型运行结束，可执行评估生成指标'
+                  : '仍有模型在串行运行中，评估可能不完整'
+              }
+            />
+          </Card>
+        )}
+
+        <Card size="small" title="效率指标（每个模型每次运行）" style={{ marginBottom: 12 }}>
           <Table
             rowKey="model"
             size="small"
             pagination={false}
-            dataSource={comp.map((c, i) => ({ ...c, __color: modelColors[i % modelColors.length] }))}
+            dataSource={comp}
             columns={[
-              { title: '模型', dataIndex: 'model', render: (m: string, r: any) => <Tag color={r.__color}>{m}</Tag> },
-              { title: '清洁点', dataIndex: 'clean_total', width: 70 },
-              { title: '命中', dataIndex: 'clean_matched', width: 70 },
-              { title: '召回率', dataIndex: 'clean_recall', width: 90, render: (v: number) => `${(v * 100).toFixed(1)}%` },
-              { title: '精确值率', dataIndex: 'value_exact_rate', width: 90, render: (v: number) => `${(v * 100).toFixed(1)}%` },
-              { title: '噪声点', dataIndex: 'noise_total', width: 70 },
-              { title: '拒噪', dataIndex: 'noise_rejected', width: 70 },
-              { title: '噪声拒绝率', dataIndex: 'noise_rejection_rate', width: 100, render: (v: number) => `${(v * 100).toFixed(1)}%` },
+              { title: '模型(运行)', dataIndex: 'model', render: (m: string, r: SyntheticComparisonItem) => <Tag color={modelColors[(r.run_index ?? 1) % modelColors.length]}>{m}</Tag> },
+              { title: '成功率', width: 100, render: (_: any, r: SyntheticComparisonItem) => `${pct(r.success_rate)}（${r.success ?? 0}成功/${r.no_data ?? 0}无数据/${r.failed ?? 0}失败）` },
+              { title: '总数据点', dataIndex: 'total_points', width: 84 },
+              { title: '均值/篇', dataIndex: 'avg_points_per_literature', width: 84 },
+              { title: '单篇均耗时(s)', dataIndex: 'avg_duration_s', width: 110 },
+              { title: '首token延迟(ms)', dataIndex: 'avg_first_token_ms', width: 120 },
+              { title: '生成速度(t/s)', dataIndex: 'avg_tokens_per_sec', width: 110 },
+              { title: '峰值显存(MB)', dataIndex: 'peak_vram_mb', width: 110 },
+              { title: '运行耗时', width: 90, render: (_: any, r: SyntheticComparisonItem) => fmtDur(r.run_seconds) },
             ]}
-            scroll={{ x: 700 }}
+            scroll={{ x: 1000 }}
           />
         </Card>
 
-        {t.multi_progress && t.multi_progress.length > 0 && (
-          <Alert
-            style={{ marginBottom: 12 }}
-            type={t.multi_progress.some(p => p.status !== 'done') ? 'info' : 'success'}
-            showIcon
-            message={t.multi_progress.some(p => p.status !== 'done') ? '部分模型/文献仍在提取，评估可能不完整' : '全部模型提取完成'}
+        <Card size="small" title="准确度指标（每个模型每次运行）" style={{ marginBottom: 12 }}>
+          <Table
+            rowKey="model"
+            size="small"
+            pagination={false}
+            dataSource={comp}
+            columns={[
+              { title: '模型(运行)', dataIndex: 'model', render: (m: string, r: SyntheticComparisonItem) => <Tag color={modelColors[(r.run_index ?? 1) % modelColors.length]}>{m}</Tag> },
+              { title: '字段P(宏)', width: 90, render: (_: any, r: SyntheticComparisonItem) => pct(r.field_prf_macro?.precision) },
+              { title: '字段R(宏)', width: 90, render: (_: any, r: SyntheticComparisonItem) => pct(r.field_prf_macro?.recall) },
+              { title: '字段F1(宏)', width: 90, render: (_: any, r: SyntheticComparisonItem) => pct(r.field_prf_macro?.f1) },
+              { title: '值级准确度', width: 100, render: (_: any, r: SyntheticComparisonItem) => pct(r.value_accuracy) },
+              { title: '清洁点召回', width: 100, render: (_: any, r: SyntheticComparisonItem) => `${pct(r.clean_recall)}（${r.clean_matched}/${r.clean_total}）` },
+              { title: '噪声拒绝率', width: 100, render: (_: any, r: SyntheticComparisonItem) => pct(r.noise_rejection_rate) },
+              { title: '幻觉率', width: 90, render: (_: any, r: SyntheticComparisonItem) => pct(r.hallucination_rate) },
+              { title: '额外识别率', width: 100, render: (_: any, r: SyntheticComparisonItem) => pct(r.extra_rate) },
+              { title: 'JSON合法率', width: 100, render: (_: any, r: SyntheticComparisonItem) => pct(r.json_ok_rate) },
+            ]}
+            scroll={{ x: 1000 }}
           />
+          <div style={{ marginTop: 8, fontSize: 12, color: '#888' }}>
+            幻觉率=产出点中原文无法溯源的比例（1 - 可溯源率）；额外识别率=产出点中未对应任何 GT 点的比例；字段 P/R/F1 为宏平均（P=正确数/产出点数，R=正确数/GT 清洁点数）。
+          </div>
+        </Card>
+
+        {stability.length > 0 && (
+          <Card size="small" title="同一模型多次运行稳定性（均值 ± 标准差）" style={{ marginBottom: 12 }}>
+            <Table
+              rowKey={(r: any) => r.model}
+              size="small"
+              pagination={false}
+              dataSource={stability}
+              columns={[
+                { title: '模型', dataIndex: 'model', width: 200, render: (m: string) => <Tag>{m}</Tag> },
+                { title: '运行次数', dataIndex: 'runs', width: 90 },
+                { title: '字段F1(宏)', width: 140, render: (_: any, r: any) => `${pct(r.metrics?.field_f1_macro?.mean)} ± ${num(r.metrics?.field_f1_macro?.std, 3)}` },
+                { title: '清洁点召回', width: 140, render: (_: any, r: any) => `${pct(r.metrics?.clean_recall?.mean)} ± ${num(r.metrics?.clean_recall?.std, 3)}` },
+                { title: '幻觉率', width: 130, render: (_: any, r: any) => `${pct(r.metrics?.hallucination_rate?.mean)} ± ${num(r.metrics?.hallucination_rate?.std, 3)}` },
+                { title: '单篇均耗时(s)', width: 130, render: (_: any, r: any) => `${num(r.metrics?.avg_duration_s?.mean)} ± ${num(r.metrics?.avg_duration_s?.std)}` },
+                { title: '生成速度(t/s)', width: 130, render: (_: any, r: any) => `${num(r.metrics?.avg_tokens_per_sec?.mean, 2)} ± ${num(r.metrics?.avg_tokens_per_sec?.std, 2)}` },
+              ]}
+              scroll={{ x: 900 }}
+            />
+          </Card>
         )}
 
         <Card size="small" title="逐文献 · 多模型对比（点击行展开查看 GT 与各模型识别点）">
@@ -779,12 +927,36 @@ const ExtractionSelfTest: React.FC = () => {
               </Form.Item>
             </>
           ) : (
-            <Form.Item label="所选文献">
-              <Space size={4}>
-                <Button onClick={openLitPicker} icon={<EyeOutlined />}>选择文献</Button>
-                <Tag color={selectedLits.length ? 'green' : 'default'}>{selectedLits.length} 篇</Tag>
-              </Space>
-            </Form.Item>
+            <>
+              <Form.Item label="文献编组" tooltip="推荐：按编组取该编组下全部文献（不受分页限制）">
+                <Space size={4}>
+                  <Select
+                    allowClear
+                    style={{ width: 180 }}
+                    placeholder="选择编组（推荐）"
+                    value={selectedTagId}
+                    onChange={(v) => {
+                      setSelectedTagId(v);
+                      setSelectedLits([]);
+                      setTagLitCount(null);
+                      if (v) {
+                        listLiterature({ page: 1, page_size: 1, tag_id: v })
+                          .then(({ total }) => setTagLitCount(total ?? 0))
+                          .catch(() => setTagLitCount(null));
+                      }
+                    }}
+                    options={tagOptions.map(t => ({ label: t.name, value: t.id }))}
+                  />
+                  {selectedTagId && <Tag color="green">{tagLitCount == null ? '统计中…' : `${tagLitCount} 篇`}</Tag>}
+                </Space>
+              </Form.Item>
+              <Form.Item label="或手动选文献">
+                <Space size={4}>
+                  <Button onClick={openLitPicker} icon={<EyeOutlined />} disabled={!!selectedTagId}>选择文献</Button>
+                  <Tag color={selectedLits.length ? 'green' : 'default'}>{selectedLits.length} 篇</Tag>
+                </Space>
+              </Form.Item>
+            </>
           )}
 
           {litSource === 'generated' ? (
@@ -796,13 +968,28 @@ const ExtractionSelfTest: React.FC = () => {
               />
             </Form.Item>
           ) : (
-            <Form.Item name="reference_model" label="参考模型" rules={[{ required: true, message: '请选择参考模型' }]}>
-              <Select
-                style={{ width: 190 }}
-                placeholder="产出基准GT的模型"
-                options={modelOptions.map(o => ({ label: o.label, value: o.value }))}
-              />
-            </Form.Item>
+            <>
+              <Form.Item name="reference_model" label="参考模型" rules={[{ required: true, message: '请选择参考模型' }]}>
+                <Select
+                  style={{ width: 190 }}
+                  placeholder="产出基准GT的模型"
+                  options={modelOptions.map(o => ({ label: o.label, value: o.value }))}
+                />
+              </Form.Item>
+              <Form.Item
+                name="extract_models"
+                label="对比模型（可多选）"
+                tooltip="选定后：创建任务 → 参考基准(GT)就绪 → 自动按顺序逐个模型跑完全部文献（每篇均跳过缓存取新结果，各次运行分别留存）"
+              >
+                <Select
+                  mode="multiple"
+                  maxTagCount="responsive"
+                  style={{ width: 280 }}
+                  placeholder="选择多个提取模型（留空则稍后手动触发）"
+                  options={modelOptions.map(o => ({ label: o.label, value: o.value }))}
+                />
+              </Form.Item>
+            </>
           )}
 
           {litSource === 'generated' && (
@@ -827,7 +1014,7 @@ const ExtractionSelfTest: React.FC = () => {
 
           <Form.Item>
             <Button type="primary" icon={<ExperimentOutlined />} loading={submitting} onClick={handleCreate}>
-              {litSource === 'existing' ? '创建自测任务' : '开始生成'}
+              {litSource === 'existing' ? '创建并开始批量评测' : '开始生成'}
             </Button>
           </Form.Item>
         </Form>
@@ -837,7 +1024,7 @@ const ExtractionSelfTest: React.FC = () => {
           style={{ marginTop: 12 }}
           message={
             litSource === 'existing'
-              ? '流程：从数据库已有文献中手动选择 → 用参考模型对所选文献纯抽取产出基准GT → 选择多个提取模型批量对比抽取 → 执行评估横向比较各模型准确度。'
+              ? '流程（推荐用编组）：选择编组（如 beijing20）→ 用参考模型产出基准GT → 选定多个对比模型 → 系统先让第 1 个模型跑完编组内全部文献（跳过缓存取新结果），再切换下一个模型，依次完成 → 逐模型产出效率指标（首token延迟/生成速度/单篇耗时/峰值显存/成功率）与准确度指标（字段级P/R/F1/值级准确度/幻觉率/JSON合法率）。'
               : '流程：选择生成模型A 量产含已知答案的合成文献（混入噪声）→ 选择提取模型 走真实提取链路 → 执行评估比对提取值 vs 真实值。'
           }
         />

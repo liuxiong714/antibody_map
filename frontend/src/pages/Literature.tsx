@@ -214,6 +214,8 @@ const LiteraturePage: React.FC = () => {
   const [extractBaseUrl, setExtractBaseUrl] = useState('');
   // 2026-09-22：是否强制跳过 LLM 缓存
   const [forceRefreshCache, setForceRefreshCache] = useState<boolean>(false);
+  // 是否开启模型原生 thinking/推理模式（默认关）
+  const [enableThinking, setEnableThinking] = useState<boolean>(false);
   const [extractCustomModel, setExtractCustomModel] = useState('');
   // 是否将当前选择的模型保存为默认
   const [saveAsDefault, setSaveAsDefault] = useState(false);
@@ -962,6 +964,7 @@ const LiteraturePage: React.FC = () => {
         baseUrl: extractBaseUrl || undefined,
         // clearExistingData 已移除（2026-09-22 彻底禁用 replace 模式，后端 API 也强制 append）
         useCache: !forceRefreshCache,  // 勾选强制刷新时跳过 LLM 缓存
+        enableThinking,
       } : undefined;
 
       if (batchExtractMode) {
@@ -2936,6 +2939,14 @@ const LiteraturePage: React.FC = () => {
             onChange={(e) => setForceRefreshCache(e.target.checked)}
           >
             强制重新跑 LLM（跳过已有缓存，重新调用模型获取新鲜结果）
+          </Checkbox>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <Checkbox
+            checked={enableThinking}
+            onChange={(e) => setEnableThinking(e.target.checked)}
+          >
+            开启模型推理（thinking）—— 让模型先思考再输出，耗时更长，抽取任务建议保持关闭
           </Checkbox>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, paddingTop: 8, borderTop: '1px solid #f0f0f0' }}>

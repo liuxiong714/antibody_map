@@ -185,6 +185,8 @@ export interface ExtractionOptions {
   modelConfigId?: string;
   clearExistingData?: boolean;
   useCache?: boolean;
+  // 是否开启模型原生 thinking/推理模式；默认 false（抽取任务不需要推理，避免截断）
+  enableThinking?: boolean;
 }
 
 export async function triggerExtraction(literatureId: string, options?: ExtractionOptions) {
@@ -196,6 +198,12 @@ export async function triggerExtraction(literatureId: string, options?: Extracti
     body.base_url = options.baseUrl;
     if (options.clearExistingData !== undefined) {
       body.clear_existing_data = options.clearExistingData;
+    }
+    if (options.useCache !== undefined) {
+      body.use_cache = options.useCache;
+    }
+    if (options.enableThinking !== undefined) {
+      body.enable_thinking = options.enableThinking;
     }
   }
   // AI 提取启动接口本身是"提交任务"式的（后端通过 SSE/轮询查进度），超时时间给 60s 保障启动阶段稳定
@@ -227,6 +235,12 @@ export async function triggerBatchExtraction(
     if (options.clearExistingData !== undefined) {
       body.clear_existing_data = options.clearExistingData;
     }
+    if (options.useCache !== undefined) {
+      body.use_cache = options.useCache;
+    }
+    if (options.enableThinking !== undefined) {
+      body.enable_thinking = options.enableThinking;
+    }
   }
   const { data } = await api.post('/literatures/extraction/batch', body, { timeout: 60_000 });
   return data;
@@ -241,13 +255,14 @@ export interface TagItem {
 }
 
 export async function listTags(): Promise<TagItem[]> {
+  // axios 拦截器已自动解包 ApiResponse.data → resp.data 即是标签数组
   const { data } = await api.get('/tags');
-  return data.data || [];
+  return (data as TagItem[]) || [];
 }
 
 export async function createTag(name: string, color?: string): Promise<TagItem> {
   const { data } = await api.post('/tags', { name, color });
-  return data.data;
+  return data as TagItem;
 }
 
 export async function deleteTag(tagId: string): Promise<void> {

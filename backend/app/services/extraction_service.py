@@ -137,6 +137,7 @@ async def trigger_extraction(
     model_config_id: str | None = None,
     clear_existing_data: bool = False,
     use_cache: bool = True,
+    enable_thinking: bool = False,
 ) -> dict:
     """触发文献 AI 提取任务（通过 Celery 异步执行）
 
@@ -208,6 +209,7 @@ async def trigger_extraction(
             model_config_id=resolved_model_config_id,
             clear_existing_data=clear_existing_data,
             use_cache=use_cache,
+            enable_thinking=enable_thinking,
         )
     except Exception as e:
         # 入队失败：回滚 queued -> pending，避免僵尸占位，允许后续重提
