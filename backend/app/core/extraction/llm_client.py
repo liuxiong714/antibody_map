@@ -463,6 +463,9 @@ class LLMClientMixin:
             "max_tokens": settings.LLM_MAX_TOKENS,
             "timeout": self._llm_timeout,
             "stream": True,
+            # 流式模式下 usage 只在显式请求时随最后一个 chunk 返回（OpenAI 兼容规范）；
+            # 不传该参数时 Ollama/多数兼容端点都不会返回 usage，导致 token 用量恒为 0。
+            "stream_options": {"include_usage": True},
         }
         # 本地 Ollama 模型优化（按实际使用的 URL 判定，兼容多候选链）：
         # client.base_url 是 openai.URL 对象而非 str，需先转字符串再判定
@@ -498,12 +501,14 @@ class LLMClientMixin:
         first_timeout = float(getattr(settings, "LLM_FIRST_TOKEN_TIMEOUT", 60) or 60)
         gap_timeout = float(getattr(settings, "LLM_CHUNK_GAP_TIMEOUT", 120) or 120)
 
+        # 效率指标：起测点须在「发起请求」之前，否则 create() 内部等待
+        # （连接建立 + 预填充，可能数十秒）不计入，首 token 延迟会被严重低估甚至记为 0。
+        _t_start = time.monotonic()
         stream = await client.chat.completions.create(**kwargs)
         content_parts: list[str] = []
         usage_dict: dict | None = None
         actual_model: str | None = None
         finish_reason: str | None = None
-        _t_start = time.monotonic()
         _first_token_at: float | None = None
         try:
             while True:
@@ -552,8 +557,10 @@ class LLMClientMixin:
         self._accumulate_usage(actual_model, usage_dict)
         # 效率指标：首 token 延迟 + decode 速度（附加统计，不影响返回值）
         self._record_timing(
-            first_token_ms=int((_first_token_at - _t_start) * 1000) if _first_token_at else None,
-            gen_ms=int((_t_end - _first_token_at) * 1000) if _first_token_at else None,
+            first_token_ms=max(0, int((_first_token_at - _t_start) * 1000))
+            if _first_token_at is not None else None,
+            gen_ms=max(0, int((_t_end - _first_token_at) * 1000))
+            if _first_token_at is not None else None,
             completion_tokens=(usage_dict or {}).get("completion_tokens", 0) or 0,
         )
         # F11：日配额熔断。响应已返回（已实际消耗 token），按本次用量计数并检查日配额。
@@ -693,6 +700,8 @@ class LLMClientMixin:
             "temperature": 0.1,
             "max_tokens": settings.LLM_MAX_TOKENS,
             "stream": True,
+            # 同 _chat_once：流式 usage 需显式请求才会返回，否则 token 用量恒为 0
+            "stream_options": {"include_usage": True},
         }
         # P2-2：通过 provider 注册中心查询是否支持 response_format。
         # ⚠️ Ollama 禁用 response_format：同 _chat_once，避免与 P2-3 format 双约束冲突。
@@ -726,6 +735,8 @@ class LLMClientMixin:
                     p["format"] = EXTRACTION_JSON_SCHEMA
 
                 async with httpx.AsyncClient(timeout=self._llm_timeout) as client:
+                    # 效率指标：起测点须在发起请求之前（理由同 _chat_once）
+                    _t_start = time.monotonic()
                     async with client.stream(
                         "POST",
                         f"{url}/chat/completions",
@@ -740,7 +751,6 @@ class LLMClientMixin:
                         content_parts: list[str] = []
                         usage_dict: dict | None = None
                         resp_model: str | None = None
-                        _t_start = time.monotonic()
                         _first_token_at: float | None = None
                         it = resp.aiter_lines()
                         while True:
@@ -797,8 +807,10 @@ class LLMClientMixin:
                         )
                     # 效率指标：首 token 延迟 + decode 速度（附加统计，不影响返回值）
                     self._record_timing(
-                        first_token_ms=int((_first_token_at - _t_start) * 1000) if _first_token_at else None,
-                        gen_ms=int((_t_end - _first_token_at) * 1000) if _first_token_at else None,
+                        first_token_ms=max(0, int((_first_token_at - _t_start) * 1000))
+                        if _first_token_at is not None else None,
+                        gen_ms=max(0, int((_t_end - _first_token_at) * 1000))
+                        if _first_token_at is not None else None,
                         completion_tokens=(usage_dict or {}).get("completion_tokens", 0) or 0,
                     )
                     return content

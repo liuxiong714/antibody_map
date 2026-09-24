@@ -905,11 +905,19 @@ async def trigger_reference_gt(db: AsyncSession, task_id: uuid.UUID,
 # ===================== 编组 × 多模型批量评测（串行运行） =====================
 
 def _ollama_base_url() -> str:
-    """Ollama 原生 API 基址（用于 /api/ps 显存采样）。"""
-    return (
+    """Ollama 原生 API 基址（用于 /api/ps 显存采样）。
+
+    配置中的 OLLAMA_BASE_URL/LLM_BASE_URL 通常是 OpenAI 兼容地址（形如 .../v1），
+    而 /api/ps 等原生接口挂在根路径下；若不去掉 /v1 后缀会请求到
+    .../v1/api/ps（404），采样永远拿不到数据。
+    """
+    base = (
         (getattr(settings, "OLLAMA_BASE_URL", "") or "").strip().rstrip("/")
         or (getattr(settings, "LLM_BASE_URL", "") or "").strip().rstrip("/")
     )
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    return base
 
 
 async def _sample_peak_vram(model: str, stop: asyncio.Event, out: dict) -> None:
