@@ -17,20 +17,20 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import sys
 from collections.abc import Sequence
 from typing import Any
 
-import logging
 import numpy as np
-
-logger = logging.getLogger(__name__)
 import scipy.stats as sps
 from scipy.interpolate import BSpline
 from scipy.optimize import brentq, minimize
 from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.proportion import proportion_confint
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "binomial_ci",

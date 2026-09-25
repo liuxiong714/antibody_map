@@ -7,12 +7,12 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timeutil import iso_ts
 from app.models.api_model_config import ApiModelConfig
 from app.models.base import async_session
 from app.models.data_point import DataPoint
 from app.models.extraction_history import ExtractionHistory
 from app.models.literature import Literature
-from app.core.timeutil import iso_ts
 from app.tasks.extract_task import process_literature
 
 logger = logging.getLogger("uvicorn")
@@ -382,6 +382,7 @@ async def get_extraction_history(
             "llm_call_count": h.llm_call_count,
             "llm_usage_detail": h.llm_usage_detail,
             "duration_seconds": float(h.duration_seconds) if h.duration_seconds is not None else None,
+            "timing_detail": h.timing_detail,
         }
         for h in history_list
     ]

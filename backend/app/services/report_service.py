@@ -804,17 +804,17 @@ async def _build_analysis_digest(
     """
     try:
         from app.services.analysis.infectious_disease import (
-            get_immune_barrier_assessment,
             get_barrier_scenarios,
+            get_immune_barrier_assessment,
         )
         assessment = await get_immune_barrier_assessment(db, disease, province)
-    except Exception as exc:  # noqa: BLE001 —— 分析服务失败不能阻断报告
+    except Exception as exc:
         logger.warning(f"[report] get_immune_barrier_assessment failed: {exc}")
         assessment = {}
 
     try:
         scenario_data = await get_barrier_scenarios(db, disease, province)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning(f"[report] get_barrier_scenarios failed: {exc}")
         scenario_data = {}
 

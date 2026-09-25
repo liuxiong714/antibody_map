@@ -7,10 +7,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_admin
-from app.core.audit import log_audit
 from app.core.crypto import mask
-from app.core.timeutil import iso_ts
 from app.core.providers.ollama_provider import fetch_installed_model_names, is_model_installed
+from app.core.timeutil import iso_ts
 from app.models.api_model_config import ApiModelConfig
 from app.models.local_model_config import LocalModelConfig
 from app.models.user import User

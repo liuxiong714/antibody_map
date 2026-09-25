@@ -34,6 +34,7 @@ def _get_async_engine():
         if _async_engine is not None:
             return _async_engine
         from sqlalchemy.ext.asyncio import create_async_engine
+
         from app.config import settings
         url = settings.DATABASE_URL  # 已是 postgresql+asyncpg://
         _async_engine = create_async_engine(

@@ -1,4 +1,4 @@
-﻿"""review_status 五分支过滤条件测试。
+"""review_status 五分支过滤条件测试。
 
 不连真实 DB（项目 Literature model 用 postgres 方言，sqlite 不兼容），
 直接在测试中导入 Literature model，构造与 crud.list_literatures 相同的
@@ -98,16 +98,16 @@ def test_review_status_none_value_no_filter():
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_review_status_crud_branch_not_missing():
-    """运行时校验 crud.list_literatures 的 review_status 分支没有遗漏任何值。
+    """运行时校验 crud.list_literature 的 review_status 分支没有遗漏任何值。
 
-    通过简单反射检查 crud.list_literatures 的源代码中是否出现了五个期望的
+    通过简单反射检查 crud.list_literature 的源代码中是否出现了五个期望的
     字符串字面量，防止以后有人删除了某个 elif 分支而不自知。
     """
     import inspect
     from app.services.literature import crud
 
-    src = inspect.getsource(crud.list_literatures)
+    src = inspect.getsource(crud.list_literature)
     for value in ("none", "pending", "rejected", "partial", "approved"):
         assert f'review_status == "{value}"' in src, (
-            f"crud.list_literatures 源码中缺少 review_status == '{value}' 分支"
+            f"crud.list_literature 源码中缺少 review_status == '{value}' 分支"
         )

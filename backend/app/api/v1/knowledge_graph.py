@@ -19,9 +19,9 @@ from app.schemas.common import ApiResponse
 from app.schemas.kg_schemas import KGBatchRequest
 from app.services import knowledge_graph_service as kg
 from app.services.kg_entity_resolver import (
-    persist_triples,
-    _normalize_for_dedup,
     _edit_distance_similarity,
+    _normalize_for_dedup,
+    persist_triples,
 )
 from app.services.kg_qa_service import ask_question
 
@@ -278,7 +278,7 @@ async def merge_candidates(
         buckets: dict[str, list[KGEntity]] = {}
         for e in items:
             buckets.setdefault(_normalize_for_dedup(e.name), []).append(e)
-        for key, bucket in buckets.items():
+        for bucket in buckets.values():
             if len(bucket) >= 2:
                 groups.append({
                     "entity_type": etype,
@@ -672,7 +672,7 @@ async def qa_feedback(
     try:
         uid = uuid.UUID(log_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="日志不存在")
+        raise HTTPException(status_code=404, detail="日志不存在") from None
     result = await db.execute(select(KgQaLog).where(KgQaLog.id == uid))
     log = result.scalar_one_or_none()
     if not log:

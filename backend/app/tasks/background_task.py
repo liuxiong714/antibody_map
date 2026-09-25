@@ -6,6 +6,7 @@
 
 worker 与 backend 共享同一 Redis（Celery broker），天然跨进程可见状态。
 """
+import contextlib
 import logging
 import traceback
 import uuid
@@ -45,7 +46,7 @@ def run_report_generation(
             task_id, language, disease, province, data_type, title, model, template_id, kind
         ))
         # ── 审计：报告生成完成 ──
-        try:
+        with contextlib.suppress(Exception):
             log_audit(
                 action="report_generated",
                 target=f"report:{data.get('id', '')}",
@@ -60,22 +61,18 @@ def run_report_generation(
                 entity_type="report",
                 entity_id=str(data.get("id", "")),
             )
-        except Exception:
-            pass
         return data
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         logger.error(f"后台报告生成失败（{kind}）: {err}\n{traceback.format_exc()}")
         run_async(bg.finish("report_generation", task_id, status="failed", error=err))
-        try:
+        with contextlib.suppress(Exception):
             log_audit(
                 action="report_generated",
                 target="report",
                 detail={"kind": _kind_label(kind), "error": err[:500]},
                 result="fail",
             )
-        except Exception:
-            pass
         raise
 
 
@@ -102,7 +99,7 @@ def run_vaccination_strategy(
             personnel_gender, personnel_age, personnel_vaccination_history,
             title, template_id, model,
         ))
-        try:
+        with contextlib.suppress(Exception):
             log_audit(
                 action="report_generated",
                 target=f"report:{data.get('id', '')}",
@@ -117,22 +114,18 @@ def run_vaccination_strategy(
                 entity_type="report",
                 entity_id=str(data.get("id", "")),
             )
-        except Exception:
-            pass
         return data
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         logger.error(f"后台疫苗接种策略报告生成失败: {err}\n{traceback.format_exc()}")
         run_async(bg.finish("report_generation", task_id, status="failed", error=err))
-        try:
+        with contextlib.suppress(Exception):
             log_audit(
                 action="report_generated",
                 target="report",
                 detail={"kind": "疫苗接种策略报告", "error": err[:500]},
                 result="fail",
             )
-        except Exception:
-            pass
         raise
 
 
@@ -158,7 +151,7 @@ def run_kg_extraction(
     run_async(bg.start("kg_extraction", task_id=task_id, scope=scope))
     try:
         result = run_async(__run_kg_extraction(task_id, scope, limit, literature_ids, model, api_key, base_url))
-        try:
+        with contextlib.suppress(Exception):
             log_audit(
                 action="kg_extraction_completed",
                 target="kg_extraction",
@@ -170,22 +163,18 @@ def run_kg_extraction(
                 },
                 result="success",
             )
-        except Exception:
-            pass
         return result
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         logger.error(f"后台知识图谱抽取失败: {err}\n{traceback.format_exc()}")
         run_async(bg.finish("kg_extraction", task_id, status="failed", error=err))
-        try:
+        with contextlib.suppress(Exception):
             log_audit(
                 action="kg_extraction_failed",
                 target="kg_extraction",
                 detail={"scope": scope, "error": err[:500]},
                 result="fail",
             )
-        except Exception:
-            pass
         raise
 
 

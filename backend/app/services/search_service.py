@@ -1,5 +1,5 @@
 
-from sqlalchemy import cast, func, select, String
+from sqlalchemy import String, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.data_point import DataPoint

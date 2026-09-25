@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 import uuid
 
@@ -20,6 +21,8 @@ from app.services.snapshot_service import with_snapshot
 from app.tasks.quality_task import score_data_point_task
 
 router = APIRouter()
+
+logger = logging.getLogger("uvicorn")
 
 # build_methodology_note 需要的事实键（从响应 meta / 嵌套容器中提取）
 _ANALYSIS_FACT_KEYS = (

@@ -6,7 +6,7 @@ import ReactECharts from '../components/EChart';
 import DiseaseSelector from '../components/DiseaseSelector';
 import ProvinceSelector from '../components/ProvinceSelector';
 import { getImmuneBarrier } from '../services/map';
-import { api } from '../services/api';
+import api from '../services/api';
 import { ImmuneBarrierData, CatalyticModel } from '../types';
 
 // 多情景模拟默认三条 + 补种覆盖计算端点（后端新增）
@@ -587,7 +587,7 @@ const Assessment: React.FC = () => {
                             dataSource={rows}
                             rowKey={(r) => r.family + '.' + r.key}
                             columns={[
-                              { title: '阈值族',   dataIndex: 'family',   width: 120, render: (v) => ({ theoretical: '理论 theoretical', coverage_target: '覆盖目标 coverage_target', administrative: '行政 administrative' }[v] ?? v) },
+                              { title: '阈值族',   dataIndex: 'family',   width: 120, render: (v: string) => ({ theoretical: '理论 theoretical', coverage_target: '覆盖目标 coverage_target', administrative: '行政 administrative' } as Record<string, string>)[v] ?? v },
                               { title: '子项',     dataIndex: 'label',   width: 200 },
                               { title: '数值(%)',  dataIndex: 'value',   width: 100, render: (v) => v != null ? `${Number(v).toFixed(2)}%` : '-' },
                               { title: '来源',     dataIndex: 'source',  width: 140, render: (v) => v ?? '-' },

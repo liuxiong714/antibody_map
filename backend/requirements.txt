@@ -7,6 +7,9 @@ greenlet==3.5.5
 asyncpg==0.31.0
 pydantic==2.13.4
 pydantic-settings==2.15.0
+# PEP 702 @deprecated 的官方 backport：Python < 3.13（CI 固定 3.11）没有
+# warnings.deprecated，见 app/core/effective_immunity.py 的兼容导入
+typing_extensions==4.16.0
 python-dotenv==1.2.3
 python-multipart==0.0.32
 redis==8.1.0

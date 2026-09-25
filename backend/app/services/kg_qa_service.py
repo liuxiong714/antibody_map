@@ -1160,9 +1160,8 @@ async def ask_question(
     # 用上一轮槽位补全本轮缺失槽位（当前轮优先）
     if matched_slots and prev_slots:
         for k, v in prev_slots.items():
-            if k == "province" or k == "disease" or k == "population":
-                if matched_slots.get(k) is None and v:
-                    matched_slots[k] = v
+            if k in ("province", "disease", "population") and matched_slots.get(k) is None and v:
+                matched_slots[k] = v
 
     executor = QAQueryExecutor(db)
     formatter = QAAnswerFormatter()

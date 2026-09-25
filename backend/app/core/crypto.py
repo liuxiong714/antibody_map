@@ -115,7 +115,7 @@ def decrypt(ciphertext: str) -> str:
                 "API Key 解密失败（V2+V1 均 InvalidToken），"
                 "可能 SECRET_KEY 已变更或密文损坏。"
             )
-            raise ValueError("API_KEY_DECRYPT_FAILED")
+            raise ValueError("API_KEY_DECRYPT_FAILED") from None
     # 历史明文直接返回
     return ciphertext
 

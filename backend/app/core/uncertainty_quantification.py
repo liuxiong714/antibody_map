@@ -157,7 +157,6 @@ def barrier_probability(
             continue
 
         dist_entry = _dist.get(key)
-        sampled_flag = False
         if (
             dist_entry is not None
             and isinstance(dist_entry, (tuple, list))
@@ -170,7 +169,6 @@ def barrier_probability(
                 t_samples = _gen.normal(loc=mean_t, scale=sd_t, size=_n_samples)
                 t_samples = np.clip(t_samples, 0.0, 1.0)
                 pass_prob = float(np.mean(totals >= t_samples))
-                sampled_flag = True
                 any_sampling = True
                 # 元数据
                 t_meta = {

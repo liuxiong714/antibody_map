@@ -15,11 +15,13 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.extraction.json_parser import LLMJSONParseError
+from app.core.extraction.orchestrator import LLMExtractor
+from app.core.extraction_grounding import ground_extraction
 from app.core.timeutil import iso_ts
 from app.models.base import async_session
 from app.models.data_point import DataPoint
@@ -28,12 +30,8 @@ from app.models.synthetic_extraction import SyntheticExtraction
 from app.models.synthetic_run import SyntheticRun
 from app.models.synthetic_task import SyntheticTask
 from app.services.extraction_service import trigger_extraction
-from app.services.report_service import _call_llm
-
-from app.core.extraction.json_parser import LLMJSONParseError
-from app.core.extraction.orchestrator import LLMExtractor
-from app.core.extraction_grounding import ground_extraction
 from app.services.literature._common import LOCAL_STORAGE_DIR
+from app.services.report_service import _call_llm
 
 logger = logging.getLogger("uvicorn")
 
@@ -124,7 +122,6 @@ def _clean_repr(pt: dict, disease: str) -> str:
 
 def _noise_repr(pt: dict, disease: str) -> str:
     kind = pt["noise_kind"]
-    clean = _clean_repr(pt, disease)
     if kind == "out_of_range":
         # 数值越界：阳性率>100% / GMC 为负 / 样本量为 0
         if pt["data_type"] == "seroprevalence":
@@ -210,14 +207,16 @@ def _build_literature_pdf(content: str, points: list[dict], disease: str, includ
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.platypus import (
-        Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
     )
 
     _FONT = "STSong-Light"
-    try:
+    with contextlib.suppress(Exception):
         pdfmetrics.registerFont(UnicodeCIDFont(_FONT))
-    except Exception:
-        pass
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
@@ -417,9 +416,7 @@ def _match_clean(gt: dict, ex: dict) -> bool:
         return False
     if gt["province"] and gt["province"] not in (ex.get("province") or ""):
         return False
-    if not _rel_close(gt["value"], ex.get("value")):
-        return False
-    return True
+    return _rel_close(gt["value"], ex.get("value"))
 
 
 def assess_task(db_data: dict) -> dict:
@@ -597,12 +594,12 @@ def assess_task(db_data: dict) -> dict:
     summary = {
         "disease": disease,
         "clean_total": all_clean,
-        "clean_matched": all_clean and clean_matched or 0,
+        "clean_matched": (all_clean and clean_matched) or 0,
         "clean_recall": _recall(clean_matched, all_clean),
         "value_exact_rate": _recall(clean_exact, all_clean),
-        "value_tolerance_rate": all_clean and _recall(clean_matched, all_clean) or 0.0,
+        "value_tolerance_rate": (all_clean and _recall(clean_matched, all_clean)) or 0.0,
         # 值级准确度（5% 相对误差口径，与容差匹配一致）
-        "value_accuracy": all_clean and _recall(clean_matched, all_clean) or 0.0,
+        "value_accuracy": (all_clean and _recall(clean_matched, all_clean)) or 0.0,
         "noise_total": all_noise,
         "noise_rejected": noise_rejected,
         "noise_rejection_rate": _recall(noise_rejected, all_noise),
@@ -644,9 +641,7 @@ def _noise_fooled(gt: dict, ex: dict) -> bool:
     if not _rel_close(gt["value"], ex.get("value")):
         return False
     # 噪声点本身可能无省份（missing_field），只看类型+数值
-    if gt["province"] and gt["province"] not in (ex.get("province") or ""):
-        return False
-    return True
+    return not (gt["province"] and gt["province"] not in (ex.get("province") or ""))
 
 
 async def compute_assessment(db: AsyncSession, task_id: uuid.UUID) -> dict:
@@ -904,50 +899,11 @@ async def trigger_reference_gt(db: AsyncSession, task_id: uuid.UUID,
 
 # ===================== 编组 × 多模型批量评测（串行运行） =====================
 
-def _ollama_base_url() -> str:
-    """Ollama 原生 API 基址（用于 /api/ps 显存采样）。
-
-    配置中的 OLLAMA_BASE_URL/LLM_BASE_URL 通常是 OpenAI 兼容地址（形如 .../v1），
-    而 /api/ps 等原生接口挂在根路径下；若不去掉 /v1 后缀会请求到
-    .../v1/api/ps（404），采样永远拿不到数据。
-    """
-    base = (
-        (getattr(settings, "OLLAMA_BASE_URL", "") or "").strip().rstrip("/")
-        or (getattr(settings, "LLM_BASE_URL", "") or "").strip().rstrip("/")
-    )
-    if base.endswith("/v1"):
-        base = base[: -len("/v1")]
-    return base
-
-
+# 显存采样逻辑已抽到 app.core.providers.ollama_provider 公共模块，
+# 此处保留薄 wrapper 以兼容现有调用点（interval=10s 适配合成任务长会话）。
 async def _sample_peak_vram(model: str, stop: asyncio.Event, out: dict) -> None:
-    """周期性采样 Ollama /api/ps，记录该模型驻留显存峰值（MB）。
-
-    仅对本地 Ollama 有效；不可达或非本地模型时 out["peak_vram_mb"] 保持 None，
-    不影响任务执行。
-    """
-    base = _ollama_base_url()
-    if ":11434" not in base:
-        return
-    target = LLMExtractor._strip_vendor_prefix(model).lower()
-    target_family = target.split(":")[0]
-    while not stop.is_set():
-        try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(f"{base}/api/ps")
-                if resp.status_code == 200:
-                    for m in (resp.json() or {}).get("models", []):
-                        name = str(m.get("name") or m.get("model") or "").lower()
-                        if name and (name == target or name.split(":")[0] == target_family):
-                            vram = int(m.get("size_vram") or 0) // (1024 * 1024)
-                            if vram > (out.get("peak_vram_mb") or 0):
-                                out["peak_vram_mb"] = vram
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=10)
-        except asyncio.TimeoutError:
-            continue
+    from app.core.providers.ollama_provider import sample_peak_vram
+    await sample_peak_vram(model, stop, out, interval=10.0)
 
 
 def _summarize_run_efficiency(rows: list, peak_vram_mb: int | None) -> dict:
@@ -1044,7 +1000,7 @@ async def _run_one_synthetic_run(task_id: uuid.UUID, run_id: uuid.UUID) -> None:
             except LLMJSONParseError as e:
                 err = f"JSON 解析失败: {e}"[:1900]
                 json_ok = False
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 err = str(e)[:1900]
                 json_ok = None
             duration_ms = int((time.monotonic() - t0) * 1000)
@@ -1132,7 +1088,7 @@ async def _run_serial_multi_extraction(task_id: str) -> None:
                 task.extracted_at = datetime.now(timezone.utc)
                 task.status = "extracting"
                 await db.commit()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.error(f"[Synthetic] 串行多模型提取失败: {e}", exc_info=True)
 
 
@@ -1436,7 +1392,7 @@ async def compute_multi_assessment(db: AsyncSession, task_id: uuid.UUID) -> dict
             "runs": len(items),
             "run_labels": [x["model"] for x in items],
             "metrics": {
-                k: dict(zip(("mean", "std"), _mean_std([fn(x) for x in items])))
+                k: dict(zip(("mean", "std"), _mean_std([fn(x) for x in items]), strict=True))
                 for k, fn in metric_getters.items()
             },
         })

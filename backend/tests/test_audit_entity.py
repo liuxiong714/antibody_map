@@ -4,6 +4,7 @@ log_audit 为同步函数，直接向 uvicorn.audit logger 输出 [AUDIT] 结构
 """
 import json
 import logging
+from unittest.mock import patch
 
 import pytest
 
@@ -12,7 +13,13 @@ from app.core import audit as audit_module
 
 @pytest.fixture(autouse=True)
 def _audit_caplog(caplog):
-    with caplog.at_level(logging.INFO, logger="uvicorn.audit"):
+    """只保留 stdout 通道：屏蔽 DB 落库，避免离网环境多出一条"落库失败"告警行。"""
+
+    def _discard(coro):
+        coro.close()  # 显式关闭，避免 "coroutine was never awaited" 告警
+
+    with caplog.at_level(logging.INFO, logger="uvicorn.audit"), \
+            patch("app.tasks.async_runner.run_async", side_effect=_discard):
         yield caplog
 
 

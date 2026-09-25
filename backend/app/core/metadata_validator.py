@@ -8,7 +8,6 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-
 # DOI 通用正则：10. + 4-9 位注册机构号 + "/" + 至少 1 字符后缀
 # 参考 Crossref 官方规范：https://www.crossref.org/documentation/register-and-deposit/doi-system/
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")

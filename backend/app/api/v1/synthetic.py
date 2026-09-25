@@ -4,7 +4,6 @@ import csv
 import io
 import logging
 import uuid
-from datetime import datetime, timezone
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,6 +21,7 @@ from app.models.synthetic_extraction import SyntheticExtraction
 from app.models.synthetic_task import SyntheticTask
 from app.schemas.common import ApiResponse
 from app.schemas.synthetic import SyntheticCreate, SyntheticExtract
+from app.services.literature.crud import _cleanup_txt_cache
 from app.services.synthetic_service import (
     compute_assessment,
     compute_multi_assessment,
@@ -34,7 +34,6 @@ from app.services.synthetic_service import (
     trigger_reference_gt,
     trigger_serial_multi_extraction,
 )
-from app.services.literature.crud import _cleanup_txt_cache
 
 logger = logging.getLogger("uvicorn")
 router = APIRouter()

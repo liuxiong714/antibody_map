@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import select, func, or_
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.data_point import DataPoint
@@ -79,7 +79,7 @@ async def scan_extraction_consistency(
     if literature_ids:
         # 限定在给定 ID 子集
         try:
-            uuids = [lit_id for lit_id in literature_ids]
+            uuids = list(literature_ids)
             stmt = stmt.where(ExtractionHistory.literature_id.in_(uuids))
         except Exception:
             pass

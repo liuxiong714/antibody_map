@@ -22,8 +22,13 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db, require_admin
+from app.config import (
+    _detect_version_runtime,
+    _get_runtime_feature_flags,
+    _set_feature_flag,
+    settings,
+)
 from app.core.audit import log_audit
-from app.config import settings, _detect_version_runtime, _get_runtime_feature_flags, _set_feature_flag
 from app.core.logging_config import LOGS_DIR
 from app.core.parser_status import get_parser_status
 from app.core.redis_background_tasks import active_tasks as _redis_active_tasks
@@ -96,7 +101,7 @@ async def patch_feature_flags(body: dict, _user=Depends(require_admin)):
         for name, val in body.items():
             _set_feature_flag(str(name), bool(val))
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     log_audit(action='feature_flags_update', target='feature_flags', user_id=getattr(_user, 'id', None), username=getattr(_user, 'username', None), result='success')
     return ApiResponse(data={}, message='Feature flags updated')
 
@@ -595,8 +600,9 @@ async def list_audit_logs(
     _user=Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy import func, or_, select
+
     from app.models.audit_log import AuditLog
-    from sqlalchemy import or_, select, func
 
     stmt = select(AuditLog)
     count_stmt = select(func.count(AuditLog.id))

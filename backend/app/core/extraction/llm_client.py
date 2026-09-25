@@ -7,6 +7,7 @@
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -441,6 +442,172 @@ class LLMClientMixin:
             max_retries=0,
         )
 
+    async def _ollama_chat_native(
+        self, ollama_root: str, prompt: str, system_prompt: str, enable_thinking: bool = False
+    ) -> str:
+        """Ollama 本地模型的原生 /api/chat SSE 调用路径。
+
+        为什么要有这个方法：Ollama 的 OpenAI 兼容层（/v1/chat/completions）在流式模式下
+        **不返回 usage 字段**，导致 token 统计、生成速度等效率指标恒为 0。
+        Ollama 原生 /api/chat 的最后一帧携带完整的 usage + 服务端 ns 级精细 timing：
+          - prompt_eval_count        → prompt_tokens 等效
+          - eval_count               → completion_tokens 等效
+          - prompt_eval_duration     → 预填充耗时（ns）
+          - eval_duration            → decode 耗时（ns）
+          - total_duration           → 总耗时（ns）
+          - load_duration            → 模型加载耗时（ns）
+        这些比客户端 time.monotonic() 计时更准（排除了网络/连接/客户端处理开销）。
+
+        适用范围：仅 Ollama 本地（URL 含 :11434）。远程 API（DeepSeek/OpenAI 等）
+        继续走 _chat_once 的 AsyncOpenAI SDK 路径，流式响应有 usage，零改动。
+
+        参数 ollama_root：Ollama 原生 API 根路径（如 http://host:11434），
+                         调用方需确保不含 /v1 后缀。
+        """
+        # 构造 Ollama 原生请求 payload
+        messages: list[dict] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        _think_on = bool(enable_thinking)
+        payload = {
+            "model": self._api_model,
+            "messages": messages,
+            "stream": True,
+            "temperature": 0.05,
+            "options": {
+                "num_ctx": settings.LLM_CTX_TOKENS,
+                "num_predict": settings.LLM_MAX_TOKENS,
+                "think": _think_on,
+                "enable_thinking": _think_on,
+            },
+            # gemma4/granite 等模型可能只认顶层 think 参数（Ollama 版本差异）
+            "think": _think_on,
+            # P2-3：Ollama 原生 JSON Schema 结构化输出强约束
+            "format": EXTRACTION_JSON_SCHEMA,
+        }
+
+        first_timeout = float(getattr(settings, "LLM_FIRST_TOKEN_TIMEOUT", 60) or 60)
+        gap_timeout = float(getattr(settings, "LLM_CHUNK_GAP_TIMEOUT", 120) or 120)
+
+        # 去掉尾部斜杠，确保 /api/chat 路径正确
+        root = ollama_root.rstrip("/")
+        _t_start = time.monotonic()
+        content_parts: list[str] = []
+        usage_dict: dict | None = None
+        done_frame: dict | None = None
+        _first_token_at: float | None = None
+        actual_model: str = self.model
+
+        try:
+            async with httpx.AsyncClient(timeout=self._llm_timeout) as client, client.stream(
+                "POST",
+                f"{root}/api/chat",
+                headers={"Content-Type": "application/json"},
+                json=payload,
+            ) as resp:
+                resp.raise_for_status()
+                it = resp.aiter_lines()
+                while True:
+                    try:
+                        line = await asyncio.wait_for(
+                            it.__anext__(),
+                            timeout=first_timeout if not content_parts else gap_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        raise TimeoutError(
+                            "LLM 流式响应无数据（"
+                            + ("首 token" if not content_parts else "chunk 间隔")
+                            + f"超时 {first_timeout if not content_parts else gap_timeout}s），"
+                            "连接可能挂死，已快速失败"
+                        ) from None
+                    except StopAsyncIteration:
+                        break
+                    line = (line or "").strip()
+                    if not line:
+                        continue
+                    try:
+                        frame = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    # 中间帧：逐片段追加 content
+                    msg = frame.get("message") or {}
+                    chunk_content = msg.get("content") or ""
+                    if chunk_content:
+                        if _first_token_at is None:
+                            _first_token_at = time.monotonic()
+                        content_parts.append(chunk_content)
+                    # 捕获模型名（可能与请求不同，如自动路由）
+                    if frame.get("model"):
+                        actual_model = frame["model"]
+                    # 最后一帧：done=true，带完整 usage + timing
+                    if frame.get("done"):
+                        done_frame = frame
+                        break
+        except Exception:
+            # 如果原生 /api/chat 因版本差异等原因失败，降级回 AsyncOpenAI 路径
+            # （上层 _call_llm_api_locked 会在 _chat_once 里重试不同 URL）
+            raise
+
+        # ---- 从最后一帧提取 usage + timing ----
+        if done_frame:
+            prompt_eval_count = int(done_frame.get("prompt_eval_count") or 0)
+            eval_count = int(done_frame.get("eval_count") or 0)
+            # total_tokens = prompt_eval_count + eval_count
+            usage_dict = {
+                "prompt_tokens": prompt_eval_count,
+                "completion_tokens": eval_count,
+                "total_tokens": prompt_eval_count + eval_count,
+            }
+            self._accumulate_usage(actual_model, usage_dict)
+            # 服务端 ns 级精细 timing（比客户端 time.monotonic() 更准）
+            # prompt_eval_duration：预填充耗时（ns），eval_duration：decode 耗时（ns）
+            eval_duration_ns = int(done_frame.get("eval_duration") or 0)
+            prompt_eval_duration_ns = int(done_frame.get("prompt_eval_duration") or 0)
+            gen_ms = eval_duration_ns // 1_000_000  # ns → ms
+            # 首 token 延迟：如果有服务端精确值更好，但 Ollama 原生不直接提供
+            # 退而用客户端计时（connect + load + prefill）
+            if _first_token_at is not None:
+                first_token_ms = max(0, int((_first_token_at - _t_start) * 1000))
+            else:
+                first_token_ms = None
+            self._record_timing(
+                first_token_ms=first_token_ms,
+                gen_ms=gen_ms if gen_ms > 0 else None,
+                completion_tokens=eval_count,
+            )
+            # F11：日配额熔断
+            if usage_dict:
+                await _consume_daily_quota(usage_dict["total_tokens"])
+            # 日志：服务端 timing 辅助诊断
+            total_duration_s = int(done_frame.get("total_duration") or 0) / 1e9
+            load_duration_s = int(done_frame.get("load_duration") or 0) / 1e9
+            prompt_eval_s = prompt_eval_duration_ns / 1e9
+            eval_s = eval_duration_ns / 1e9
+            logger.info(
+                f"[OllamaNative] model={actual_model}, tokens={usage_dict['prompt_tokens']}/{usage_dict['completion_tokens']}, "
+                f"server_timing: total={total_duration_s:.2f}s load={load_duration_s:.2f}s "
+                f"prefill={prompt_eval_s:.2f}s decode={eval_s:.2f}s"
+            )
+        else:
+            # 没有 done 帧：usage 拿不到，timing 降级为客户端计时
+            logger.warning("[OllamaNative] 未收到 done 帧，usage 和 timing 不可用")
+
+        content = "".join(content_parts)
+        finish_reason = (done_frame or {}).get("done_reason")
+        if content:
+            logger.info(f"LLM 返回内容长度: {len(content)}")
+        if finish_reason == "length":
+            logger.warning(
+                f"LLM 输出因 max_tokens 限制被截断（finish_reason=length），"
+                f"实际输出 {len(content)} 字符 — 建议增大 LLM_MAX_TOKENS 或精简输出格式"
+            )
+        # 未解析到任何有效帧（既无 content 也无 done），说明响应格式不对，抛异常降级到 HTTP 兜底
+        if not content and not done_frame:
+            raise RuntimeError("Ollama 原生调用未解析到有效 JSON 帧，可能走了 SSE 格式，降级到 HTTP 兜底")
+        return content or ""
+
     async def _chat_once(self, client: AsyncOpenAI, prompt: str, system_prompt: str, enable_thinking: bool = False) -> str:
         """对指定客户端执行一次 chat.completions 调用并累加 token 用量。
 
@@ -451,6 +618,18 @@ class LLMClientMixin:
           避免 Ollama 端连接层挂死时空等 LLM_REQUEST_TIMEOUT（20 分钟）阻塞队列；
         - 生成中途相邻 chunk 间隔超过 LLM_CHUNK_GAP_TIMEOUT 同样快速失败。
         """
+        # Ollama 本地模型：直接走原生 /api/chat SSE 路径
+        # —— AsyncOpenAI SDK 走的是 Ollama 的 /v1/chat/completions（OpenAI 兼容层），
+        #    该层流式不返回 usage，导致 token 统计恒为 0；
+        #    原生 /api/chat 的最后一帧带完整 usage + 服务端 ns 级精细 timing。
+        _raw_url = str(getattr(client, "base_url", "") or self._resolved_url)
+        if self._is_ollama_model(_raw_url):
+            # 从 OpenAI 兼容层 URL（可能带 /v1）回退到 Ollama 原生根路径
+            _native_root = _raw_url.rstrip("/")
+            if _native_root.endswith("/v1"):
+                _native_root = _native_root[: -len("/v1")]
+            return await self._ollama_chat_native(_native_root, prompt, system_prompt, enable_thinking)
+
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -687,8 +866,25 @@ class LLMClientMixin:
         连接容错增强：按候选 URL 链逐个尝试，首个成功的地址返回。
         流式模式（方案 B）：与 _chat_once 一致，采用 SSE 流式读取，
         首 token / chunk 间隔超时快速失败，避免连接层挂死空等。
+
+        Ollama 本地模型优先走原生 /api/chat（拿完整 usage + 精细 timing），
+        原生路径失败再降级到原来的 /v1/chat/completions 兜底。
         """
         url_chain = self._url_chain or [self._resolved_url or settings.LLM_BASE_URL]
+
+        # Ollama 本地模型：优先走原生 /api/chat（原生路径已有完整 usage）
+        _ollama_urls = [u for u in url_chain if self._is_ollama_model(u)]
+        for _url in _ollama_urls:
+            _native_root = _url.rstrip("/")
+            if _native_root.endswith("/v1"):
+                _native_root = _native_root[: -len("/v1")]
+            try:
+                return await self._ollama_chat_native(_native_root, prompt, system_prompt, enable_thinking)
+            except Exception as e:
+                logger.warning(f"_ollama_chat_native 失败，降级到 HTTP 兜底: {e}")
+                continue  # 试下一个 Ollama URL
+
+        # 以下是远程模型（非 Ollama）的 httpx 兜底路径
         api_key = self._resolved_key or settings.LLM_API_KEY
         messages = []
         if system_prompt:

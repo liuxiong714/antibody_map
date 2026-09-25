@@ -7,7 +7,7 @@
 说明：httpx.ASGITransport 默认不触发 lifespan（不会跑 Alembic 迁移 / 后台任务），
 且 SQLAlchemy 引擎为惰性创建，因此 import app.main 不会真的连接数据库。
 """
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.main import app
 from app.api import deps
 from app.models.user import User
+
+
+def fake_llm_stream(content: str, usage=None, model: str = "deepseek-chat") -> MagicMock:
+    """构造 LLM 流式响应替身（_chat_once 以 ``stream.__anext__`` 逐块读取）。
+
+    必须以 StopAsyncIteration 收尾：否则 MagicMock 的 ``__anext__`` 会不断返回
+    新的 MagicMock，读取循环永不结束（症状为测试挂死、CI 任务超时）。
+    """
+    chunk = MagicMock()
+    chunk.usage = usage
+    chunk.model = model
+    chunk.choices = [MagicMock(finish_reason="stop", delta=MagicMock(content=content))]
+
+    stream = MagicMock()
+    stream.model = model
+    stream.__anext__ = AsyncMock(side_effect=[chunk, StopAsyncIteration])
+    stream.close = AsyncMock()
+    return stream
 
 
 async def _override_get_db():

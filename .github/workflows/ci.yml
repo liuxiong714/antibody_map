@@ -45,7 +45,8 @@ jobs:
       - name: Lint backend with ruff
         run: |
           cd backend
-          pip install ruff
+          # 固定版本：ruff 的规则集会随版本演进，浮动版本会让同一份代码突然新增告警
+          pip install ruff==0.16.8
           ruff check app --output-format=github
 
       - name: Setup Node.js

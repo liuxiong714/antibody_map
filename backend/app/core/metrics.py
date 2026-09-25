@@ -270,6 +270,7 @@ async def _update_extraction_gauges() -> None:
     if m_hb is None and m_status is None:
         return
     from datetime import datetime, timezone
+
     from app.models.literature import Literature
 
     async with async_session() as db:

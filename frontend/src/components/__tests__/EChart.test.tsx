@@ -51,4 +51,29 @@ describe('EChart 封装（冒烟）', () => {
     expect(el.getAttribute('data-lazy')).toBe('true');
     expect(el.getAttribute('data-event')).toBe('true');
   });
+
+  it('容器尺寸变化时触发 resize 回调（ResizeObserver → resize）', () => {
+    // 用能捕获回调的 ResizeObserver 替换测试环境桩，手动触发尺寸变化
+    const original = globalThis.ResizeObserver;
+    const callbacks: Array<() => void> = [];
+    class CapturingResizeObserver {
+      constructor(cb: () => void) {
+        callbacks.push(cb);
+      }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = CapturingResizeObserver;
+
+    try {
+      const { unmount } = render(<EChart option={{}} />);
+      expect(callbacks).toHaveLength(1);
+      // 触发回调：未挂载 echarts 实例时应安全短路，不抛异常
+      expect(() => callbacks[0]()).not.toThrow();
+      unmount();
+    } finally {
+      (globalThis as { ResizeObserver?: unknown }).ResizeObserver = original;
+    }
+  });
 });

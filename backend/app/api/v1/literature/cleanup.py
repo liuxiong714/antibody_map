@@ -8,6 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, require_admin
 from app.models.user import User
 from app.schemas.common import ApiResponse
+from app.services.extraction_audit_service import (
+    fix_extraction_consistency,
+    scan_extraction_consistency,
+)
 from app.services.file_cleanup_service import (
     cleanup_orphan_files,
     delete_minio_orphan_objects,
@@ -119,11 +123,6 @@ async def cleanup_minio_orphan_objects_endpoint(
 # ─────────────────────────────────────────────────────────────────────────────
 # 数据一致性审计：extraction_history vs data_point 表
 # ─────────────────────────────────────────────────────────────────────────────
-
-from app.services.extraction_audit_service import (
-    fix_extraction_consistency,
-    scan_extraction_consistency,
-)
 
 
 @router.get(

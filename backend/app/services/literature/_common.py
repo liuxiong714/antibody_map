@@ -8,7 +8,6 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timeutil import iso_ts
-
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
 

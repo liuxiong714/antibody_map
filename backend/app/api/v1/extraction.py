@@ -22,11 +22,11 @@ from app.api.deps import get_current_user, get_db, require_admin
 from app.core.audit import log_audit
 from app.core.rate_limiter import extraction_rate_limit
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES
+from app.core.timeutil import iso_ts
 from app.core.traceability_html import (
     datapoint_dict_to_trace,
     generate_traceability_html,
 )
-from app.core.timeutil import iso_ts
 from app.models.data_point import DataPoint
 from app.models.extraction_history import ExtractionHistory
 from app.models.literature import Literature

@@ -83,6 +83,7 @@ async def _redis_sliding_window_check(
     """
     try:
         from redis.asyncio import Redis
+
         from app.config import settings
     except Exception:
         return None

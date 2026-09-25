@@ -5,6 +5,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.reference_data.china_provinces import REGIONS, province_region
 from app.core.stats import (
     weighted_linear_trend,
 )
@@ -16,7 +17,6 @@ from app.core.stats_engine import (
     two_proportion_test,
 )
 from app.core.term_normalizer import normalize_disease, normalize_province
-from app.core.reference_data.china_provinces import REGIONS, province_region
 from app.models.data_point import DataPoint
 from app.services.analysis._common import (
     AGE_GROUPS,

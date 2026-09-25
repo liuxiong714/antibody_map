@@ -223,22 +223,6 @@ async def get_barrier_scenarios(
         补种人数 = gap / 100 × POP_2020_NATIONAL
         注：分母为七普全国总人口（省级/年龄分层人口暂无数据），属全国平均粗估。
     """
-    empty = {
-        "disease": disease,
-        "province": province,
-        "scenarios": [],
-        "hit_target_percent": None,
-        "hit_target_source": "none",
-        "r0_estimated_from_foi": None,
-        "r0_reference": None,
-        "population_used": _POP_2020_NATIONAL,
-        "population_note": (
-            "补种人数分母基于七普 2020 全国总人口 14.12 亿的全国平均粗估；"
-            "省级/年龄分层人口暂无数据，结果仅供参考"
-        ),
-        "notes": [],
-    }
-
     # 默认情景（前端不传时的内置三条：基线 / 高覆盖 / 加强）
     if not scenarios:
         scenarios = [
@@ -317,7 +301,7 @@ async def get_barrier_scenarios(
         )
         C = load_contact_matrix()
         age_groups_contact = list(AGE_GROUPS_CONTACT)
-    except Exception as _exc:  # noqa: BLE001
+    except Exception as _exc:
         logger.info(f"[BarrierScenarios] 未加载接触矩阵: {_exc.__class__.__name__}: {_exc}")
 
     scenario_results: list[dict] = []
@@ -362,7 +346,7 @@ async def get_barrier_scenarios(
         if C is not None and estimated_r0 is not None and age_groups_contact:
             # 均匀免疫近似：scenario 未指定年龄异质 → 所有年龄组 p = effective_ratio
             # （实际传播中儿童/成人的暴露率、易感人群结构不同，这里做同质性假设）
-            pos_dict = {g: effective_ratio * 100.0 for g in age_groups_contact}
+            pos_dict = dict.fromkeys(age_groups_contact, effective_ratio * 100.0)
             res = r_eff(pos_dict, C, r0=float(estimated_r0))
             r_eff_val = res["r_eff"]
             met = res["herd_immunity_met"]
@@ -662,7 +646,7 @@ async def get_immunity_projection(
                 f"[ImmunityProjection] 接触矩阵分箱命中不足 3 组"
                 f"（{len(_age_sp_contact)}），回退简单平均"
             )
-    except Exception as _exc:  # noqa: BLE001 — 故意吞掉加载失败（非关键路径）
+    except Exception as _exc:
         logger.info(
             f"[ImmunityProjection] 未启用接触加权基线"
             f"（{_exc.__class__.__name__}: {_exc}）"

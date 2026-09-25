@@ -6,7 +6,6 @@ from pathlib import Path
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 # Runtime cache for version & feature flags (TTL = 30s)
 _VERSION_CACHE = {"value": None, "mtime": 0.0}
 _FLAG_CACHE = {"flags": None, "mtime": 0.0}
@@ -14,7 +13,8 @@ _CACHE_TTL = 30.0
 
 
 def _detect_version_runtime() -> str:
-    import re, time
+    import re
+    import time
     global _VERSION_CACHE
     now = time.time()
     cache = _VERSION_CACHE
@@ -50,7 +50,9 @@ def _set_feature_flag(name: str, enabled: bool) -> None:
     _FLAG_CACHE = {'flags': None, 'mtime': 0.0}
     # 同步到 Redis（跨进程共享，worker 也能读到）
     try:
-        import json as _json, redis as _redis
+        import json as _json
+
+        import redis as _redis
         _r = _redis.Redis.from_url(settings.REDIS_URL or 'redis://localhost:6379/0', socket_connect_timeout=1)
         _r.set(_FLAG_REDIS_KEY, _json.dumps(_FLAG_OVERRIDES), ex=3600)
     except Exception:
@@ -70,7 +72,9 @@ def _get_runtime_feature_flags() -> dict:
     }
     # 优先从 Redis 读最新 overrides（worker 也可能写入）
     try:
-        import json as _json, redis as _redis
+        import json as _json
+
+        import redis as _redis
         _r = _redis.Redis.from_url(settings.REDIS_URL or 'redis://localhost:6379/0', socket_connect_timeout=1)
         _raw = _r.get(_FLAG_REDIS_KEY)
         if _raw:
@@ -351,7 +355,8 @@ class Settings(BaseSettings):
             warnings.warn(
                 "CORS_ORIGINS 含 '*' 时 CORS_ALLOW_CREDENTIALS 会被浏览器拒绝，"
                 "已强制置 False。请改用具体域名列表（如 ['https://yourdomain.com'] ）"
-                "以恢复 credentials 支持。"
+                "以恢复 credentials 支持。",
+                stacklevel=2,
             )
             self.CORS_ALLOW_CREDENTIALS = False
         return self

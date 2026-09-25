@@ -12,14 +12,13 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.models.base import Base, engine
-import app.models  # noqa: F401  # 确保所有模型注册到 Base.metadata（供 create_all 兜底建表）
+import app.models  # 确保所有模型注册到 Base.metadata（供 create_all 兜底建表）
 from app.api.v1.router import router as api_v1_router
 from app.config import settings
 from app.core.exceptions import AppError
 from app.core.logging_config import logger, setup_logging
 from app.core.metrics import metrics_accessible, record_http_exception
-from app.models.base import async_session, engine
+from app.models.base import Base, async_session, engine
 
 # Prometheus HTTP 指标收集（依赖缺失时静默跳过，不影响应用启动）
 try:
@@ -50,8 +49,8 @@ def _run_migrations():
         cwd=str(backend_dir), capture_output=True, text=True, timeout=30,
     )
     if heads.returncode == 0:
-        head_lines = [l for l in heads.stdout.strip().splitlines() if l.strip() and not l.startswith('INFO') and not l.startswith('TRACE')]
-        real_heads = [l for l in head_lines if ' (revision ' in l or not l.startswith('  ')]
+        head_lines = [line for line in heads.stdout.strip().splitlines() if line.strip() and not line.startswith('INFO') and not line.startswith('TRACE')]
+        real_heads = [line for line in head_lines if ' (revision ' in line or not line.startswith('  ')]
         if len(real_heads) > 1:
             logger.warning(f"Alembic migration chain has {len(real_heads)} heads (possible fork). Alembic will attempt to merge during upgrade. Heads: {real_heads}")
 
@@ -97,6 +96,7 @@ async def _seed_admin_user():
     首次启动时 user 表可能为空，导致无账号可登录；这里幂等插入管理员。
     """
     from sqlalchemy import select
+
     from app.api.v1.auth import DEFAULT_PASSWORD
     from app.core.security import hash_password
     from app.models.base import async_session

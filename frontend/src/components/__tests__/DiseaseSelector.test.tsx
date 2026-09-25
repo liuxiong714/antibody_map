@@ -78,4 +78,29 @@ describe('DiseaseSelector', () => {
     render(<DiseaseSelector value="" onChange={vi.fn()} />);
     expect(screen.getByTestId('select-clear')).not.toBeDisabled();
   });
+
+  it('multiple 模式：数组 value 直接透传展示', () => {
+    render(<DiseaseSelector multiple value={['measles']} onChange={vi.fn()} />);
+    expect(screen.getByTestId('select-value')).toHaveTextContent('measles');
+  });
+
+  it('multiple 模式：空数组展示为未选中，选择时透传所选项', () => {
+    const onChange = vi.fn();
+    render(<DiseaseSelector multiple value={[]} onChange={onChange} />);
+    expect(screen.getByTestId('select-value')).toHaveTextContent('');
+    fireEvent.click(screen.getByTestId('select-options-count'));
+    expect(onChange).toHaveBeenCalledWith('measles');
+  });
+
+  it('multiple 模式：清除时回调空数组', () => {
+    const onChange = vi.fn();
+    render(<DiseaseSelector multiple value={['measles']} onChange={onChange} />);
+    fireEvent.click(screen.getByTestId('select-clear'));
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
+
+  it('multiple 模式：占位文案默认为"选择疾病（可多选）"', () => {
+    render(<DiseaseSelector multiple value={[]} onChange={vi.fn()} />);
+    expect(screen.getByTestId('select-placeholder')).toHaveTextContent('选择疾病（可多选）');
+  });
 });

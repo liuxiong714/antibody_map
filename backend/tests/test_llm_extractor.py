@@ -2,6 +2,8 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 import json
 
+from conftest import fake_llm_stream as _stream_mock
+
 from app.core.extraction.json_parser import LLMJSONParseError
 from app.core.llm_extractor import LLMExtractor
 
@@ -15,10 +17,7 @@ class TestLLMExtractor:
     @patch("app.core.extraction.llm_client.AsyncOpenAI")
     async def test_extract_with_mock_response(self, mock_openai):
         mock_client = AsyncMock()
-        mock_response = MagicMock()
-        mock_choice = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = json.dumps({
+        mock_client.chat.completions.create.return_value = _stream_mock(json.dumps({
             "data_points": [{
                 "disease_name": "麻疹",
                 "province": "广东省",
@@ -27,10 +26,7 @@ class TestLLMExtractor:
                 "detection_method": "ELISA",
                 "antibody_type": "IgG",
             }]
-        })
-        mock_choice.message = mock_message
-        mock_response.choices = [mock_choice]
-        mock_client.chat.completions.create.return_value = mock_response
+        }))
         mock_openai.return_value = mock_client
 
         extractor = LLMExtractor(model="deepseek-chat")
@@ -46,17 +42,10 @@ class TestLLMExtractor:
     @patch("app.core.extraction.llm_client.AsyncOpenAI")
     async def test_extract_with_invalid_json(self, mock_openai):
         mock_client = AsyncMock()
-        mock_response = MagicMock()
-        mock_choice = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = "not valid json"
-        mock_choice.message = mock_message
-        mock_response.choices = [mock_choice]
-        mock_response.usage = MagicMock()
-        mock_response.usage.prompt_tokens = 10
-        mock_response.usage.completion_tokens = 2
-        mock_response.usage.total_tokens = 12
-        mock_client.chat.completions.create.return_value = mock_response
+        usage = MagicMock(prompt_tokens=10, completion_tokens=2, total_tokens=12)
+        mock_client.chat.completions.create.return_value = _stream_mock(
+            "not valid json", usage=usage
+        )
         mock_openai.return_value = mock_client
 
         extractor = LLMExtractor(model="deepseek-chat")
@@ -67,13 +56,9 @@ class TestLLMExtractor:
     @patch("app.core.extraction.llm_client.AsyncOpenAI")
     async def test_extract_with_json_code_block(self, mock_openai):
         mock_client = AsyncMock()
-        mock_response = MagicMock()
-        mock_choice = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = "```json\n{\"data_points\": [{\"disease_name\": \"麻疹\"}]}\n```"
-        mock_choice.message = mock_message
-        mock_response.choices = [mock_choice]
-        mock_client.chat.completions.create.return_value = mock_response
+        mock_client.chat.completions.create.return_value = _stream_mock(
+            "```json\n{\"data_points\": [{\"disease_name\": \"麻疹\"}]}\n```"
+        )
         mock_openai.return_value = mock_client
 
         extractor = LLMExtractor(model="deepseek-chat")
@@ -86,18 +71,12 @@ class TestLLMExtractor:
     @patch("app.core.extraction.llm_client.AsyncOpenAI")
     async def test_extract_with_missing_key_fields(self, mock_openai):
         mock_client = AsyncMock()
-        mock_response = MagicMock()
-        mock_choice = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = json.dumps({
+        mock_client.chat.completions.create.return_value = _stream_mock(json.dumps({
             "data_points": [{
                 "disease_name": "麻疹",
                 "province": "广东",
             }]
-        })
-        mock_choice.message = mock_message
-        mock_response.choices = [mock_choice]
-        mock_client.chat.completions.create.return_value = mock_response
+        }))
         mock_openai.return_value = mock_client
 
         extractor = LLMExtractor(model="deepseek-chat")

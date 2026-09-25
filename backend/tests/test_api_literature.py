@@ -55,7 +55,8 @@ class TestLiteratureAPI:
             fake_id = "00000000-0000-0000-0000-000000000000"
             response = await client.get(f"/api/v1/literatures/{fake_id}")
             assert response.status_code == 404
-            assert "文献不存在" in response.json()["detail"]
+            # 错误响应统一为 ApiResponse 格式：{success, code, message, data}
+            assert "文献不存在" in response.json()["message"]
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_upload_literature_invalid_file_type(self):
@@ -66,7 +67,8 @@ class TestLiteratureAPI:
                 files={"file": ("test.exe", b"not a supported doc", "application/octet-stream")},
             )
             assert response.status_code == 400
-            assert "不支持的文件格式" in response.json()["detail"]
+            # 错误响应统一为 ApiResponse 格式：{success, code, message, data}
+            assert "不支持的文件格式" in response.json()["message"]
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_upload_literature_missing_file(self):

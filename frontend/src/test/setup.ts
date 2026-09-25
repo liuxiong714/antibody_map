@@ -54,3 +54,14 @@ if (!window.matchMedia) {
       dispatchEvent: () => false,
     }) as MediaQueryList;
 }
+
+// jsdom 未实现 ResizeObserver：EChart 用它监听容器尺寸变化，
+// 缺失会在渲染时抛 "ResizeObserver is not defined"。补一个空实现。
+if (!('ResizeObserver' in globalThis)) {
+  class ResizeObserverStub {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = ResizeObserverStub;
+}

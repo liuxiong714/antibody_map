@@ -4,7 +4,6 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timeutil import iso_ts
-
 from app.models.literature import Literature
 from app.services.literature._common import (
     logger,

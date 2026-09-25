@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import json
 import os
-from warnings import deprecated
 
 import numpy as np
+
+try:  # Python 3.13+ 内置 PEP 702 的 warnings.deprecated
+    from warnings import deprecated
+except ImportError:  # Python < 3.13 回退到官方 backport（CI 固定 3.11）
+    from typing_extensions import deprecated
 
 # 接触矩阵年龄组标签（与 china_contact_matrix.json 的行顺序一致）
 AGE_GROUPS_CONTACT = ["0-4", "5-17", "18-29", "30-59", "60+"]
@@ -240,20 +244,14 @@ def r_eff(
         met = r_eff_val < 1.0
         # 平均保护需提升到 p_target，使 (1-p_target) · r0_norm < 1
         # 线性近似：gap ≈ R_eff - 1（当 R_eff > 1）
-        if r_eff_val >= 1.0:
-            gap = float((r_eff_val - 1.0) / max(r_eff_val, 1e-9))
-        else:
-            gap = 0.0
+        gap = float((r_eff_val - 1.0) / max(r_eff_val, 1e-9)) if r_eff_val >= 1.0 else 0.0
 
     # 7) 各组贡献：残差矩阵行和（传播源）归一化
     row_sums = residual.sum(axis=1)
     total_row = float(row_sums.sum())
     contribs = []
     for i, label in enumerate(AGE_GROUPS_CONTACT):
-        if total_row > 1e-12:
-            frac = float(row_sums[i] / total_row)
-        else:
-            frac = 0.0
+        frac = float(row_sums[i] / total_row) if total_row > 1e-12 else 0.0
         contribs.append({
             "age_group": label,
             "positivity_percent": round(float(p_arr[i] * 100.0), 2),

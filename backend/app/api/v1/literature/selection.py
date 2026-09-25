@@ -9,7 +9,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -158,8 +158,8 @@ async def _match_one(
         return ("ambiguous", {
             "count": len(exact_hits),
             "candidates": [
-                {"id": str(l.id), "title": l.title, "authors": l.authors or ""}
-                for l in exact_hits[:5]
+                {"id": str(c.id), "title": c.title, "authors": c.authors or ""}
+                for c in exact_hits[:5]
             ],
         })
 
@@ -185,8 +185,8 @@ async def _match_one(
         return ("ambiguous", {
             "count": len(fuzzy_hits),
             "candidates": [
-                {"id": str(l.id), "title": l.title, "authors": l.authors or ""}
-                for l in fuzzy_hits[:5]
+                {"id": str(c.id), "title": c.title, "authors": c.authors or ""}
+                for c in fuzzy_hits[:5]
             ],
         })
 
@@ -315,7 +315,7 @@ async def batch_set_tags(
         if tag is None:
             raise HTTPException(
                 status_code=400,
-                detail=f"无法解析标签：既没有有效的 tag_id 也没有 tag_name",
+                detail="无法解析标签：既没有有效的 tag_id 也没有 tag_name",
             )
         resolved_tags.append(tag)
 

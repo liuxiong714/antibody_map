@@ -728,7 +728,7 @@ def _build_hit_threshold_families(
     # 延迟加载：首次调用时读 JSON（lru_cache 缓存）
     try:
         _const = _load_ref_constants_json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         _const = {}
 
     who_meta = {}

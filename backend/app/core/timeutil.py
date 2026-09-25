@@ -3,7 +3,7 @@
 数据库所有 DateTime(timezone=True) 字段以 UTC 存储（默认 datetime.now(timezone.utc)）。
 在序列化给前端时，应通过 iso_ts() 转成本地时区（Asia/Shanghai），保证展示时间与用户本地一致。
 """
-from datetime import datetime, timezone
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # 应用展示时区：北京时间

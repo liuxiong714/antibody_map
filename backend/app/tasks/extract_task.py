@@ -9,24 +9,24 @@ from pathlib import Path
 from sqlalchemy import delete, func, select, update
 
 from app.config import settings
+from app.core.audit import log_audit
 from app.core.document_parser import extract_text
 from app.core.extraction_grounding import (
     ground_extraction,
     validate_extraction_schema,
 )
 from app.core.llm_extractor import LLMExtractor, _classify_llm_error
-from app.core.minio_client import get_minio_client
-from app.core.parse_trace import reset as trace_reset
-from app.core.parse_trace import snapshot as trace_snapshot
 from app.core.metadata_validator import (
     is_valid_doi,
     is_valid_pmid,
     is_valid_pub_year,
 )
+from app.core.minio_client import get_minio_client
+from app.core.parse_trace import reset as trace_reset
+from app.core.parse_trace import snapshot as trace_snapshot
 from app.core.pdf_table_parser import extract_tables_markdown
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES, normalize_province
-from app.core.text_preprocessor import preprocess, detect_language
-from app.core.audit import log_audit
+from app.core.text_preprocessor import detect_language, preprocess
 from app.models.api_model_config import ApiModelConfig
 from app.models.base import async_session
 from app.models.data_point import DataPoint
@@ -357,7 +357,7 @@ def _pm_int(val):
     if val is None or val == "":
         return None
     try:
-        return int(round(float(str(val).replace(",", ""))))
+        return round(float(str(val).replace(",", "")))
     except (TypeError, ValueError, ZeroDivisionError):
         return None
 
@@ -830,6 +830,8 @@ async def _process_literature_async(
                 titer_tables = cached.get("titer_tables") or []
                 pathogen_monitoring = cached.get("pathogen_monitoring") or []
                 usage_summary = cached.get("usage_summary") or {}
+                # 效率指标详情（首token延迟/tokens_per_sec等）
+                timing_summary = cached.get("timing_summary")
                 # P1-1：缓存也携带 article 元数据
                 article_meta = cached.get("article_meta") or {}
                 extractor = None
@@ -856,7 +858,21 @@ async def _process_literature_async(
             logger.info(f"开始 LLM 提取: model={effective_model}, extraction_passes={passes}")
             from app.core.metrics import observe_extraction_duration, record_llm_completion
 
+            # peak_vram 显存采样协程：LLM 调用期间后台轮询 Ollama /api/ps
+            # 仅本地 Ollama 生效；远程 API/不可达时协程立即 return，不影响主流程
+            _stop_vram = _asyncio.Event()
+            _vram_out: dict = {"peak_vram_mb": None}
+            _vram_task = None
+            try:
+                from app.core.providers.ollama_provider import sample_peak_vram
+                _vram_task = _asyncio.create_task(
+                    sample_peak_vram(effective_model, _stop_vram, _vram_out, interval=1.0)
+                )
+            except Exception:
+                _vram_task = None
+
             _extract_start = time.perf_counter()
+            _extract_error: Exception | None = None
             try:
                 extract_results = await extractor.extract_with_retry(
                     text=clean_text,
@@ -868,12 +884,34 @@ async def _process_literature_async(
                     extraction_passes=passes,
                     enable_thinking=enable_thinking,
                 )
-            except Exception:
-                # 记录提取失败耗时与结局（非阻塞，绝不影响失败回抛）
-                observe_extraction_duration(effective_model, time.perf_counter() - _extract_start)
-                record_llm_completion(effective_model, "error", None)
-                raise
-            _extract_seconds = time.perf_counter() - _extract_start
+            except Exception as e:
+                _extract_error = e
+            finally:
+                _extract_seconds = time.perf_counter() - _extract_start
+                # 停显存采样协程（加 3s 超时防护，绝不阻塞主流程）
+                _stop_vram.set()
+                if _vram_task is not None and not _vram_task.done():
+                    try:
+                        await _asyncio.wait_for(_vram_task, timeout=3)
+                    except Exception:
+                        _vram_task.cancel()
+                        with contextlib.suppress(_asyncio.CancelledError):
+                            await _vram_task
+                # 记录 Prometheus 指标（成功/失败都要记）
+                observe_extraction_duration(effective_model, _extract_seconds)
+                if _extract_error is not None:
+                    record_llm_completion(effective_model, "error", None)
+                # 把 peak_vram_mb merge 进 timing_summary
+                timing_summary = extractor.get_timing_summary()
+                timing_summary["peak_vram_mb"] = _vram_out.get("peak_vram_mb")
+                logger.info(
+                    f"[PeakVRAM] model={effective_model}, "
+                    f"peak_vram_mb={timing_summary.get('peak_vram_mb')}, "
+                    f"timing={timing_summary}"
+                )
+
+            if _extract_error is not None:
+                raise _extract_error
             _llm_seconds = _extract_seconds
             logger.info(f"LLM 提取完成: {len(extract_results)} 个数据点")
 
@@ -908,13 +946,14 @@ async def _process_literature_async(
                             logger.warning(f"[视觉增强] 视觉滴度表合并失败（不影响数据点）: {e}")
 
             usage_summary = extractor.get_usage_summary()
+            # 效率指标详情：timing_summary 已在 finally 里 merge 了 peak_vram_mb
+            # 此处不再重新 get_timing_summary() 以免覆盖 peak_vram_mb
             titer_tables = extractor.get_titer_tables()
             # P1-1：捕获顶层 article 元数据用于回填 literature
             article_meta = extractor.get_article_meta()
             # 阶段2：捕获病原学监测数据
             pathogen_monitoring = extractor.get_pathogen_monitoring()
-            # 记录 Prometheus 指标：提取耗时 + LLM token/费用/结局
-            observe_extraction_duration(effective_model, _extract_seconds)
+            # 记录 Prometheus 指标（observe 已在 finally 里记过）
             record_llm_completion(effective_model, "success", usage_summary)
 
         # F13：写库事务边界重构（方案A）——将数据点转换阶段（含可能触发的 A3 LLM 重抽）
@@ -1175,17 +1214,16 @@ async def _process_literature_async(
                             f"P0-5 article_meta doi 格式无效，跳过回填: {_v_str!r}"
                         )
                         continue
-                elif _field == "pmid":
-                    if not is_valid_pmid(_v_str):
-                        logger.warning(
-                            f"P0-5 article_meta pmid 格式无效，跳过回填: {_v_str!r}"
-                        )
-                        continue
+                elif _field == "pmid" and not is_valid_pmid(_v_str):
+                    logger.warning(
+                        f"P0-5 article_meta pmid 格式无效，跳过回填: {_v_str!r}"
+                    )
+                    continue
                 # abstract 长度截断防护（LLM 可能编造超长摘要）
                 if _field == "abstract" and len(_v_str) > 5000:
                     _v_str = _v_str[:5000]
                     logger.warning(
-                        f"P0-5 article_meta abstract 超长，截断至 5000 字符"
+                        "P0-5 article_meta abstract 超长，截断至 5000 字符"
                     )
                 setattr(literature, _field, _v_str)
                 _backfilled.append(_field)
@@ -1314,6 +1352,8 @@ async def _process_literature_async(
             _new_history.llm_call_count = usage_summary.get("total_call_count", 0)
             _new_history.llm_usage_detail = usage_summary.get("models")
             _new_history.duration_seconds = _llm_seconds
+            # 效率指标详情：首token延迟/tokens_per_sec/gen_seconds等
+            _new_history.timing_detail = timing_summary
         except Exception as e:
             logger.warning(f"更新提取历史记录失败（不影响提取结果）: {e}")
 
@@ -1408,6 +1448,7 @@ async def _process_literature_async(
                     "pathogen_monitoring": pathogen_monitoring,
                     "usage_summary": usage_summary,
                     "article_meta": article_meta,
+                    "timing_summary": timing_summary,
                 })
                 logger.info(f"提取结果已写入缓存（文献 {literature_id}）")
             except Exception as e:
@@ -1557,7 +1598,7 @@ def process_literature(
                     logger.warning(f"写入失败历史记录出错: {he}")
                 await db.commit()
                 # ── 审计：提取失败 ──
-                try:
+                with contextlib.suppress(Exception):
                     log_audit(
                         action="extraction_failed",
                         target=f"literature:{literature_id}",
@@ -1570,8 +1611,6 @@ def process_literature(
                         entity_type="literature",
                         entity_id=str(literature_id),
                     )
-                except Exception:
-                    pass
 
         # 连接类错误重试耗尽：回退到 pending（不判死、不写 failed 历史），
         # 使该文献在模型服务恢复后可被重新提取。

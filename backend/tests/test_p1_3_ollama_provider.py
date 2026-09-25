@@ -10,12 +10,15 @@
 """
 from __future__ import annotations
 
-import sys
 import asyncio
+import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from conftest import fake_llm_stream
 
 from app.config import settings
 from app.core.llm_extractor import LLMExtractor
@@ -103,11 +106,7 @@ def test_response_format_skipped_for_ollama(mock_cls):
 
     async def fake_create(**kwargs):
         captured_kwargs.update(kwargs)
-        resp = MagicMock()
-        resp.choices = [MagicMock()]
-        resp.choices[0].message.content = '{"data_points": []}'
-        resp.usage = None
-        return resp
+        return fake_llm_stream('{"data_points": []}', model="llama3")
 
     client = mock_cls.return_value
     client.chat.completions.create = AsyncMock(side_effect=fake_create)
@@ -130,11 +129,7 @@ def test_response_format_kept_for_deepseek(mock_cls):
 
     async def fake_create(**kwargs):
         captured_kwargs.update(kwargs)
-        resp = MagicMock()
-        resp.choices = [MagicMock()]
-        resp.choices[0].message.content = '{"data_points": []}'
-        resp.usage = None
-        return resp
+        return fake_llm_stream('{"data_points": []}')
 
     client = mock_cls.return_value
     client.chat.completions.create = AsyncMock(side_effect=fake_create)
@@ -148,18 +143,31 @@ def test_response_format_kept_for_deepseek(mock_cls):
 
 
 # ── 测试 7: 兜底 HTTP 调用使用解析后的 base_url ─────────
-def test_fallback_http_uses_resolved_url():
-    """_fallback_http_call 使用 self._resolved_url 而非全局 LLM_BASE_URL"""
-    ext = LLMExtractor(model="llama3", base_url="http://my-ollama:11434/v1")
+def _sse_client(captured: dict, content: str = '{"data_points": []}'):
+    """构造 httpx.AsyncClient 替身：以 SSE 流式返回 content（_fallback_http_call 走 client.stream）。
 
-    captured_url = {}
+    captured 会收到 {"url": 请求地址, "payload": 请求体}，供断言使用。
+    """
 
-    class FakeResponse:
+    async def aiter_lines():
+        yield "data: " + json.dumps(
+            {"model": "llama3", "choices": [{"delta": {"content": content}}]}
+        )
+        yield "data: [DONE]"
+
+    class FakeStreamResponse:
         def raise_for_status(self):
             pass
 
-        def json(self):
-            return {"choices": [{"message": {"content": '{"data_points": []}'}}]}
+        def aiter_lines(self):
+            return aiter_lines()
+
+    class FakeStreamCtx:
+        async def __aenter__(self):
+            return FakeStreamResponse()
+
+        async def __aexit__(self, *args):
+            return False
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
@@ -171,15 +179,25 @@ def test_fallback_http_uses_resolved_url():
         async def __aexit__(self, *args):
             return False
 
-        async def post(self, url, **kwargs):
-            captured_url["url"] = url
-            return FakeResponse()
+        def stream(self, method, url, **kwargs):
+            captured["url"] = url
+            captured["payload"] = kwargs.get("json") or {}
+            return FakeStreamCtx()
 
-    with patch("app.core.extraction.llm_client.httpx.AsyncClient", FakeClient):
+    return FakeClient
+
+
+def test_fallback_http_uses_resolved_url():
+    """_fallback_http_call 使用 self._resolved_url 而非全局 LLM_BASE_URL"""
+    ext = LLMExtractor(model="llama3", base_url="http://my-ollama:11434/v1")
+
+    captured = {}
+
+    with patch("app.core.extraction.llm_client.httpx.AsyncClient", _sse_client(captured)):
         result = asyncio.run(ext._fallback_http_call("test"))
 
-    assert "my-ollama:11434" in captured_url["url"], \
-        f"兜底调用应使用解析后的 URL, 实际: {captured_url['url']}"
+    assert "my-ollama:11434" in captured["url"], \
+        f"兜底调用应使用解析后的 URL, 实际: {captured['url']}"
     assert result == '{"data_points": []}'
     print("✓ test_fallback_http_uses_resolved_url")
 
@@ -189,34 +207,13 @@ def test_fallback_http_skips_response_format_for_ollama():
     """兜底 HTTP 调用对 Ollama 模型不传 response_format"""
     ext = LLMExtractor(model="llama3")
 
-    captured_payload = {}
+    captured = {}
 
-    class FakeResponse:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"choices": [{"message": {"content": "{}"}}]}
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        async def post(self, url, headers=None, json=None, **kwargs):
-            captured_payload.update(json or {})
-            return FakeResponse()
-
-    with patch("app.core.extraction.llm_client.httpx.AsyncClient", FakeClient):
+    with patch("app.core.extraction.llm_client.httpx.AsyncClient", _sse_client(captured, "{}")):
         asyncio.run(ext._fallback_http_call("test"))
 
-    assert "response_format" not in captured_payload, \
-        f"Ollama 兜底调用不应传 response_format: {captured_payload.get('response_format')}"
+    assert "response_format" not in captured["payload"], \
+        f"Ollama 兜底调用不应传 response_format: {captured['payload'].get('response_format')}"
     print("✓ test_fallback_http_skips_response_format_for_ollama")
 
 

@@ -38,6 +38,10 @@ class ExtractionHistory(Base):
     llm_usage_detail: Mapped[dict | None] = mapped_column(JSON)
     # 本次 AI 提取时长（秒，3 位小数）。成功路径为 LLM 提取耗时；失败路径为从任务抢占到失败的整段耗时
     duration_seconds: Mapped[Any] = mapped_column(Numeric(12, 3), default=0)
+    # 效率指标详情（JSON）：来自 LLMClientMixin.get_timing_summary()
+    # 包含 avg_first_token_ms（首token延迟）、gen_seconds（decode阶段耗时）、
+    # tokens_per_sec（生成速度）、completion_tokens、calls
+    timing_detail: Mapped[dict | None] = mapped_column(JSON)
 
     __table_args__ = (
         CheckConstraint(
