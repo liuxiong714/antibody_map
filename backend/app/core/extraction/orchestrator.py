@@ -440,11 +440,63 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
                 )
             logger.info("C-聚焦提取模式 prompt 已注入")
 
+        # B-2026-09-26：文本类型引导——关键词检测后动态追加 prompt 段
+        # 纯流行病学文献（无血清学实验）→ 强制引导输出 incidence_rate / case_count / mortality
+        # 混合型文献 → 双重覆盖提示
+        type_guidance = ""
+        text_for_probe = text[:8000] if text else ""
+        sero_sig, epi_sig = self._detect_text_profile(text_for_probe, language)
+        if sero_sig == 0 and epi_sig >= 2:
+            if language == "zh":
+                type_guidance = (
+                    "【文献类型判定：纯流行病学监测报告】\n"
+                    "本文献不含血清学实验（ELISA、中和试验、血清抗体检测等），"
+                    "但包含流行病学监测数据。请重点从【结果】部分提取：\n"
+                    "- 发病率 → incidence_rate（单位如实填如 /10万、‰）\n"
+                    "- 病例总数 → case_count（整数）\n"
+                    "- 病死率/死亡率 → mortality_rate\n"
+                    "- 死亡数 → death_count\n"
+                    "- 不同年份的发病率/病例数、不同人群的发病率/病例数 分别独立输出\n"
+                    "seroprevalence / gmc_value / antibody_type 等血清学字段全部填 null。\n\n"
+                )
+            else:
+                type_guidance = (
+                    "[Text type: PURE EPIDEMIOLOGY SURVEILLANCE]\n"
+                    "No serological assays found (no ELISA, neutralization, serum antibody testing). "
+                    "Extract epidemiological surveillance data from Results:\n"
+                    "- incidence_rate (unit: /100k, per mille, etc.)\n"
+                    "- case_count (integer)\n"
+                    "- mortality_rate\n"
+                    "- death_count\n"
+                    "- Separate data points for different years or populations\n"
+                    "seroprevalence, gmc_value, antibody_type must ALL be null.\n\n"
+                )
+            logger.info(f"B-text guidance: pure epi mode (sero=0 epi={epi_sig})")
+        elif sero_sig > 0 and epi_sig >= 1:
+            if language == "zh":
+                type_guidance = (
+                    "【文献类型判定：血清学+流行病学混合型】\n"
+                    "本文献同时包含血清学检测和流行病学监测数据。请两类都提取：\n"
+                    "- 血清学：阳性率→positivity_rate，GMC→gmc_value\n"
+                    "- 流行病学：发病率→incidence_rate，病例数→case_count\n"
+                    "两类数据可以在同一个 data_point 中并存。\n\n"
+                )
+            else:
+                type_guidance = (
+                    "[Text type: MIXED SEROBIOLOGY + EPIDEMIOLOGY]\n"
+                    "Both serological assays and epidemiological surveillance present. "
+                    "Extract BOTH types:\n"
+                    "- Serology: positivity_rate, gmc_value\n"
+                    "- Epidemiology: incidence_rate, case_count\n"
+                    "Both types can coexist in the same data_point.\n\n"
+                )
+            logger.info(f"B-text guidance: mixed mode (sero={sero_sig} epi={epi_sig})")
+
         # A1：表格优先模式只注入表格，不注入全文
         if table_only:
-            user_content = meta + focus_prefix + complement_prefix + tables_section + feedback_section + "（仅从上述表格中提取数据点）"
+            user_content = meta + type_guidance + focus_prefix + complement_prefix + tables_section + feedback_section + "（仅从上述表格中提取数据点）"
         else:
-            user_content = meta + focus_prefix + tables_section + complement_prefix + feedback_section + text
+            user_content = meta + type_guidance + focus_prefix + tables_section + complement_prefix + feedback_section + text
 
         # 本地模型（不支持 response_format）在 user 内容末尾追加 JSON 强制提醒
         if not self._supports_response_format(self.model):
@@ -465,7 +517,6 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
                 self._article_meta = art
 
         points = self._post_process(data)
-
         # P2-tt 试点：累计本次输出中的滴度矩阵（confidence<0.8 已标记落人工）
         for tt in self._post_process_titer_tables(data):
             self._titer_tables.append(tt)
@@ -486,6 +537,56 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
                 p["_pub_year"] = pub_year
 
         return points
+
+    # ===== B-2026-09-26：文本类型关键词检测 =====
+
+    @staticmethod
+    def _detect_text_profile(text: str, language: str) -> tuple:
+        """检测文本前 N 字符中的血清学/流行病学信号词密度。
+
+        返回 (sero_sig, epi_sig) —— 两组信号词命中的加权计数。
+        sero_sig=0 且 epi_sig>=2 → 纯流行病学文献。
+        """
+        if not text:
+            return 0, 0
+
+        text_lower = text.lower()
+
+        # 血清学信号词（命中即代表存在真实实验，加权更高）
+        if language == "zh":
+            sero_keywords = [
+                "elisa", "中和试验", "中和抗体", "血凝抑制", "hi试验",
+                "血清检测", "血清学试验", "血清抗体", "血清阳性",
+                "gmc", "gmt", "几何平均浓度", "几何平均滴度",
+                "igg抗体", "igm抗体", "iga抗体", "中和滴度",
+                "免疫情报", "免疫检测", "免疫测定", "免疫荧光",
+            ]
+            epi_keywords = [
+                "发病率", "病例数", "病例报告", "发病数",
+                "病死率", "死亡率", "死亡数", "死亡病例",
+                "流行病学监测", "暴发", "流行", "疫情",
+                "报告病例", "发病情况", "发病分布",
+            ]
+        else:
+            sero_keywords = [
+                "elisa", "neutralization test", "neutralizing antibody",
+                "hemagglutination inhibition", "serum antibody",
+                "seropositive", "serology", "serological assay",
+                "gmc", "gmt", "geometric mean concentration",
+                "geometric mean titer", "igg antibody", "igm antibody",
+                "prnt", "plaque reduction", "immunoassay",
+            ]
+            epi_keywords = [
+                "incidence rate", "case count", "cases reported",
+                "mortality rate", "case fatality", "death count",
+                "epidemiological surveillance", "outbreak", "epidemic",
+                "incidence", "reported cases",
+            ]
+
+        sero_sig = sum(text_lower.count(kw.lower()) for kw in sero_keywords)
+        epi_sig = sum(text_lower.count(kw.lower()) for kw in epi_keywords)
+
+        return sero_sig, epi_sig
 
     # ===== B8：表格行数估算 =====
 

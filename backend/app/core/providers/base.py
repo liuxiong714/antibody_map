@@ -97,3 +97,42 @@ def list_providers() -> list[type[BaseLLMProvider]]:
 def clear_registry() -> None:
     """清空注册表（仅用于测试）"""
     _PROVIDER_REGISTRY.clear()
+
+
+# ── 模型名标准化 ──────────────────────────────────────
+_KNOWN_PROVIDERS = ("ollama", "deepseek", "openai", "qwen", "zhipuai", "azure", "google", "anthropic")
+
+
+def normalize_model_name(model: str | None) -> str | None:
+    """统一模型名格式为 `<provider>:<model>`。
+
+    - 已有 provider 前缀（ollama:qwen3:27b）→ 原样返回（仅剥离多余空白）
+    - 无前缀但能匹配 Provider（qwen3.8:27b → ollama）→ 补前缀
+    - 无前缀也匹配不到 Provider → 原样返回（未知来源）
+    - 空 / None → 原样返回
+    - (cached) 后缀保留在最后
+    """
+    if not model or not model.strip():
+        return model
+    model = model.strip()
+
+    # 分离 (cached) 后缀
+    cached_suffix = ""
+    core = model
+    if core.endswith(" (cached)"):
+        cached_suffix = " (cached)"
+        core = core[: -len(" (cached)")].strip()
+
+    # 已经有已知 provider 前缀 → 原样返回 core
+    if ":" in core:
+        first = core.split(":", 1)[0].lower()
+        if first in _KNOWN_PROVIDERS:
+            return core + cached_suffix
+
+    # 用 Provider 注册表匹配
+    provider_cls = get_provider_for_model(core)
+    if provider_cls is not None:
+        return f"{provider_cls.name}:{core}" + cached_suffix
+
+    # 无法匹配 → 原样返回
+    return model

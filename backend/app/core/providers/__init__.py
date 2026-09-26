@@ -18,6 +18,7 @@ from app.core.providers.base import (
     clear_registry,
     get_provider_for_model,
     list_providers,
+    normalize_model_name,
     register_provider,
 )
 
@@ -26,5 +27,6 @@ __all__ = [
     "clear_registry",
     "get_provider_for_model",
     "list_providers",
+    "normalize_model_name",
     "register_provider",
 ]

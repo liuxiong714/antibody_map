@@ -1224,6 +1224,96 @@ async def delete_history(
     return ApiResponse(message="提取历史已删除", data={"history_id": str(history_id)})
 
 
+@router.get("/extraction/export-history", summary="批量导出提取历史指标CSV", description="按文献×模型导出所有 AI 提取历史记录的完整指标，支持按模型/状态/日期过滤，便于多模型横向对比分析")
+async def export_extraction_history(
+    model: str | None = Query(None, description="按模型名过滤（支持 LIKE 模糊匹配，如 ollama:qwen）"),
+    status: str | None = Query(None, description="按状态过滤：success / no_data / failed"),
+    since: str | None = Query(None, description="起始日期（ISO 格式，如 2026-09-01）"),
+    literature_id: uuid.UUID | None = Query(None, description="按单篇文献过滤"),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量导出 extraction_history → CSV，含 timing_detail JSON 里的 VRAM/速度/首token"""
+    from sqlalchemy import and_ as _and_
+
+    stmt = select(ExtractionHistory).join(Literature, Literature.id == ExtractionHistory.literature_id)
+    conds = []
+    if model:
+        conds.append(ExtractionHistory.model.like(f"%{model}%"))
+    if status:
+        conds.append(ExtractionHistory.status == status)
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
+            conds.append(ExtractionHistory.extracted_at >= since_dt)
+        except ValueError:
+            pass
+    if literature_id:
+        conds.append(ExtractionHistory.literature_id == literature_id)
+    if conds:
+        stmt = stmt.where(_and_(*conds))
+    stmt = stmt.order_by(ExtractionHistory.model, ExtractionHistory.extracted_at.desc())
+
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+
+    # 预取 literature_id → title 映射（避免 N+1）
+    lit_ids = {r.literature_id for r in rows}
+    title_map: dict[uuid.UUID, str] = {}
+    if lit_ids:
+        lit_stmt = select(Literature.id, Literature.title).where(Literature.id.in_(lit_ids))
+        lit_result = await db.execute(lit_stmt)
+        for lid, t in lit_result.all():
+            title_map[lid] = t or ""
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "literature_id", "文献标题", "模型", "提取时间", "状态",
+        "数据点数", "prompt_tokens", "completion_tokens", "total_tokens",
+        "VRAM_MB", "VRAM_GB", "tokens_per_sec", "avg_first_token_ms",
+        "duration_seconds", "llm_call_count", "llm_cost_usd",
+        "错误信息",
+    ])
+    for r in rows:
+        td = r.timing_detail or {}
+        vram_mb = td.get("peak_vram_mb")
+        vram_gb = round(vram_mb / 1024, 2) if vram_mb else ""
+        err = (r.error_message or "").replace("\n", " ")[:200]
+        writer.writerow([
+            str(r.literature_id),
+            title_map.get(r.literature_id, ""),
+            r.model or "",
+            r.extracted_at.strftime("%Y-%m-%d %H:%M:%S") if r.extracted_at else "",
+            r.status,
+            r.data_point_count or 0,
+            r.prompt_tokens or 0,
+            r.completion_tokens or 0,
+            r.total_tokens or 0,
+            vram_mb or "",
+            vram_gb,
+            td.get("tokens_per_sec", ""),
+            td.get("avg_first_token_ms", ""),
+            float(r.duration_seconds) if r.duration_seconds else 0,
+            r.llm_call_count or 0,
+            float(r.llm_cost_usd) if r.llm_cost_usd else 0,
+            err,
+        ])
+
+    # 构建文件名：含过滤条件
+    parts = ["extraction_history"]
+    if model:
+        parts.append(model.replace(":", "_"))
+    if since:
+        parts.append(since)
+    filename = "_".join(parts) + ".csv"
+
+    return Response(
+        content=output.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
 @router.post("/literatures/extraction/reset-stuck", response_model=ApiResponse, summary="批量重置卡住的提取（管理员）", description="管理员专用：批量重置所有卡在processing或queued状态的文献为failed，并强制终止运行中的Celery提取任务，清空队列，用于服务器重启后恢复状态")
 async def reset_stuck_extractions(
     db: AsyncSession = Depends(get_db),

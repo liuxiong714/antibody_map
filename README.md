@@ -21,7 +21,7 @@
 | 阶段 | 输入 / 模型 / 输出 | 核心说明 |
 |------|---------------------|----------|
 | ① 文献与数据导入 | PDF · CAJ · DOCX · XLSX · URL | 支持主流学术文献格式 + CNKI CAJ 专属解析器，URL 批量抓取；TXT/CSV 导入匹配 + 批量 Tag 编组 |
-| ② AI 自动提取 | Qwen3.8 · DeepSeek · OpenAI · Muse · Ollama | **策略模式模型注册表**：按任务自动路由最佳模型，GPU 可用 MinerU / AnyDoc 加速文档解析；**追加模式安全**（禁用 replace）+ enable_thinking 思维链开关 |
+| ② AI 自动提取 | Qwen3.8 · DeepSeek · OpenAI · Muse · Ollama | **策略模式模型注册表**：按任务自动路由最佳模型，GPU 可用 MinerU / AnyDoc 加速文档解析；**追加模式安全**（禁用 replace）+ enable_thinking 思维链开关 + **三类数据全覆盖 Prompt**（血清学+流行病学+病原学，动态文本类型引导）；提取历史指标可批量导出 CSV |
 | ③ 人工审核修订 | 通过 / 驳回 / 编辑 / 补充 | 多人协作审核工作台，版本留痕，字段级差异对比；提取历史 vs 数据点一致性审计（自动修正 `[DP_DROPPED]`） |
 | ④ 地图可视化与多维分析 | 知识图谱 · 空间统计 · Meta 分析 · 抗原图谱 | 六类分析端点 + **免疫屏障 R_eff NGM 残差法**（真正 R_eff < 1 判据）+ 多情景批量模拟 × VE 疫苗效率 + 参考常量 JSON 化（WHO HIT / R0 / NIP 全覆盖 citation） |
 | ⑤ 报告生成与导出 | Word · PDF · Markdown | 可配置报告模板，自动引用 HIT 阈值三族 citation、R_eff 补种缺口等定量结论 |

@@ -39,6 +39,9 @@ PDF、CAJ、EPUB、DOCX、PPTX、XLSX、TXT、HTML。解析采用**策略模式*
 - **文献批量选中与编组**：TXT/CSV 导入匹配（UUID 精确 + 标题-作者模糊匹配），批量打 Tag 分组
 - **多模型串行评测 + SyntheticRun**：AI 自测多模型串行执行（一个模型跑完全部文献再切下一个，确保 100% GPU 驻留）；新建 synthetic_run 表保留每次运行的峰值显存/耗时/效率指标（首 token 延迟 / decode 速度 / tokens/s），不可覆盖
 - **enable_thinking 模型原生推理开关**：贯通 API → orchestrator → Ollama extra_body；gemma4:26b 提供无思维链 Modelfile
+- **三类数据全覆盖 Prompt + 动态文本引导**：系统 Prompt 同时提取血清学 + 流行病学监测 + 病原学；`_detect_text_profile()` 关键词检测纯流行病学文献自动注入引导段，杜绝血清学幻觉（IGM/ELISA）；三类指标判别规则（positivity_rate vs incidence_rate vs case_count 分母不同）
+- **提取历史指标 CSV 批量导出**：按模型/状态/日期过滤导出全库提取历史指标（VRAM/速度/首 token/Token 用量等 17 列），供多模型横向对比
+- **提取历史表格 VRAM/GPU→CPU 可视化**：文献详情页 AI 提取历史表格新增 VRAM 峰值（GB）、GPU→CPU 泄露 Tag（绿=全 GPU / 橙=泄露）、ctx/max_out/tps/Decode/TTFT 列，所有列标题带 Tooltip 解释
 - **PostgreSQL WAL 安全加固**：fsync=on + synchronous_commit=on + stop_grace_period 120s，容器被 SIGKILL 不丢最近写入
 - **后台自动备份**：每 60 分钟 pg_dump 一次，保留 48 份，配合 WAL 形成两层保险
 - **文献重复检测**：DOI、标题、作者、PDF 哈希多维度自动检测

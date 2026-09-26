@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ from app.core.extraction_grounding import (
     validate_extraction_schema,
 )
 from app.core.llm_extractor import LLMExtractor, _classify_llm_error
+from app.core.providers import normalize_model_name
 from app.core.metadata_validator import (
     is_valid_doi,
     is_valid_pmid,
@@ -353,13 +355,30 @@ def _pm_num(val):
 
 
 def _pm_int(val):
-    """阶段2：病原学整数清洗（分离株数/样本量/年份/页码）。"""
+    """阶段2：整数清洗（样本量/年份/页码等）。
+
+    归一化兜底（防 LLM 把页码/年份写成范围串）：
+      - "677-678" / "677,678"  → 取第一个整数
+      - "2018年" / "公元2018"  → 取第一个 4 位数字
+      - "2007-2009"          → 取起始年（第一个 4 位数）
+      - 不可解析             → None
+    """
     if val is None or val == "":
         return None
+    s = str(val).replace(",", "").strip()
+    # 1) 纯 float → round
     try:
-        return round(float(str(val).replace(",", "")))
+        return round(float(s))
     except (TypeError, ValueError, ZeroDivisionError):
-        return None
+        pass
+    # 2) 兜底：提取第一个整数（匹配正负号，允许范围串如 "677-678"）
+    m = re.search(r"-?\d+", s)
+    if m:
+        try:
+            return int(m.group())
+        except (TypeError, ValueError):
+            pass
+    return None
 
 
 async def _extract_result_to_datapoints(
@@ -459,8 +478,10 @@ async def _extract_result_to_datapoints(
         "method": cleaned.get("detection_method"),
         "assay": cleaned.get("antibody_type"),
         "population": cleaned.get("population_type"),
-        "collection_year": cleaned.get("sample_year") or cleaned.get("study_start_year") or cleaned.get("study_end_year"),
-        "source_page": cleaned.get("source_page"),
+        "collection_year": _pm_int(
+            cleaned.get("sample_year") or cleaned.get("study_start_year") or cleaned.get("study_end_year")
+        ),
+        "source_page": _pm_int(cleaned.get("source_page")),
         "source_context": final_source_context,
         # P0：精确字符级溯源字段
         "source_char_start": grounding.source_char_start,
@@ -776,7 +797,7 @@ async def _process_literature_async(
             logger.warning(f"缓存溯源文本失败（不影响提取）: {e}")
 
         # 5. LLM 提取（返回数据点列表）
-        effective_model = model or settings.LLM_MODEL
+        effective_model = normalize_model_name(model or settings.LLM_MODEL)
         passes = getattr(settings, "LLM_EXTRACTION_PASSES", 2)
         cache_hit = False
         cache_key: str | None = None
@@ -904,6 +925,18 @@ async def _process_literature_async(
                 # 把 peak_vram_mb merge 进 timing_summary
                 timing_summary = extractor.get_timing_summary()
                 timing_summary["peak_vram_mb"] = _vram_out.get("peak_vram_mb")
+                # processor 字段：Ollama /api/ps 返回 "100% GPU" / "CPU/GPU" / "CPU"
+                timing_summary["processor"] = _vram_out.get("processor")
+                # GPU→CPU 泄露判断：processor 不含 "100% GPU" 且含 "CPU"
+                _proc = (_vram_out.get("processor") or "").upper()
+                timing_summary["gpu_leak_to_cpu"] = bool(_proc and "CPU" in _proc and "100%" not in _proc)
+                # 记录本次调用的关键推理参数（ctx / max_tokens），便于后续模型行为分析
+                try:
+                    from app.config import settings as _s
+                    timing_summary["num_ctx"] = _s.LLM_CTX_TOKENS
+                    timing_summary["num_predict"] = _s.LLM_MAX_TOKENS
+                except Exception:
+                    pass
                 logger.info(
                     f"[PeakVRAM] model={effective_model}, "
                     f"peak_vram_mb={timing_summary.get('peak_vram_mb')}, "

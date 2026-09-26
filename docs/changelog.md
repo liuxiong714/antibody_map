@@ -1,5 +1,56 @@
 ## 变更日志
 
+## v1.32.0 (2026-09-26)
+
+### 核心新功能
+
+- **AI 提取 Prompt 大升级：三类数据全覆盖 + 动态引导**（`backend/app/core/extraction/schema.py` + `orchestrator.py`）：
+  - 系统 Prompt 从「只提取血清学数据」改为「同时提取血清学 + 流行病学监测 + 病原学三类数据」，覆盖 incidence_rate / case_count / mortality_rate / death_count 等流行病学字段
+  - **三类指标判别规则**：positivity_rate（分母=血清样本量） vs incidence_rate（分母=人口数） vs case_count（整数病例总数），消除模型混淆
+  - **动态文本类型引导**：`_detect_text_profile()` 检测前 8000 字符中的血清学/流行病学信号词密度，纯流行病学文献自动注入「血清学字段全 null + 强制输出 incidence/case/mortality」引导段，混合型文献注入「两类都要」双重覆盖提示
+  - **否定指令（anti-hallucination）**：纯流行病学文献严禁编造血清学字段（IgM、ELISA、阳性率等幻觉）
+  - **强制输出指令**：有流行病学数据就必须输出，纯流行病学文献即使无血清学也不得返回空 data_points
+  - **source_context 硬约束**：≤25 字关键数字短语（✅"阳性率84.3%" / ❌完整句子）
+  - **Token 预算硬约束**：completion ≤ 6000，source_context 合计 ≤ 300 tokens
+
+- **提取历史表格指标全展开 + VRAM/GPU→CPU 可视化**（`LiteratureDetail.tsx` + `extract_task.py` + `ollama_provider.py`）：
+  - 表格从 15 列扩展至 20+ 列：新增 VRAM 峰值（GB，悬停看 ctx/max_out）、GPU→CPU 泄露（绿色 Tag=全 GPU，橙色 Tag=有泄露）、ctx、max_out、tps、Decode（GPU 纯生成耗时）、TTFT（首 token 延迟）、Prompt/Completion 分项
+  - `ollama_provider.sample_peak_vram()` 新增 processor 判定：根据 size_vram / size 比例输出 "100% GPU" / "GPU+CPU 混合" / "主要在 CPU"
+  - `extract_task.py` timing_detail 新增 processor / gpu_leak_to_cpu / num_ctx / num_predict 字段写入
+  - 所有列标题加 Tooltip 解释
+  - 表格滚动改为 `scroll={{ x: 'max-content' }}` 自适应（窗口够宽无横向滚动，窄则自动出现）
+
+- **提取历史指标 CSV 批量导出 API**（`GET /api/v1/extraction/export-history` + 前端 LiteratureDetail + literature.ts）：
+  - 支持按模型（LIKE 模糊）、状态、日期、文献过滤，返回 17 列指标
+  - 文献详情页新增「📥 导出历史指标 CSV」按钮，供多模型横向对比分析
+
+- **AI 提取自测文献选择器服务端分页**（`ExtractionSelfTest.tsx`）：
+  - 从硬编码 100 条客户端分页改为服务端分页，pageSizeOptions [10, 20, 50, 100]
+  - `preserveSelectedRowKeys: true` 保留跨页选中项
+
+- **模型名标准化函数**（`providers/base.py` + `__init__.py`）：
+  - `normalize_model_name()` 自动补全 `<provider>:` 前缀（如 `qwen3.8:27b` → `ollama:qwen3.8:27b`）
+  - extract_task.py 的 effective_model 使用此函数统一处理
+
+- **后处理器补全流行病学字段白名单**（`post_processor.py`）：
+  - incidence_unit / mortality_unit / death_unit / case_count / death_count / incidence_rate / mortality_rate 全部进入白名单
+
+- **整数清洗函数增强**（`extract_task.py` `_pm_int()`）：
+  - 支持范围串归一化："677-678" → 677、"2007-2009" → 2007、"2018年" → 2018
+
+### 测试覆盖
+
+- 新增 `backend/tests/test_sample_peak_vram.py`（峰值显存采样测试）
+
+### 文档（本次同步更新）
+
+- **docs/changelog.md** — 本 v1.32.0 条目
+- **docs/guide/features.md** — §2.3 历次 AI 提取历史补充 VRAM/GPU→CPU 新列 + CSV 导出 + Prompt 三类数据升级 + 动态文本类型引导
+- **docs/index.md** — 智能特性区补充三类数据 Prompt 升级、VRAM/GPU→CPU 指标、批量导出
+- **README.md** — 端到端工作流核心功能要点补充
+
+---
+
 ## v1.31.0 (2026-09-25)
 
 ### 核心新功能

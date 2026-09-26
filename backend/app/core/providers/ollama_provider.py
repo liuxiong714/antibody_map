@@ -123,6 +123,17 @@ async def sample_peak_vram(
                         vram = int(m.get("size_vram") or 0) // (1024 * 1024)
                         if vram > (out.get("peak_vram_mb") or 0):
                             out["peak_vram_mb"] = vram
+                        # 根据 size_vram vs size 判定 processor（Ollama /api/ps 不直接返回 processor 字段）
+                        _m_size = int(m.get("size") or 0)
+                        _m_vram = int(m.get("size_vram") or 0)
+                        if _m_size > 0 and _m_vram > 0:
+                            _ratio = _m_vram / _m_size
+                            if _ratio >= 0.95:
+                                out["processor"] = "100% GPU"
+                            elif _ratio >= 0.50:
+                                out["processor"] = "GPU+CPU 混合"
+                            else:
+                                out["processor"] = "主要在 CPU"
         except Exception:
             # 任何采样错误（Ollama 不可达/网络瞬断/JSON 异常）都静默吞掉
             # 只在 stop 后自然退出，绝不影响主任务

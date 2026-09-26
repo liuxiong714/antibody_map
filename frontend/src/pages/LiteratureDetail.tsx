@@ -10,7 +10,7 @@ import StatusBadge from '../components/StatusBadge';
 import QualityBadge from '../components/QualityBadge';
 import {
   getLiterature, getExtractionResults, getExtractionStatus, getExtractionHistory, deleteExtractionHistory, updateDataPoints, triggerExtraction, updateLiterature, createDataPoint, getSourceText, confirmDataPoints, disputeDataPoints, deleteLiterature, listLiterature,
-  exportExtractionCsv, exportTraceabilityHtml, exportExtractionWord,
+  exportExtractionCsv, exportTraceabilityHtml, exportExtractionWord, exportAllExtractionHistory,
 } from '../services/literature';
 import PdfViewer from '../components/PdfViewer';
 import FilePreview from '../components/FilePreview';
@@ -1445,8 +1445,11 @@ const LiteratureDetail: React.FC = () => {
 
                     {/* 历次 AI 提取历史（内联展示） */}
                     <div style={{ marginTop: 16 }}>
-                      <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 600 }}>
-                        <HistoryOutlined style={{ marginRight: 6 }} />历次 AI 提取历史
+                      <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span><HistoryOutlined style={{ marginRight: 6 }} />历次 AI 提取历史</span>
+                        <Button size="small" icon={<DownloadOutlined />} onClick={() => exportAllExtractionHistory({ literature_id: id! }).catch(() => message.error('导出失败'))}>
+                          导出历史指标 CSV
+                        </Button>
                       </div>
                       <Spin spinning={historyLoading}>
                         {historyList.length === 0 && !historyLoading ? (
@@ -1459,83 +1462,172 @@ const LiteratureDetail: React.FC = () => {
                             dataSource={historyList}
                             pagination={false}
                             size="small"
-                            scroll={{ x: 900 }}
+                            scroll={{ x: 'max-content' }}
                             columns={[
                               {
-                                title: '提取时间',
+                                title: <Tooltip title="提取完成时间戳"><span>时间</span></Tooltip>,
                                 dataIndex: 'extracted_at',
                                 key: 'time',
-                                width: 160,
-                                render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
+                                width: 100,
+                                render: (v: string) => dayjs(v).format('MM-DD HH:mm'),
                               },
                               {
-                                title: '使用模型',
+                                title: <Tooltip title="AI 大模型（ollama: 前缀=本地部署）"><span>模型</span></Tooltip>,
                                 dataIndex: 'model',
                                 key: 'model',
-                                width: 160,
+                                width: 95,
                                 render: (v: string | null) => v || '-',
                               },
                               {
-                                title: '状态',
+                                title: <Tooltip title="success=成功；no_data=无数据；failed=出错"><span>状态</span></Tooltip>,
                                 dataIndex: 'status',
                                 key: 'status',
-                                width: 100,
+                                width: 70,
                                 render: (s: string) => {
                                   const meta = HISTORY_STATUS_META[s] || { color: 'default', label: s };
                                   return <Tag color={meta.color}>{meta.label}</Tag>;
                                 },
                               },
                               {
-                                title: '数据点数',
+                                title: <Tooltip title="落库的数据点总数"><span>点数</span></Tooltip>,
                                 dataIndex: 'data_point_count',
                                 key: 'count',
-                                width: 80,
+                                width: 55,
                                 render: (v: number) => v || 0,
                               },
                               {
-                                title: 'Token 用量',
+                                title: <Tooltip title="总 token = Prompt + Completion，悬停看分解"><span>Token</span></Tooltip>,
                                 key: 'tokens',
-                                width: 120,
-                                render: (_: unknown, r: ExtractionHistoryItem) =>
-                                  r.total_tokens > 0
-                                    ? <Tag color="blue">{r.total_tokens.toLocaleString()} tokens</Tag>
-                                    : '-',
-                              },
-                              {
-                                title: '调用次数',
-                                dataIndex: 'llm_call_count',
-                                key: 'calls',
-                                width: 80,
-                                render: (v: number) => v || 0,
-                              },
-                              {
-                                title: '耗时',
-                                key: 'duration',
-                                width: 90,
+                                width: 75,
                                 render: (_: unknown, r: ExtractionHistoryItem) => {
-                                  if (!r.duration_seconds || r.duration_seconds <= 0) return '-';
-                                  const s = r.duration_seconds;
-                                  if (s < 60) return <span>{s.toFixed(1)}s</span>;
-                                  if (s < 3600) return <span>{(s / 60).toFixed(1)}min</span>;
-                                  return <span>{(s / 3600).toFixed(2)}h</span>;
+                                  const t = r.total_tokens;
+                                  if (!t) return '-';
+                                  return <Tooltip title={`Prompt ${r.prompt_tokens?.toLocaleString() ?? 0} · Completion ${r.completion_tokens?.toLocaleString() ?? 0}`}><Tag color="blue">{t.toLocaleString()}</Tag></Tooltip>;
                                 },
                               },
                               {
-                                title: '费用',
-                                key: 'cost',
-                                width: 100,
-                                render: (_: unknown, r: ExtractionHistoryItem) =>
-                                  r.llm_cost_usd > 0
-                                    ? <Tag color="gold">${r.llm_cost_usd.toFixed(4)}</Tag>
-                                    : '-',
+                                title: <Tooltip title="输入 token（prompt + 文献 + 指令）"><span>In</span></Tooltip>,
+                                dataIndex: 'prompt_tokens',
+                                key: 'prompt',
+                                width: 65,
+                                render: (v: number) => v > 0 ? v.toLocaleString() : '-',
                               },
                               {
-                                title: '错误分类',
-                                key: 'err_category',
-                                width: 160,
+                                title: <Tooltip title="输出 token（JSON 结果大小）"><span>Out</span></Tooltip>,
+                                dataIndex: 'completion_tokens',
+                                key: 'completion',
+                                width: 68,
+                                render: (v: number) => v > 0 ? v.toLocaleString() : '-',
+                              },
+                              {
+                                title: <Tooltip title="GPU 显存峰值（GB），悬停看 ctx / max_out"><span>VRAM</span></Tooltip>,
+                                key: 'vram',
+                                width: 68,
+                                render: (_: unknown, r: ExtractionHistoryItem) => {
+                                  const v = r.timing_detail?.peak_vram_mb;
+                                  if (!v) return '-';
+                                  const gb = (v / 1024).toFixed(1);
+                                  const ctx = r.timing_detail?.num_ctx?.toLocaleString() ?? '-';
+                                  const mp = r.timing_detail?.num_predict?.toLocaleString() ?? '-';
+                                  return <Tooltip title={`ctx ${ctx} · max_out ${mp}`}><Tag color="purple">{gb}GB</Tag></Tooltip>;
+                                },
+                              },
+                              {
+                                title: <Tooltip title="GPU→CPU 泄露：模型部分层卸载到 CPU（Tag=泄露 / - = 全 GPU）"><span>GPU→CPU</span></Tooltip>,
+                                key: 'gpu_leak',
+                                width: 70,
+                                render: (_: unknown, r: ExtractionHistoryItem) => {
+                                  if (r.timing_detail?.gpu_leak_to_cpu === true) {
+                                    const proc = r.timing_detail.processor || '';
+                                    return <Tooltip title={`processor: ${proc || 'CPU/GPU 混合'}`}><Tag color="orange">⚠ 泄露</Tag></Tooltip>;
+                                  }
+                                  if (r.timing_detail?.processor && r.timing_detail.processor.includes('100%')) {
+                                    return <Tooltip title={`processor: ${r.timing_detail.processor}`}><Tag color="green">✓</Tag></Tooltip>;
+                                  }
+                                  return '-';
+                                },
+                              },
+                              {
+                                title: <Tooltip title="ctx：Ollama 上下文窗口（max 可处理 token 数）"><span>ctx</span></Tooltip>,
+                                key: 'ctx',
+                                width: 55,
+                                render: (_: unknown, r: ExtractionHistoryItem) => {
+                                  const v = r.timing_detail?.num_ctx;
+                                  return v ? v.toLocaleString() : '-';
+                                },
+                              },
+                              {
+                                title: <Tooltip title="max_out：允许生成的最大输出 token 上限"><span>out</span></Tooltip>,
+                                key: 'maxout',
+                                width: 55,
+                                render: (_: unknown, r: ExtractionHistoryItem) => {
+                                  const v = r.timing_detail?.num_predict;
+                                  return v ? v.toLocaleString() : '-';
+                                },
+                              },
+                              {
+                                title: <Tooltip title="生成速度（token/s），越大越快"><span>tps</span></Tooltip>,
+                                key: 'tps',
+                                width: 60,
+                                render: (_: unknown, r: ExtractionHistoryItem) => {
+                                  const v = r.timing_detail?.tokens_per_sec;
+                                  return v ? `${v.toFixed(0)}` : '-';
+                                },
+                              },
+                              {
+                                title: <Tooltip title="LLM 调用次数（多轮时 >1）"><span>调用</span></Tooltip>,
+                                dataIndex: 'llm_call_count',
+                                key: 'calls',
+                                width: 50,
+                                render: (v: number) => v || 0,
+                              },
+                              {
+                                title: <Tooltip title="全流程耗时（PDF解析+prompt+decode+后处理）"><span>耗时</span></Tooltip>,
+                                key: 'duration',
+                                width: 68,
+                                render: (_: unknown, r: ExtractionHistoryItem) => {
+                                  const s = r.duration_seconds;
+                                  if (!s || s <= 0) return '-';
+                                  return s < 60 ? `${s.toFixed(0)}s` : s < 3600 ? `${(s / 60).toFixed(0)}m` : `${(s / 3600).toFixed(1)}h`;
+                                },
+                              },
+                              {
+                                title: <Tooltip title="Decode（GPU 纯生成）耗时"><span>Decode</span></Tooltip>,
+                                key: 'decode',
+                                width: 65,
+                                render: (_: unknown, r: ExtractionHistoryItem) => {
+                                  const s = r.timing_detail?.gen_seconds;
+                                  if (!s) return '-';
+                                  return s < 60 ? `${s.toFixed(0)}s` : `${(s / 60).toFixed(1)}m`;
+                                },
+                              },
+                              {
+                                title: <Tooltip title="首 token 延迟 TTFT（反映 prefill 速度）"><span>TTFT</span></Tooltip>,
+                                key: 'ttft',
+                                width: 68,
+                                render: (_: unknown, r: ExtractionHistoryItem) => {
+                                  const ms = r.timing_detail?.avg_first_token_ms;
+                                  if (!ms) return '-';
+                                  return ms > 1000 ? `${(ms / 1000).toFixed(0)}s` : `${ms.toFixed(0)}ms`;
+                                },
+                              },
+                              {
+                                title: <Tooltip title="API 费用（本地 Ollama 通常为 0）"><span>费用</span></Tooltip>,
+                                key: 'cost',
+                                width: 65,
+                                render: (_: unknown, r: ExtractionHistoryItem) =>
+                                  r.llm_cost_usd > 0 ? <Tag color="gold">${r.llm_cost_usd.toFixed(2)}</Tag> : '-',
+                              },
+                              {
+                                title: <Tooltip title="错误分类 + 悬停看完整错误信息"><span>错误</span></Tooltip>,
+                                key: 'error_comb',
+                                width: 120,
                                 render: (_: unknown, r: ExtractionHistoryItem) => {
                                   const m = r.error_message?.match(/^\[([^\]]+)\]/);
-                                  if (!m) return r.status === 'failed' ? <Tag color="red">未知错误</Tag> : '-';
+                                  if (!m) {
+                                    if (r.status === 'failed') return <Tooltip title={r.error_message || '未知错误'}><Tag color="red">未知错误</Tag></Tooltip>;
+                                    return '-';
+                                  }
                                   const code = m[1];
                                   const COLOR: Record<string, string> = {
                                     ollama_unreachable: 'volcano',
@@ -1546,26 +1638,20 @@ const LiteratureDetail: React.FC = () => {
                                   };
                                   const LABEL: Record<string, string> = {
                                     ollama_unreachable: 'Ollama 连不上',
-                                    connection_error: '网络连接失败',
-                                    api_key_invalid: 'API Key 无效',
-                                    api_key_expired: 'API Key 过期',
+                                    connection_error: '网络连接',
+                                    api_key_invalid: 'Key 无效',
+                                    api_key_expired: 'Key 过期',
                                     llm_timeout: 'LLM 超时',
-                                    llm_parse_error: 'LLM 响应解析失败',
-                                    schema_validation: 'Schema 校验未通过',
-                                    pdf_parse_error: 'PDF 解析失败',
+                                    llm_parse_error: '解析失败',
+                                    schema_validation: 'Schema 错',
+                                    pdf_parse_error: 'PDF 错',
                                   };
-                                  return <Tag color={COLOR[code] || 'default'}>{LABEL[code] || code}</Tag>;
+                                  const fullErr = r.error_message || '';
+                                  return <Tooltip title={fullErr}><Tag color={COLOR[code] || 'default'}>{LABEL[code] || code}</Tag></Tooltip>;
                                 },
                               },
                               {
-                                title: '错误信息',
-                                dataIndex: 'error_message',
-                                key: 'error',
-                                render: (v: string | null) =>
-                                  v ? <Tooltip title={v}><Tag color="red" style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}>{v}</Tag></Tooltip> : '-',
-                              },
-                              {
-                                title: '操作',
+                                title: <Tooltip title="可执行的操作"><span>操作</span></Tooltip>,
                                 key: 'action',
                                 width: 150,
                                 render: (_: unknown, r: ExtractionHistoryItem) => {

@@ -59,6 +59,9 @@ const ExtractionSelfTest: React.FC = () => {
   const [litOptions, setLitOptions] = useState<Literature[]>([]);
   const [litLoading, setLitLoading] = useState(false);
   const [litKeyword, setLitKeyword] = useState('');
+  const [litPage, setLitPage] = useState(1);
+  const [litPageSize, setLitPageSize] = useState(10);
+  const [litTotal, setLitTotal] = useState(0);
   // 每行多模型对比选中
   const [activeModels, setActiveModels] = useState<Record<string, string[]>>({});
   // existing 来源：按编组选择（推荐）
@@ -75,20 +78,34 @@ const ExtractionSelfTest: React.FC = () => {
     form.setFieldsValue({ disease: '麻疹', n_literatures: 20, points_per_literature: 20, noise_ratio: 0.2, seed: 42, output_format: 'text', include_table: true });
   }, [form]);
 
-  const openLitPicker = async () => {
-    setLitModalOpen(true);
-    setLitLoading(true);
+  const openLitPicker = () => {
     setLitKeyword('');
-    setLitOptions([]);
-    try {
-      const { items } = await listLiterature({ page: 1, page_size: 100, keyword: '', has_abstract: true });
-      setLitOptions(items || []);
-    } catch {
-      message.error('加载文献列表失败');
-    } finally {
-      setLitLoading(false);
-    }
+    setLitPage(1);
+    setLitModalOpen(true);
   };
+
+  // 文献选择器：服务端分页加载（openLitPicker 打开、页码/页大小/关键词变化时触发）
+  useEffect(() => {
+    if (!litModalOpen) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    setLitLoading(true);
+    (async () => {
+      try {
+        const params: Record<string, unknown> = { page: litPage, page_size: litPageSize };
+        if (litKeyword.trim()) params.keyword = litKeyword.trim();
+        const res = await listLiterature(params, { signal: controller.signal });
+        if (cancelled) return;
+        setLitOptions(res.items || []);
+        setLitTotal(res.total ?? 0);
+      } catch {
+        if (!cancelled) { setLitOptions([]); setLitTotal(0); }
+      } finally {
+        if (!cancelled) setLitLoading(false);
+      }
+    })();
+    return () => { cancelled = true; controller.abort(); };
+  }, [litModalOpen, litPage, litPageSize, litKeyword]);
 
   const fetchTasks = useCallback(async (silent = true) => {
     if (!silent) setLoading(true);
@@ -1038,41 +1055,47 @@ const ExtractionSelfTest: React.FC = () => {
         >
           <Input.Search
             allowClear
-            placeholder="输入关键词即时筛选；回车搜索数据库（上限100篇）"
+            placeholder="输入关键词搜索全部文献"
             value={litKeyword}
             onChange={(e) => setLitKeyword(e.target.value)}
-            onSearch={(kw) => {
-              setLitLoading(true);
-              listLiterature({ page: 1, page_size: 100, keyword: kw || '', has_abstract: true })
-                .then(({ items }) => setLitOptions(items || []))
-                .catch(() => message.error('搜索文献失败'))
-                .finally(() => setLitLoading(false));
-            }}
+            onSearch={(kw) => { setLitKeyword(kw.trim()); setLitPage(1); }}
             style={{ marginBottom: 12 }}
           />
-          <div style={{ maxHeight: 480, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 8 }}>
-            <Table<Literature>
-              size="small"
-              loading={litLoading}
-              rowKey={(r) => r.id}
-              dataSource={litOptions.filter(l => !litKeyword || ['title', 'province', 'source'].some(k =>
-                String((l as any)[k] || '').toLowerCase().includes(litKeyword.toLowerCase())))}
-              rowSelection={{
-                selectedRowKeys: selectedLits.map(l => l.id),
-                // 用全量 litOptions 反查选中标题，跨页搜索时只更新选中集合，不丢已选项
-                onChange: (keys) =>
-                  setSelectedLits(litOptions.filter(l => (keys as (string)[]).includes(l.id)).map(l => ({ id: l.id, title: l.title }))),
-              }}
-              pagination={{ pageSize: 10, showSizeChanger: true, showTotal: (t) => `共 ${t} 篇` }}
-              locale={{ emptyText: '暂无文献' }}
-              columns={[
-                { title: '标题', dataIndex: 'title', ellipsis: true },
-                { title: '省份', dataIndex: 'province', width: 80, render: (v?: string | null) => v || '-' },
-                { title: '年份', dataIndex: 'pub_year', width: 70, render: (v?: number | null) => v || '-' },
-                { title: '状态', dataIndex: 'extraction_status', width: 90 },
-              ]}
-            />
-          </div>
+          <Table<Literature>
+            size="small"
+            loading={litLoading}
+            rowKey={(r) => r.id}
+            dataSource={litOptions}
+            rowSelection={{
+              selectedRowKeys: selectedLits.map(l => l.id),
+              preserveSelectedRowKeys: true,
+              onChange: (keys) => {
+                const keySet = new Set(keys as string[]);
+                const currentPageMap = new Map(litOptions.map(l => [l.id, l.title]));
+                // 保留不在当前页但仍被选中的旧条目
+                const existing = selectedLits.filter(l => keySet.has(l.id) && !currentPageMap.has(l.id));
+                // 加入当前页被选中的（有完整标题）
+                const currentSelected = litOptions.filter(l => keySet.has(l.id)).map(l => ({ id: l.id, title: l.title }));
+                setSelectedLits([...existing, ...currentSelected]);
+              },
+            }}
+            pagination={{
+              current: litPage,
+              pageSize: litPageSize,
+              total: litTotal,
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50, 100],
+              showTotal: (t) => `共 ${t} 篇`,
+              onChange: (p, ps) => { setLitPage(p); setLitPageSize(ps); },
+            }}
+            locale={{ emptyText: '暂无文献' }}
+            columns={[
+              { title: '标题', dataIndex: 'title', ellipsis: true },
+              { title: '省份', dataIndex: 'province', width: 80, render: (v?: string | null) => v || '-' },
+              { title: '年份', dataIndex: 'pub_year', width: 70, render: (v?: number | null) => v || '-' },
+              { title: '状态', dataIndex: 'extraction_status', width: 90 },
+            ]}
+          />
         </Modal>
       </Card>
 

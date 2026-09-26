@@ -397,7 +397,9 @@ class PostProcessorMixin:
             for field in ["city", "population_type", "gmc_unit",
                            "journal", "authors", "author_affiliations",
                            "source_context",
-                           "parent_group"]:  # P1-1：子估计分组标识
+                           "parent_group",
+                           "incidence_unit", "mortality_unit", "death_unit",  # 流行病学单位
+                           ]:  # P1-1：子估计分组标识
                 dp[field] = item.get(field)
 
             # P1-1：estimate_type 归一化（默认 primary）
@@ -412,6 +414,7 @@ class PostProcessorMixin:
                 "study_start_year", "study_end_year", "sample_year",
                 "age_min", "age_max", "sample_size",
                 "source_page",  # 新增：来源页码
+                "case_count", "death_count",  # 流行病学：病例数、死亡数
             ]:
                 val = item.get(field)
                 if val is not None:
@@ -426,6 +429,7 @@ class PostProcessorMixin:
             for field in [
                 "positivity_rate", "positivity_ci_lower", "positivity_ci_upper",
                 "gmc_value", "gmc_ci_lower", "gmc_ci_upper",
+                "incidence_rate", "mortality_rate",  # 流行病学：发病率、病死率
             ]:
                 dp[field] = self._parse_float_field(item.get(field))
 

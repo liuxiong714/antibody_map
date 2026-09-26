@@ -137,6 +137,18 @@ export async function exportExtractionWord(literatureId: string) {
   _triggerBlobDownload(resp.data as Blob, resp.headers, `literature_${literatureId}_report`);
 }
 
+/** 批量导出全库/过滤条件的提取历史指标 CSV（供多模型横向对比） */
+export async function exportAllExtractionHistory(params?: { model?: string; status?: string; since?: string; literature_id?: string }) {
+  const qs = new URLSearchParams();
+  if (params?.model) qs.set('model', params.model);
+  if (params?.status) qs.set('status', params.status);
+  if (params?.since) qs.set('since', params.since);
+  if (params?.literature_id) qs.set('literature_id', params.literature_id);
+  const suffix = params?.model ? `_${params.model.replace(/:/g, '_')}` : '';
+  const resp = await api.get<Blob>(`/extraction/export-history?${qs.toString()}`, { responseType: 'blob' });
+  _triggerBlobDownload(resp.data as Blob, resp.headers, `extraction_history${suffix}`);
+}
+
 export async function deleteLiterature(id: string) {
   const { data } = await api.delete<{ message: string }>(`/literatures/${id}`);
   return data;
@@ -358,6 +370,18 @@ export interface ExtractionHistoryItem {
   llm_cost_usd: number;
   llm_call_count: number;
   llm_usage_detail: Record<string, { prompt_tokens: number; completion_tokens: number; total_tokens: number; call_count: number }> | null;
+  timing_detail: {
+    calls?: number;
+    avg_first_token_ms?: number;
+    gen_seconds?: number;
+    completion_tokens?: number;
+    tokens_per_sec?: number;
+    peak_vram_mb?: number;
+    num_ctx?: number;
+    num_predict?: number;
+    processor?: string;       // Ollama "100% GPU" / "CPU/GPU" / "CPU"
+    gpu_leak_to_cpu?: boolean; // True 表示 GPU→CPU 泄露
+  } | null;
   duration_seconds: number | null;
 }
 
