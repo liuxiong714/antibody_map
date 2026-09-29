@@ -609,118 +609,121 @@ async def import_literatures_from_json(
     imported_titles: list[str] = []
 
     for idx, lit_data in enumerate(literatures):
+        # A1: SAVEPOINT 每条文献独立事务
         try:
-            title = lit_data.get("title", "").strip()
-            if not title:
-                errors.append({"index": idx, "reason": "标题为空"})
-                continue
-
-            doi = lit_data.get("doi") or None
-            if doi:
-                doi = doi.strip() or None
-
-            # 重复检测
-            existing = None
-            if doi:
-                result = await db.execute(
-                    select(Literature).where(Literature.doi == doi)
-                )
-                existing = result.scalar_one_or_none()
-
-            if not existing:
-                result = await db.execute(
-                    select(Literature).where(Literature.title == title)
-                )
-                existing = result.scalar_one_or_none()
-
-            if existing:
-                if skip_duplicates:
-                    skipped_count += 1
-                    logger.info(f"[Import] 跳过重复文献: title={title}")
+            async with db.begin_nested():
+                title = lit_data.get("title", "").strip()
+                if not title:
+                    errors.append({"index": idx, "reason": "标题为空"})
                     continue
-                # 不跳过则更新已有记录的元数据
-                existing.pub_year = lit_data.get("pub_year") or existing.pub_year
-                existing.province = lit_data.get("province") or existing.province
-                existing.journal = lit_data.get("journal") or existing.journal
-                existing.authors = lit_data.get("authors") or existing.authors
-                existing.abstract = lit_data.get("abstract") or existing.abstract
-                existing.extraction_status = lit_data.get("extraction_status") or existing.extraction_status
-                existing.extracted_count = lit_data.get("extracted_count") or existing.extracted_count
-                existing.approved_count = lit_data.get("approved_count") or existing.approved_count
-                existing.updated_at = datetime.now(timezone.utc)
-                await db.flush()
-                lit_id = existing.id
-                imported_count += 1
-                imported_titles.append(title)
-            else:
-                # 创建新文献记录
-                literature = Literature(
-                    title=title,
-                    title_en=lit_data.get("title_en"),
-                    authors=lit_data.get("authors"),
-                    journal=lit_data.get("journal"),
-                    pub_year=lit_data.get("pub_year"),
-                    doi=doi,
-                    pmid=lit_data.get("pmid"),
-                    abstract=lit_data.get("abstract"),
-                    keywords=lit_data.get("keywords") if lit_data.get("keywords") else None,
-                    region=lit_data.get("region"),
-                    province=lit_data.get("province"),
-                    publication_types=lit_data.get("publication_types") if lit_data.get("publication_types") else None,
-                    source_db=lit_data.get("source_db") or "import",
-                    file_path=None,
-                    extraction_status=lit_data.get("extraction_status") or "done",
-                    extracted_count=lit_data.get("extracted_count") or 0,
-                    approved_count=lit_data.get("approved_count") or 0,
-                )
-                db.add(literature)
-                await db.flush()
-                lit_id = literature.id
-                imported_count += 1
-                imported_titles.append(title)
 
-            # 导入数据点
-            data_points = lit_data.get("data_points", [])
-            for dp_data in data_points:
-                dp = DataPoint(
-                    literature_id=lit_id,
-                    disease=dp_data.get("disease"),
-                    region=dp_data.get("region"),
-                    province=dp_data.get("province"),
-                    city=dp_data.get("city"),
-                    latitude=dp_data.get("latitude"),
-                    longitude=dp_data.get("longitude"),
-                    age_group=dp_data.get("age_group"),
-                    age_min=dp_data.get("age_min"),
-                    age_max=dp_data.get("age_max"),
-                    sample_size=dp_data.get("sample_size"),
-                    data_type=dp_data.get("data_type"),
-                    value=dp_data.get("value"),
-                    unit=dp_data.get("unit"),
-                    ci_lower=dp_data.get("ci_lower"),
-                    ci_upper=dp_data.get("ci_upper"),
-                    method=dp_data.get("method"),
-                    assay=dp_data.get("assay"),
-                    population=dp_data.get("population"),
-                    collection_year=dp_data.get("collection_year"),
-                    source_page=dp_data.get("source_page"),
-                    source_context=dp_data.get("source_context"),
-                    source_char_start=dp_data.get("source_char_start"),
-                    source_char_end=dp_data.get("source_char_end"),
-                    is_grounded=dp_data.get("is_grounded", False),
-                    estimate_type=dp_data.get("estimate_type") or "primary",
-                    confidence=dp_data.get("confidence") or "medium",
-                    review_status=dp_data.get("review_status") or "pending",
-                )
-                db.add(dp)
-                dp_imported_count += 1
+                doi = lit_data.get("doi") or None
+                if doi:
+                    doi = doi.strip() or None
 
-            await db.flush()
+                # 重复检测
+                existing = None
+                if doi:
+                    result = await db.execute(
+                        select(Literature).where(Literature.doi == doi)
+                    )
+                    existing = result.scalar_one_or_none()
+
+                if not existing:
+                    result = await db.execute(
+                        select(Literature).where(Literature.title == title)
+                    )
+                    existing = result.scalar_one_or_none()
+
+                if existing:
+                    if skip_duplicates:
+                        skipped_count += 1
+                        logger.info(f"[Import] 跳过重复文献: title={title}")
+                        continue
+                    # 不跳过则更新已有记录的元数据
+                    existing.pub_year = lit_data.get("pub_year") or existing.pub_year
+                    existing.province = lit_data.get("province") or existing.province
+                    existing.journal = lit_data.get("journal") or existing.journal
+                    existing.authors = lit_data.get("authors") or existing.authors
+                    existing.abstract = lit_data.get("abstract") or existing.abstract
+                    existing.extraction_status = lit_data.get("extraction_status") or existing.extraction_status
+                    existing.extracted_count = lit_data.get("extracted_count") or existing.extracted_count
+                    existing.approved_count = lit_data.get("approved_count") or existing.approved_count
+                    existing.updated_at = datetime.now(timezone.utc)
+                    await db.flush()
+                    lit_id = existing.id
+                    imported_count += 1
+                    imported_titles.append(title)
+                else:
+                    # 创建新文献记录
+                    literature = Literature(
+                        title=title,
+                        title_en=lit_data.get("title_en"),
+                        authors=lit_data.get("authors"),
+                        journal=lit_data.get("journal"),
+                        pub_year=lit_data.get("pub_year"),
+                        doi=doi,
+                        pmid=lit_data.get("pmid"),
+                        abstract=lit_data.get("abstract"),
+                        keywords=lit_data.get("keywords") if lit_data.get("keywords") else None,
+                        region=lit_data.get("region"),
+                        province=lit_data.get("province"),
+                        publication_types=lit_data.get("publication_types") if lit_data.get("publication_types") else None,
+                        source_db=lit_data.get("source_db") or "import",
+                        file_path=None,
+                        extraction_status=lit_data.get("extraction_status") or "done",
+                        extracted_count=lit_data.get("extracted_count") or 0,
+                        approved_count=lit_data.get("approved_count") or 0,
+                    )
+                    db.add(literature)
+                    await db.flush()
+                    lit_id = literature.id
+                    imported_count += 1
+                    imported_titles.append(title)
+
+                # 导入数据点
+                data_points = lit_data.get("data_points", [])
+                for dp_data in data_points:
+                    dp = DataPoint(
+                        literature_id=lit_id,
+                        disease=dp_data.get("disease"),
+                        region=dp_data.get("region"),
+                        province=dp_data.get("province"),
+                        city=dp_data.get("city"),
+                        latitude=dp_data.get("latitude"),
+                        longitude=dp_data.get("longitude"),
+                        age_group=dp_data.get("age_group"),
+                        age_min=dp_data.get("age_min"),
+                        age_max=dp_data.get("age_max"),
+                        sample_size=dp_data.get("sample_size"),
+                        data_type=dp_data.get("data_type"),
+                        value=dp_data.get("value"),
+                        unit=dp_data.get("unit"),
+                        ci_lower=dp_data.get("ci_lower"),
+                        ci_upper=dp_data.get("ci_upper"),
+                        method=dp_data.get("method"),
+                        assay=dp_data.get("assay"),
+                        population=dp_data.get("population"),
+                        collection_year=dp_data.get("collection_year"),
+                        source_page=dp_data.get("source_page"),
+                        source_context=dp_data.get("source_context"),
+                        source_char_start=dp_data.get("source_char_start"),
+                        source_char_end=dp_data.get("source_char_end"),
+                        is_grounded=dp_data.get("is_grounded", False),
+                        estimate_type=dp_data.get("estimate_type") or "primary",
+                        confidence=dp_data.get("confidence") or "medium",
+                        review_status=dp_data.get("review_status") or "pending",
+                    )
+                    db.add(dp)
+                    dp_imported_count += 1
+
+                await db.flush()
+
 
         except Exception as e:
             logger.error(f"[Import] 导入第 {idx} 条文献失败: {e}", exc_info=True)
             errors.append({"index": idx, "title": lit_data.get("title", ""), "reason": str(e)[:200]})
-            await db.rollback()
+            # rolled back automatically by async with db.begin_nested() on exit (A1 fix)
 
     await db.commit()
 
