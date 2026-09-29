@@ -1523,6 +1523,11 @@ def process_literature(
     enable_thinking: bool = False,
 ):
     """Celery 任务：文献处理（PDF 解析 + AI 提取）"""
+    # A2: 在 Celery 任务层也声明 _run_clock_start，供 except 里的 _mark_failed() 访问
+    # —— 之前它只在 _process_literature_async 内部，但 except 块里的 _mark_failed()
+    # 是 Celery 任务函数的内部函数，lexical scope 看不到 async 函数里的变量，
+    # 导致 NameError 被 suppress 吞掉，Literature 永远卡在 processing。
+    _run_clock_start: float | None = None
     try:
         result = run_async(
             _process_literature_async(
@@ -1613,8 +1618,8 @@ def process_literature(
                 lit_id, lit_model = row[0], row[1]
                 # 写入失败历史记录（错误信息带类型前缀，便于前端/日志诊断）
                 _fail_elapsed = (
-                    time.perf_counter() - _run_clock_start  # noqa: F821
-                    if _run_clock_start is not None  # noqa: F821
+                    time.perf_counter() - _run_clock_start
+                    if _run_clock_start is not None
                     else 0.0
                 )
                 try:
