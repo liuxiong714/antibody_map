@@ -47,22 +47,32 @@ def do_run_migrations(connection):
 async def run_migrations_online() -> None:
     """Run migrations in 'online' mode (connects to DB).
 
-    重要：先 Base.metadata.create_all 幂等建表，再跑 alembic upgrade。
-    原因：init 迁移（94cbbc6f286f）内部全是 ALTER COLUMN / DROP INDEX，
-    无 CREATE TABLE —— 这是 alembic 首次 autogenerate 时在已有库上生成的结果。
-    全新空库上直接跑 init 迁移会因 "relation does not exist" 失败。
-    先 create_all 能在空库上补齐所有模型表（25 张），且对已有库是 no-op。
+    IMPORTANT: Two SEPARATE connections for create_all and do_run_migrations.
+
+    Why? Base.metadata.create_all() opens an implicit asyncpg transaction
+    (autocommit=False). Then do_run_migrations() wraps context.begin_transaction()
+    around context.run_migrations() — this creates a NESTED transaction in
+    asyncpg, and alembic's internal "mark as applied" state gets confused:
+    revision versions silently skipped instead of being written to
+    alembic_version. That's why 	est_migration_drift.py keeps catching
+    current=X heads=X+1 after a clean alembic upgrade.
+
+    Two separate connections = two separate transaction boundaries. Each gets
+    its own clean commit scope. alembic's version marking works correctly.
     """
-    connectable = create_async_engine(
-        settings.DATABASE_URL,
-        poolclass=pool.NullPool,
-    )
-    async with connectable.connect() as connection:
-        # 1. 幂等建表（空库上补所有表；已有库上 CREATE TABLE IF NOT EXISTS，无副作用）
-        await connection.run_sync(Base.metadata.create_all)
-        # 2. 正常跑 alembic 升级链（在已有表上做 ALTER / 加列 / 加索引等）
-        await connection.run_sync(do_run_migrations)
-    await connectable.dispose()
+    url = settings.DATABASE_URL
+    # 两个 connection，各自独立 transaction scope
+    # --- Connection 1: create_all 幂等建表（空库上补所有 25 张表） ---
+    eng1 = create_async_engine(url, poolclass=pool.NullPool)
+    async with eng1.connect() as conn1:
+        await conn1.run_sync(Base.metadata.create_all)
+    await eng1.dispose()
+
+    # --- Connection 2: alembic upgrade 链上的 ALTER/加列/加索引 ---
+    eng2 = create_async_engine(url, poolclass=pool.NullPool)
+    async with eng2.connect() as conn2:
+        await conn2.run_sync(do_run_migrations)
+    await eng2.dispose()
 
 
 if context.is_offline_mode():
