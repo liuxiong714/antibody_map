@@ -199,6 +199,29 @@ AI 提取系统 Prompt 已升级为**同时提取血清学 + 流行病学监测 
 
 **Token 预算硬约束**：completion ≤ 6000，source_context 合计 ≤ 300 tokens，超预算时先砍 source_context 再砍方法学描述。
 
+#### Prompt/Schema v2 + 5.3 校验规则（v1.33.0 新增）
+
+Prompt/Schema 升级为 v2，**缓存 key 自动绑定版本号**（`EXTRACTION_PROMPT_VERSION`）——改 Prompt 必须 bump 版本，否则旧缓存仍命中。
+
+新增 Prompt 硬约束：**单位强制自洽**（CI 禁推算编造）、**分母显式标注**（`denominator_type`：血清样本/人口/病例/标本）、**空结果合法化**并写 notes。
+
+新增 `validate_extraction_schema` 校验规则表 R1–R13，**全部只标记不改值**，统一降级 confidence=low + review_status=pending：
+
+| 规则 | 判定 |
+|---|---|
+| 0<p<1 口径可疑 | 标记 value_ratio_suspicious → 强制人工审核 |
+| CI 顺序颠倒（lower>upper） | 标记 → pending |
+| CI 不包含点估计 | 标记 → pending |
+| 样本量 ≤0 或 >1e7 | 标记 → pending |
+| 年龄区间 min>max 或 >120 | 标记 → pending |
+| 病例数 death_count > case_count | 标记 → pending |
+
+#### 溯源覆盖率强制化（v1.33.0 新增）
+
+- `ExtractionHistory` 自动记录 **grounding_rate**（= `is_grounded=True` 的点数 / 总点数）与 `ungrounded_count`
+- 批量审核（batch_confirm）**拦截 `is_grounded=False` 的点**，禁止直接置 approved
+- grounding_rate < 0.8 时，文献列表显式提示"⚠️ 溯源率偏低"
+
 #### 文献详情页的浏览与数据
 
 - **上一篇 / 下一篇**：详情页标题栏右侧新增「上一篇（←）」「下一篇（→）」按钮，与文献列表保持相同排序，首位/末位自动置灰；两个按钮共用一次列表请求，不重复调 API
@@ -215,6 +238,8 @@ AI 提取系统 Prompt 已升级为**同时提取血清学 + 流行病学监测 
 ### 2.5 重复检测与合并
 
 点击「扫描重复」，系统自动按 DOI/标题/作者/PDF 哈希检测重复，结果以分组列表展示，可逐组合并或一键合并全部。
+
+> **v1.33.0 安全改进**：合并不再物理删除数据点——冲突 DataPoint 改置 `review_status=rejected`（可审核恢复），源 Literature 改置 `deleted_at` 软删除（回收站可恢复）。重复提取也不再堆积重复点：缓存命中直接跳过落库 + 落库前跨批次 7 字段键查重。
 
 ### 2.6 回收站
 
@@ -289,6 +314,7 @@ AI 提取系统 Prompt 已升级为**同时提取血清学 + 流行病学监测 
 1. 同一省份的多篇文献做 **Meta 合并**，得到该省综合阳性率
 2. 额外做**年龄标化**（ASR，直接法，以第七次全国人口普查为标准人口），消除省份间年龄结构差异的影响
 3. 当恰好比较两个省份时，做**两样本率检验**，输出率差（RD）和率比（RR）及 95% CI
+4. **v1.33.0 新增护栏**：区域两两比较统一加 **BH-FDR 多重比较校正**；地图小样本门槛 `MIN_SAMPLE_FOR_META=30`，低于门槛的地区返回 `evidence_insufficient` 而非着色
 
 **公式：**
 - 年龄标化（直接法）：`ASR = Σ(w_k × p_k) / Σw_k`，其中 w_k = 标准人口中 k 年龄组权重，p_k = 该年龄组阳性率
@@ -822,6 +848,8 @@ API：`GET /analysis/simulation` 新增 `ve` 参数；`GET /analysis/barrier-sce
 
 后端通过 `_load_ref_constants_json() + lru_cache` 加载，对外保持原字典接口——下游消费代码零改动，同时前端报告自动引用 citation 出处，**每个定量结论都有文献依据**。
 
+**接触矩阵升级（v1.33.0）**：`china_contact_matrix.json` 从占位版（粗略猜测数值）替换为 **Prem et al. 2022** PLOS Comp Biol 2022 v2 合成投影矩阵——基于 POLYMOD 欧洲实测接触数据 + 2020 中国人口/教育/就业/家庭数据贝叶斯投影，peer-reviewed，被 Lancet/PLOS/Nature 顶刊中国 COVID 建模采用。16 年龄组按七普人口权重聚合到项目 5 年龄组边界，**对称矩阵**。屏障 API 响应显式返回 `contact_matrix_source` 与"非实测值"免责声明。
+
 ### 5.5 使用步骤
 
 1. 在左侧选择「免疫屏障评估」
@@ -870,12 +898,14 @@ DeepSeek 官方弃用 `deepseek-chat` / `deepseek-reasoner`，主推 `deepseek-f
 
 ### 7.2 数据来源
 
-知识图谱的实体和关系通过以下两种方式生成：
+知识图谱的实体和关系通过以下两种方式生成，**v1.33.0 起每条三元组标记来源**（`kg_triple.source` 字段）：
 
-1. **计算式推导**：从数据库中已审核的**数据点**（血清阳性率/GMC）自动推导实体与关系边。例如：数据点中的省份字段自动生成「地区」实体，各数据点之间的统计比较自动生成 `higher_than` 关系边，省份与大区之间的层级自动生成 `belongs_to` 关系边
-2. **LLM 抽取**：从文献全文自动抽取三元组（头实体-关系-尾实体）持久化存储。此功能由特性开关控制，**默认关闭**（避免用户误触产生额外 LLM 费用），关闭时触发 KG 的 API 直接返回 400 拒绝；失败不影响主提取流程。开关有两种设置方式（任一开启即可）：
+1. **计算式推导**（`source="computed"`）：从数据库中已审核的**数据点**（血清阳性率/GMC）自动推导实体与关系边。例如：数据点中的省份字段自动生成「地区」实体，各数据点之间的统计比较自动生成 `higher_than` 关系边，省份与大区之间的层级自动生成 `belongs_to` 关系边
+2. **LLM 抽取**（`source="extracted"`）：从文献全文自动抽取三元组（头实体-关系-尾实体）持久化存储。此功能由特性开关控制，**默认关闭**（避免用户误触产生额外 LLM 费用），关闭时触发 KG 的 API 直接返回 400 拒绝；失败不影响主提取流程。开关有两种设置方式（任一开启即可）：
    - **.env 配置**：设置 `ENABLE_KG_EXTRACTION=true` 需重启容器生效（见[配置参考](configuration.md)）
    - **运行时开关**：管理员在「系统设置 → 系统信息 → 特性开关」中即时切换（内存级，默认生效，无需重启；如需让后台 worker 的抽取任务也生效，重启 worker 进程）
+
+> **v1.33.0 问答口径收紧**：知识图谱问答**默认只消费已审核数据**（`KG_QA_INCLUDE_UNREVIEWED=false`），需显式开启才纳入未审核数据点。LLM 兜底路径**无检索证据时返回"未在已审核数据中找到依据"**，不再自由作答编造结论。
 
 ### 7.3 使用步骤
 
@@ -960,6 +990,8 @@ DeepSeek 官方弃用 `deepseek-chat` / `deepseek-reasoner`，主推 `deepseek-f
 4. 点击「生成」→ 等待 LLM 完成 → 在线查看、编辑和导出
 
 > 报告生成为**后台异步**模式：提交后前端轮询任务状态并实时展示进度，完成后自动加载报告，长报告不会因请求超时中断；生成后支持在线查看、编辑，并按 Markdown / Word / PDF 下载。
+
+> **v1.33.0 引用真实化**：报告正文 LLM Prompt 注入**来源文献清单**（从 DataPoint.literature_id 关联 Literature 表实时拉取 title/authors/journal/year/doi），要求 LLM 关键论断后标注 `[1][2]` 编号；报告末尾自动按 **GB/T 7714-2015 顺序编码制** 渲染完整参考文献列表，而非自引用模板。每个数值都可追溯到真实文献。
 
 ---
 
@@ -1149,6 +1181,22 @@ loguru 按日落盘，支持文件切换、级别筛选、关键字搜索，便�
 1. 点击「上传备份文件并还原」，选择 `.sql` 备份文件
 2. 系统先自动备份当前库（保险），随后清空并重建数据库，再在单事务内导入备份——出错自动回滚，数据库保持还原前状态
 3. 还原成功后，新电脑上的文献、数据点、用户、配置即备份时的状态
+
+#### 全量备份 + 恢复脚本（v1.33.0 新增）
+
+系统现提供覆盖完整数据生命周期的备份/恢复能力，命令行脚本：
+
+```bash
+# 全量备份（数据库 + MinIO 所有对象 + data/pdfs 文件 → 单个 tar.gz）
+python backend/scripts/run_restore.py --backup
+
+# 恢复（解压后分别恢复 pg / MinIO / data）
+python backend/scripts/run_restore.py --restore /path/to/backup.tar.gz --target-test
+```
+
+- 恢复带**目标库非空安全门**（拒绝覆盖有数据的生产库，必须显式加 `--force`）
+- 备份生成 **manifest.json**（时间戳、各表行数 rowcounts、对象数、文件 sha256 校验）
+- MinIO SDK 不可用时自动 skip，pg_dump + data 目录仍正常执行
 
 > ⚠️ 还原为**高危操作**：会清空当前所有数据并用所选备份重建，务必确认备份文件正确。非管理员可查看但按钮禁用。
 

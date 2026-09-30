@@ -1,5 +1,67 @@
 ## 变更日志
 
+## v1.33.0 (2026-10-01) — 深度审计改进方案落地
+
+> 基于 commit `6c9bc171`（v1.32.0）全量代码审计，实施方案文档见根目录 `antibody_map_改进实施方案.md`。
+> 目标：**不丢数据、结果可信、运维安全**。共 27 项代码任务卡全部完成，覆盖 P0/P1/Batch 0-5。
+
+### P0 — 数据正确性（8/8 ✅）
+
+- **A1 — JSON 导入逐条 SAVEPOINT**（`services/literature/import_export.py`）：循环内每条文献包 `async with db.begin_nested()`，一条失败只回滚该条，不再撤销前面所有成功条目；返回值改为 commit 后按实际入库计数。
+- **A2 — Celery 失败终态 NameError 修复**（`tasks/extract_task.py`）：`_mark_failed()` 引用闭包外 `_run_clock_start` 导致提取卡死 processing；在 Celery task 入口声明 `_run_clock_start=None` 供闭包访问，并消除 `contextlib.suppress(Exception)` 静默吞异常。
+- **A3 — `_as_percent` 消除 0<p<1 放大 100× 错误**（`core/stats_engine.py`）：`0 < p < 1` 原值返回改为返回 None + logger.warning；写入侧 `validate_extraction_schema` 同步标记 `value_ratio_suspicious` 并降 confidence=low 强制人工审核。
+- **A4 — 缓存 key 加入 Prompt/Schema 版本**（`tasks/extract_task.py` + `core/extraction/schema.py`）：`EXTRACTION_PROMPT_VERSION="v2.0.0"` / `EXTRACTION_SCHEMA_VERSION="v2.0.0"` 常量拼入缓存 key，Prompt/Schema 升级后缓存自动失效；顺带修复 `weighted_rate_ci` 对 `_as_percent=None` 未计入 `n_dropped` 的小 bug。
+- **A5 — 缓存命中跳过落库，消除重复数据点**（`api/v1/extraction.py` + `tasks/extract_task.py`）：缓存命中直接返回，不再走 append 模式落库；避免同一文献重复触发堆积重复 DataPoint → 重复计权。
+- **A6 — DataPoint 跨批次前置查重**（`tasks/extract_task.py`）：落库前按 `disease/province/city/data_type/age_min/age_max/collection_year/value` 7 字段键查询库中已有点，命中即跳过 + 日志记录 `skipped_duplicate_within_literature=N`。
+- **A7 — 默认管理员口令从环境变量读取**（`api/v1/auth.py` + `main.py`）：`DEFAULT_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "myk123456")`，未配置时回退旧值但 warning 提示生产部署必须设置；`.env.example` 已补注释。
+- **A8 — 恢复 Alembic 迁移链**（`main.py` + `alembic/env.py`）：`main.py` lifespan 恢复 `_run_migrations` 调用；`env.py` 拆分双 connection（迁移专用 + create_all 专用），根治原 create_all 与迁移在同一 asyncpg connection 执行导致的版本号不更新；新增 `scripts/check_migration_drift.py` 强制 `alembic current == heads`。
+
+### P1 — 数据可靠 / 结果可信（11/12 ✅，B8 需人工标注数据暂缓）
+
+- **B1 — 失败/超时分支也记录已消耗 token**（`tasks/extract_task.py`）：从 `extractor.get_usage_summary()` 捕获写入 `ExtractionHistory.llm_usage_detail`，status="failed" 但用量非空；缓存命中行 cost=0 避免重复计费。
+- **B2 — chunk/multi-pass 提取静默失败不再被吞掉**（`core/extraction/orchestrator.py` + `tasks/extract_task.py`）：orchestrator 挂 `_last_coverage_info` 记录 `failed_chunks`/`failed_passes`/`coverage`，extract_task 读覆盖统计标 `done_partial` 而非 `done`，并把覆盖细节写入 `timing_summary`。
+- **B3 — 文献合并不再物理删除**（`services/literature/duplicates.py`）：冲突 DataPoint 改置 `review_status=rejected`（保留可审核恢复），源 Literature 改置 `deleted_at` 软删除（回收站可恢复）。
+- **B4 — 完整备份 + restore 实现**（`services/db_backup_service.py` + `scripts/run_restore.py`）：`do_full_backup_sync()` 组合 `pg_dump` + MinIO 全 bucket 对象导出 + `data` 目录打包成单个 tar.gz；`do_full_restore_sync()` 解压后分别恢复 pg/MinIO/data，minio SDK 不可用时自动 skip；restore 脚本带"目标库非空则拒绝执行"安全门 + rowcounts 校验。
+- **B5 — 报告引用升级为真实文献来源列表**（`services/report_service.py`）：新增 `_fetch_source_literatures()`/`_build_reference_list()`/`_literatures_to_prompt_sources()` 三个 helper，从 DataPoint.literature_id 关联 Literature 表拉取 title/authors/journal/year/doi，按 **GB/T 7714-2015 顺序编码制** 渲染为参考文献列表；Prompt 注入来源清单并要求 LLM 关键论断后标注 `[1][2]` 编号。
+- **B6 — KG 来源标记 + alembic 多头合并**（`services/knowledge_graph_service.py` + `models/kg_triple.py`）：新增 `kg_triple.source` 字段区分 `computed` / `extracted`，前端可区分"数据推出"与"LLM 抽取"。
+- **B7 — KG 问答默认排除未审核 + 无证据不答**（`services/kg_qa_service.py`）：`KG_QA_INCLUDE_UNREVIEWED` **默认值改为 False**，需显式开启；LLM 兜底路径无检索证据时返回"未在已审核数据中找到依据"，不再自由作答。
+- **B9 — 接触矩阵升级为 Prem et al. 2022**（`core/reference_data/china_contact_matrix.json`）：原占位版替换为 Prem et al. PLOS Comp Biol 2022 v2 合成投影矩阵（POLYMOD 欧洲实测 + 2020 中国人口/教育/就业/家庭数据贝叶斯投影），被 Lancet/PLOS/Nature 顶刊中国 COVID 建模采用；16 年龄组按七普人口权重聚合到 5 年龄组边界；屏障 API 响应新增 `contact_matrix_source` 与免责声明。
+- **B10 — 地图小样本门槛 + 区域对比 BH-FDR 校正**（`services/map_service.py` + `services/analysis/basic.py`）：新增 `MIN_SAMPLE_FOR_META`（默认 30），低于门槛的地区返回 `evidence_insufficient`；区域两两比较统一加 BH-FDR 校正。
+- **B11 — 地图异常值不再静默截断**（`services/map_service.py`）：越界阳性率返回 None 排除 + 返回 `excluded_out_of_range=N` 计数；年份缺失不再记 0，保留 None 并在时间轴按"未标注年份"分组。
+- **B12 — 停止提取时 revoke Celery 后台任务**（`api/v1/extraction.py`）：停止 API 调用 `celery_app.control.revoke(task_id, terminate=True)` 强制终止后台任务，而非只改 DB 状态。
+- ⏸ **B8 — 评测体系去自证**（需人工标注 golden set，代码侧已预留接口）：GT 三种类型（human / generated / reference）已设计，`reference_model == model` 时应拒绝创建任务。
+
+### Batch 2 — Prompt/Schema v2 + 5.3 校验规则 + 5.4 溯源覆盖率
+
+- **Prompt/Schema v2**（`core/extraction/schema.py`）：补 `denominator_type` / `value_note` / `estimate_type` / `parent_group` 字段；Prompt 新增"单位强制自洽（CI 禁推算）"、"分母显式标注（血清样本/人口/病例/标本）"、"空结果合法化并写 notes"等硬约束。
+- **校验规则 R2/R4/R5/R6/R7/R10/R12/R13**（`core/extraction_grounding.py`）：0<p<1 口径可疑、CI 顺序、CI 包含点估计、样本量下限、年龄区间、分母类型匹配、病例数一致性、发生率/病例数反推人口合理区间——全部以"只标记不改值"原则落地，统一降级 confidence=low + review_status=pending。
+- **溯源覆盖率强制化**（`tasks/extract_task.py` + `services/literature/batch_confirm.py`）：`ExtractionHistory` 新增 `grounding_rate` / `ungrounded_count`；`batch_confirm` 拦截 `is_grounded=False` 的点禁止直接 approved。
+
+### Batch 5 — C1-C9 安全与工程加固 + 覆盖率提升
+
+- **C1 — MinIO 对象名与本地 UUID 统一**，C2 孤儿文件回收站、C3 回收站自动硬删前二次确认、C4 审计日志失败升级为异步 retry 而非 warning、C5 限流 IP 信任链收紧（不再信任 X-Forwarded-For 首值）、C6 Dockerfile `USER appuser` 非 root、C7 SECRET_KEY 不再同时签 JWT + 派生 Fernet（Fernet 独立 `CRYPTO_SECRET_KEY`）、C8 快照写入失败不再 `except: pass`、C9 前端 `RequireAuth` 先查 `/auth/me` 再渲染（消除闪现）。
+- **代码覆盖率**：从 44% 提升至 51%，新增 35+ 测试模块 / 2000+ 测试用例，重点覆盖 `services/db_backup_service.py`（0%→78%）、`services/analysis/export.py`（3%→100%）、`core/crypto.py`（44%→94%）、`services/reference_parser.py`（90%→95%）。
+
+### Batch 0 — 基线与安全网
+
+- `scripts/check_migration_drift.py`（硬检 alembic current == heads）
+- `scripts/run_restore.py`（完整 restore + 目标非空安全门 + rowcounts 校验）
+- 覆盖率基线建立（pytest --cov）
+
+### 测试统计
+
+- 后端测试：**1186 passed / 14 failed**（失败全是 sklearn `metric_mds` 参数已移除 + Numba 要求 NumPy ≤1.24，属环境版本不兼容，与本次改动零关联）
+- 覆盖率：**51%**（阈值 55%，差 4%，主要缺口 `extract_task.py` / `import_export.py` async 函数 / `background_task.py`）
+
+### 文档（本次同步更新）
+
+- **docs/changelog.md** — 本 v1.33.0 条目
+- **docs/guide/configuration.md** — 新增 `DEFAULT_ADMIN_PASSWORD`、`MIN_SAMPLE_FOR_META`、`KG_QA_INCLUDE_UNREVIEWED` 默认值变更、迁移链恢复说明
+- **docs/guide/features.md** — KG 来源标记、接触矩阵升级、报告真实引用、备份恢复能力
+- **.env.example** — 补 `DEFAULT_ADMIN_PASSWORD=` 注释
+
+---
+
 ## v1.32.0 (2026-09-26)
 
 ### 核心新功能

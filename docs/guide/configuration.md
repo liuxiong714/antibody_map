@@ -26,6 +26,23 @@
 | `CELERY_BROKER_URL` | Celery 消息队列 | `redis://localhost:6379/1` |
 | `MINIO_ENDPOINT` | MinIO 地址 | `localhost:9000` |
 
+### 数据库迁移（v1.33.0 恢复）
+
+> v1.32.0 及之前版本启动时迁移被禁用，靠 `create_all` + 手写 ALTER TABLE 兜底，存在 schema 漂移风险。
+> **v1.33.0 起迁移链已恢复**，应用启动时自动执行 `alembic upgrade head`。
+
+```bash
+# 手工检查迁移状态
+cd backend
+alembic current      # 当前版本号
+alembic heads        # 最新版本号；两者应相等
+alembic upgrade head # 执行全部待应用迁移
+```
+
+新增脚本：
+- `backend/scripts/check_migration_drift.py` — 硬检 `alembic current == heads`，应用启动自动运行
+- `backend/scripts/run_restore.py` — 完整恢复（pg + MinIO + data），带目标库非空安全门 + rowcounts 校验
+
 ## 其他
 
 | 变量 | 说明 | 默认值 |
@@ -44,10 +61,12 @@
 | `EXTRACTION_CACHE_ENABLED` | 提取结果缓存 | `true` |
 | `EXTRACTION_CACHE_TTL_HOURS` | 缓存 TTL（小时） | `168` |
 | `ENABLE_KG_EXTRACTION` | 启用知识图谱 LLM 三元组抽取 | `false` |
-| `KG_QA_INCLUDE_UNREVIEWED` | 知识图谱问答是否纳入未审核数据点（关闭则只检索已审核） | `true` |
+| `KG_QA_INCLUDE_UNREVIEWED` | 知识图谱问答是否纳入未审核数据点（关闭则只检索已审核） | **`false`**（v1.33.0 起，原 `true`） |
+| `MIN_SAMPLE_FOR_META` | 地图/统计最小样本量门槛，低于此值的地区返回 `evidence_insufficient` 而非着色 | `30` |
 | `VL_BATCH_SIZE` | 视觉提取单批页数（分批发送扫描页，避免超过 Ollama 上下文窗） | `6` |
 | `EXTRACTION_STALE_MINUTES` | 提取状态卡死回收阈值（分钟），覆盖本地模型单篇长任务 | `180` |
 | `APP_ENV` | 运行环境 | `development` |
+| `DEFAULT_ADMIN_PASSWORD` | **默认 admin 管理员口令（v1.33.0 新增）**。生产部署**必须**设置 ≥12 位。未设置时回退旧默认值 `myk123456` 但启动日志会 warning | 空 → 回退 `myk123456` |
 
 > `ENABLE_KG_EXTRACTION` 也可不修改 .env：管理员可在「系统设置 → 系统信息 → 特性开关」中运行时切换（内存级，默认立即生效，worker 后台任务需重启 worker 使开关同步），二者任一开启即可。
 
