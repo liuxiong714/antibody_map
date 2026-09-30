@@ -1470,6 +1470,32 @@ async def _process_literature_async(
         try:
             _new_history.status = history_status
             _new_history.data_point_count = final_count
+            # 5.4: 计算 grounding_rate —— 基于 flush 后 DB 中已写入的 DataPoint
+            try:
+                if final_count > 0:
+                    _g_res = await db.execute(
+                        select(
+                            func.count(DataPoint.id),
+                            func.count(DataPoint.id).where(DataPoint.is_grounded == True),  # noqa: E712
+                        ).where(DataPoint.extraction_history_id == _history_id)
+                    )
+                    _total, _grounded = _g_res.one()
+                    _total = int(_total)
+                    _grounded = int(_grounded)
+                    if _total > 0:
+                        _new_history.grounding_rate = round(_grounded / _total, 4)
+                        _new_history.ungrounded_count = _total - _grounded
+                        if _grounded < _total:
+                            logger.info(
+                                f"[5.4] 文献 {literature_id} grounding_rate={_grounded}/{_total}={_grounded/_total:.2%}, "
+                                f"{_total - _grounded} 个点未溯源"
+                            )
+                else:
+                    _new_history.grounding_rate = 0.0
+                    _new_history.ungrounded_count = 0
+            except Exception as _ge:
+                logger.warning(f"[5.4] grounding_rate 计算失败（不影响提取结果）: {_ge}")
+
             _new_history.prompt_tokens = usage_summary.get("total_prompt_tokens", 0)
             _new_history.completion_tokens = usage_summary.get("total_completion_tokens", 0)
             _new_history.total_tokens = usage_summary.get("total_tokens", 0)

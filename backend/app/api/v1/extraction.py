@@ -866,6 +866,29 @@ async def batch_confirm(
     current_user: User = Depends(get_current_user),
 ):
     """批量审核通过"""
+    # 5.4: 拦截 is_grounded=False 的点 —— 默认不允许批量通过未溯源的数据点
+    ungrounded_ids: list[uuid.UUID] = []
+    try:
+        _ug_res = await db.execute(
+            select(DataPoint.id).where(
+                DataPoint.id.in_(req.ids),
+                DataPoint.is_grounded == False,  # noqa: E712
+            )
+        )
+        ungrounded_ids = list(_ug_res.scalars().all())
+    except Exception:
+        pass  # is_grounded 列不存在时兜底跳过
+
+    if ungrounded_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"以下 {len(ungrounded_ids)} 个数据点未通过溯源校验（is_grounded=False），"
+                f"无法直接批量通过。请逐个核对 source_context 后再审核，"
+                f"或联系管理员处理。"
+            ),
+        )
+
     comment = req.comment if req.comment is not None else req.note
     result = await review_data_points(
         db, literature_id, req.ids, "approved", comment, current_user.id

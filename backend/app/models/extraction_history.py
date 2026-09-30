@@ -36,6 +36,10 @@ class ExtractionHistory(Base):
     llm_call_count: Mapped[int] = mapped_column(Integer, default=0)
     # 详细的模型用量信息（JSON）
     llm_usage_detail: Mapped[dict | None] = mapped_column(JSON)
+    # 5.4 新增：本次提取的溯源覆盖率 = is_grounded=True 的 DataPoint 数 / 总点数（null=未计算）
+    grounding_rate: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True, index=True)
+    # 5.4 新增：未溯源点数（grounding_rate 的分子分母拆分存冗余，便于快速筛选告警）
+    ungrounded_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 本次 AI 提取时长（秒，3 位小数）。成功路径为 LLM 提取耗时；失败路径为从任务抢占到失败的整段耗时
     duration_seconds: Mapped[Any] = mapped_column(Numeric(12, 3), default=0)
     # 效率指标详情（JSON）：来自 LLMClientMixin.get_timing_summary()
