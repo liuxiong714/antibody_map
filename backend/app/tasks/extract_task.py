@@ -1435,10 +1435,35 @@ async def _process_literature_async(
         # 8. 更新 literature 状态 —— 通过 generation CAS 的显式 UPDATE 完成，
         # 不直接改 ORM 对象，避免 autoflush 以无保护的 WHERE id 覆盖被新任务接管的数据。
         usage_summary = usage_summary or {}
-        final_status = "done" if len(all_data_points) > 0 else "done_no_data"
+        # B2: 读 orchestrator 覆盖统计 —— 如果有失败块/趟，标记 done_partial 而非 done
+        _cov = getattr(extractor, "_last_coverage_info", None)
+        _has_partial = False
+        if _cov and _cov.get("coverage", 1.0) < 1.0:
+            _has_partial = True
+            logger.warning(
+                f"[B2] 提取覆盖不全 — mode={_cov.get('mode')}, "
+                f"coverage={_cov.get('coverage', 0):.1%}, "
+                f"failed={_cov.get('failed_chunks') or _cov.get('failed_passes')}, "
+                f"文献将标 done_partial"
+            )
+        final_status = (
+            "done_partial" if (_has_partial and len(all_data_points) > 0)
+            else "done" if len(all_data_points) > 0
+            else "done_no_data"
+        )
         final_count = len(all_data_points)
-        history_status = "success" if final_status == "done" else "no_data"
-        if final_status == "done_no_data":
+        history_status = "success" if final_status == "done" else (
+            "partial_success" if final_status == "done_partial" else "no_data"
+        )
+        if final_status == "done_partial":
+            # 把覆盖细节写进 timing_detail，便于前端/日志查看
+            try:
+                timing_summary = timing_summary or {}
+                timing_summary["coverage_info"] = _cov
+            except Exception:
+                pass
+            logger.warning(f"文献 {literature_id} 覆盖不全，状态标记为 done_partial")
+        elif final_status == "done_no_data":
             logger.warning(f"文献 {literature_id} 提取结果为空，状态标记为 done_no_data")
 
         # 8b. F21：更新预创建的 ExtractionHistory（完整状态/用量/耗时回填）

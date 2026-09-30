@@ -802,11 +802,27 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
                     return_exceptions=True,
                 )
 
+                _chunk_failures: list[dict] = []
                 for idx, result in enumerate(chunk_results):
                     if isinstance(result, Exception):
                         logger.error(f"分块 {idx + 1} 提取失败（不阻塞其他块）: {result}")
+                        _chunk_failures.append({"chunk": idx + 1, "error": str(result)[:300]})
                         continue
                     all_points.extend(result)
+
+                # B2: 把覆盖信息挂到实例，让上层 extract_task 知道有失败块
+                self._last_coverage_info = {
+                    "mode": "chunked",
+                    "total_chunks": len(chunk_results),
+                    "success_chunks": len(chunk_results) - len(_chunk_failures),
+                    "failed_chunks": _chunk_failures,
+                    "coverage": (len(chunk_results) - len(_chunk_failures)) / max(1, len(chunk_results)),
+                }
+                if _chunk_failures:
+                    logger.warning(
+                        f"[B2] 分块提取有 {len(_chunk_failures)}/{len(chunk_results)} 失败 "
+                        f"— 数据点覆盖不全；建议人工 review 或重提取"
+                    )
 
                 logger.info(f"所有分块并发提取完成，共 {len(all_points)} 个数据点，开始去重...")
                 deduped = self._deduplicate_points(all_points)
@@ -866,8 +882,11 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
 
         B8 智能调度：第 1 趟后评估表格行数 vs 提取数据点数，
         若覆盖率 > 90% 则跳过后续趟，节省 API 成本。
+        B2 覆盖统计：每趟失败时记录，返回 coverage_info 让上层知道覆盖不全。
         """
         all_points: list[dict] = []
+        _pass_failures: list[dict] = []
+        _completed_passes = 0
         for pass_idx in range(passes):
             logger.info(f"P0-2 多趟提取: 第 {pass_idx + 1}/{passes} 趟")
             try:
@@ -883,6 +902,7 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
                         complement_mode=True,
                     )
                 all_points.extend(pass_result)
+                _completed_passes += 1
                 logger.info(f"P0-2 第 {pass_idx + 1} 趟提取 {len(pass_result)} 个数据点")
 
                 # B8：智能调度 — 第 1 趟后评估覆盖率
@@ -896,7 +916,23 @@ class LLMExtractor(LLMClientMixin, JSONParserMixin, PostProcessorMixin, UsageTra
                             logger.info(f"B8 覆盖率 {coverage:.1%} >= 90%，跳过后续 {passes - 1} 趟（节省成本）")
                             break
             except Exception as e:
-                logger.error(f"P0-2 第 {pass_idx + 1} 趟提取失败（不阻塞其他趟）: {e}")
+                # B2: 记录失败趟 — 不再被静默吞掉
+                _pass_failures.append({"pass": pass_idx + 1, "error": str(e)[:300]})
+                logger.error(f"[B2] P0-2 第 {pass_idx + 1} 趟提取失败（不阻塞其他趟）: {e}")
+
+        # B2: 挂 coverage_info 到实例供上层读取
+        self._last_coverage_info = {
+            "mode": "multi_pass",
+            "total_passes": passes,
+            "completed_passes": _completed_passes,
+            "failed_passes": _pass_failures,
+            "coverage": _completed_passes / max(1, passes),
+        }
+        if _pass_failures:
+            logger.warning(
+                f"[B2] 多趟提取有 {len(_pass_failures)}/{passes} 趟失败 "
+                f"— 数据点覆盖不全；建议人工 review 或重提取"
+            )
 
         logger.info(f"P0-2 多趟提取完成: 共 {len(all_points)} 个数据点，开始去重...")
         deduped = self._deduplicate_points(all_points)
