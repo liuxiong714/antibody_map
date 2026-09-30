@@ -1,5 +1,6 @@
 """认证 API：登录、用户管理、修改密码"""
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -34,8 +35,9 @@ router = APIRouter()
 
 logger = logging.getLogger("uvicorn")
 
-# 新用户默认密码（从环境变量读取，未配置时使用硬编码默认值）
-DEFAULT_PASSWORD = "myk123456"
+# A7: 新用户默认密码 —— 优先读环境变量 DEFAULT_ADMIN_PASSWORD，未配置时回退硬编码默认值。
+# 公网部署必须在 docker-compose.yml 或 .env 里覆盖此值，避免弱口令接管。
+DEFAULT_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "myk123456")
 
 
 # ── 请求/响应模型 ──────────────────────────────────────────
