@@ -67,9 +67,10 @@ def _get(row: Any, key: str) -> Any:
 def _as_percent(p: Any) -> float | None:
     """把 value 字段（约定恒为 0-100 百分数）转为 0-1 比例；非法返回 None。
 
-    F-6 口径统一：DataPoint.value 约定恒为 0-100 百分数（如 87.3 表示 87.3%），
-    不再根据 p>1 猜测/兼容 0-1 比例。0<p<1 的点应视为数据可疑，打 warning 让
-    人工复核（这些点 LLM 可能输出了 0.9 本意是 90%，但按新约定会变成 0.009）。
+    A3 口径统一：DataPoint.value 约定恒为 0-100 百分数（如 87.3 表示 87.3%）。
+    对 0<p<1 的值直接返回 None + warning — 宁可丢弃也不放大 100 倍。
+    （写入侧 extraction_grounding.py:664-676 已标记此类点为 suspected_fraction，
+     extract_task.py:447 已将 confidence 降级为 low 并送 pending；此处是第二道防线。）
     """
     if p is None:
         return None
@@ -80,13 +81,13 @@ def _as_percent(p: Any) -> float | None:
     if p < 0.0 or p > 100.0:
         logger.warning(f"[stats_engine] _as_percent 越界值 {p!r}，丢弃")
         return None
-    # F-6：无条件除 100；0<p<1 打 warning 但保持原值返回（兼容旧数据）
+    # A3: 0<p<1 疑似比例值（LLM 把 90% 写成 0.9），直接丢弃
     if 0.0 < p < 1.0:
         logger.warning(
-            f"[stats_engine] _as_percent 收到 0<p<1 的值 p={p}，按新口径应为百分数；"
-            f"请人工复核该点到底是比例值还是百分数"
+            f"[stats_engine] _as_percent 收到 0<p<1 的值 p={p}，疑似比例值；"
+            f"按约定应为 0-100 百分数 — 丢弃避免 100× 放大"
         )
-        return p
+        return None
     return p / 100.0
 
 
