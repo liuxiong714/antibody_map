@@ -195,22 +195,43 @@ async def get_region_compare(
 
     results.sort(key=lambda x: x["province"])
 
-    # 恰好两省时做两样本率比较（z 检验 + RD/RR 及 95%CI）
-    comparison_test = None
-    if len(results) == 2:
-        r0, r1 = results[0], results[1]
-        if r0["avg_positivity"] is not None and r1["avg_positivity"] is not None \
-                and r0["total_samples"] and r1["total_samples"]:
+    # B10 修复：≥2 省做两两比较 + BH-FDR 多重检验校正
+    # 之前仅 len==2 时才做单对比较，多省时两两 p 值无校正导致假阳性累积
+    pairwise_tests: list[dict] = []
+    if len(results) >= 2:
+        from itertools import combinations
+        from statsmodels.stats.multitest import multipletests
+
+        valid_results = [
+            r for r in results
+            if r["avg_positivity"] is not None and r.get("total_samples")
+        ]
+        pvals: list[float] = []
+        pairs: list[tuple] = []
+
+        for r0, r1 in combinations(valid_results, 2):
             p0 = r0["avg_positivity"] / 100.0 if r0["avg_positivity"] > 1 else r0["avg_positivity"]
             p1 = r1["avg_positivity"] / 100.0 if r1["avg_positivity"] > 1 else r1["avg_positivity"]
-            comparison_test = two_proportion_test(
+            test = two_proportion_test(
                 p0 * r0["total_samples"], r0["total_samples"],
                 p1 * r1["total_samples"], r1["total_samples"],
             )
-            comparison_test["province_a"] = r0["province"]
-            comparison_test["province_b"] = r1["province"]
+            test["province_a"] = r0["province"]
+            test["province_b"] = r1["province"]
+            pvals.append(test.get("p_value", 1.0))
+            pairs.append(test)
 
-    return {"regions": results, "comparison_test": comparison_test}
+        if pvals:
+            _, p_fdr_vals, _, _ = multipletests(pvals, alpha=0.05, method="fdr_bh")
+            for test, pfdr in zip(pairs, p_fdr_vals):
+                test["p_fdr"] = round(float(pfdr), 6)
+                test["significant_fdr"] = pfdr < 0.05
+            pairwise_tests = pairs
+
+    # 兼容旧字段：恰好两省时同时返回 comparison_test（= pairwise_tests[0]）
+    comparison_test = pairwise_tests[0] if len(pairwise_tests) == 1 else None
+
+    return {"regions": results, "comparison_test": comparison_test, "pairwise_tests": pairwise_tests}
 
 
 async def get_zone_compare(

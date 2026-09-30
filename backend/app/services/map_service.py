@@ -519,19 +519,29 @@ async def get_province_data(
             province_map[key]["data_points"].append(dp)
 
     result_list = []
+    # B10 修复：小样本门槛 —— 累计样本量 < MIN_SAMPLE_FOR_META 的组标记证据不足
+    min_n = settings.MIN_SAMPLE_FOR_META
+    excluded_insufficient = 0
+
     for key, group in province_map.items():
         dps = group["data_points"]
         weighted_rate, total_sample = _calc_weighted_rate(dps, data_type)
 
-        result_list.append({
+        entry = {
             "province": key,
             "point_count": len(dps),
             "study_count": len(group["literature_ids"]),
             "total_sample": total_sample,
             "weighted_positivity": weighted_rate,
-        })
+            # B10: 小样本护栏标记
+            "evidence_insufficient": total_sample < min_n if total_sample is not None else True,
+        }
+        if entry["evidence_insufficient"]:
+            excluded_insufficient += 1
+        result_list.append(entry)
 
     result_list.sort(key=lambda x: x["province"])
+    # 返回统计信息，让前端/日志知道多少条因小样本被标记
     return result_list
 
 
@@ -582,6 +592,9 @@ async def get_city_data(
         city_map[group_key]["literature_ids"].add(str(dp.literature_id) if dp.literature_id else "")
 
     result_list = []
+    # B10: 城市级同样做小样本门槛
+    min_n = settings.MIN_SAMPLE_FOR_META
+
     for _key, group in city_map.items():
         dps = group["data_points"]
         weighted_rate, total_sample = _calc_weighted_rate(dps, data_type)
@@ -596,6 +609,7 @@ async def get_city_data(
             "study_count": len(group["literature_ids"]),
             "total_sample": total_sample,
             "weighted_positivity": weighted_rate,
+            "evidence_insufficient": total_sample < min_n if total_sample is not None else True,
             "latitude": lat,
             "longitude": lng,
         })
@@ -761,6 +775,8 @@ async def get_province_yearly_data(
             year_map[year][group_key]["data_points"].append(dp)
 
     result_list = []
+    min_n = settings.MIN_SAMPLE_FOR_META
+
     for year in sorted(year_map.keys()):
         year_data = []
         for _, group in year_map[year].items():
@@ -774,6 +790,8 @@ async def get_province_yearly_data(
                 "total_sample": total_sample,
                 "weighted_positivity": weighted_rate,
                 "disease": group["disease"],
+                # B10: 小样本门槛（同省级聚合）
+                "evidence_insufficient": total_sample < min_n if total_sample is not None else True,
             }
             year_data.append(entry)
 
