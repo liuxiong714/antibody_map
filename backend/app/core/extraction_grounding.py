@@ -494,6 +494,13 @@ class ValidationFlags:
     grounded: bool = False  # not strictly schema, but used to downgrade
     # F-6: LLM 可能把 percent 写成 0-1 fraction (e.g. 0.9 means 90%)
     suspected_fraction: bool = False
+    # 5.3 新规则软标记
+    ci_missing_point: bool = False
+    age_invalid: bool = False
+    year_invalid: bool = False
+    denominator_mismatch: bool = False
+    death_exceeds_case: bool = False
+    population_implausible: bool = False
 
     @property
     def schema_issues(self) -> list[str]:
@@ -510,6 +517,18 @@ class ValidationFlags:
             issues.append("value_out_of_range")
         if self.suspected_fraction:
             issues.append("suspected_fraction")
+        if self.ci_missing_point:
+            issues.append("ci_misses_point_estimate")
+        if self.age_invalid:
+            issues.append("age_range_invalid")
+        if self.year_invalid:
+            issues.append("year_out_of_range")
+        if self.denominator_mismatch:
+            issues.append("denominator_type_mismatch")
+        if self.death_exceeds_case:
+            issues.append("death_exceeds_case_count")
+        if self.population_implausible:
+            issues.append("implausible_implied_population")
         return issues
 
     @property
@@ -612,8 +631,78 @@ def _sanitize_unreasonable_values(item: dict) -> list[str]:
     lo, hi = item.get("positivity_ci_lower"), item.get("positivity_ci_upper")
     if lo is not None and hi is not None and hi < lo:
         issues.append("ci_lower_greater_than_upper")
-
+    # R5: 样本量上限
+    ss = item.get("sample_size")
+    if ss is not None:
+        try:
+            if float(ss) > 1e7:
+                issues.append("sample_size_too_large")
+        except (TypeError, ValueError):
+            pass
     return issues
+
+
+
+def _check_v2_consistency_rules(item, flags):
+    """5.3 新增一致性规则（R4/R6/R7/R10/R12/R13）——软标记不修改 item。"""
+    import datetime as _dt
+    pr = item.get("positivity_rate")
+    pr_lo = item.get("positivity_ci_lower")
+    pr_hi = item.get("positivity_ci_upper")
+    if pr is not None and pr_lo is not None and pr_hi is not None:
+        try:
+            if not (float(pr_lo) <= float(pr) <= float(pr_hi)):
+                flags.ci_missing_point = True
+        except (TypeError, ValueError):
+            pass
+    age_min = item.get("age_min")
+    age_max = item.get("age_max")
+    try:
+        if age_min is not None and age_max is not None:
+            if float(age_min) > float(age_max):
+                flags.age_invalid = True
+            if float(age_min) > 120 or float(age_max) > 120:
+                flags.age_invalid = True
+    except (TypeError, ValueError):
+        pass
+    cy = _dt.date.today().year
+    for yr_key in ("study_start_year", "study_end_year", "sample_year"):
+        v = item.get(yr_key)
+        if v is not None:
+            try:
+                if not (1900 <= int(v) <= cy + 1):
+                    flags.year_invalid = True
+                    break
+            except (TypeError, ValueError):
+                pass
+    denom = item.get("denominator_type")
+    if denom:
+        pr_present = item.get("positivity_rate") is not None
+        ir_present = item.get("incidence_rate") is not None
+        if pr_present and denom not in ("serum_samples", "unknown", None):
+            flags.denominator_mismatch = True
+        if ir_present and denom not in ("population", "unknown", None):
+            flags.denominator_mismatch = True
+    cc = item.get("case_count")
+    dc = item.get("death_count")
+    if cc is not None and dc is not None:
+        try:
+            if float(dc) > float(cc):
+                flags.death_exceeds_case = True
+        except (TypeError, ValueError):
+            pass
+    ir = item.get("incidence_rate")
+    pop = item.get("population")
+    if ir is not None and pop is not None:
+        try:
+            implied = float(pop) * float(ir) / 100.0
+            cc2 = item.get("case_count")
+            if cc2 is not None and float(cc2) > 0:
+                ratio = implied / float(cc2)
+                if ratio < 0.01 or ratio > 100:
+                    flags.population_implausible = True
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
 
 
 def validate_extraction_schema(
@@ -660,6 +749,8 @@ def validate_extraction_schema(
     gmc_ok = validate_value_range(item.get("gmc_value"), "gmc")
     _issues = _sanitize_unreasonable_values(item)
     flags.value_range_valid = (pr_ok and gmc_ok and "value_out_of_range" not in _issues)
+    # 5.3 新增一致性规则
+    _check_v2_consistency_rules(item, flags)
 
     # F-6: 0<positivity_rate<1 是"疑似比例值"（LLM 可能把 90% 写成 0.9）
     _pr = item.get("positivity_rate")

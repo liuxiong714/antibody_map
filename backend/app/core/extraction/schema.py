@@ -6,8 +6,8 @@
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES, PROVINCE_NAMES_ZH
 
 # A4: Prompt 版本号 — bump 时缓存自动失效，避免 Prompt 升级后旧缓存仍命中
-EXTRACTION_PROMPT_VERSION = "v1.32.0"
-EXTRACTION_SCHEMA_VERSION = "v1.32.0"
+EXTRACTION_PROMPT_VERSION = "v2.0.0"  # 5.2 Prompt/Schema v2
+EXTRACTION_SCHEMA_VERSION = "v2.0.0"
 
 # ==================== Prompt 模板 ====================
 
@@ -143,6 +143,12 @@ PROMPT_ZH = """你是一位专业的流行病学文献信息提取专家。请�
   - ⚠️ **"阳性率"歧义处理**：如果阳性率的分母是"病例"而非"血清样本"（如"病例中检出阳性率"），应填入 pathogen_monitoring.detection_rate 而非 data_point.positivity_rate
 - **⚠️ 纯流行病学文献的血清学字段处理（极重要）**：如果全文**没有任何血清学实验**（ELISA、中和试验、血凝抑制、血清检测等关键词），或者没有"抗体"、"血清阳性"、"GMC"/"GMT"等字样，**positivity_rate / gmc_value / antibody_type / detection_method 必须全部填 null**。此时应将发病率填入 incidence_rate、病例数填入 case_count。严禁编造不存在的血清学数据（如编造 "IgM" 抗体、"ELISA" 方法、"100%" 阳性率）
 - **⚠️ 有流行病学数据就必须输出（极重要）**：纯流行病学文献即使没有血清学数据，**不要返回空 data_points 数组**。只要文中有发病率（incidence_rate）、病例数（case_count）、病死率（mortality_rate）、死亡数（death_count）中的**任何一个**，就必须输出包含该字段的 data_point。只有文中确实没有任何可用的数值型流行病学或血清学数据时，才返回空数组 []
+- **【v2 硬约束 · 数值可定位】**：每个数值必须在 source_context 中原样出现；区间填中值 + value_note "range"
+- **【v2 硬约束 · 单位自洽 · CI 禁推算】**：CI 必须与原文同单位；原文无 CI 一律填 null，禁止自行计算
+- **【v2 硬约束 · 分母显式标注】**：每条 data_point 必须填 denominator_type（serum_samples/population/cases/specimens/animals/unknown）
+- **【v2 硬约束 · 数值范围前置】**：positivity ∈ [0,100]；gmc>0；sample_size 正整数；年龄 ∈[0,120]；年份 ∈[1900,当前年+1]；越界填 null + value_note
+- **【v2 硬约束 · 省份/城市双校验】**：province 必须从标准列表选；city 省份不确定则 province=null，禁止猜测
+- **【v2 硬约束 · 空结果合法化】**：全文确无数值 → data_points: [] + article.notes(≤30字)说明原因
 - **血清检测的判定信号**：只有当文中同时出现①检测方法（ELISA/中和/血凝抑制/免疫荧光等）和②检测对象是"血清"/"抗体"/"抗-HBs"等，才判定存在血清学数据。仅凭疾病名称（如"麻疹"）、"IgM阳性率"（病例确诊标准）不足以判定——"IgM"如果是病例中检出的病原体抗体，那是病原学指标，应填入 pathogen_monitoring.detection_rate，不是血清阳性率
 - **流行病学单位填写**：`incidence_unit` 如实填写文中出现的单位（如 "/10万"、"‰"、"%"）；`case_count` / `death_count` 单位固定是"例"，直接填数值即可
 - **仅输出JSON**：不要包含任何解释性文字或markdown代码块标记
@@ -232,6 +238,12 @@ EXTRACTION_JSON_SCHEMA = {
                     "source_context": {"type": ["string", "null"]},
                     "estimate_type": {"type": "string", "enum": ["primary", "subgroup", "null"]},
                     "parent_group": {"type": ["string", "null"]},
+                    # 5.2 新增
+                    "denominator_type": {
+                        "type": ["string", "null"],
+                        "enum": ["serum_samples", "population", "cases", "specimens", "animals", "unknown", None],
+                    },
+                    "value_note": {"type": ["string", "null"]},
                 },
             },
         },
@@ -455,6 +467,12 @@ If a value only describes a positivity/negativity judgment cutoff, ignore it and
   - ⚠️ **Ambiguous "positive rate"**: If the denominator is "cases" not "serum samples" (e.g., "detection rate among cases"), use pathogen_monitoring.detection_rate instead of data_point.positivity_rate
 - **⚠️ Serology field handling for pure epidemiology papers (CRITICAL)**: If the paper contains **NO serological assays** (no ELISA, neutralization, HI titer, serum testing keywords), or no mentions of "antibody", "seropositive", "GMC"/"GMT", **positivity_rate / gmc_value / antibody_type / detection_method must ALL be null**. Fill incidence_rate for incidence, case_count for cases. **DO NOT fabricate** nonexistent serology data (e.g., "IgM" antibody, "ELISA" method, "100%" positivity)
 - **⚠️ MUST output epidemiology data when present (CRITICAL)**: For pure epidemiology papers, **do NOT return an empty data_points array** just because there's no serology data. If the text contains ANY of incidence_rate, case_count, mortality_rate, death_count, you MUST output data_points with those fields. Only return empty [] when truly no numeric epidemiology or serology data exists
+- **【v2 Hard Rule · Values grounded】**: Every numeric field MUST appear verbatim in source_context. Range → midpoint + value_note "range"
+- **【v2 Hard Rule · Unit consistency · CI prohibited】**: If CI given, must match original. If no CI → null, NEVER calculate
+- **【v2 Hard Rule · Denominator type mandatory】**: Each data_point MUST fill denominator_type enum (serum_samples/population/cases/specimens/animals/unknown)
+- **【v2 Hard Rule · Value ranges】**: positivity ∈ [0,100] (pct); gmc>0; sample_size positive; age ∈[0,120]; year ∈[1900,current+1]; out-of-range → null + value_note
+- **【v2 Hard Rule · Province/city double-check】**: province MUST match list; unknown → null, DO NOT guess
+- **【v2 Hard Rule · Empty result合法化】**: No data → data_points: [] + article.notes (≤30 chars) reason
 - **Serology detection signals**: Only judge serology data present when the text contains BOTH ① a detection method (ELISA/neutralization/HI/immunofluorescence etc.) AND ② the target is "serum"/"antibody"/"anti-HBs" etc. A disease name alone (e.g., "measles") or "IgM positivity rate" as a case confirmation criterion is NOT sufficient — "IgM" detected in cases is pathogen monitoring (pathogen_monitoring.detection_rate), not serum positivity
 - **Epidemiological units**: Fill `incidence_unit` exactly as it appears (e.g., "/100k", "‰", "%"); case_count and death_count are always unit "例" — just fill the number
 - Output ONLY JSON, no markdown code blocks
@@ -633,6 +651,12 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
   - ⚠️ **"阳性率"歧义处理**：如果阳性率的分母是"病例"而非"血清样本"（如"病例中检出阳性率"），应填入 pathogen_monitoring.detection_rate 而非 data_point.positivity_rate
 - **⚠️ 纯流行病学文献的血清学字段处理（极重要）**：如果全文**没有任何血清学实验**（ELISA、中和试验、血凝抑制、血清检测等关键词），或者没有"抗体"、"血清阳性"、"GMC"/"GMT"等字样，**positivity_rate / gmc_value / antibody_type / detection_method 必须全部填 null**。此时应将发病率填入 incidence_rate、病例数填入 case_count。严禁编造不存在的血清学数据（如编造 "IgM" 抗体、"ELISA" 方法、"100%" 阳性率）
 - **⚠️ 有流行病学数据就必须输出（极重要）**：纯流行病学文献即使没有血清学数据，**不要返回空 data_points 数组**。只要文中有发病率（incidence_rate）、病例数（case_count）、病死率（mortality_rate）、死亡数（death_count）中的**任何一个**，就必须输出包含该字段的 data_point。只有文中确实没有任何可用的数值型流行病学或血清学数据时，才返回空数组 []
+- **【v2 硬约束 · 数值可定位】**：每个数值必须在 source_context 中原样出现；区间填中值 + value_note "range"
+- **【v2 硬约束 · 单位自洽 · CI 禁推算】**：CI 必须与原文同单位；原文无 CI 一律填 null，禁止自行计算
+- **【v2 硬约束 · 分母显式标注】**：每条 data_point 必须填 denominator_type（serum_samples/population/cases/specimens/animals/unknown）
+- **【v2 硬约束 · 数值范围前置】**：positivity ∈ [0,100]；gmc>0；sample_size 正整数；年龄 ∈[0,120]；年份 ∈[1900,当前年+1]；越界填 null + value_note
+- **【v2 硬约束 · 省份/城市双校验】**：province 必须从标准列表选；city 省份不确定则 province=null，禁止猜测
+- **【v2 硬约束 · 空结果合法化】**：全文确无数值 → data_points: [] + article.notes(≤30字)说明原因
 - **血清检测的判定信号**：只有当文中同时出现①检测方法（ELISA/中和/血凝抑制/免疫荧光等）和②检测对象是"血清"/"抗体"/"抗-HBs"等，才判定存在血清学数据。仅凭疾病名称（如"麻疹"）、"IgM阳性率"（病例确诊标准）不足以判定——"IgM"如果是病例中检出的病原体抗体，那是病原学指标，应填入 pathogen_monitoring.detection_rate，不是血清阳性率
 - **流行病学单位填写**：`incidence_unit` 如实填写文中出现的单位（如 "/10万"、"‰"、"%"）；`case_count` / `death_count` 单位固定是"例"，直接填数值即可
 - **仅输出JSON**：不要包含任何解释性文字或markdown代码块标记
