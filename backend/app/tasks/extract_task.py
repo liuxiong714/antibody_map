@@ -1187,6 +1187,43 @@ async def _process_literature_async(
         _history_id = _new_history.id
         logger.info(f"[F21] 预创建 ExtractionHistory(id={_history_id}, model={_history_model})，待关联 DataPoint")
 
+        # A6: DataPoint 跨批次前置查重 — 查 DB 中本 literature 已有的 DataPoint，
+        # 防止同一文献被重复提取时产生跨批次重复（批内 _deduped 只防单次 LLM 输出重复）。
+        # 用与 _deduped 相同的 key，value 四舍五入到 6 位小数比较。
+        _existing_dp_key = set()
+        _exist_result = await db.execute(
+            select(
+                DataPoint.disease, DataPoint.province, DataPoint.city,
+                DataPoint.data_type, DataPoint.age_min, DataPoint.age_max,
+                DataPoint.collection_year, DataPoint.value,
+            ).where(DataPoint.literature_id == literature_id)
+        )
+        for row in _exist_result.fetchall():
+            _v = round(row.value, 6) if row.value is not None else None
+            _existing_dp_key.add((
+                row.disease, row.province, row.city, row.data_type,
+                row.age_min, row.age_max, row.collection_year, _v,
+            ))
+        _before_count = len(all_data_points)
+        _deduped_vs_db: list[DataPoint] = []
+        _skipped_db = 0
+        for _dp in all_data_points:
+            _val = round(_dp.value, 6) if _dp.value is not None else None
+            _key = (
+                _dp.disease, _dp.province, _dp.city, _dp.data_type,
+                _dp.age_min, _dp.age_max, _dp.collection_year, _val,
+            )
+            if _key in _existing_dp_key:
+                _skipped_db += 1
+                continue
+            _deduped_vs_db.append(_dp)
+        if _skipped_db > 0:
+            logger.info(
+                f"[A6] DataPoint 跨批次查重：跳过 {_skipped_db} 条已存在的数据点"
+                f"（本批次 {_before_count} 条，查重后 {len(_deduped_vs_db)} 条）"
+            )
+        all_data_points = _deduped_vs_db
+
         # 6. 写库：持久化本批次数据点（每个 DataPoint 写 F21 溯源字段）
         for dp in all_data_points:
             dp.model_used = _history_model
