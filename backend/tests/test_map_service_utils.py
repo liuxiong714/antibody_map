@@ -1,4 +1,4 @@
-﻿"""map_service.py 纯同步函数单元测试 —— 零 mock，全纯数据喂入。"""
+"""map_service.py 纯同步函数单元测试 —— 零 mock，全纯数据喂入。"""
 from __future__ import annotations
 
 from app.services import map_service as ms
@@ -57,10 +57,12 @@ class TestBuildOccupationFilter:
         assert hasattr(f, "operator")
 
     def test_multi_returns_or_(self):
-        from sqlalchemy.sql.elements import Or
         f = ms._build_occupation_filter("医生,护士,技师")
         assert f is not None
-        assert isinstance(f, Or)
+        s = str(f)
+        # 多值 → OR 组合多个 LIKE
+        assert " OR " in s
+        assert "LIKE" in s
 
 
 # ===== _get_city_coords =====
@@ -78,9 +80,9 @@ class TestGetCityCoords:
         assert lng == 116.2992
 
     def test_fallback_to_province_center(self):
-        # 新疆的一个非标准县级市 → 回退到新疆中心
+        # 新疆的一个非标准县级市 → 回退到新疆中心 PROVINCE_CENTERS: (87.6, 43.8)
         lat, lng = ms._get_city_coords("新疆", "呼喇喇市")
-        assert (lat, lng) == (43.8256, 87.6168)
+        assert (lat, lng) == (43.8, 87.6)
 
     def test_unknown_province_returns_none(self):
         lat, lng = ms._get_city_coords("火星省", "奥林帕斯山")
