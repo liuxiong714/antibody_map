@@ -398,20 +398,20 @@ def _parse_provinces(raw: str | None) -> list[str]:
     return result if result else ["unknown"]
 
 
-def _normalize_seroprevalence(value: float) -> float:
-    """标准化血清阳性率值：
-    - 如果值在 0~1 之间（小数格式），转换为百分比（×100）
-    - 上限封顶 100%
+def _normalize_seroprevalence(value: float) -> float | None:
+    """标准化血清阳性率值。
+
+    - 0~1 之间（小数格式）→ ×100 转换为百分比
+    - 越界值（v > 100 或 v < 0）→ 返回 None，不再静默截断
+      （B11 修复：之前直接截断为 100/0 导致异常值伪装成正常值进入聚合）
     """
     if value is None:
         return None
     v = float(value)
     if 0 < v <= 1:
         v = v * 100
-    if v > 100:
-        v = 100.0
-    if v < 0:
-        v = 0.0
+    if v > 100 or v < 0:
+        return None
     return round(v, 4)
 
 
@@ -435,19 +435,22 @@ def _calc_weighted_rate(dps: list, target_data_type: str | None = None) -> tuple
         return None, 0
 
     if effective_type == "seroprevalence":
-        # 阳性率：标准化小数格式并封顶 100%
-        # 注意：dp.sample_size 来自 DB 是 Decimal，需要统一转 float
-        weighted_sum = sum(
-            float(_normalize_seroprevalence(dp.value)) * float(dp.sample_size)
+        # 阳性率：标准化小数格式，越界值（>100 或 <0）自动排除
+        # 注意：_normalize_seroprevalence 现在返回 None 表示越界
+        normalized = [
+            (float(_normalize_seroprevalence(dp.value)), float(dp.sample_size))
             for dp in valid_dps
-        )
+            if _normalize_seroprevalence(dp.value) is not None
+        ]
+        weighted_sum = sum(n * s for n, s in normalized)
+        total_sample = int(sum(s for _, s in normalized))
     else:
         # GMC: 直接使用原始值
         weighted_sum = sum(
             float(dp.value) * float(dp.sample_size) for dp in valid_dps
         )
+        total_sample = int(sum(float(dp.sample_size) for dp in valid_dps))
 
-    total_sample = int(sum(float(dp.sample_size) for dp in valid_dps))
     weighted_rate = round(weighted_sum / total_sample, 2) if total_sample > 0 else None
 
     return weighted_rate, total_sample
@@ -738,7 +741,8 @@ async def get_province_yearly_data(
     year_map: dict[int, dict[str, dict]] = {}
 
     for dp in rows:
-        year = dp.collection_year or 0
+        # B11 修复：年份缺失不再记 0，保留 None 让前端分组"未标注年份"
+        year = dp.collection_year  # None 保留，不再 or 0
         if year not in year_map:
             year_map[year] = {}
 
