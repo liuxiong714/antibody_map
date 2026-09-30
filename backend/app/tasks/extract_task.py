@@ -1121,6 +1121,28 @@ async def _process_literature_async(
                     logger.warning(f"文献 {literature_id} superseded 后重置 queued 失败（不影响返回）: {_e}")
             return {"literature_id": str(literature_id), "status": "superseded", "data_point_count": 0}
 
+        # A5: 缓存命中 — 跳过整个落库流程（ExtractionHistory 创建、DataPoint 写库、KG 抽取、审计等）
+        # 同一文献同一 Prompt/Schema 版本已经提取过，没必要重复落库造成 DataPoint 重复。
+        # 缓存已经包含完整 extract_results + 元数据，直接返回。
+        if cache_hit:
+            _hit_count = len(extract_results)
+            _cache_model = effective_model
+            logger.info(
+                f"文献 {literature_id} 缓存命中，跳过落库避免重复 DataPoint"
+                f"（data_points={_hit_count}, model={_cache_model}）"
+            )
+            await _stop_heartbeat()
+            await db.commit()
+            return {
+                "literature_id": str(literature_id),
+                "status": "done_cache_hit",
+                "data_point_count": _hit_count,
+                "extracted_count": _hit_count,
+                "model": f"{_cache_model} (cached)",
+                "cache_hit": True,
+                "skipped_db_write": True,
+            }
+
         # 5b. 清除该文献下已有的旧数据点（防止重新提取时新旧叠加）
         # 使用 ORM delete 确保 cascade 正确处理
         # F21：clear_existing_data=True = 替换模式（清空旧数据点）；
