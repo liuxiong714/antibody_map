@@ -7,6 +7,17 @@
 新世代矩阵（NGM）残差法（R_eff）见 ``r_eff``：用 NGM 直接计算免疫后
 基本再生数，更严格地回答"是否真的达到群体免疫"。
 
+**接触矩阵来源**：``china_contact_matrix.json`` 使用 Prem et al. 2022 的
+中国合成投影矩阵（v2）——基于 POLYMOD 欧洲 8 国实测接触调查 + 2020 中国
+人口普查年龄结构、教育/就业/家庭统计的贝叶斯分层投影，peer review 过、
+被 Lancet/PLOS/Nature 等顶刊的中国 COVID-19 建模论文直接采用。详见
+JSON 文件的 ``source`` 字段。
+
+  Prem K, van Zandvoort K, Klepac P, et al. Projecting contact matrices in
+  177 geographical regions: An update and comparison with empirical data for
+  the COVID-19 era. PLOS Computational Biology, 2022, 18(3): e1009098.
+  https://doi.org/10.1371/journal.pcbi.1009098
+
 不引入新依赖：仅使用项目已有的 numpy。
 """
 
