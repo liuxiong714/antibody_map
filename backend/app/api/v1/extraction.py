@@ -1169,6 +1169,34 @@ async def stop_extraction(
             data={"literature_id": str(literature_id), "status": literature.extraction_status},
         )
 
+    # B12 修复：尽力 revoke Celery 后台任务（之前只改 DB 状态，任务继续跑可能回写）
+    # 复用 ResetMy/ResetStuck 的模式：inspect 活跃任务，按 literature_id 匹配并 revoke
+    revoked = False
+    try:
+        from app.tasks.celery_app import celery_app
+        inspect = celery_app.control.inspect(timeout=3.0)
+        active_tasks = inspect.active() or {}
+        for _worker, tasks in active_tasks.items():
+            for task in tasks:
+                task_name = task.get("name") or ""
+                if not task_name.endswith("process_literature"):
+                    continue
+                args = task.get("args") or ()
+                kwargs = task.get("kwargs") or {}
+                lit_ref = ""
+                if args:
+                    lit_ref = str(args[0])
+                elif kwargs.get("literature_id"):
+                    lit_ref = str(kwargs["literature_id"])
+                if lit_ref == str(literature_id):
+                    task_id = task.get("id")
+                    if task_id:
+                        celery_app.control.revoke(task_id, terminate=True)
+                        revoked = True
+                        logger.warning(f"[StopExtraction] Celery 任务已 revoke: {task_id} (文献 {literature_id})")
+    except Exception as e:
+        logger.warning(f"[StopExtraction] Celery revoke 失败（忽略，DB CAS 兜底）: {e}")
+
     literature.extraction_status = "failed"
     literature.updated_at = datetime.now(timezone.utc)
     # 手动停止提取时同步写失败历史，避免「有结果无历史」缺口
@@ -1184,10 +1212,10 @@ async def stop_extraction(
     )
     await db.commit()
 
-    logger.warning(f"文献 {literature_id} 提取已被手动停止，状态重置为 failed")
+    logger.warning(f"文献 {literature_id} 提取已被手动停止，状态重置为 failed (celery_revoked={revoked})")
     return ApiResponse(
         message="提取已停止，状态重置为失败",
-        data={"literature_id": str(literature_id), "status": "failed"},
+        data={"literature_id": str(literature_id), "status": "failed", "celery_revoked": revoked},
     )
 
 

@@ -248,8 +248,9 @@ class QAQueryExecutor:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        # 是否纳入未审核数据点（来源标注由格式化器/答案处理）
-        self.include_unreviewed = getattr(settings, "KG_QA_INCLUDE_UNREVIEWED", True)
+        # 是否纳入未审核数据点。默认 False —— 只消费已审核数据，开启时显式设置 KG_QA_INCLUDE_UNREVIEWED=true
+        # B7 修复：之前默认 True，问答结论混入未审数据，科研口径不严谨
+        self.include_unreviewed = getattr(settings, "KG_QA_INCLUDE_UNREVIEWED", False)
 
     def _disease_terms(self, disease: str | None) -> list[str]:
         """将疾病槽位归一化为候选匹配串（中文→英文代码，去掉干扰后缀）。"""
@@ -1005,8 +1006,22 @@ async def llm_fallback_answer(
     （来自真实检索行，非 LLM 生成），供前端证据溯源卡片展示。
     """
     try:
-        # 真实数据证据（RAG）
+        # 真实数据证据（RAG）—— 默认只查 approved（QAQueryExecutor 默认值已改 B7）
         rag_evidence, evidence_list = await _retrieve_qa_evidence(question, db)
+
+        # B7 修复：如果 RAG 完全检索不到已审核证据，不走 LLM 自由作答
+        # （之前 LLM 兜底会基于空上下文自由发挥，结论无证据支撑）
+        if not rag_evidence and not evidence_list:
+            return {
+                "answer": (
+                    "抱歉，未在已审核数据中找到该问题的依据。\n\n"
+                    "可尝试：\n"
+                    '- 查询具体数据的问题（如"北京麻疹阳性率是多少"）\n'
+                    '- 对比性问题（如"北京和上海麻疹阳性率对比"）\n'
+                    '- 指定人群的问题（如"儿童麻疹抗体阳性率"）'
+                ),
+                "evidence": [],
+            }
 
         # 获取 KG 上下文
         ent_count = await db.execute(select(func.count()).select_from(KGEntity).where(KGEntity.merged_into.is_(None)))
