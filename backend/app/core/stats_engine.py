@@ -157,6 +157,7 @@ def weighted_rate_ci(rows: Sequence[Any], z: float = 1.96) -> dict:
             continue
         p = _as_percent(_get(row, "value"))
         if p is None:
+            dropped += 1
             continue
         n = _get(row, "sample_size")
         if n is None:

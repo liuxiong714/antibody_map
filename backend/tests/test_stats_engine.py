@@ -116,9 +116,20 @@ class TestWeightedRateCI:
         assert res["method"] == "normal_approx"
 
     def test_percent_and_ratio_input_mixed(self):
-        # 0-1 比例与百分数混用均可
-        res = weighted_rate_ci([self._row(0.5, 100), self._row(0.3, 300)])
+        # A3: DataPoint.value 约定恒为 0-100 百分数；
+        #     0<p<1 被视为口径可疑（LLM 把 90% 写成 0.9），_as_percent 返回 None — 丢弃
+        res = weighted_rate_ci([self._row(50.0, 100), self._row(30.0, 300)])
         assert res["weighted_positivity"] == pytest.approx(35.0, abs=1e-6)
+
+    def test_ratio_values_dropped_A3(self):
+        """A3 验证：0<p<1 不应被 100× 放大 — 整条被丢弃"""
+        res = weighted_rate_ci([
+            self._row(0.5, 100),  # 被视为 0.5%，但按约定应为 50% — 丢弃
+            self._row(30.0, 300),
+        ])
+        # 第一行 0.5 → _as_percent 返回 None → weighted_rate_ci 丢弃
+        assert res["n_dropped"] >= 1  # 至少丢了那条比例值
+        assert res["weighted_positivity"] is not None  # 第二行应保留
 
     def test_dropped_when_sample_size_missing(self):
         # 保守起见：任一行 sample_size 缺失则整行剔除并计数

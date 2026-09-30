@@ -96,11 +96,19 @@ def _build_extraction_cache_key(
 ) -> str:
     """构建提取结果缓存 key。
 
-    采用全文 sha256 哈希作为文本指纹，避免仅取前 1000 字符导致尾部内容变化
-    （重抽/换引擎/修正后）缓存不失效、返回陈旧结果。
+    A4: Prompt 版本号必须在 key 中 —— Prompt/Schema 升级后 bump
+    EXTRACTION_PROMPT_VERSION / EXTRACTION_SCHEMA_VERSION，旧缓存自然失效，
+    避免新旧口径数据混用。（rules.md 第 9.3 节铁律：修改 Prompt 或 JSON Schema
+    必须 bump EXTRACTION_PROMPT_VERSION）
     """
+    from app.core.extraction.schema import EXTRACTION_PROMPT_VERSION, EXTRACTION_SCHEMA_VERSION
+
     text_fingerprint = hashlib.sha256(clean_text.encode("utf-8")).hexdigest()
-    raw = f"{literature_id}|{model}|{passes}|{chunk_threshold}|{text_fingerprint}"
+    raw = (
+        f"{literature_id}|{model}|{passes}|{chunk_threshold}|"
+        f"{EXTRACTION_PROMPT_VERSION}|{EXTRACTION_SCHEMA_VERSION}|"
+        f"{text_fingerprint}"
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

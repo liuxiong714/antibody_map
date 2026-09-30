@@ -5,6 +5,10 @@
 
 from app.core.term_normalizer import CHINA_PROVINCE_NAMES, PROVINCE_NAMES_ZH
 
+# A4: Prompt 版本号 — bump 时缓存自动失效，避免 Prompt 升级后旧缓存仍命中
+EXTRACTION_PROMPT_VERSION = "v1.32.0"
+EXTRACTION_SCHEMA_VERSION = "v1.32.0"
+
 # ==================== Prompt 模板 ====================
 
 PROVINCE_LIST_TIP = f"""中国省份标准名称列表（必须从这里选择，不要使用简称或拼音）：
