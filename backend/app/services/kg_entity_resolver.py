@@ -259,6 +259,8 @@ async def persist_triples(
             predicate=predicate,
             object_id=obj_id,
             confidence=tri.get("confidence", 1.0),
+            # B6: 显式标注来源 —— 从 LLM 文献抽取管道写入，一律 extracted
+            source="extracted",
             source_context=tri.get("source_context"),
             literature_id=literature_id,
         )

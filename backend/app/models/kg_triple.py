@@ -24,6 +24,10 @@ class KGTriple(Base):
         String(16), ForeignKey("kg_entity.id", ondelete="CASCADE"), nullable=False,
     )
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    # B6: 来源标记 — extracted(LLM从文献中抽取，默认) / computed(从数据点自动合成)
+    source: Mapped[str] = mapped_column(
+        String(16), default="extracted", server_default="extracted", index=True,
+    )
     source_context: Mapped[str | None] = mapped_column(Text)
     literature_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("literature.id", ondelete="SET NULL"),

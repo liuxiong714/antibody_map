@@ -421,8 +421,10 @@ class QAQueryExecutor:
 
         results = []
         for inst in institutions:
-            # 查询该机构关联的三元组
+            # 查询该机构关联的三元组 —— B6/B7: 只看已审核的 extracted 三元组
             tri_stmt = select(KGTriple).where(
+                KGTriple.review_status == "approved",
+                KGTriple.source == "extracted",
                 or_(
                     and_(KGTriple.subject_id == inst.id, KGTriple.predicate == "conducted_by"),
                     and_(KGTriple.object_id == inst.id, KGTriple.predicate == "conducted_by"),
@@ -1023,9 +1025,14 @@ async def llm_fallback_answer(
                 "evidence": [],
             }
 
-        # 获取 KG 上下文
+        # 获取 KG 上下文 —— B6/B7: 统计只数已审核的 extracted 三元组（与问答数据源一致）
         ent_count = await db.execute(select(func.count()).select_from(KGEntity).where(KGEntity.merged_into.is_(None)))
-        tri_count = await db.execute(select(func.count()).select_from(KGTriple))
+        tri_count = await db.execute(
+            select(func.count()).select_from(KGTriple).where(
+                KGTriple.review_status == "approved",
+                KGTriple.source == "extracted",
+            )
+        )
         total_entities = ent_count.scalar() or 0
         total_triples = tri_count.scalar() or 0
 
