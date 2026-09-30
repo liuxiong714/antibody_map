@@ -333,7 +333,7 @@ async def merge_literatures(
         select(DataPoint).where(DataPoint.literature_id == target_id))).scalars().all()
 
     moved = 0
-    deleted_conflicts = 0
+    soft_rejected = 0  # P1-B3: 软替代物理删除，避免合并误操作永久丢数据
     for s_dp in s_dps:
         conflict_tgts = [t for t in t_dps if _is_dp_conflict(s_dp, t)]
         if not conflict_tgts:
@@ -344,15 +344,20 @@ async def merge_literatures(
             s_dp.literature_id = target_id
             moved += 1
         elif dp_conflict_strategy == "prefer_target":
-            await db.delete(s_dp)
-            deleted_conflicts += 1
+            # P1-B3: 物理删除 → 软标记 rejected（保留数据，可后续审核恢复）
+            s_dp.review_status = "rejected"
+            s_dp.review_reason = "merged_conflict_prefer_target" if hasattr(s_dp, 'review_reason') else None
+            soft_rejected += 1
         elif dp_conflict_strategy == "prefer_source":
             for t in conflict_tgts:
-                await db.delete(t)
+                # P1-B3: 物理删除 → 软标记 rejected
+                t.review_status = "rejected"
+                if hasattr(t, 'review_reason'):
+                    t.review_reason = "merged_conflict_prefer_source"
                 t_dps.remove(t)
             s_dp.literature_id = target_id
             moved += 1
-            deleted_conflicts += len(conflict_tgts)
+            soft_rejected += len(conflict_tgts)
 
     # 3. 重算 target 计数与状态（合并改变了 DataPoint 归属，必须同步 Literature 元数据）
     total_dp = (await db.execute(
@@ -382,8 +387,9 @@ async def merge_literatures(
     if field_choices.get("file_path") != "source":
         source_file_to_delete = source.file_path
 
-    source.file_path = None  # 避免 db.delete 触发文件删除逻辑
-    await db.delete(source)
+    source.file_path = None  # 清空 file_path（保留本地文件，由下面单独处理）
+    # P1-B3: 物理删除 source Literature → 软删除（置 deleted_at，可从回收站恢复）
+    source.deleted_at = datetime.now(timezone.utc)
     await db.commit()
 
     # 删除源文件（仅当与 target 文件不同时）
