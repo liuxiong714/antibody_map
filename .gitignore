@@ -118,3 +118,7 @@ backend/tests/_*.py
 _patch_*.py
 fix_*.ps1
 .wslconfig
+
+# 个人工作进度/笔记文件 — 不纳入版本控制
+*工作进度*
+*个人*
