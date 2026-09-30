@@ -118,15 +118,17 @@ async def _seed_admin_user():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时运行数据库迁移（在独立线程中执行，避免 asyncio.run() 嵌套）
-    # TODO: Phase 0 merge migration 临时跳过，DDL 已手动执行，后续恢复自动迁移
+    # 启动时运行数据库迁移（通过 subprocess 在独立进程中执行，避免事件循环冲突）
+    # A8 修复：恢复 alembic 迁移链（之前被禁用）。
+    # env.py 已改为先 create_all 兜底再跑 alembic upgrade，空库/已有库都能正确处理。
     try:
-        pass  # await asyncio.to_thread(_run_migrations)  # Phase 0 临时禁用
+        await asyncio.to_thread(_run_migrations)
     except Exception as e:
         logger.error(f"Database migration failed: {e}")
         raise
 
-    # 兜底补齐迁移链未覆盖的表（如 user、audit_log）
+    # create_all 兜底（日志告警即可，env.py 已经兜底过一次）
+    # 留一个轻量调用以防 env.py 导入不全（双保险，幂等）
     await _ensure_tables()
 
     # 确保默认管理员账号存在

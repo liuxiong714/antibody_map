@@ -13,16 +13,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.config import settings
 from app.models.base import Base
 
-# 导入所有模型，确保 Base.metadata 包含全部表
-import app.models.literature  # noqa: F401
-import app.models.data_point  # noqa: F401
-import app.models.report     # noqa: F401
-import app.models.disease_dict  # noqa: F401
-import app.models.api_model_config  # noqa: F401
-import app.models.user  # noqa: F401
-import app.models.audit_log  # noqa: F401
-import app.models.extraction_history  # noqa: F401
-import app.models.reference_import_log  # noqa: F401
+# 一次性导入所有模型，确保 Base.metadata 包含全部 25 张表
+# （不能逐文件导入——容易遗漏，改用 models/__init__.py 的集中导入）
+import app.models  # noqa: F401  registers all models into Base.metadata
 
 config = context.config
 
@@ -52,12 +45,22 @@ def do_run_migrations(connection):
 
 
 async def run_migrations_online() -> None:
-    """Run migrations in 'online' mode (connects to DB)."""
+    """Run migrations in 'online' mode (connects to DB).
+
+    重要：先 Base.metadata.create_all 幂等建表，再跑 alembic upgrade。
+    原因：init 迁移（94cbbc6f286f）内部全是 ALTER COLUMN / DROP INDEX，
+    无 CREATE TABLE —— 这是 alembic 首次 autogenerate 时在已有库上生成的结果。
+    全新空库上直接跑 init 迁移会因 "relation does not exist" 失败。
+    先 create_all 能在空库上补齐所有模型表（25 张），且对已有库是 no-op。
+    """
     connectable = create_async_engine(
         settings.DATABASE_URL,
         poolclass=pool.NullPool,
     )
     async with connectable.connect() as connection:
+        # 1. 幂等建表（空库上补所有表；已有库上 CREATE TABLE IF NOT EXISTS，无副作用）
+        await connection.run_sync(Base.metadata.create_all)
+        # 2. 正常跑 alembic 升级链（在已有表上做 ALTER / 加列 / 加索引等）
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()
 
