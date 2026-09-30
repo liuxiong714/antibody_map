@@ -263,6 +263,12 @@ class Settings(BaseSettings):
     # 冷静期（天）：文件 mtime 距今小于该天数则跳过，避免误判监控/上传/提取中的文件
     ORPHAN_COOLING_DAYS: int = 7
 
+    # ===== 回收站自动硬删配置（C3） =====
+    # 回收站超过 TRASH_RETENTION_DAYS（30）天是否允许后台循环自动物理删除。
+    # 默认 False：后台循环仅 dry-run 统计并告警，不自动硬删——需人工经
+    # /literatures/trash/empty 显式确认后才执行，避免超期误删不可恢复。
+    TRASH_AUTO_CLEAN_ENABLED: bool = False
+
     # PubMed 开放获取 PDF 下载目录；为空时回退到 LOCAL_STORAGE_DIR
     PDF_DOWNLOAD_DIR: str = ""
 
@@ -332,6 +338,10 @@ class Settings(BaseSettings):
 
     # App
     SECRET_KEY: str = ""  # 必须通过环境变量或 .env 文件配置
+    # C7：API Key 加密（Fernet）专用密钥，与 JWT 签名密钥（SECRET_KEY）分离。
+    # 为空时回退 SECRET_KEY（向后兼容存量密文）；建议生产环境单独配置
+    # （openssl rand -base64 32 生成），避免同一密钥多用途放大泄露影响面。
+    CRYPTO_KEY: str = ""
     APP_ENV: str = "production"
     APP_DEBUG: bool = False
     # 应用版本号（单一版本源，main.py 与 /health 端点均引用此值）
@@ -342,6 +352,15 @@ class Settings(BaseSettings):
     # "Access-Control-Allow-Origin: *" 与 "Access-Control-Allow-Credentials: true" 同时出现。
     CORS_ALLOW_CREDENTIALS: bool = True
     MAX_UPLOAD_SIZE: int = 52428800
+
+    # ===== 限流安全配置（C5） =====
+    # 可信代理直连对端（X-Forwarded-For 仅在直连对端命中此列表时才采信，
+    # 否则一律使用 request.client.host，防客户端伪造 XFF 绕过限流）。
+    # 默认仅回环地址（nginx 与 backend 同宿主机的典型部署）。
+    TRUSTED_PROXIES: list[str] = ["127.0.0.1", "::1"]
+    # 登录限流：每 IP 每分钟最大尝试次数（与文档口径一致，默认 5）
+    LOGIN_RATE_LIMIT_MAX: int = 5
+    LOGIN_RATE_LIMIT_WINDOW: int = 60
 
     @model_validator(mode="after")
     def _cors_star_credentials_safety(self) -> "Settings":

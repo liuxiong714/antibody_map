@@ -261,8 +261,12 @@ def with_snapshot(module: str,
                     meta = {}
                     data["meta"] = meta
                 meta["snapshot_token"] = token
-            except Exception:  # 旁路：快照失败不影响主流程
-                pass
+            except Exception as exc:  # 旁路：快照失败不影响主流程，但必须可感知
+                logger.exception(
+                    "快照写入失败（module=%s，已跳过且不影响主响应，"
+                    "但会导致该次分析结果无法用快照号复现）: %s",
+                    module, exc,
+                )
             return resp
         return wrapper
     return decorator

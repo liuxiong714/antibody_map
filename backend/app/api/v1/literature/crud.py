@@ -182,12 +182,29 @@ async def permanent_delete(
     return ApiResponse(message="已永久删除")
 
 
-@router.post("/literatures/trash/empty", response_model=ApiResponse, summary="清空回收站", description="永久删除回收站中超过30天的文献（含文件）；指定 older_than_days=0 永久删除回收站中所有文献")
+@router.post("/literatures/trash/empty", response_model=ApiResponse, summary="清空回收站", description="永久删除回收站中超过30天的文献（含文件）。C3：dry_run=true 先输出「将影响 N 行」预览；仅当 dry_run=false 且显式 confirm=true 时才真正执行。指定 older_than_days=0 覆盖回收站中所有文献")
 async def empty_trash_endpoint(
     older_than_days: int = Query(30, ge=0, description="删除超过此天数的文献，0=全部"),
+    dry_run: bool = Query(True, description="true=仅预览「将影响 N 行」，不执行（默认）"),
+    confirm: bool = Query(False, description="二次确认：true 且 dry_run=false 才真正执行永久删除"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
+    if dry_run:
+        result = await empty_trash(db, older_than_days=older_than_days, dry_run=True)
+        return ApiResponse(
+            message=f"将影响 {result['permanently_deleted']} 行（超过 {older_than_days} 天的回收站文献），"
+            f"回收站剩余 {result['remaining']} 行。确认执行请传 dry_run=false&confirm=true。",
+            data=result,
+        )
+    if not confirm:
+        # C3：未显式确认则拒绝执行，返回预览
+        result = await empty_trash(db, older_than_days=older_than_days, dry_run=True)
+        return ApiResponse(
+            message=f"未确认，已拒绝执行（将影响 {result['permanently_deleted']} 行）。"
+            f"确认执行请传 dry_run=false&confirm=true。",
+            data=result,
+        )
     if older_than_days == 0:
         result = await permanently_delete_all_trash(db)
         return ApiResponse(message=f"已永久删除回收站中所有 {result['permanently_deleted']} 篇文献", data=result)

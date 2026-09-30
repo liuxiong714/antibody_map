@@ -4,9 +4,9 @@ log_audit 会同时：
   1. 写入 audit_log 表（async engine + asyncpg，worker 与 web 进程通用）
   2. 向 uvicorn.audit logger 输出一行结构化 stdout（留作运维旁路 / 排障兜底）
 
-两者**尽力而为**：DB 写入失败只打一条 .warning 不抛异常，调用方业务不受影响。
-
-调用签名保持兼容，无需改现有调用点（2026-09-17 改造：从纯 stdout 升级为 DB + stdout）。
+C4：DB 落库失败不再仅 warning——升级为 error + 指标计数 + **有界内存缓冲**，
+后续 log_audit 调用先补写欠账（顺带重试），瞬时故障自愈，审计断档可观测。
+调用方业务始终不受影响。
 """
 from __future__ import annotations
 
@@ -24,6 +24,11 @@ _logger = logging.getLogger("uvicorn.audit")
 # ---------------------------------------------------------------------------
 _async_engine = None
 _async_engine_lock = threading.Lock()
+
+# C4：落库失败暂存的内存缓冲（有界，超出丢最旧），供下次调用补写重试
+_PENDING_MAX = 500
+_pending_lock = threading.Lock()
+_pending: list[dict] = []
 
 
 def _get_async_engine():
@@ -46,23 +51,10 @@ def _get_async_engine():
         return _async_engine
 
 
-async def _async_write_audit(
-    action: str,
-    target: str | None,
-    user_id: str | None,
-    username: str | None,
-    result: str,
-    detail: str | None,
-    ip: str | None,
-    entity_type: str | None,
-    entity_id: str | None,
-    old_value: str | None,
-    new_value: str | None,
-) -> None:
+def _audit_insert_sql():
     from sqlalchemy import text
 
-    engine = _get_async_engine()
-    sql = text(
+    return text(
         """
         INSERT INTO audit_log
             (id, user_id, username, action, target, detail, client_ip,
@@ -71,6 +63,55 @@ async def _async_write_audit(
                 :entity_type, :entity_id, :old_value, :new_value, NOW())
         """
     )
+
+
+def _buffer_pending(entry: dict) -> None:
+    """将一条审计条目放入内存缓冲（有界，超出丢弃最旧）。"""
+    with _pending_lock:
+        _pending.append(entry)
+        if len(_pending) > _PENDING_MAX:
+            _pending.pop(0)
+
+
+def _pop_pending() -> list[dict]:
+    with _pending_lock:
+        entries = list(_pending)
+        _pending.clear()
+        return entries
+
+
+async def _flush_pending() -> None:
+    """尽力补写历史欠账（缓冲中的审计条目）。失败时重新入队，等待下次重试。"""
+    entries = _pop_pending()
+    if not entries:
+        return
+    engine = _get_async_engine()
+    sql = _audit_insert_sql()
+    try:
+        async with engine.begin() as conn:
+            for entry in entries:
+                await conn.execute(sql, entry)
+    except Exception:
+        # 补写失败：重新入队（有界，防无限增长）
+        for entry in entries:
+            _buffer_pending(entry)
+        raise
+
+
+async def _async_write_audit(
+    action: str,
+    target: str | None,
+    user_id: str | None,
+    username: str | None,
+    detail: str | None,
+    ip: str | None,
+    entity_type: str | None,
+    entity_id: str | None,
+    old_value: str | None,
+    new_value: str | None,
+) -> None:
+    engine = _get_async_engine()
+    sql = _audit_insert_sql()
     async with engine.begin() as conn:
         await conn.execute(
             sql,
@@ -158,24 +199,38 @@ def log_audit(
     else:
         _logger.info(f"[AUDIT] {msg}")
 
-    # --- DB 落库（asyncpg + 独立 engine，worker/web 进程通用；失败降级）---
+    # --- DB 落库（asyncpg + 独立 engine；失败 → error + 指标 + 缓冲待重试）---
+    entry = {
+        "user_id": user_id,
+        "username": username,
+        "action": action,
+        "target": target or None,
+        "detail": _fmt_detail(detail) or None,
+        "ip": ip,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "old_value": _fmt_snapshot(old_value),
+        "new_value": _fmt_snapshot(new_value),
+    }
     try:
         from app.tasks.async_runner import run_async
 
-        run_async(
-            _async_write_audit(
-                action=action,
-                target=target or None,
-                user_id=user_id,
-                username=username,
-                result=result,
-                detail=_fmt_detail(detail) or None,
-                ip=ip,
-                entity_type=entity_type,
-                entity_id=entity_id,
-                old_value=_fmt_snapshot(old_value),
-                new_value=_fmt_snapshot(new_value),
-            )
-        )
+        # C4：先补写历史欠账（失败不影响本条）
+        try:
+            run_async(_flush_pending())
+        except Exception as flush_e:
+            _logger.warning(f"[AUDIT] 缓冲补写失败（等待下次重试）: {type(flush_e).__name__}: {flush_e}")
+        run_async(_async_write_audit(**entry))
     except Exception as e:
-        _logger.warning(f"[AUDIT] DB 落库失败（已降级为仅 stdout）: {type(e).__name__}: {e}")
+        # C4：不再静默——错误级日志 + 指标计数 + 入内存缓冲，下次调用顺带重试补写
+        _buffer_pending(entry)
+        try:
+            from app.core.metrics import record_audit_log_drop
+
+            record_audit_log_drop()
+        except Exception:
+            pass
+        _logger.error(
+            f"[AUDIT] DB 落库失败，已缓冲待重试（缓冲 {len(_pending)} 条，超 {_PENDING_MAX} 条丢最旧）: "
+            f"{type(e).__name__}: {e}"
+        )

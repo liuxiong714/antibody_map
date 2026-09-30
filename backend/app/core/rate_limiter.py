@@ -3,10 +3,11 @@
 架构：
   - Redis 可用 → Redis 滑动窗口（多进程/分布式安全）。
   - Redis 不可用 → 降级为单进程内存实现（_SlidingWindowCounter）。
-  - IP 提取优先 X-Forwarded-For 首个 IP（nginx 透传链最左端），回退 request.client.host。
+  - IP 提取（C5）：仅当直连对端命中 TRUSTED_PROXIES（默认回环）时才采信
+    X-Forwarded-For 首值；否则一律使用 request.client.host，防伪造 XFF 绕过限流。
 
 Key 模式：
-  登录限流：ratelimit:login:{ip}     窗口 60s，max 5 次
+  登录限流：ratelimit:login:{ip}     窗口 60s，max LOGIN_RATE_LIMIT_MAX（默认 5）
   提取触发：ratelimit:extract:{ip}   窗口 60s，max 20 次（防刷 LLM token）
 """
 from __future__ import annotations
@@ -23,24 +24,29 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# IP 提取（X-Forwarded-For 感知）
+# IP 提取（C5：仅信任可信代理的 X-Forwarded-For）
 # ============================================================
 
 def _extract_client_ip(request: Request) -> str:
-    """从请求中抽取客户端 IP（支持 X-Forwarded-For 代理链）。
+    """从请求中抽取客户端 IP。
 
-    代理链（nginx → ... → backend）通常：
-      X-Forwarded-For: <client_ip>, <proxy1_ip>, <proxy2_ip>
-    最左侧是真实客户端 IP，右侧是中间代理。
+    C5 修复：此前无条件取 X-Forwarded-For 首值，客户端可伪造首值绕过限流。
+    现在仅当**直连对端**（request.client.host）命中 TRUSTED_PROXIES 时才采信
+    X-Forwarded-For（取首值 = 真实客户端）；否则回退 request.client.host，
+    避免任意客户端伪造成不同 IP 无限刷登录。
     """
-    xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        first = xff.split(",")[0].strip()
-        if first:
-            return first
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
+    from app.config import settings
+
+    peer = request.client.host if request.client else None
+    if peer:
+        trusted = set(getattr(settings, "TRUSTED_PROXIES", ["127.0.0.1", "::1"]))
+        if peer in trusted:
+            xff = request.headers.get("x-forwarded-for", "")
+            if xff:
+                first = xff.split(",")[0].strip()
+                if first:
+                    return first
+    return peer or "unknown"
 
 
 # ============================================================
@@ -134,14 +140,25 @@ class _LimitConfig:
     _mem_counter: _SlidingWindowCounter | None = None
 
 
-# 登录限流：每 IP 每分钟最多 20 次（开发环境 nginx 健康检查 + 浏览器重试可能触发）
+# 登录限流：每 IP 每分钟最多 LOGIN_RATE_LIMIT_MAX 次（C5：与文档口径对齐，默认 5；
+# 通过 .env 的 LOGIN_RATE_LIMIT_MAX 可调，开发环境 nginx 健康检查频繁时请上调）
+_login_max = 5
+_login_window = 60
+try:
+    from app.config import settings as _settings
+
+    _login_max = int(getattr(_settings, "LOGIN_RATE_LIMIT_MAX", 5))
+    _login_window = int(getattr(_settings, "LOGIN_RATE_LIMIT_WINDOW", 60))
+except Exception:
+    pass
+
 _login_cfg = _LimitConfig(
     name="login",
     key_prefix="login",
-    max_requests=20,
-    window_seconds=60,
-    message="登录请求过于频繁，请 1 分钟后再试",
-    _mem_counter=_SlidingWindowCounter(20, 60),
+    max_requests=_login_max,
+    window_seconds=_login_window,
+    message=f"登录请求过于频繁，请 {_login_window} 秒后再试",
+    _mem_counter=_SlidingWindowCounter(_login_max, _login_window),
 )
 
 # 提取触发限流：每 IP 每分钟最多 20 次（批量提取算 1 次请求，但会入队多个任务）

@@ -77,6 +77,29 @@ def delete_file(object_name: str) -> bool:
         return False
 
 
+def move_object(object_name: str, dest_name: str) -> bool:
+    """MinIO 内移动对象（复制到新名称 + 删除原对象；MinIO 无原生 rename）。
+
+    用于孤儿对象「回收」：先复制到回收前缀，确认后再删原对象，
+    失败时保持原对象不动（不删），避免数据丢失。
+    """
+    client = get_minio_client()
+    if client is None:
+        return False
+    try:
+        bucket = settings.MINIO_BUCKET_LITERATURE
+        client.copy_object(
+            bucket_name=bucket,
+            object_name=dest_name,
+            object_source=f"{bucket}/{object_name}",
+        )
+        client.remove_object(bucket, object_name)
+        return True
+    except S3Error as e:
+        logger.error(f"MinIO move failed: {object_name} -> {dest_name}: {e}")
+        return False
+
+
 def get_file_url(object_name: str, expires: int = 3600) -> str | None:
     client = get_minio_client()
     if client is None:

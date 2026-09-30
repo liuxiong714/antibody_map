@@ -27,6 +27,30 @@ def _is_safe_local_path(file_path: str) -> Path | None:
     return None
 
 
+def derive_minio_object_name(file_path: str | None) -> str | None:
+    """由文献 file_path 推导对应的 MinIO 对象名（C1）。
+
+    约定（C1 起）：本地文件名与 MinIO 对象名使用**同一 uuid**，
+    MinIO 对象名 = `literature/{本地文件名}`。因此永久删除时可依据
+    file_path 推导出 MinIO 对象名并一并删除，避免 MinIO 孤儿对象残留。
+
+    - 已是 `literature/...` 形式（历史数据）→ 原样返回；
+    - 本地 uuid 文件路径 → 返回 `literature/{basename}`；
+    - URL / 空值等无法推导 → 返回 None。
+    """
+    if not file_path:
+        return None
+    fp = str(file_path).replace("\\", "/")
+    if fp.startswith(("http://", "https://")):
+        return None
+    if fp.startswith("literature/"):
+        return fp
+    base = fp.rsplit("/", 1)[-1]
+    if not base:
+        return None
+    return f"literature/{base}"
+
+
 # ===== 查重辅助函数 =====
 
 def compute_pdf_hash(file_bytes: bytes) -> str:
@@ -218,22 +242,48 @@ TRASH_CLEANUP_INTERVAL: int = 86400  # 每天检查一次
 
 
 async def _trash_cleanup_loop():
-    """后台循环：每隔 TRASH_CLEANUP_INTERVAL 秒检查并永久删除回收站中超过 TRASH_RETENTION_DAYS 天的文献。"""
+    """后台循环：每隔 TRASH_CLEANUP_INTERVAL 秒检查回收站中超过 TRASH_RETENTION_DAYS 天的文献。
+
+    C3：默认不自动物理删除（尽力而为的数据安全）。
+    - TRASH_AUTO_CLEAN_ENABLED=True 时才会真正 empty_trash(硬删)；
+    - 否则仅以 dry_run 统计超期条目并记 warning，提示人工经
+      /literatures/trash/empty 显式确认后清理，避免超期误删不可恢复。
+    """
+    from app.config import settings
     from app.models.base import async_session
     from app.services.literature.crud import empty_trash
 
-    logger.info("[回收站] 后台自动清理任务已启动，每 %d 秒检查一次", TRASH_CLEANUP_INTERVAL)
+    auto_clean = bool(getattr(settings, "TRASH_AUTO_CLEAN_ENABLED", False))
+    logger.info(
+        "[回收站] 后台自动清理任务已启动，每 %d 秒检查一次；自动硬删=%s",
+        TRASH_CLEANUP_INTERVAL,
+        auto_clean,
+    )
     while True:
         try:
             async with async_session() as db:
-                result = await empty_trash(db, older_than_days=TRASH_RETENTION_DAYS)
-                if result["permanently_deleted"] > 0:
-                    logger.info(
-                        "[回收站] 自动清理: 永久删除 %d 篇超过 %d 天的文献，剩余 %d 篇",
-                        result["permanently_deleted"],
-                        TRASH_RETENTION_DAYS,
-                        result["remaining"],
-                    )
+                result = await empty_trash(
+                    db,
+                    older_than_days=TRASH_RETENTION_DAYS,
+                    dry_run=not auto_clean,
+                )
+                n = result["permanently_deleted"]
+                if n > 0:
+                    if auto_clean:
+                        logger.info(
+                            "[回收站] 自动清理: 永久删除 %d 篇超过 %d 天的文献，剩余 %d 篇",
+                            n,
+                            TRASH_RETENTION_DAYS,
+                            result["remaining"],
+                        )
+                    else:
+                        # C3：未开启自动硬删，仅 dry-run 报告
+                        logger.warning(
+                            "[回收站] 检测到 %d 篇超过 %d 天的文献待清理（自动硬删未开启，故仅报告）。"
+                            "请登录管理员经「清空回收站」接口显式确认后处理。",
+                            n,
+                            TRASH_RETENTION_DAYS,
+                        )
         except asyncio.CancelledError:
             raise
         except Exception as e:

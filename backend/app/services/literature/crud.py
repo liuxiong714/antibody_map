@@ -20,6 +20,7 @@ from app.services.literature._common import (
     TRASH_RETENTION_DAYS,
     _build_file_format_expr,
     _is_safe_local_path,
+    derive_minio_object_name,
     logger,
 )
 
@@ -582,7 +583,7 @@ async def permanently_delete_literature(db: AsyncSession, literature_id: uuid.UU
     if not literature or literature.deleted_at is None:
         return False
 
-    # 删除文件（MinIO 或本地）
+    # 删除文件（本地 + 对应 MinIO 对象；C1 起对象名与本地文件名同 uuid）
     if literature.file_path:
         local_path = _is_safe_local_path(literature.file_path)
         if local_path and local_path.exists():
@@ -591,9 +592,14 @@ async def permanently_delete_literature(db: AsyncSession, literature_id: uuid.UU
                 logger.info(f"Local file permanently deleted: {local_path}")
             except Exception as e:
                 logger.warning(f"Failed to delete local file: {e}")
-        elif not local_path:
-            logger.error(f"[安全] 文件路径越界，跳过删除: {literature.file_path}")
-            delete_file(literature.file_path)
+        elif local_path is None:
+            logger.error(f"[安全] 文件路径越界，跳过本地删除: {literature.file_path}")
+        minio_obj = derive_minio_object_name(literature.file_path)
+        if minio_obj:
+            if delete_file(minio_obj):
+                logger.info(f"MinIO object permanently deleted: {minio_obj}")
+            else:
+                logger.warning(f"MinIO object 删除失败（可能未上传或不可用）: {minio_obj}")
 
     # 清理知识图谱缓存文本（data/pdfs/{id}.txt），防止后台 KG 抽取任务
     # 扫描到已删除文献的缓存文件后，插入 kg_entity 时因外键约束失败。
@@ -614,9 +620,16 @@ async def permanently_delete_literature(db: AsyncSession, literature_id: uuid.UU
     return True
 
 
-async def empty_trash(db: AsyncSession, older_than_days: int = TRASH_RETENTION_DAYS) -> dict:
+async def empty_trash(
+    db: AsyncSession,
+    older_than_days: int = TRASH_RETENTION_DAYS,
+    dry_run: bool = False,
+) -> dict:
     """清空回收站中超过指定天数的文献（永久删除，含文件）。
-    返回 {"permanently_deleted": int, "remaining": int}。
+
+    C3：dry_run=True（默认由后台循环在未开启自动硬删时调用）仅统计将影响的条目，
+    不执行任何删除；返回 {"permanently_deleted": N, "remaining": N, "dry_run": bool}。
+    否则返回 {"permanently_deleted": int, "remaining": int}。
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
     query = select(Literature).where(
@@ -626,6 +639,12 @@ async def empty_trash(db: AsyncSession, older_than_days: int = TRASH_RETENTION_D
     result = await db.execute(query)
     items = list(result.scalars().all())
 
+    if dry_run:
+        remaining_query = select(func.count(Literature.id)).where(Literature.deleted_at.is_not(None))
+        remaining_result = await db.execute(remaining_query)
+        remaining = remaining_result.scalar() or 0
+        return {"permanently_deleted": len(items), "remaining": remaining, "dry_run": True}
+
     count = 0
     for lit in items:
         try:
@@ -633,10 +652,11 @@ async def empty_trash(db: AsyncSession, older_than_days: int = TRASH_RETENTION_D
                 local_path = _is_safe_local_path(lit.file_path)
                 if local_path and local_path.exists():
                     os.remove(local_path)
-                else:
-                    if local_path is None:
-                        logger.error(f"[安全] 文件路径越界，跳过删除: id={lit.id}, path={lit.file_path}")
-                    delete_file(lit.file_path)
+                elif local_path is None:
+                    logger.error(f"[安全] 文件路径越界，跳过本地删除: id={lit.id}, path={lit.file_path}")
+                minio_obj = derive_minio_object_name(lit.file_path)
+                if minio_obj:
+                    delete_file(minio_obj)
             # 清理知识图谱缓存文本与关联实体
             _cleanup_txt_cache(str(lit.id))
             try:
@@ -674,10 +694,11 @@ async def permanently_delete_all_trash(db: AsyncSession) -> dict:
                 local_path = _is_safe_local_path(lit.file_path)
                 if local_path and local_path.exists():
                     os.remove(local_path)
-                else:
-                    if local_path is None:
-                        logger.error(f"[安全] 文件路径越界，跳过删除: id={lit.id}, path={lit.file_path}")
-                    delete_file(lit.file_path)
+                elif local_path is None:
+                    logger.error(f"[安全] 文件路径越界，跳过本地删除: id={lit.id}, path={lit.file_path}")
+                minio_obj = derive_minio_object_name(lit.file_path)
+                if minio_obj:
+                    delete_file(minio_obj)
             await db.delete(lit)
             count += 1
         except Exception as e:

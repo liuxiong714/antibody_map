@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_admin
+from app.config import settings
 from app.models.user import User
 from app.schemas.common import ApiResponse
 from app.services.extraction_audit_service import (
@@ -97,9 +98,9 @@ async def preview_minio_orphan_cleanup(
     )
 
 
-@router.post("/literatures/cleanup-minio-orphan-files", response_model=ApiResponse, summary="清理 MinIO 孤儿对象", description="（管理员）清理 MINIO_BUCKET_LITERATURE 中已不在数据库的孤儿对象。默认 dry_run=true 仅预览不删除；显式传 dry_run=false 才物理删除（无回收站，删除不可恢复）。")
+@router.post("/literatures/cleanup-minio-orphan-files", response_model=ApiResponse, summary="清理 MinIO 孤儿对象", description="（管理员）回收 MINIO_BUCKET_LITERATURE 中已不在数据库的孤儿对象。默认 dry_run=true 仅预览；显式传 dry_run=false 才将孤儿对象移入回收前缀 trash/orphan/（保留 ORPHAN_TRASH_RETENTION_DAYS 天后物理清除），不再一步物理删除。")
 async def cleanup_minio_orphan_objects_endpoint(
-    dry_run: bool = Query(True, description="为 true 时仅预览（默认，不删除）；为 false 时执行物理删除"),
+    dry_run: bool = Query(True, description="为 true 时仅预览（默认，不移动）；为 false 时执行移入回收"),
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -110,14 +111,16 @@ async def cleanup_minio_orphan_objects_endpoint(
         raise HTTPException(status_code=500, detail=f"清理失败: {e}") from e
     if dry_run:
         message = (
-            f"预览完成（未删除）：共 {result['scanned']} 个对象，"
+            f"预览完成（未移动）：共 {result['scanned']} 个对象，"
             f"孤儿 {result['orphan_count']} 个，冷静期跳过 {len(result.get('cooldown_files', []))} 个，"
             f"引用保护 {len(result.get('protected_files', []))} 个"
         )
     else:
         message = (
-            f"清理完成：扫描 {result['scanned']} 个对象，孤儿 {result['orphan_count']} 个，"
-            f"物理删除 {result['deleted']} 个，失败 {result['failed']} 个"
+            f"回收完成：扫描 {result['scanned']} 个对象，孤儿 {result['orphan_count']} 个，"
+            f"移入回收 {result['quarantined']} 个，失败 {result['failed']} 个"
+            f"（回收前缀 {result.get('quarantine_prefix', 'trash/orphan')}，"
+            f"保留 {settings.ORPHAN_TRASH_RETENTION_DAYS} 天后自动清除）"
         )
     return ApiResponse(message=message, data=result)
 # ─────────────────────────────────────────────────────────────────────────────

@@ -339,6 +339,7 @@ def test_minio_referenced_object_never_deleted():
 
 # ─────────────────────────────────────────────────────────
 # 测试 11：真删仅删孤儿对象；id 前缀保护对象不删；再次扫描孤儿为 0
+# （C2：孤儿对象改为移入回收前缀 trash/orphan/，不再一步物理删除）
 # ─────────────────────────────────────────────────────────
 def test_minio_real_delete_and_rescan():
     print("\n" + "=" * 60)
@@ -350,7 +351,7 @@ def test_minio_real_delete_and_rescan():
     lit_id = "550e8400-e29b-41d4-a716-446655440000"
     db = AsyncMock()
 
-    # 模拟对象随删除而消失：list_objects 从剩余清单读取
+    # 模拟对象随回收而移动：list_objects 从剩余清单读取
     remaining: list[tuple[str, datetime]] = [
         ("orphan_x.pdf", _OLD_TS),
         (f"{lit_id}_v2.pdf", _OLD_TS),  # id 前缀保护，不应删除
@@ -364,11 +365,12 @@ def test_minio_real_delete_and_rescan():
     client = MagicMock()
     client.list_objects.side_effect = fake_list
 
-    def fake_delete(obj):
-        # 模拟删除生效：从剩余清单移除该对象（原地修改，无需 nonlocal）
+    def fake_move(obj, dest):
+        # 模拟回收生效：原对象移入回收前缀，从原位置消失
         for i, (name, _) in enumerate(remaining[:]):
             if name == obj:
                 remaining.pop(i)
+                remaining.append((dest, _OLD_TS))
                 break
         return True
 
@@ -376,26 +378,26 @@ def test_minio_real_delete_and_rescan():
         svc, "collect_referenced", AsyncMock(return_value=({f"{lit_id}.pdf"}, {lit_id}))
     ), patch.object(svc, "get_minio_client", MagicMock(return_value=client)), patch.object(
         svc, "record_orphan_scan", MagicMock()
-    ), patch.object(svc, "delete_file", MagicMock(side_effect=fake_delete)) as df, patch.object(
+    ), patch.object(svc, "move_object", MagicMock(side_effect=fake_move)) as mo, patch.object(
         svc, "log_audit", AsyncMock()
     ):
         result = asyncio.run(svc.delete_minio_orphan_objects(db, dry_run=False))
         scan_after = asyncio.run(svc.scan_minio_orphans(db))
 
-    called_objects = [c.args[0] for c in df.call_args_list] if df.call_args_list else []
+    called_objects = [c.args[0] for c in mo.call_args_list] if mo.call_args_list else []
     if (
-        result["deleted"] == 1
+        result["quarantined"] == 1
         and called_objects == ["orphan_x.pdf"]
         and f"{lit_id}_v2.pdf" in scan_after["protected"]
         and scan_after["orphan"] == []
     ):
         _ok(
-            "仅删孤儿对象、保护对象保留、再次扫描孤儿为 0",
-            f"deleted={result['deleted']}, called={called_objects}, scan_after_orphan={scan_after['orphan']}",
+            "仅回收孤儿对象、保护对象保留、再次扫描孤儿为 0",
+            f"quarantined={result['quarantined']}, called={called_objects}, scan_after_orphan={scan_after['orphan']}",
         )
     else:
         _fail(
-            "真删行为不符合预期",
+            "回收行为不符合预期",
             f"result={result}, called={called_objects}, scan_after={scan_after}",
         )
 

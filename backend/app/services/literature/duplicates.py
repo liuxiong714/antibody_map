@@ -15,6 +15,7 @@ from app.services.literature._common import (
     _first_author_surname,
     _is_dp_conflict,
     _title_similarity,
+    derive_minio_object_name,
     logger,
     normalize_title,
 )
@@ -392,7 +393,7 @@ async def merge_literatures(
     source.deleted_at = datetime.now(timezone.utc)
     await db.commit()
 
-    # 删除源文件（仅当与 target 文件不同时）
+    # 删除源文件（仅当与 target 文件不同时）；本地 + 对应 MinIO 对象一并清理（C1）
     if source_file_to_delete and source_file_to_delete != target.file_path:
         p = Path(source_file_to_delete)
         if p.exists():
@@ -400,8 +401,9 @@ async def merge_literatures(
                 os.remove(p)
             except Exception as e:
                 logger.warning(f"删除源文件失败: {e}")
-        else:
-            delete_file(source_file_to_delete)
+        minio_obj = derive_minio_object_name(source_file_to_delete)
+        if minio_obj:
+            delete_file(minio_obj)
 
     await db.refresh(target)
     return {

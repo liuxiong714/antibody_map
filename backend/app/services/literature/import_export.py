@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.document_parser import get_mime_type
-from app.core.minio_client import upload_file
+from app.core.minio_client import delete_file, upload_file
 from app.core.timeutil import iso_ts
 from app.models.data_point import DataPoint
 from app.models.literature import Literature
@@ -25,6 +25,7 @@ from app.services.literature._common import (
     _clean_filename_title,
     _find_existing_by_title,
     compute_pdf_hash,
+    derive_minio_object_name,
     logger,
 )
 from app.services.literature.crud import (
@@ -71,7 +72,10 @@ async def upload_literature(
 
     # 2. 始终保存到本地文件系统（确保提取时能找到文件）
     LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    local_filename = f"{uuid.uuid4()}.{ext}"
+    # C1：本地文件名与 MinIO 对象名使用同一 uuid（literature/{uuid}.{ext}），
+    # 保证永久删除时可依据 file_path 推导并删除对应 MinIO 对象，不留孤儿。
+    file_uuid = uuid.uuid4()
+    local_filename = f"{file_uuid}.{ext}"
     local_path = LOCAL_STORAGE_DIR / local_filename
     try:
         with open(local_path, "wb") as f:
@@ -82,7 +86,7 @@ async def upload_literature(
         return None
 
     # 3. 尝试上传到 MinIO（仅用于分布式/备份场景，失败不阻塞）
-    object_name = f"literature/{uuid.uuid4()}.{ext}"
+    object_name = f"literature/{local_filename}"
     minio_path = upload_file(file_bytes, object_name, content_type=get_mime_type(ext))
     if minio_path is None:
         logger.warning(f"[upload_literature] MinIO 不可用，仅保存本地副本: filename={filename}")
@@ -137,7 +141,9 @@ async def _save_and_associate(
     """保存文件并关联到已有文献（仅替换文件，不新建记录）。"""
     # 保存文件
     LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    local_filename = f"{uuid.uuid4()}.{ext}"
+    # C1：本地文件名与 MinIO 对象名使用同一 uuid
+    file_uuid = uuid.uuid4()
+    local_filename = f"{file_uuid}.{ext}"
     local_path = LOCAL_STORAGE_DIR / local_filename
     try:
         with open(local_path, "wb") as f:
@@ -148,7 +154,7 @@ async def _save_and_associate(
         return literature
 
     # 尝试上传 MinIO
-    object_name = f"literature/{uuid.uuid4()}.{ext}"
+    object_name = f"literature/{local_filename}"
     minio_path = upload_file(file_bytes, object_name, content_type=get_mime_type(ext))
     if minio_path is None:
         logger.warning(f"[upload_literature] 关联文件 MinIO 不可用，仅保存本地副本: filename={filename}")
@@ -199,7 +205,9 @@ async def upload_literature_file(
 
     # 1. 保存到本地文件系统
     LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    local_filename = f"{uuid.uuid4()}.{ext}"
+    # C1：本地文件名与 MinIO 对象名使用同一 uuid
+    file_uuid = uuid.uuid4()
+    local_filename = f"{file_uuid}.{ext}"
     local_path = LOCAL_STORAGE_DIR / local_filename
     try:
         with open(local_path, "wb") as f:
@@ -210,7 +218,7 @@ async def upload_literature_file(
         return None
 
     # 2. 尝试上传到 MinIO
-    object_name = f"literature/{uuid.uuid4()}.{ext}"
+    object_name = f"literature/{local_filename}"
     minio_path = upload_file(file_bytes, object_name, content_type=get_mime_type(ext))
     if minio_path is None:
         logger.warning(f"[upload_literature_file] MinIO 不可用，仅保存本地副本: filename={filename}")
@@ -220,7 +228,7 @@ async def upload_literature_file(
     stored_path = str(local_path)
     pdf_hash = compute_pdf_hash(file_bytes)
 
-    # 3. 删除旧文件（如果存在）
+    # 3. 删除旧文件（如果存在）——本地 + 对应 MinIO 对象一并清理（C1）
     if literature.file_path:
         old_path = Path(literature.file_path)
         if old_path.exists():
@@ -229,6 +237,9 @@ async def upload_literature_file(
                 logger.info(f"[upload_literature_file] 已删除旧文件: {old_path}")
             except Exception as e:
                 logger.warning(f"[upload_literature_file] 删除旧文件失败: {old_path}, {e}")
+        old_minio_obj = derive_minio_object_name(literature.file_path)
+        if old_minio_obj:
+            delete_file(old_minio_obj)
 
     # 4. 更新文献记录
     literature.file_path = stored_path

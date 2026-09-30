@@ -1,13 +1,16 @@
 """API Key 加密存储工具
 
 使用 Fernet 对称加密（AES-128-CBC + HMAC-SHA256）保护敏感凭证。
-密钥从 settings.SECRET_KEY 派生，未配置时使用 RuntimeError 拒绝启动。
+密钥从 settings 派生：**C7 起与 JWT 的 SECRET_KEY 分离**，优先使用独立
+CRYPTO_KEY（未配置时回退 SECRET_KEY，保证存量部署零配置迁移）。
+两者均未配置时使用 RuntimeError 拒绝启动。
 
 密钥派生版本：
-- V1：sha256(secret).digest() → base64  （存量密文，兼容读取）
-- V2：HKDF-SHA256(salt="antibody-map-apikey-v2", info="fernet", length=32).base64 （新写入）
+- V1：sha256(SECRET_KEY).digest() → base64  （历史密文，兼容读取）
+- V2(新)：HKDF-SHA256(CRYPTO_KEY 或 SECRET_KEY)  （C7 之后新写入）
+- V2(旧)：HKDF-SHA256(SECRET_KEY)  （C7 之前存量密文，仅在 CRYPTO_KEY 单独配置时存在）
 
-解密先试 V2，InvalidToken 再试 V1，**两次都失败则 raise ValueError**
+解密链：V2(新) → V2(旧) → V1，**全部 InvalidToken 则 raise ValueError**
 （绝不返回密文原值给调用方——避免密文被误发为 API Key 的安全事故）。
 """
 from __future__ import annotations
@@ -49,39 +52,65 @@ def _derive_key_v2(secret: str) -> bytes:
     return base64.urlsafe_b64encode(kdf.derive(secret.encode("utf-8")))
 
 
-def _build_fernet_pair(secret: str) -> tuple[Fernet, Fernet]:
-    """同时构建 v2 (primary, 新写入) + v1 (fallback, 兼容存量) Fernet"""
-    if not secret:
+def _crypto_secret() -> str:
+    """C7：加密密钥来源——优先独立 CRYPTO_KEY，未配置回退 SECRET_KEY。
+
+    存量部署未配置 CRYPTO_KEY 时，此函数返回 SECRET_KEY，行为与 C7 前完全一致
+    （新写入密钥不变、解密链仍由 SECRET_KEY 派生），实现零配置向后兼容。
+    """
+    return settings.CRYPTO_KEY or settings.SECRET_KEY
+
+
+def _build_fernet_trio(primary_secret: str, legacy_secret: str) -> tuple[Fernet, Fernet | None, Fernet]:
+    """构建三级解密链 Fernet 实例：
+
+    - primary：由 primary_secret（CRYPTO_KEY 或 SECRET_KEY）HKDF-V2 派生，新写入用
+    - legacy_v2：由 legacy_secret（SECRET_KEY）HKDF-V2 派生，兼容 C7 前存量密文；
+      与 primary_secret 相同时（未单独配置 CRYPTO_KEY）返回 None 避免重复尝试
+    - v1：sha256(legacy_secret) 派生，历史密文兜底
+
+    任一 secret 为空时 raise RuntimeError，拒绝静默使用弱密钥启动。
+    """
+    if not primary_secret or not legacy_secret:
         raise RuntimeError(
-            "SECRET_KEY 未配置，无法派生加密密钥。"
-            "请确保 .env 中 SECRET_KEY 已配置且长度 >= 32。"
+            "SECRET_KEY/CRYPTO_KEY 均未配置，无法派生加密密钥。"
+            "请确保 .env 中 SECRET_KEY 已配置且长度 >= 32（建议同时单独配置 CRYPTO_KEY）。"
         )
-    return Fernet(_derive_key_v2(secret)), Fernet(_derive_key_v1(secret))
+    primary = Fernet(_derive_key_v2(primary_secret))
+    legacy_v2 = None
+    if legacy_secret != primary_secret:
+        legacy_v2 = Fernet(_derive_key_v2(legacy_secret))
+    v1 = Fernet(_derive_key_v1(legacy_secret))
+    return primary, legacy_v2, v1
 
 
-# 模块级单例：v2 主实例 + v1 兼容实例
+# 模块级单例：新 v2 主实例 + 旧 v2 兼容实例 + v1 历史实例
 try:
-    _fernet_v2, _fernet_v1 = _build_fernet_pair(settings.SECRET_KEY)
+    _fernet_primary, _fernet_legacy_v2, _fernet_v1 = _build_fernet_trio(
+        _crypto_secret(), settings.SECRET_KEY
+    )
 except RuntimeError:
-    # SECRET_KEY 缺失时延迟初始化（待首次调用 encrypt/decrypt 时再抛）
-    _fernet_v2 = _fernet_v1 = None
+    # 密钥缺失时延迟初始化（待首次调用 encrypt/decrypt 时再抛）
+    _fernet_primary = _fernet_legacy_v2 = _fernet_v1 = None
 
 
 def encrypt(plaintext: str) -> str:
-    """加密明文（使用 V2 HKDF 派生的密钥），返回 Fernet 密文字符串"""
+    """加密明文（使用新密钥 HKDF-V2 派生，C7 起为 CRYPTO_KEY 派生），返回 Fernet 密文字符串"""
     if not plaintext:
         return ""
-    if _fernet_v2 is None:
+    if _fernet_primary is None:
         _init_lazy()
-    token = _fernet_v2.encrypt(plaintext.encode("utf-8"))
+    token = _fernet_primary.encrypt(plaintext.encode("utf-8"))
     return token.decode("utf-8")
 
 
 def _init_lazy() -> None:
-    """SECRET_KEY 缺失时延迟初始化（避免模块导入即 RuntimeError）"""
-    global _fernet_v2, _fernet_v1
-    if _fernet_v2 is None:
-        _fernet_v2, _fernet_v1 = _build_fernet_pair(settings.SECRET_KEY)
+    """密钥缺失时延迟初始化（避免模块导入即 RuntimeError）"""
+    global _fernet_primary, _fernet_legacy_v2, _fernet_v1
+    if _fernet_primary is None:
+        _fernet_primary, _fernet_legacy_v2, _fernet_v1 = _build_fernet_trio(
+            _crypto_secret(), settings.SECRET_KEY
+        )
 
 
 def decrypt(ciphertext: str) -> str:
@@ -89,31 +118,39 @@ def decrypt(ciphertext: str) -> str:
 
     安全约定：
     - 若非密文格式（历史明文、None、空）→ 直接返回原值（迁移平滑）
-    - 是密文格式：先试 V2 密钥解密 → InvalidToken 再试 V1 密钥 →
-      **两次都失败 raise ValueError("API_KEY_DECRYPT_FAILED")**
+    - 是密文格式：依次尝试 新V2(CRYPTO_KEY) → 旧V2(SECRET_KEY) → V1(sha256) →
+      **全部失败 raise ValueError("API_KEY_DECRYPT_FAILED")**
       ——不再返回密文原值给调用方（避免密文被当作 API Key 外发）
     """
     if not ciphertext:
         return ""
     # 已是密文格式才尝试解密
     if ciphertext.startswith(_FERNET_TOKEN_PREFIX):
-        if _fernet_v2 is None:
+        if _fernet_primary is None:
             _init_lazy()
         enc = ciphertext.encode("utf-8")
-        # V2 优先（新密文）
+        # 新 V2 优先（CRYPTO_KEY 派生的新密文）
         try:
-            return _fernet_v2.decrypt(enc).decode("utf-8")
+            return _fernet_primary.decrypt(enc).decode("utf-8")
         except InvalidToken:
             pass
-        # V1 回退（存量密文）
+        # 旧 V2 回退（C7 前 SECRET_KEY 派生的存量密文）
+        if _fernet_legacy_v2 is not None:
+            try:
+                plain = _fernet_legacy_v2.decrypt(enc).decode("utf-8")
+                logger.info("API Key 用旧 V2(SECRET_KEY) 密钥成功解密，下次保存将升级到新密钥")
+                return plain
+            except InvalidToken:
+                pass
+        # V1 回退（历史密文）
         try:
             plain = _fernet_v1.decrypt(enc).decode("utf-8")
             logger.info("API Key 用 V1(sha256) 密钥成功解密，下次保存将自动升级到 V2")
             return plain
         except InvalidToken:
             logger.error(
-                "API Key 解密失败（V2+V1 均 InvalidToken），"
-                "可能 SECRET_KEY 已变更或密文损坏。"
+                "API Key 解密失败（新V2+旧V2+V1 均 InvalidToken），"
+                "可能 CRYPTO_KEY/SECRET_KEY 已变更或密文损坏。"
             )
             raise ValueError("API_KEY_DECRYPT_FAILED") from None
     # 历史明文直接返回

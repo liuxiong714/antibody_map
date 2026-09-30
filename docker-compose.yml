@@ -103,6 +103,14 @@ services:
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
       # 提取状态"卡死"回收阈值：processing/queued 且超时未更新心跳则回收为 failed
       EXTRACTION_STALE_MINUTES: 180
+      # C6/C5：代理信任收紧——不再信任任意来源的 X-Forwarded-For。
+      # 默认仅回环；若经 nginx（frontend 容器）代理访问 backend，请先把 nginx
+      # 容器 IP 固定（在 networks.antibody-net.ipam 下配静态 IP），再分别配入：
+      #   FORWARDED_ALLOW_IPS: "<nginx_ip>"
+      #   TRUSTED_PROXIES: '["<nginx_ip>"]'
+      # 否则 uvicorn/限流将以 nginx 容器 IP 作为客户端 IP（安全但粒度更粗）。
+      FORWARDED_ALLOW_IPS: "127.0.0.1,::1"
+      TRUSTED_PROXIES: '["127.0.0.1","::1"]'
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
       interval: 15s
@@ -114,6 +122,9 @@ services:
       - "host.docker.internal:172.25.176.1"
     # 最小权限加固：丢弃全部 Linux 能力、根文件系统只读（可写数据全走 volume），
     # 临时写目录挂到 tmpfs，降低容器被入侵后对宿主的影响面
+    # C6：镜像默认以非 root 用户 app 运行（Dockerfile USER app）；
+    # 若宿主机 bind mount（./backend/data 等）权限导致写入失败，
+    # 可在此加 `user: "0:0"` 覆盖（牺牲最小权限换取兼容）。
     cap_drop:
       - ALL
     read_only: true
@@ -184,7 +195,8 @@ services:
       - ./backend/data:/app/backend/data
       - ./backend/logs:/app/backend/logs
       # MinerU 模型缓存持久化：挂载到宿主机，容器重建后无需重新下载模型（约 2.2G）
-      - ./backend/data/mineru_cache:/root/.cache/modelscope
+      # C6：镜像 USER app 后 HOME=/home/app，modelscope 缓存落在其下
+      - ./backend/data/mineru_cache:/home/app/.cache/modelscope
       # 文件夹监控目录（宿主机路径在 .env 中 MONITORED_REF_HOST_PATH 配置）
       - ${MONITORED_REF_HOST_PATH:-/mnt/e/01-liuxiong/antibody_map_ref/ref}:/app/monitor/ref
     # 内存上限 8g：MinerU + torch 推理 + 2 并发 Celery worker 峰值内存可达数 GB

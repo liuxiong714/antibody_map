@@ -113,8 +113,22 @@ WORKDIR /app/backend
 RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
+# C6：以非 root 运行。创建普通用户 app，并将运行期可写目录（数据/日志/备份）
+# 归其所有；Home 指向 /home/app（MinerU/modelscope 缓存默认落在 $HOME/.cache）。
+# 若宿主机 bind mount 权限导致写入失败，可在 docker-compose.yml 中以
+# `user: "0:0"` 覆盖（见 docker-compose.yml backend 服务注释）。
+RUN groupadd -r app && useradd -r -g app -d /home/app -m app \
+    && mkdir -p /app/backend/data /app/backend/logs /app/backend/backups \
+    && chown -R app:app /app/backend/data /app/backend/logs /app/backend/backups /home/app
+ENV HOME=/home/app
+
 # 暴露端口
 EXPOSE 8000
 
 # 启动服务（lifespan 启动时自动执行 Alembic 迁移）
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# C6：--forwarded-allow-ips 不再使用 "*"（避免任意来源伪造 X-Forwarded-For），
+# 默认仅信任回环；经 nginx 代理部署时，在 compose 中把 nginx 容器 IP 配入
+# FORWARDED_ALLOW_IPS（与 C5 的 TRUSTED_PROXIES 保持一致）。
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1,::1}\""]
+
+USER app

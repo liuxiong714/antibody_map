@@ -96,6 +96,11 @@ def _init_metrics() -> dict:
             "Number of literatures by extraction status.",
             ["status"],
         ),
+        # C4：审计日志落库失败计数（落库降级可观测）
+        "audit_log_dropped_total": Counter(
+            "audit_log_dropped_total",
+            "Total number of audit log entries that failed to persist to DB.",
+        ),
     }
     _METRICS.update(metrics)
     return _METRICS
@@ -145,6 +150,14 @@ def record_llm_cost(model: str, cost_usd: float) -> None:
     if m is not None:
         with contextlib.suppress(Exception):
             m.labels(model=model).inc(cost_usd)
+
+
+def record_audit_log_drop() -> None:
+    """记录一次审计日志 DB 落库失败（C4 可观测性）。"""
+    m = _metric("audit_log_dropped_total")
+    if m is not None:
+        with contextlib.suppress(Exception):
+            m.inc()
 
 
 def record_llm_completion(model: str, status: str, usage_summary: dict | None = None) -> None:

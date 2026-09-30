@@ -21,7 +21,7 @@ import logging
 import re
 import shutil
 import time
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select
@@ -30,12 +30,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.audit import log_audit
 from app.core.metrics import record_orphan_scan
-from app.core.minio_client import delete_file, get_minio_client
+from app.core.minio_client import delete_file, get_minio_client, move_object
 from app.models.base import async_session
 from app.models.literature import Literature
 from app.services.literature_service import LOCAL_STORAGE_DIR
 
 logger = logging.getLogger("uvicorn")
+
+# MinIO 孤儿对象回收前缀（C2：孤儿对象不再物理删除，先移入该前缀保留
+# ORPHAN_TRASH_RETENTION_DAYS 天后由 purge_minio_trash 物理清除，可恢复）
+MINIO_TRASH_PREFIX = "trash/orphan"
 
 # 提取文本文件命名模式：{literature_id}.txt
 _TXT_PATTERN = re.compile(
@@ -224,6 +228,9 @@ async def scan_minio_orphans(db: AsyncSession) -> dict:
             object_name = obj.object_name
             if not object_name:
                 continue
+            # C2：回收前缀内的对象视为「已回收待清理」，不再参与孤儿扫描
+            if str(object_name).startswith(MINIO_TRASH_PREFIX + "/"):
+                continue
             base = str(object_name).replace("\\", "/").split("/")[-1]
             # 冷静期：近期上传/修改的对象一律跳过
             ts = _minio_last_modified_ts(obj)
@@ -259,10 +266,12 @@ async def scan_minio_orphans(db: AsyncSession) -> dict:
 
 
 async def delete_minio_orphan_objects(db: AsyncSession, dry_run: bool = False, operator: str = "system") -> dict:
-    """清理 MinIO 孤儿对象（dry_run=True 仅报告不删除）。
+    """回收 MinIO 孤儿对象（dry_run=True 仅报告不操作）。
 
-    只删除 scan_minio_orphans 判定为孤儿、且 MinIO 可用时的对象；真删前审计留痕。
-    注意：MinIO 无回收站概念，删除为物理删除，故默认 dry_run 先行（ORPHAN_AUTO_MOVE 门控）。
+    C2：MinIO 无原生回收站，故将孤儿对象**移动**到回收前缀
+    `trash/orphan/{YYYYMMDD}/{basename}`（copy + remove），保留
+    ORPHAN_TRASH_RETENTION_DAYS 天，由 purge_minio_trash 到期后物理清除——
+    不再一步物理删除，误判时可恢复。真操作前审计留痕。
     """
     scan = await scan_minio_orphans(db)
     orphan_objects = scan["orphan"]
@@ -290,7 +299,7 @@ async def delete_minio_orphan_objects(db: AsyncSession, dry_run: bool = False, o
             "dry_run": True,
         }
 
-    # 删除前审计留痕（失败不影响主流程）
+    # 操作前审计留痕（失败不影响主流程）
     try:
         log_audit(
             "cleanup_minio_orphan_objects",
@@ -300,31 +309,67 @@ async def delete_minio_orphan_objects(db: AsyncSession, dry_run: bool = False, o
                 "scanned": scanned,
                 "orphan_count": len(orphan_objects),
                 "orphan_files": orphan_objects,
+                "action": f"move_to_{MINIO_TRASH_PREFIX}",
             },
         )
     except Exception as e:
         logger.error(f"MinIO 孤儿对象清理审计日志写入失败: {e}")
 
-    deleted = 0
+    quarantine_prefix = f"{MINIO_TRASH_PREFIX}/{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+    moved = 0
     failed = 0
     for object_name in orphan_objects:
-        if delete_file(object_name):
-            deleted += 1
+        base = str(object_name).replace("\\", "/").rsplit("/", 1)[-1]
+        dest_name = f"{quarantine_prefix}/{base}"
+        if move_object(object_name, dest_name):
+            moved += 1
         else:
             failed += 1
-            logger.warning(f"MinIO 孤儿对象删除失败: {object_name}")
+            logger.warning(f"MinIO 孤儿对象移入回收失败（对象保留原处）: {object_name}")
 
     logger.info(
-        f"MinIO 孤儿对象清理完成: 扫描 {scanned}，孤儿 {len(orphan_objects)}，删除 {deleted}，失败 {failed}"
+        f"MinIO 孤儿对象回收完成: 扫描 {scanned}，孤儿 {len(orphan_objects)}，"
+        f"移入回收 {moved}，失败 {failed}（回收前缀 {MINIO_TRASH_PREFIX}）"
     )
     return {
         "scanned": scanned,
         "orphan_count": len(orphan_objects),
-        "deleted": deleted,
+        "quarantined": moved,
+        "deleted": moved,  # 兼容旧响应字段（语义=已从原位置移走）
         "failed": failed,
         "cooldown_files": scan["cooldown"],
         "protected_files": scan["protected"],
+        "quarantine_prefix": MINIO_TRASH_PREFIX,
     }
+
+
+def purge_minio_trash(retention_days: int | None = None) -> dict:
+    """物理清除回收前缀中超过保留天数的 MinIO 对象（C2 回收站到期清理）。
+
+    MinIO 不可用/异常时安全降级：返回 errors，不做任何删除。
+    """
+    retention_days = retention_days or int(getattr(settings, "ORPHAN_TRASH_RETENTION_DAYS", 30))
+    client = get_minio_client()
+    if client is None:
+        return {"purged": 0, "errors": 0, "available": False}
+    try:
+        bucket = settings.MINIO_BUCKET_LITERATURE
+        cutoff = time.time() - retention_days * 86400
+        purged = 0
+        errors = 0
+        for obj in client.list_objects(bucket, prefix=MINIO_TRASH_PREFIX, recursive=True):
+            if not obj.object_name:
+                continue
+            ts = _minio_last_modified_ts(obj)
+            if ts is not None and ts < cutoff:
+                if delete_file(obj.object_name):
+                    purged += 1
+                else:
+                    errors += 1
+        return {"purged": purged, "errors": errors, "available": True}
+    except Exception as e:
+        logger.error(f"MinIO 回收对象清理失败（安全降级，不删除）: {e}", exc_info=True)
+        return {"purged": 0, "errors": 0, "available": False}
 
 
 def purge_trash(retention_days: int | None = None) -> dict:
@@ -446,8 +491,11 @@ async def _cleanup_loop():
             async with async_session() as db:
                 local_result = await cleanup_orphan_files(db, dry_run=not auto_move, operator="system")
                 minio_result = await delete_minio_orphan_objects(db, dry_run=not auto_move, operator="system")
+                # C2：回收站到期清理（本地回收目录 + MinIO 回收前缀）
+                minio_purged = purge_minio_trash()
                 logger.info(
-                    f"后台孤儿清理完成(dry_run={not auto_move}): 本地={local_result} MinIO={minio_result}"
+                    f"后台孤儿清理完成(dry_run={not auto_move}): 本地={local_result} "
+                    f"MinIO={minio_result} MinIO回收清理={minio_purged}"
                 )
         except asyncio.CancelledError:
             logger.info("孤儿文件清理后台任务已停止")
