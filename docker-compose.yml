@@ -111,7 +111,7 @@ services:
       start_period: 20s
     restart: unless-stopped
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:172.25.176.1"
     # 最小权限加固：丢弃全部 Linux 能力、根文件系统只读（可写数据全走 volume），
     # 临时写目录挂到 tmpfs，降低容器被入侵后对宿主的影响面
     cap_drop:
@@ -165,7 +165,7 @@ services:
       EXTRACTION_STALE_MINUTES: 180
     restart: unless-stopped
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:172.25.176.1"
     # 最小权限加固（同 backend）
     cap_drop:
       - ALL

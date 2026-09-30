@@ -1690,6 +1690,15 @@ def process_literature(
                     else 0.0
                 )
                 try:
+                    # P1-B1: 失败分支也捕获已消耗 token —— 即便失败也要记成本，
+                    # 避免失败任务的真实 LLM 开销从统计里消失。extractor 可能在错误
+                    # 发生前就已创建并消耗 token（如 extract_with_retry 内部多次调用）。
+                    _fail_usage = {}
+                    try:
+                        if extractor is not None:
+                            _fail_usage = extractor.get_usage_summary() or {}
+                    except Exception:
+                        _fail_usage = {}
                     history = ExtractionHistory(
                         literature_id=lit_id,
                         model=lit_model,
@@ -1697,6 +1706,10 @@ def process_literature(
                         data_point_count=0,
                         error_message=f"[{err_type}] {err['message'][:2000]}",
                         duration_seconds=_fail_elapsed,
+                        prompt_tokens=_fail_usage.get("total_prompt_tokens", 0),
+                        completion_tokens=_fail_usage.get("total_completion_tokens", 0),
+                        total_tokens=_fail_usage.get("total_tokens", 0),
+                        llm_usage_detail=_fail_usage.get("models") or _fail_usage,
                     )
                     db.add(history)
                 except Exception as he:
