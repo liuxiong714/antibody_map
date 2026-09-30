@@ -67,6 +67,59 @@ def _run_migrations():
     logger.info("Database migrations applied successfully")
 
 
+def _check_migration_drift() -> None:
+    """Batch 0 安全门：断言 alembic current == heads。
+
+    2026-09-30 Session 暴露过 env.py create_all + mergepoint 幂等 DDL
+    隐式跳过版本号写入，导致 alembic_version 表滞后。若发现漂移则：
+      1. 尝试 alembic upgrade heads 修复
+      2. 修复失败则 raise RuntimeError 阻止启动
+    （详细说明见 tests/test_migration_drift.py）
+    """
+    backend_dir = Path(__file__).resolve().parent.parent
+
+    def _parse(cmd: list[str]) -> set[str]:
+        r = subprocess.run(
+            [sys.executable, "-m", "alembic", *cmd],
+            cwd=str(backend_dir), capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return set()
+        out = set()
+        for line in r.stdout.strip().splitlines():
+            line = line.strip()
+            if not line or line.startswith("INFO"):
+                continue
+            rev = line.split()[0]
+            if rev.isidentifier():
+                out.add(rev)
+        return out
+
+    heads = _parse(["heads"])
+    currents = _parse(["current"])
+
+    if heads != currents:
+        missing = heads - currents
+        logger.warning(
+            f"[migration-drift] current={sorted(currents)} != heads={sorted(heads)}, "
+            f"missing={sorted(missing)}. 尝试 upgrade heads 修复..."
+        )
+        # 再跑一次 upgrade（之前 env.py 里 create_all + upgrade 在同一连接，幂等 DDL 跳过导致
+        # 版本号没写入；独立子进程再跑一次让 alembic 正确记录版本号）
+        r = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "heads"],
+            cwd=str(backend_dir), capture_output=True, text=True, timeout=60,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"[migration-drift] 修复失败: {r.stderr.strip()[-500:]}\n"
+                f"手动修复: alembic stamp {list(heads)[0]}"
+            )
+        logger.info("[migration-drift] 已修复 ✓")
+    else:
+        logger.info(f"[migration-drift] OK — current == heads == {sorted(heads)}")
+
+
 async def _ensure_tables():
     """兜底建表：以 SQLAlchemy 模型为准补齐缺失的表。
 
@@ -126,6 +179,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Database migration failed: {e}")
         raise
+
+    # Batch 0 额外安全门：检查 migration drift（current != heads）
+    # 2026-09-30 Session 暴露过 env.py create_all + mergepoint 跳过版本号写入导致漂移
+    await asyncio.to_thread(_check_migration_drift)
 
     # create_all 兜底（日志告警即可，env.py 已经兜底过一次）
     # 留一个轻量调用以防 env.py 导入不全（双保险，幂等）

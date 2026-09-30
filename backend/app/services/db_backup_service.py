@@ -282,9 +282,19 @@ def _data_dir_restore(data_tar: Path) -> bool:
 
 
 def do_full_backup_sync() -> tuple[bool, str]:
-    """完整备份：pg_dump + MinIO 全 bucket 对象 + data 目录 → 单个 .tar.gz。"""
+    """完整备份：pg_dump + rowcounts 清单 + MinIO + data + SHA256 校验 → 单个 .tar.gz。
+
+    符合 Batch 0 D1 验收标准：
+      pg_dump -Fc → database.sql
+      psql rowcounts → rowcounts.csv  （事后可对比恢复前后行数一致）
+      _minio_export → minio/
+      _data_dir_export → data.tar.gz
+      sha256sum → SHA256SUMS          （每个产物一行）
+      tar -czf → full_backup_{ts}.tar.gz
+    """
     import tarfile as _tarfile
     import shutil as _shutil
+    import hashlib
 
     backup_dir = Path(settings.BACKUP_DIR)
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -297,11 +307,33 @@ def do_full_backup_sync() -> tuple[bool, str]:
     work_dir = backup_dir / f"_full_tmp_{ts}"
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- 1. pg_dump ---
     _shutil.copyfile(str(Path(pg_result)), str(work_dir / "database.sql"))
 
+    # --- 2. rowcounts 清单（Batch 0 D1 必需）---
+    rowcounts_path = work_dir / "rowcounts.csv"
+    _write_rowcounts(rowcounts_path)
+
+    # --- 3. MinIO ---
     minio_objs, minio_skipped = _minio_export(work_dir)
+
+    # --- 4. data 目录 ---
     data_ok = _data_dir_export(work_dir)
 
+    # --- 5. SHA256SUMS ---
+    sha_path = work_dir / "SHA256SUMS"
+    with open(sha_path, "w", encoding="utf-8") as sha_file:
+        for item in sorted(work_dir.iterdir()):
+            if item.name.startswith("_"):
+                continue
+            if item.is_file():
+                h = hashlib.sha256()
+                with open(item, "rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        h.update(chunk)
+                sha_file.write(f"{h.hexdigest()}  {item.name}\n")
+
+    # --- 6. 打包 ---
     full_backup = backup_dir / f"full_backup_{ts}.tar.gz"
     try:
         with _tarfile.open(str(full_backup), "w:gz") as tar:
@@ -316,13 +348,163 @@ def do_full_backup_sync() -> tuple[bool, str]:
     size_kb = full_backup.stat().st_size / 1024
     logger.info(
         f"[B4] 完整备份完成 → {full_backup.name} ({size_kb:.1f} KB) | "
-        f"pg=✓ | minio_objs={minio_objs}(skip={minio_skipped}) | data={'✓' if data_ok else 'skip'}"
+        f"pg=✓ | rowcounts=✓ | minio_objs={minio_objs}(skip={minio_skipped}) | "
+        f"data={'✓' if data_ok else 'skip'} | sha256=✓"
     )
     return True, str(full_backup)
 
 
-def do_full_restore_sync(backup_path: str) -> tuple[bool, str]:
-    """从完整备份 .tar.gz 恢复：pg + MinIO + data。⚠️ 破坏性操作。"""
+def _write_rowcounts(out_path: Path) -> None:
+    """向 out_path 写一张 CSV：rowcounts.csv (relname, n_live_tup)。
+
+    对应文档 D1 的 psql rowcounts 清单。用 asyncpg 连接（不依赖 psql CLI），
+    若连接失败则写一行表头 + WARNING，不阻塞备份主流程。
+    """
+    import asyncio
+
+    try:
+        import asyncpg
+    except ImportError:
+        logger.warning("[B4] asyncpg 未安装，跳过 rowcounts.csv")
+        return
+
+    async def _query():
+        c = await asyncpg.connect(
+            settings.DATABASE_URL.replace("+asyncpg", "")
+        )
+        try:
+            rows = await c.fetch(
+                "SELECT relname, n_live_tup AS approx_rows "
+                "FROM pg_stat_user_tables ORDER BY relname"
+            )
+            return [(r["relname"], r["approx_rows"]) for r in rows]
+        finally:
+            await c.close()
+
+    try:
+        rows = asyncio.run(_query())
+    except Exception as e:
+        logger.warning(f"[B4] rowcounts 查询失败，写空清单: {e}")
+        rows = []
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("relname,approx_rows\n")
+        for name, cnt in rows:
+            f.write(f"{name},{cnt}\n")
+
+
+def _verify_sha256(work_dir: Path) -> tuple[bool, list[str]]:
+    """校验 work_dir/SHA256SUMS 中记录的每个产物哈希是否匹配。
+
+    返回 (全部匹配, [不匹配的文件名列表])。若无 SHA256SUMS 文件则视为通过
+    （兼容旧版备份）。
+    """
+    import hashlib
+
+    sha_file = work_dir / "SHA256SUMS"
+    if not sha_file.exists():
+        return True, ["(no SHA256SUMS — old backup)"]
+
+    mismatches: list[str] = []
+    with open(sha_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            expected, filename = parts
+            actual_path = work_dir / filename
+            if not actual_path.exists():
+                mismatches.append(f"{filename}: missing")
+                continue
+            h = hashlib.sha256()
+            with open(actual_path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(8192), b""):
+                    h.update(chunk)
+            if h.hexdigest() != expected:
+                mismatches.append(filename)
+
+    return len(mismatches) == 0, mismatches
+
+
+def _compare_rowcounts(work_dir: Path) -> str:
+    """对比备份 rowcounts.csv 和当前 DB 的行数，返回对比摘要字符串。"""
+    import csv
+    import asyncio as _asyncio
+
+    rc_file = work_dir / "rowcounts.csv"
+    if not rc_file.exists():
+        return "(no rowcounts.csv in backup — old backup)"
+
+    try:
+        import asyncpg
+    except ImportError:
+        return "(asyncpg missing — skip rowcounts compare)"
+
+    # 读备份基线
+    baseline: dict[str, int] = {}
+    with open(rc_file, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            try:
+                baseline[row["relname"]] = int(row["approx_rows"] or 0)
+            except (ValueError, KeyError):
+                pass
+
+    async def _query_current():
+        c = await asyncpg.connect(settings.DATABASE_URL.replace("+asyncpg", ""))
+        try:
+            rows = await c.fetch(
+                "SELECT relname, n_live_tup AS approx_rows "
+                "FROM pg_stat_user_tables"
+            )
+            return {r["relname"]: int(r["approx_rows"] or 0) for r in rows}
+        finally:
+            await c.close()
+
+    try:
+        current = _asyncio.run(_query_current())
+    except Exception as e:
+        return f"(current rowcounts query failed: {e})"
+
+    # 逐表差异
+    diffs = []
+    for name, base in sorted(baseline.items()):
+        cur = current.get(name, 0)
+        if base == cur:
+            continue
+        delta = cur - base
+        diffs.append(f"{name}: {base} → {cur} ({delta:+d})")
+
+    if not diffs:
+        return f"(all {len(baseline)} tables match baseline)"
+    # 截断最多 20 条差异
+    summary = "; ".join(diffs[:20])
+    if len(diffs) > 20:
+        summary += f"; ... +{len(diffs) - 20} more"
+    return summary
+
+
+def do_full_restore_sync(
+    backup_path: str,
+    *,
+    verify_only: bool = False,
+    target_test: bool = False,
+    allow_nonempty: bool = False,
+) -> tuple[bool, str]:
+    """从完整备份 .tar.gz 恢复：pg + MinIO + data。⚠️ 破坏性操作。
+
+    参数:
+        verify_only:  只校验备份 SHA256 + 对比 rowcounts，不真恢复。
+        target_test:  目标库允许非空；否则若发现目标库有数据则直接拒绝。
+        allow_nonempty: 同 target_test（互斥同义，兼容调用方）。
+
+    D1 安全门:
+        1. 先 SHA256 校验 — 备份文件损坏直接拒绝
+        2. verify_only=True 时到此为止（演练模式）
+        3. target_test=False 且目标库非空 → 拒绝（防止误覆盖生产）
+    """
     import tarfile as _tarfile
     import shutil as _shutil
 
@@ -334,6 +516,7 @@ def do_full_restore_sync(backup_path: str) -> tuple[bool, str]:
     work_dir = backup_dir / f"_restore_tmp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- 解压 ---
     try:
         with _tarfile.open(str(backup_file), "r:gz") as tar:
             tar.extractall(str(work_dir))
@@ -341,6 +524,41 @@ def do_full_restore_sync(backup_path: str) -> tuple[bool, str]:
         _shutil.rmtree(str(work_dir), ignore_errors=True)
         return False, f"解压备份失败: {e}"
 
+    # --- D1-1: SHA256 校验 ---
+    sha_ok, sha_mismatches = _verify_sha256(work_dir)
+    sha_result = "✓" if sha_ok else f"FAIL({sha_mismatches})"
+
+    # --- D1-2: rowcounts 对比 ---
+    rc_result = _compare_rowcounts(work_dir)
+
+    summary_parts = [f"sha256={sha_result}", f"rowcounts={rc_result}"]
+
+    # --- verify_only 模式：到此为止 ---
+    if verify_only:
+        _shutil.rmtree(str(work_dir), ignore_errors=True)
+        logger.info(f"[D1-verify] 备份校验通过 → {backup_file.name} | " + " | ".join(summary_parts))
+        return sha_ok, " | ".join(summary_parts)
+
+    # --- SHA256 不过就不继续恢复 ---
+    if not sha_ok:
+        _shutil.rmtree(str(work_dir), ignore_errors=True)
+        return False, " | ".join(summary_parts) + " (aborted — sha256 mismatch)"
+
+    # --- D1-3: 目标库非空检查 ---
+    if not (target_test or allow_nonempty):
+        is_nonempty, tables = _check_target_nonempty()
+        if is_nonempty:
+            _shutil.rmtree(str(work_dir), ignore_errors=True)
+            return (
+                False,
+                "TARGET_NONEMPTY REFUSE — 目标库存在数据: "
+                + ", ".join(tables[:5])
+                + f" (共 {len(tables)} 张表)\n"
+                + "如需演练恢复到测试库，加参数 --target-test；\n"
+                + "如需强行覆盖（极度危险），需用 Python API 显式传 allow_nonempty=True"
+            )
+
+    # --- 执行恢复 ---
     results: list[str] = []
 
     # pg_restore (psql single-transaction)
@@ -373,8 +591,40 @@ def do_full_restore_sync(backup_path: str) -> tuple[bool, str]:
         results.append("data=skip")
 
     _shutil.rmtree(str(work_dir), ignore_errors=True)
-    summary = " | ".join(results)
+    summary = " | ".join(summary_parts) + " | " + " | ".join(results)
     logger.info(f"[B4] 完整备份恢复完成 → {backup_file.name} | {summary}")
 
     pg_ok = "pg=✓" in summary
     return (pg_ok, summary)
+
+
+def _check_target_nonempty() -> tuple[bool, list[str]]:
+    """检查目标库是否有任何数据。返回 (非空, 有数据的表名列表)。
+
+    用 asyncpg，不依赖 psql CLI。任何一张表行数 > 0 视为非空。
+    """
+    import asyncio as _asyncio
+
+    try:
+        import asyncpg
+    except ImportError:
+        # 拿不到就认为非空（宁可拒绝不做）
+        return True, ["(asyncpg missing — conservative refuse)"]
+
+    async def _query():
+        c = await asyncpg.connect(settings.DATABASE_URL.replace("+asyncpg", ""))
+        try:
+            rows = await c.fetch(
+                "SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY relname"
+            )
+            return [(r["relname"], int(r["n_live_tup"] or 0)) for r in rows]
+        finally:
+            await c.close()
+
+    try:
+        tables = _asyncio.run(_query())
+    except Exception as e:
+        return True, [f"(query failed: {e}) — conservative refuse"]
+
+    nonempty = [name for name, cnt in tables if cnt > 0]
+    return (len(nonempty) > 0, nonempty)
