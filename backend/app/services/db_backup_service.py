@@ -137,3 +137,244 @@ async def _auto_backup_loop() -> None:
 def do_backup_sync() -> tuple[bool, str]:
     """同步执行一次备份（供手动 API 调用）。"""
     return _pg_dump()
+
+
+# ============================================================================
+# P1-B4: 完整备份（pg_dump + MinIO 对象 + data 目录）及 restore 实现
+# ============================================================================
+
+
+def _get_minio_client():
+    """构造 MinIO client（从环境变量读取，失败返回 None）。"""
+    try:
+        from minio import Minio
+    except ImportError:
+        logger.warning("[B4] minio SDK 未安装，跳过 MinIO 备份")
+        return None
+
+    endpoint = os.getenv("MINIO_ENDPOINT", "minio:9000")
+    access = os.getenv("MINIO_ACCESS_KEY", os.getenv("MINIO_ROOT_USER", ""))
+    secret = os.getenv("MINIO_SECRET_KEY", os.getenv("MINIO_ROOT_PASSWORD", ""))
+    secure = os.getenv("MINIO_SECURE", "false").lower() in ("1", "true", "yes")
+
+    if not access or not secret:
+        logger.warning("[B4] MINIO_ACCESS_KEY / MINIO_SECRET_KEY 未配置，跳过 MinIO 备份")
+        return None
+
+    try:
+        client = Minio(endpoint, access_key=access, secret_key=secret, secure=secure)
+        client.list_buckets()
+        return client
+    except Exception as e:
+        logger.warning(f"[B4] MinIO 连接失败，跳过 MinIO 备份: {e}")
+        return None
+
+
+def _minio_export(work_dir: Path) -> tuple[int, list[str]]:
+    """导出 MinIO 所有 bucket 的对象到 work_dir/minio/<bucket>/。"""
+    client = _get_minio_client()
+    if client is None:
+        return 0, ["(minio not available)"]
+
+    minio_root = work_dir / "minio"
+    minio_root.mkdir(parents=True, exist_ok=True)
+
+    total = 0
+    skipped: list[str] = []
+
+    try:
+        buckets = client.list_buckets()
+    except Exception as e:
+        logger.error(f"[B4] list_buckets 失败: {e}")
+        return 0, ["list_failed"]
+
+    for bucket in buckets:
+        bucket_name = bucket.name
+        bucket_dir = minio_root / bucket_name
+        bucket_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            objects = client.list_objects(bucket_name, recursive=True)
+            for obj in objects:
+                local_path = bucket_dir / obj.object_name
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                client.fget_object(bucket_name, obj.object_name, str(local_path))
+                total += 1
+            logger.info(f"[B4] MinIO 导出 bucket={bucket_name} 对象数={total - sum(1 for _ in bucket_dir.rglob('*') if _.is_file())}")
+        except Exception as e:
+            logger.warning(f"[B4] MinIO 导出 bucket={bucket_name} 失败: {e}")
+            skipped.append(bucket_name)
+
+    return total, skipped
+
+
+def _minio_restore(minio_root: Path) -> tuple[int, list[str]]:
+    """从 minio_root/<bucket>/ 恢复对象到 MinIO。"""
+    client = _get_minio_client()
+    if client is None:
+        return 0, ["(minio not available)"]
+
+    total = 0
+    skipped: list[str] = []
+
+    if not minio_root.exists():
+        logger.warning(f"[B4] minio_root={minio_root} 不存在")
+        return 0, ["no_dir"]
+
+    for bucket_dir in minio_root.iterdir():
+        if not bucket_dir.is_dir():
+            continue
+        bucket_name = bucket_dir.name
+        try:
+            if not client.bucket_exists(bucket_name):
+                client.make_bucket(bucket_name)
+            for local_file in bucket_dir.rglob("*"):
+                if not local_file.is_file():
+                    continue
+                obj_name = str(local_file.relative_to(bucket_dir))
+                client.fput_object(bucket_name, obj_name, str(local_file))
+                total += 1
+            logger.info(f"[B4] MinIO 恢复 bucket={bucket_name} 对象数={total}")
+        except Exception as e:
+            logger.warning(f"[B4] MinIO 恢复 bucket={bucket_name} 失败: {e}")
+            skipped.append(bucket_name)
+
+    return total, skipped
+
+
+def _data_dir_export(work_dir: Path) -> bool:
+    """打包 /app/backend/data 目录到 work_dir/data.tar.gz。"""
+    import shutil as _shutil
+
+    data_src = Path("/app/backend/data")
+    if not data_src.exists():
+        logger.warning("[B4] /app/backend/data 不存在，跳过 data 备份")
+        return False
+
+    try:
+        _shutil.make_archive(str(work_dir / "data"), "gztar", root_dir=str(data_src))
+        logger.info(f"[B4] data 目录打包完成")
+        return True
+    except Exception as e:
+        logger.error(f"[B4] data 目录打包失败: {e}")
+        return False
+
+
+def _data_dir_restore(data_tar: Path) -> bool:
+    """从 data.tar.gz 解压恢复到 /app/backend/data。"""
+    import tarfile
+
+    if not data_tar.exists():
+        logger.warning(f"[B4] data_tar={data_tar} 不存在")
+        return False
+
+    data_dst = Path("/app/backend/data")
+    data_dst.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with tarfile.open(str(data_tar), "r:gz") as tf:
+            tf.extractall(str(data_dst))
+        logger.info("[B4] data 目录恢复完成")
+        return True
+    except Exception as e:
+        logger.error(f"[B4] data 目录恢复失败: {e}")
+        return False
+
+
+def do_full_backup_sync() -> tuple[bool, str]:
+    """完整备份：pg_dump + MinIO 全 bucket 对象 + data 目录 → 单个 .tar.gz。"""
+    import tarfile as _tarfile
+    import shutil as _shutil
+
+    backup_dir = Path(settings.BACKUP_DIR)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    ok, pg_result = _pg_dump()
+    if not ok:
+        return False, f"pg_dump 失败: {pg_result}"
+
+    work_dir = backup_dir / f"_full_tmp_{ts}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    _shutil.copyfile(str(Path(pg_result)), str(work_dir / "database.sql"))
+
+    minio_objs, minio_skipped = _minio_export(work_dir)
+    data_ok = _data_dir_export(work_dir)
+
+    full_backup = backup_dir / f"full_backup_{ts}.tar.gz"
+    try:
+        with _tarfile.open(str(full_backup), "w:gz") as tar:
+            for item in work_dir.iterdir():
+                tar.add(str(item), arcname=item.name)
+    except Exception as e:
+        logger.error(f"[B4] 完整备份打包失败: {e}")
+        return False, str(e)
+
+    _shutil.rmtree(str(work_dir), ignore_errors=True)
+
+    size_kb = full_backup.stat().st_size / 1024
+    logger.info(
+        f"[B4] 完整备份完成 → {full_backup.name} ({size_kb:.1f} KB) | "
+        f"pg=✓ | minio_objs={minio_objs}(skip={minio_skipped}) | data={'✓' if data_ok else 'skip'}"
+    )
+    return True, str(full_backup)
+
+
+def do_full_restore_sync(backup_path: str) -> tuple[bool, str]:
+    """从完整备份 .tar.gz 恢复：pg + MinIO + data。⚠️ 破坏性操作。"""
+    import tarfile as _tarfile
+    import shutil as _shutil
+
+    backup_file = Path(backup_path)
+    if not backup_file.exists():
+        return False, f"备份文件不存在: {backup_path}"
+
+    backup_dir = Path(settings.BACKUP_DIR)
+    work_dir = backup_dir / f"_restore_tmp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with _tarfile.open(str(backup_file), "r:gz") as tar:
+            tar.extractall(str(work_dir))
+    except Exception as e:
+        _shutil.rmtree(str(work_dir), ignore_errors=True)
+        return False, f"解压备份失败: {e}"
+
+    results: list[str] = []
+
+    # pg_restore (psql single-transaction)
+    pg_sql = work_dir / "database.sql"
+    if pg_sql.exists():
+        db_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")
+        cmd = ["psql", db_url, "-f", str(pg_sql), "--single-transaction"]
+        try:
+            env = os.environ.copy()
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=settings.BACKUP_TIMEOUT)
+            results.append("pg=✓" if result.returncode == 0 else f"pg=FAIL({result.stderr.strip()[:200]})")
+        except Exception as e:
+            results.append(f"pg=FAIL({e})")
+    else:
+        results.append("pg=skip")
+
+    # MinIO restore
+    minio_root = work_dir / "minio"
+    if minio_root.exists() and any(minio_root.iterdir()):
+        n_ok, n_skip = _minio_restore(minio_root)
+        results.append(f"minio={n_ok}objs(skip={n_skip})")
+    else:
+        results.append("minio=skip")
+
+    # data dir restore
+    data_tar = work_dir / "data.tar.gz"
+    if data_tar.exists():
+        results.append(f"data={'✓' if _data_dir_restore(data_tar) else 'FAIL'}")
+    else:
+        results.append("data=skip")
+
+    _shutil.rmtree(str(work_dir), ignore_errors=True)
+    summary = " | ".join(results)
+    logger.info(f"[B4] 完整备份恢复完成 → {backup_file.name} | {summary}")
+
+    pg_ok = "pg=✓" in summary
+    return (pg_ok, summary)
