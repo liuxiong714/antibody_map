@@ -15,6 +15,7 @@ from app.core.methodology import build_methodology_note
 from app.core.timeutil import iso_ts
 from app.models.api_model_config import ApiModelConfig
 from app.models.data_point import DataPoint
+from app.models.literature import Literature
 from app.models.report import Report
 from app.models.report_template import ReportTemplate
 
@@ -41,6 +42,135 @@ def _data_snapshot_hash(rows) -> str | None:
     )
     payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+async def _fetch_source_literatures(
+    db: AsyncSession, rows: list[DataPoint]
+) -> list[dict]:
+    """从 DataPoint 列表提取去重 literature_id，查询 Literature 表返回元数据。
+
+    返回 list[dict]，每项包含 title/authors/journal/pub_year/doi/pmid，
+    供 _build_reference_list 生成参考文献，以及注入 prompt 让 LLM 可标注来源。
+    """
+    lit_ids = list({str(r.literature_id) for r in rows if r.literature_id})
+    if not lit_ids:
+        return []
+    # 容错：过滤掉非 UUID 格式的 literature_id（比如测试 mock 里用的字符串）
+    uuids = []
+    for uid in lit_ids:
+        try:
+            uuids.append(UUID(uid))
+        except (ValueError, AttributeError):
+            continue
+    if not uuids:
+        return []
+    result = await db.execute(
+        select(Literature).where(Literature.id.in_(uuids))
+    )
+    lits = result.scalars().all()
+    out = []
+    for lit in lits:
+        out.append({
+            "id": str(lit.id),
+            "title": lit.title,
+            "title_en": lit.title_en,
+            "authors": lit.authors,
+            "journal": lit.journal,
+            "pub_year": lit.pub_year,
+            "doi": lit.doi,
+            "pmid": lit.pmid,
+        })
+    # 按年份降序排，同年按标题字母序
+    out.sort(key=lambda x: (-x.get("pub_year") or 0, x.get("title") or ""))
+    return out
+
+
+def _build_reference_list(literatures: list[dict], language: str = "zh") -> str:
+    """把 Literature 元数据列表渲染为 GB/T 7714 (顺序编码制) 格式的 Markdown 参考文献。
+
+    中文用 GB/T 7714-2015 格式：
+    [序号] 作者. 题名[文献类型标识]. 刊名, 年, 卷(期): 起止页码. DOI.
+    英文用 APA 风格简化版，确保英文报告也有可读引用。
+    """
+    if not literatures:
+        return ""
+
+    def _fmt_authors_zh(authors: str | None) -> str:
+        if not authors:
+            return "作者不详"
+        # 统一分隔符：中文用 ; 或 , 都兼容
+        parts = [a.strip() for a in authors.replace(";", ",").split(",") if a.strip()]
+        if len(parts) <= 3:
+            return ", ".join(parts)
+        return ", ".join(parts[:3]) + ", 等"
+
+    def _fmt_authors_en(authors: str | None) -> str:
+        if not authors:
+            return "Anonymous"
+        parts = [a.strip() for a in authors.replace(";", ",").split(",") if a.strip()]
+        if len(parts) <= 6:
+            return ", ".join(parts)
+        return ", ".join(parts[:6]) + ", et al."
+
+    entries = []
+    for i, lit in enumerate(literatures, 1):
+        if language.startswith("zh"):
+            authors = _fmt_authors_zh(lit.get("authors"))
+            title = lit.get("title") or ""
+            journal = lit.get("journal") or ""
+            year = lit.get("pub_year") or ""
+            doi = lit.get("doi") or ""
+            pmid = lit.get("pmid") or ""
+            tail_parts = []
+            if journal and year:
+                tail_parts.append(f"{journal}, {year}")
+            elif year:
+                tail_parts.append(str(year))
+            if doi:
+                tail_parts.append(f"DOI: {doi}")
+            elif pmid:
+                tail_parts.append(f"PMID: {pmid}")
+            tail = ". ".join(tail_parts)
+            entries.append(f"[{i}] {authors}. {title}[J]. {tail}.")
+        else:
+            authors = _fmt_authors_en(lit.get("authors"))
+            title_en = lit.get("title_en") or lit.get("title") or ""
+            journal = lit.get("journal") or ""
+            year = lit.get("pub_year") or "n.d."
+            doi = lit.get("doi") or ""
+            pmid = lit.get("pmid") or ""
+            tail_parts = []
+            if journal:
+                tail_parts.append(f"{journal}, {year}")
+            else:
+                tail_parts.append(str(year))
+            if doi:
+                tail_parts.append(f"DOI: {doi}")
+            elif pmid:
+                tail_parts.append(f"PMID: {pmid}")
+            tail = ". ".join(tail_parts)
+            entries.append(f"[{i}] {authors}. {title_en}. {tail}.")
+
+    return "\n".join(entries)
+
+
+def _literatures_to_prompt_sources(literatures: list[dict], language: str = "zh") -> str:
+    """把 Literature 列表转为适合注入 prompt 的简短来源说明（最多 50 条）。"""
+    if not literatures:
+        return ""
+    MAX = 50
+    items = []
+    for i, lit in enumerate(literatures[:MAX], 1):
+        year = lit.get("pub_year") or ""
+        title = (lit.get("title_en") if language.startswith("zh") else None) or lit.get("title") or ""
+        journal = lit.get("journal") or ""
+        suffix = f"{journal}, {year}".strip(" ,").replace(" ,", ",")
+        items.append(f"  [{i}] {title}" + (f" ({suffix})" if suffix else ""))
+    if len(literatures) > MAX:
+        items.append(f"  ... (共 {len(literatures)} 篇，仅列出前 {MAX})")
+    header = "数据来源文献：" if language.startswith("zh") else "Source literatures:"
+    return header + "\n" + "\n".join(items)
+
 
 DISEASE_NAMES = {
     "measles": "麻疹", "mumps": "腮腺炎", "rubella": "风疹",
@@ -1028,6 +1158,9 @@ async def generate_report(
     if not rows:
         raise ValueError("没有找到审核通过的数据，无法生成报告")
 
+    # B5: 在释放事务连接前，先拉取数据来源文献元数据（Literature 查询仍需要活的 session）
+    source_literatures = await _fetch_source_literatures(db, rows)
+
     # 释放读事务占用的数据库连接：本地 LLM 推理可能耗时数分钟，若连接一直处于
     # idle-in-transaction，会被 PostgreSQL 的 idle_in_transaction_session_timeout
     # （120s）强制断开，导致后续保存报告时出现
@@ -1051,6 +1184,9 @@ async def generate_report(
     # 8. 生成正文：template_id 走模板渲染，否则走内置 Prompt
     if template:
         ctx = _build_context(rows, disease=disease, language=language)
+        # B5: 把来源文献信息注入 context 供模板或后续使用
+        ctx["source_literatures"] = source_literatures
+        ctx["sources_prompt_block"] = _literatures_to_prompt_sources(source_literatures, language)
         content = await _render_template_report(db, ctx, template, model=model, language=language)
     else:
         content = None
@@ -1066,6 +1202,7 @@ async def generate_report(
                     provinces_set.add(p)
         total_sample = sum(r.sample_size or 0 for r in rows)
         province_table, year_trend, age_distribution = _build_legacy_inline_text(rows, language)
+        sources_block = _literatures_to_prompt_sources(source_literatures, language)
         if language == "zh":
             prompt = REPORT_PROMPT_ZH.format(
                 title=report_title,
@@ -1077,6 +1214,9 @@ async def generate_report(
                 year_trend=year_trend,
                 age_distribution=age_distribution,
             )
+            # B5: 追加数据来源清单，让 LLM 论断可追溯到具体文献
+            if sources_block:
+                prompt += f"\n\n{sources_block}\n\n请在关键论断（如抗体水平高低、地区差异、时间趋势）后标注对应数据来源文献编号 [1]、[2] 等，便于事实核查。"
         else:
             prompt = REPORT_PROMPT_EN.format(
                 title_en=report_title_en,
@@ -1088,6 +1228,8 @@ async def generate_report(
                 year_trend=year_trend,
                 age_distribution=age_distribution,
             )
+            if sources_block:
+                prompt += f"\n\n{sources_block}\n\nPlease append source literature numbers [1], [2], etc. after key claims for fact-checkability."
         content = await _call_llm(db, prompt, model=model)
 
     # 8.5 方法学小节：统一脚注（复用 build_methodology_note），拼接进报告正文
@@ -1098,18 +1240,27 @@ async def generate_report(
         {"n_estimates": len(rows), "n_literatures": len(lit_ids), "quality_grades": True},
     )
     content = (content or "").rstrip()
+    reference_list = _build_reference_list(source_literatures, language)
     if language == "zh":
         content += f"\n\n## 方法学\n\n{methodology_note}"
-        content += (
+        content += f"\n\n## 引用\n\n{reference_list}" if reference_list else (
             f"\n\n## 引用\n\n"
+            f"（本报告所依据的数据暂未关联到具体文献）"
+        )
+        content += (
+            f"\n\n### 数据库引用\n\n"
             f"抗体地图数据库分析报告[EB/OL]. 抗体地图数据库（版本 v1.0）. "
             f"数据截至：{gen_date.date().isoformat()}；[引用日期 {gen_date.date().isoformat()}]. "
             f"报告编号：{disease_name}_{province or '全国'}_{gen_date.date().isoformat()}。"
         )
     else:
         content += f"\n\n## Methodology\n\n{methodology_note}"
+        content += f"\n\n## References\n\n{reference_list}" if reference_list else (
+            f"\n\n## References\n\n"
+            f"(No specific literatures linked to data used in this report.)"
+        )
         content += (
-            f"\n\n## Citation\n\n"
+            f"\n\n### Database Citation\n\n"
             f"Antibody Map Database Analysis Report[EB/OL]. Antibody Map Database (Version v1.0). "
             f"Data as of: {gen_date.date().isoformat()}; [Accessed {gen_date.date().isoformat()}]. "
             f"Report ID: {disease_name}_{province or 'National'}_{gen_date.date().isoformat()}."
@@ -1192,6 +1343,9 @@ async def generate_immune_barrier_report(
     if not rows:
         raise ValueError("没有找到审核通过的数据，无法生成报告")
 
+    # B5: 在释放事务连接前，先拉取数据来源文献元数据
+    source_literatures = await _fetch_source_literatures(db, rows)
+
     # 释放读事务占用的数据库连接（同 generate_report）：本地 LLM 推理耗时数分钟，
     # 避免连接因 idle_in_transaction_session_timeout 被断开导致保存失败。
     await db.commit()
@@ -1209,8 +1363,11 @@ async def generate_immune_barrier_report(
         report_title_en = f"{disease_name} Immune Barrier Assessment Report"
 
     # 2. 模板渲染或内置 Prompt
+    sources_block = _literatures_to_prompt_sources(source_literatures, language)
     if template:
         ctx = _build_context(rows, disease=disease, language=language)
+        ctx["source_literatures"] = source_literatures
+        ctx["sources_prompt_block"] = sources_block
         content = await _render_template_report(db, ctx, template, model=model, language=language)
     else:
         lit_ids = {str(r.literature_id) for r in rows if r.literature_id}
@@ -1238,6 +1395,8 @@ async def generate_immune_barrier_report(
                 year_trend=year_trend,
                 age_distribution=age_distribution,
             )
+            if sources_block:
+                prompt += f"\n\n{sources_block}\n\n请在关键论断（如免疫屏障水平、R_eff、补种缺口）后标注对应数据来源文献编号 [1]、[2] 等，便于事实核查。"
         else:
             prompt = IMMUNE_BARRIER_PROMPT_EN.format(
                 title_en=report_title_en,
@@ -1250,6 +1409,8 @@ async def generate_immune_barrier_report(
                 year_trend=year_trend,
                 age_distribution=age_distribution,
             )
+            if sources_block:
+                prompt += f"\n\n{sources_block}\n\nPlease append source literature numbers [1], [2], etc. after key claims for fact-checkability."
         content = await _call_llm(db, prompt, model=model)
 
     lit_ids = {str(r.literature_id) for r in rows if r.literature_id}
@@ -1261,12 +1422,16 @@ async def generate_immune_barrier_report(
     # 阈值方法学注脚：版本 + 三族阈值 citation（由 _build_analysis_digest 同步拉取）
     threshold_methodology_block = analysis_digest_citations or ""
     content = (content or "").rstrip()
+    reference_list = _build_reference_list(source_literatures, language)
     if language == "zh":
         content += f"\n\n## 方法学\n\n{methodology_note}"
         if threshold_methodology_block:
             content += f"\n\n### HIT 阈值方法学与引用\n\n{threshold_methodology_block}"
+        content += f"\n\n## 引用\n\n{reference_list}" if reference_list else (
+            f"\n\n## 引用\n\n（本报告所依据的数据暂未关联到具体文献）"
+        )
         content += (
-            f"\n\n## 引用\n\n"
+            f"\n\n### 数据库引用\n\n"
             f"抗体地图数据库分析报告[EB/OL]. 抗体地图数据库（版本 v1.0）. "
             f"数据截至：{gen_date.date().isoformat()}；[引用日期 {gen_date.date().isoformat()}]. "
             f"报告编号：{disease_name}_{province or '全国'}_{gen_date.date().isoformat()}。"
@@ -1275,8 +1440,11 @@ async def generate_immune_barrier_report(
         content += f"\n\n## Methodology\n\n{methodology_note}"
         if threshold_methodology_block:
             content += f"\n\n### HIT Threshold Methodology & Citations\n\n{threshold_methodology_block}"
+        content += f"\n\n## References\n\n{reference_list}" if reference_list else (
+            f"\n\n## References\n\n(No specific literatures linked to data used in this report.)"
+        )
         content += (
-            f"\n\n## Citation\n\n"
+            f"\n\n### Database Citation\n\n"
             f"Antibody Map Database Analysis Report[EB/OL]. Antibody Map Database (Version v1.0). "
             f"Data as of: {gen_date.date().isoformat()}; [Accessed {gen_date.date().isoformat()}]. "
             f"Report ID: {disease_name}_{province or 'National'}_{gen_date.date().isoformat()}."
@@ -1339,6 +1507,9 @@ async def generate_vaccination_strategy_report(
 
     result = await db.execute(query)
     rows = list(result.scalars().all())
+
+    # B5: 在释放事务连接前，先拉取数据来源文献元数据
+    source_literatures = await _fetch_source_literatures(db, rows)
 
     # 释放读事务占用的数据库连接（同 generate_report）：本地 LLM 推理耗时数分钟，
     # 避免连接因 idle_in_transaction_session_timeout 被断开导致保存失败。
@@ -1450,6 +1621,12 @@ async def generate_vaccination_strategy_report(
             epidemic_data=epidemic_data,
         )
         content = await _call_llm(db, prompt, model=model)
+
+    # B5: 追加数据来源参考文献列表
+    reference_list = _build_reference_list(source_literatures, "zh")
+    content = (content or "").rstrip()
+    if reference_list:
+        content += f"\n\n## 引用\n\n{reference_list}"
 
     # 解析模型显示名称
     llm_model_name = await _resolve_model_name(db, model)
