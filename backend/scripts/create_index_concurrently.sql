@@ -24,7 +24,8 @@
 --   WHERE i.relname = 'uq_dp_lit_fingerprint';
 
 -- Step 1: 幂等 DROP（若开发/测试库已经手工建过非 CONCURRENTLY 版本）
-DROP INDEX IF EXISTS uq_dp_lit_fingerprint;
+-- V5-04: 改为 CONCURRENTLY（与 Step 2/3 对称；脚本整体在事务外执行，安全）
+DROP INDEX CONCURRENTLY IF EXISTS uq_dp_lit_fingerprint;
 
 -- Step 2: CONCURRENTLY 建索引（不锁表，允许并发写入）
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_dp_lit_fingerprint

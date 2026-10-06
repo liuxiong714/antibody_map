@@ -69,9 +69,10 @@ class TestV305ConcurrentlyScriptExists:
     def test_script_idempotent(self):
         p = Path(__file__).resolve().parent.parent / "scripts" / "create_index_concurrently.sql"
         content = p.read_text(encoding="utf-8").lower()
-        # DROP INDEX IF EXISTS (幂等)
-        assert "drop index if exists" in content, \
-            "脚本非幂等 (缺 DROP IF EXISTS)"
+        # DROP INDEX CONCURRENTLY IF EXISTS (V5-04: Step 1 也用 CONCURRENTLY，与 Step 2/3 对称)
+        import re as _re
+        assert _re.search(r"drop index\s+(concurrently\s+)?if exists", content), \
+            "脚本非幂等 (缺 DROP ... IF EXISTS)"
 
     def test_script_precheck_sql(self):
         p = Path(__file__).resolve().parent.parent / "scripts" / "create_index_concurrently.sql"

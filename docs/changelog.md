@@ -43,10 +43,38 @@ d7cdb9c fix(P0-A1): V4-02 remove redundant Session.rollback() in SAVEPOINT error
 
 ### 测试统计
 
-- 后端全量：**1181 passed / 7 skipped / 13 warnings**
-- E2E（`--run-e2e`）：**5 passed / 2 skipped**（E2E-1 缺 pg_dump 二进制 — 需 CI 环境）
+- 后端全量：**1185 passed / 7 skipped（skipping sklearn/numba 预先存在的环境问题）**
+- E2E（`--run-e2e`）：**7 passed / 0 skipped**（V5-02 pg_dump docker exec 让 E2E-1 从"永远 skip"变成真通电 二进制 — 需 CI 环境）
 - 预先存在的环境问题：minio mock（1 test）+ sklearn/numba 版本（13 warnings）— 与本次改动零关联
-- 新增/升级测试：`tests/test_v402_savepoint_semantics.py`（1 行为测试）+ `TestV406SafeGetDictCompat`（3）+ `test_v401_legacy_sql_fallback` / `test_v401_post_restore_empty_marked_fail`（2 unit）+ test_v302 真 PG 行为测试（1）+ E2E 6 条 → **13 新增 + 1 升级**
+- 新增/升级测试：`tests/test_v402_savepoint_semantics.py`（1 行为测试）+ `TestV406SafeGetDictCompat`（3）+ `test_v401_legacy_sql_fallback` / `test_v401_post_restore_empty_marked_fail + TestResolvePgDumpFile（4 unit）`（2 unit）+ test_v302 真 PG 行为测试（1）+ E2E 6 条 → **13 新增 + 1 升级**
+
+
+### V5 系列（"影子修复"收尾 — DoD §5.1 技术收口满足）
+
+> 继 V2/V3/V4 修复正确性缺陷后，V5 聚焦**机制级陷阱**：测试不调生产代码（"影子测试"）、E2E 永远 skip、可测函数内联无法单测。**V5 全部做完后"修缺陷阶段结束"**。
+
+- **V5-01 — 消除影子测试：写库循环抽为 `persist_data_points()`**（`tasks/extract_task.py` + 2 测试）：生产和测试各写一份复刻的 `begin_nested` 循环（不调生产代码），生产回归时测试仍全绿。修复：模块级新增 `async def persist_data_points(db, data_points, *, history_model, history_id) -> (written, skipped)`（28 行），`_process_literature_async` 28 行循环 → 4 行调用，两测试删影子循环改调生产函数。反向验证：临时加 `await db.rollback()` → `test_v402` 真实 FAIL（MissingGreenlet）。
+- **V5-02 + V5-06 — E2E 通电 + CI**（`tests/e2e/test_e2e_01_backup_restore.py` + `.github/workflows/e2e.yml` + `docker-compose.test.yml`）：E2E-1 因宿主 Windows 无 pg_dump 一直 skip，V4-01 的 `.sql` fallback 从未端到端验证。修复：pg_dump/psql 通过 `wsl -- docker exec antibody-postgres` 调用（postgres:15-alpine 镜像自带 client）。E2E-1 重写：6 表完整断言 + data_point 抽样 10 条 sha256 哈希一致 + V4-01 fallback 真跑通。CI workflow：手动触发 + weekly nightly。
+- **V5-03 — `_resolve_pg_dump_file()` 可测函数 + 三边界单元测试**（`services/db_backup_service.py`）：原路径选择 `.dump → .sql → FAIL` 内联无法单测。抽为 `_resolve_pg_dump_file(work_dir) -> Path | None`（12 行 + 契约注释），3 个边界单元测试 + 反向验证。
+- **V5-04 — CONCURRENTLY 脚本 Step 1 也用 DROP INDEX CONCURRENTLY**（`scripts/create_index_concurrently.sql:27`）：原普通 DROP 与 Step 2/3 不对称。同步修复 `test_v305_index_concurrently.py::test_script_idempotent` 断言改正则。
+- **V5-05 — 覆盖率数字首次记录**：`pytest --cov=app` → **51%**（低于 55% 阈值）。核心工具类覆盖优秀（quality 97% / reference_parser 95%），集成路径（extract_task 12% / report_service 32%）需真 PG+LLM，**接受现状**。
+
+### Commit 链（V4 + V5 合计 12 个）
+
+```
+90bc0c8 feat(V5-02): E2E 通电 — pg_dump docker exec + 6 表断言 + CI workflow
+dfc143f fix(V5-03/04): _resolve_pg_dump_file 抽函数 + CONCURRENTLY DROP + test_v305 正则
+84b7876 fix(V5-01): 消除影子测试 — 写库循环抽为 persist_data_points
+f582f4d fix: V3-13 alembic drop_index if_exists=True
+c9ec0b3 docs(changelog): V4-08 add v1.33.2 entry
+b5c7ea2 fix(P0-A2): V4-05 behavioral tests for report_service
+6b71e2b fix(P0-A2): V4-06 report_service dict/object safe_get
+da192b6 fix(P0-A2): V4-04 meta-test reverse assertion
+66b0e68 fix(P0-A2): V4-07 DATABASE_URL driver unification
+5ab2d18 fix(P0-A1): V4-03 CONCURRENTLY index validation SQL
+0a32e74 fix(P0-A1): V4-01 backup fallback + post-restore double-check
+d7cdb9c fix(P0-A1): V4-02 remove redundant Session.rollback()
+```
 
 ---
 
@@ -435,7 +463,8 @@ df156ce fix(V2-10,V2-14,V2-16): contact matrix source+disclaimer + HOME cache mo
 - **metadata_validator** — 新增 ackend/app/core/metadata_validator.py：DOI ^10\.\d{4,9}/\S+$ 正则 + 长度 ≤128、PMID 1-9 位正整数、pub_year ∈ [1900, now+1]，无效值跳过并警告。
 - **前端 usePolling Hook** — rontend/src/hooks/usePolling.ts 统一多处轮询逻辑（文献详情提取状态、报告生成、批量任务进度），内置 404 容忍（连续 4 次）、最多 200 次、shouldStop、onGiveUp 回调、组件卸载自动清理等防泄漏设计。
 - **数据点表格分页** — 文献详情页数据点列表支持分页（pageSize=50，showSizeChanger 20/50/100），跨页保留 selectedRowKeys。
-- **文献详情页上一篇 / 下一篇** — 详情页标题栏右侧新增「上一篇（LeftOutlined）」按钮，与已有「下一篇」共用一次列表请求（esolvePrevNext），首位/末位自动置灰。
+- **文献详情页上一篇 / 下一篇** — 详情页标题栏右侧新增「上一篇（LeftOutlined）」按钮，与已有「下一篇」共用一次列表请求（
+esolvePrevNext），首位/末位自动置灰。
 
 ### 修复
 
@@ -445,9 +474,11 @@ _truncation_skipped。
 - **P0-3 去重键扩展** — orchestrator._deduplicate_points 键扩展为 disease|province|city|sample_year|age_min|age_max|antibody_type|detection_method|data_kind|value，value 用 :.6g 精度归一，避免有效数据被误删。
 - **P0-4 边界感知数值校验 + 千分位** — extraction_grounding._numeric_grounding_forms 对 ≥4 位整数追加千分位形式（"{int(num):,}"），alidate_numeric_grounding 用 (?<![0-9.]){form}(?![0-9]) 正则做边界检查，防止 84.3 误匹配进 184.35。
 - **P0-5 DOI/PMID/年份元数据校验** — 提取回填段和 Crossref 段统一校验，摘要截断至 ≤5000 字符，无效值跳过并记录 warning。
-- **S-2 备份/还原端点提升管理员权限** — POST /system/backup、GET /system/backups、GET /system/backup/download/{filename} 从 get_current_user 改为 equire_admin。
+- **S-2 备份/还原端点提升管理员权限** — POST /system/backup、GET /system/backups、GET /system/backup/download/{filename} 从 get_current_user 改为 
+equire_admin。
 - **S-3 代理头 + 端口绑定** — backend Dockerfile CMD 追加 --proxy-headers --forwarded-allow-ips *；compose 端口改为 127.0.0.1:8000:8000 避免直连泄露。
-- **S-4/S-5/S-6/S-7 CORS + /models 权限 + API Key 解密失败保护** — CORS_ORIGINS 含 * 时强制 CORS_ALLOW_CREDENTIALS=False 并警告；GET /models/GET /models/local/GET /models/remote 加 equire_admin；ApiModelConfig.api_key hybrid_property 的 setter 自动加密、getter 自动解密，失败不返回密文。
+- **S-4/S-5/S-6/S-7 CORS + /models 权限 + API Key 解密失败保护** — CORS_ORIGINS 含 * 时强制 CORS_ALLOW_CREDENTIALS=False 并警告；GET /models/GET /models/local/GET /models/remote 加 
+equire_admin；ApiModelConfig.api_key hybrid_property 的 setter 自动加密、getter 自动解密，失败不返回密文。
 - **CI 字符串解析 fallback 次序** — post_processor._parse_ci_string 先显式匹配范围正则 (\d+(?:\.\d+)?)\s*[-–~至到]\s*(\d+(?:\.\d+)?)，再 fallback 到「取后两个数」逻辑，避免 (95% CI 16.2-19.5, P<0.05) 被解析成错误区间。
 - **提取任务 value 统计口径统一** — stats_engine._as_percent 和 _meta_merge_cell 无条件 ÷100；0 < positivity_rate < 1 自动触发 suspected_fraction 问题并下调置信度至 low，供人工复核。
 - **前端 API 401 导出修复** — 三个导出按钮从 window.open 改为统一的 blob 下载 service，随 Authorization header 携带 JWT。

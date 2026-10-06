@@ -577,3 +577,47 @@ class TestDoFullRestoreSync:
 
         assert ok is False, f"restore 应标记为空库失败: {msg}"
         assert "pg=FAIL(post_restore_empty)" in msg
+
+# ==============================================================
+# V5-03: _resolve_pg_dump_file 单元测试（三边界 + 反向验证）
+# ==============================================================
+class TestResolvePgDumpFile:
+    """V5-03: 路径选择函数的三个边界条件必须都能正确命中。
+
+    反向验证（commit 前必须做一次）:
+      把 _resolve_pg_dump_file 的 .sql 分支改成 return None →
+      test_prefers_dump_over_sql 和 test_sql_fallback_alone 应 **同时失败**
+      （证明测试真在测这个函数，不是 mock）。
+    """
+
+    def test_prefers_dump_over_sql(self, tmp_path):
+        """两候选都存在 → 优先选 .dump（二进制 pg_restore 恢复更快更可靠）。"""
+        (tmp_path / "database.dump").write_bytes(b"PGDMP\x00fake-binary")
+        (tmp_path / "database.sql").write_text("-- fake sql")
+        from app.services.db_backup_service import _resolve_pg_dump_file
+        result = _resolve_pg_dump_file(tmp_path)
+        assert result is not None
+        assert result.name == "database.dump"
+
+    def test_sql_fallback_alone(self, tmp_path):
+        """仅 .sql 存在 → 选 .sql（V4-01 旧备份包 fallback 路径）。"""
+        (tmp_path / "database.sql").write_text("-- fake sql")
+        from app.services.db_backup_service import _resolve_pg_dump_file
+        result = _resolve_pg_dump_file(tmp_path)
+        assert result is not None
+        assert result.name == "database.sql"
+
+    def test_none_when_both_missing(self, tmp_path):
+        """两候选都不存在 → 返回 None（上层必须 FAIL，不能静默 skip）。"""
+        from app.services.db_backup_service import _resolve_pg_dump_file
+        result = _resolve_pg_dump_file(tmp_path)
+        assert result is None
+
+    def test_dump_five_bytes_pgdmps_magic(self, tmp_path):
+        """.dump 文件前 5 字节必须是 PGDMP —— 验证调用方的魔数检测不会被假文件骗过。"""
+        (tmp_path / "database.dump").write_bytes(b"PGDMP\x00fake-binary-payload")
+        from app.services.db_backup_service import _resolve_pg_dump_file
+        result = _resolve_pg_dump_file(tmp_path)
+        assert result is not None
+        head = result.read_bytes()[:5]
+        assert head == b"PGDMP"

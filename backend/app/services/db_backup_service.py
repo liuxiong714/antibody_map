@@ -507,6 +507,29 @@ def _compare_rowcounts(work_dir: Path) -> str:
     return summary
 
 
+def _resolve_pg_dump_file(work_dir: Path) -> Path | None:
+    """V5-03: 从备份工作目录里选 pg_dump 产物的恢复路径（可单测）。
+
+    优先级: database.dump > database.sql > None（两候选都不存在）。
+
+    契约:
+      - 返回 Path: 调用方按文件魔数自动选 pg_restore / psql
+      - 返回 None: 调用方走 FAIL 分支（V4-01 第三层兜底，而非静默 skip）
+
+    为什么是独立函数:
+      之前路径选择内联在 do_full_restore_sync 里，无法单测，"V4-01 的
+      .sql fallback 到底有没有生效"只能靠端到端 E2E 验证。V5-03 抽出后
+      三个边界（.dump 有 / 仅 .sql / 都无）各有单元测试，反向验证可做。
+    """
+    dump_path = work_dir / "database.dump"
+    sql_path = work_dir / "database.sql"
+    if dump_path.exists():
+        return dump_path
+    if sql_path.exists():
+        return sql_path
+    return None
+
+
 def do_full_restore_sync(
     backup_path: str,
     *,
@@ -582,18 +605,12 @@ def do_full_restore_sync(
     # --- 执行恢复 ---
     results: list[str] = []
 
-    # V3-01: 按文件魔数自动选择 pg_restore / psql
-    # -Fc 二进制归档前 5 字节为 "PGDMP"，用 pg_restore;
-    # 纯文本 SQL 走 psql（旧备份包 / 向后兼容）
-    pg_file = work_dir / "database.dump"
-    if not pg_file.exists():
-        pg_file = work_dir / "database.sql"  # V4-01 fix: fallback 到旧 .sql 格式（之前重复了 .dump）
-    if not pg_file.exists():
-        # V4-01 第三层兜底: 两个候选都不存在 → 明确报错
-        # 之前这里是 pg=skip，静默跳过导致"恢复成功但数据库是空的"
+    # V3-01 + V4-01 + V5-03: 通过可测函数选恢复文件
+    # 优先级: database.dump > database.sql > None（都无 → FAIL）
+    pg_file = _resolve_pg_dump_file(work_dir)
+    if pg_file is None:
         results.append("pg=FAIL(no database.dump / database.sql in archive)")
-
-    if pg_file.exists():
+    else:
         db_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")
         try:
             head = pg_file.open("rb").read(5)
@@ -623,8 +640,6 @@ def do_full_restore_sync(
             results.append(f"pg=FAIL(binary_not_found:{cmd[0]})")
         except Exception as e:
             results.append(f"pg=FAIL({e})")
-    else:
-        results.append("pg=skip")
 
     # MinIO restore
     minio_root = work_dir / "minio"
