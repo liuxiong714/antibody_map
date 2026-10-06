@@ -85,5 +85,12 @@ def test_rollback_in_error_path():
 ## 5. E2E 测试（`backend/tests/e2e/`）
 
 - 全链路测试（备份→恢复、提取→落库→报告）走 E2E 目录
-- E2E 测试必须标记 `@pytest.mark.e2e`，默认不进 CI（需 PG + MinIO + Redis 全栈）
-- 本地跑: `pytest tests/e2e -v --run-e2e`
+- E2E 测试默认 skip（`@pytest.mark.e2e`），需显式 `--run-e2e`
+- **本地跑**：`pytest tests/e2e -v --run-e2e` — 当前 **7 passed / 0 skipped**
+- **pg_dump/psql 宿主无关调用**（关键！）：
+  - **不要**在宿主 Windows 上找 pg_dump/pg_restore — postgres:15-alpine 镜像自带
+  - 用 `wsl -- docker exec antibody-postgres pg_dump -U antibody -d antibody_map ...`
+  - 或 Python subprocess：`['wsl', '--', 'docker', 'exec', '-i', 'antibody-postgres', 'pg_dump', ...]`
+- **不要用 `docker compose down -v` 清 test compose** — 会连带清共享网络；`docker-compose.test.yml` 已加 `name: antibody_test` 隔离
+- **CI workflow**：`.github/workflows/e2e.yml` — 手动触发 + weekly nightly；CI 环境 postgres 镜像自带 pg_dump 工具链，不需要 docker exec 迂回
+- **注意**：E2E-02 (重复写入) 已改用 V5-01 的 `persist_data_points()` 生产函数，不再复刻写库循环（V5-01 消除影子测试）

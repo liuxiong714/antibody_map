@@ -94,3 +94,75 @@
 | T-05 | `.replace("+asyncpg", "")` 剥离驱动 | psycopg 驱动 URL 会漏 | 用完整链：`.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")` |
 | T-06 | 测试只搜源码字符串 `"X" in src` | 其他地方同名符号会误命中，测试完全失效 | 精确到函数内窗口 + 配行为测试 |
 | T-07 | SQLite 替代 PG 测 IntegrityError/SAVEPOINT | SQLite 的 SAVEPOINT/唯一约束行为与 PG 有差异 | 必须用真 PG |
+
+---
+
+## 4. 数据红线巡检 SQL（最终版 · 2026-10-06 验证通过）
+
+> 每次发布前跑一次。**全 0** 即代表数据层面收口。
+> 执行方式（WSL Docker 环境）：
+
+```bash
+wsl -- docker exec -i antibody-postgres psql -U antibody -d antibody_map < _redline_check.sql
+```
+
+### 最终版 SQL（固定阈值，不再改）
+
+```sql
+-- V5 DoD §5.1 数据红线巡检 — 全 0 即收口
+-- ⚠️ seroprevalence 存的是百分比数值 (0-100%), 不是 0-1 小数
+--    gmc 是滴度 (1:x), 无上界
+
+-- 1. 重复指纹 (uq_dp_lit_fingerprint 唯一索引应全部命中)
+SELECT COUNT(*) AS dup_groups FROM (
+  SELECT 1 FROM data_point
+  WHERE review_status != 'rejected'
+    AND content_fingerprint IS NOT NULL AND content_fingerprint != ''
+  GROUP BY literature_id, content_fingerprint
+  HAVING COUNT(*) > 1) t;
+
+-- 2. pending 超 7 天 (卡 processing)
+SELECT COUNT(*) AS pending_older_than_7d FROM data_point
+WHERE review_status = 'pending'
+  AND created_at < NOW() - INTERVAL '7 days';
+
+-- 3. approved value 真越界
+SELECT COUNT(*) AS bad FROM data_point WHERE review_status = 'approved'
+  AND ((data_type = 'seroprevalence' AND (value IS NULL OR value < 0 OR value > 100))
+    OR (data_type = 'gmc' AND (value IS NULL OR value < 0)));
+
+-- 4. approved 未溯源 (source_page + source_context 都空)
+SELECT COUNT(*) AS bad FROM data_point WHERE review_status = 'approved'
+  AND source_page IS NULL
+  AND (source_context IS NULL OR btrim(source_context) = '');
+
+-- 5. is_grounded=false 但 approved (语义矛盾)
+SELECT COUNT(*) AS bad FROM data_point
+WHERE review_status = 'approved' AND is_grounded = FALSE;
+
+-- 6. FK 完整性
+SELECT 'dp->lit orphan' AS check, COUNT(*) AS bad FROM data_point dp
+  WHERE dp.literature_id NOT IN (SELECT id FROM literature)
+UNION ALL
+SELECT 'dp->eh orphan', COUNT(*) FROM data_point dp
+  WHERE dp.extraction_history_id IS NOT NULL
+    AND dp.extraction_history_id::uuid NOT IN (SELECT id FROM extraction_history)
+UNION ALL
+SELECT 'eh->lit orphan', COUNT(*) FROM extraction_history eh
+  WHERE eh.literature_id IS NOT NULL
+    AND eh.literature_id NOT IN (SELECT id FROM literature);
+```
+
+### 数据修正铁律
+
+> 本项目不做"破坏性数据修正"——**只清孤儿、不删数据行、不改业务字段值**。
+
+- [ ] 任何 UPDATE 先 `SELECT COUNT(*) AS will_update` 说清影响行数（dry-run）
+- [ ] UPDATE 后跑完整巡检 SQL 确认红线为 0
+- [ ] commit message 带 `chore(data):` 前缀，附巡检 SQL 结果摘要
+
+### 已记录的数据修正（供参考）
+
+| commit | 修正 | 影响行 | 风险 |
+|---|---|---|---|
+| `2d2c94a` | 4 条 dp→eh 孤儿 `extraction_history_id = NULL` | 4 | 低（全 pending，eh 可空） |

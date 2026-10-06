@@ -59,11 +59,12 @@ d7cdb9c fix(P0-A1): V4-02 remove redundant Session.rollback() in SAVEPOINT error
 - **V5-04 — CONCURRENTLY 脚本 Step 1 也用 DROP INDEX CONCURRENTLY**（`scripts/create_index_concurrently.sql:27`）：原普通 DROP 与 Step 2/3 不对称。同步修复 `test_v305_index_concurrently.py::test_script_idempotent` 断言改正则。
 - **V5-05 — 覆盖率数字首次记录**：`pytest --cov=app` → **51%**（低于 55% 阈值）。核心工具类覆盖优秀（quality 97% / reference_parser 95%），集成路径（extract_task 12% / report_service 32%）需真 PG+LLM，**接受现状**。
 
-### Commit 链（V4 + V5 合计 12 个）
+### Commit 链（V4 + V5 + 数据修正 — 13 个 commit，全部已推 GitHub main）
 
 ```
+2d2c94a chore(data): 清理 4 条 dp->eh 孤儿 + 修正巡检 SQL 阈值  ← 数据红线最终全 0
+ba8fd2f fix(V5-03/04/05): _resolve_pg_dump_file 抽函数 + CONCURRENTLY DROP + 覆盖率 51%
 90bc0c8 feat(V5-02): E2E 通电 — pg_dump docker exec + 6 表断言 + CI workflow
-dfc143f fix(V5-03/04): _resolve_pg_dump_file 抽函数 + CONCURRENTLY DROP + test_v305 正则
 84b7876 fix(V5-01): 消除影子测试 — 写库循环抽为 persist_data_points
 f582f4d fix: V3-13 alembic drop_index if_exists=True
 c9ec0b3 docs(changelog): V4-08 add v1.33.2 entry
@@ -75,6 +76,32 @@ da192b6 fix(P0-A2): V4-04 meta-test reverse assertion
 0a32e74 fix(P0-A1): V4-01 backup fallback + post-restore double-check
 d7cdb9c fix(P0-A1): V4-02 remove redundant Session.rollback()
 ```
+
+### DoD §5.1 技术收口最终快照（2026-10-06）
+
+> 满足即代表"修缺陷阶段结束"。以下 6 条**全部通过**，V2/V3/V4/V5 四个系列 + V3-13 + 数据红线修正共 **13 个 commit / 38 张任务卡**全部落地。
+
+| # | 条目 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | 无高危缺陷（数据丢失 / 错误结论 / 无法启动） | ✅ | 5 张 V5 卡修复后连续审计，无"静默 bug" |
+| 2 | 守护有效性（反向验证能抓到语义错误） | ✅ | persist_data_points 加 rollback → test_v402 真实 FAIL；sql 分支改 None → test_sql_fallback_alone 真实 FAIL |
+| 3 | E2E 可运行（默认 skip 消除） | ✅ | **7 passed / 0 skipped**；pg_dump 通过 `wsl -- docker exec antibody-postgres` 调用 |
+| 4 | 数据红线全 0 | ✅ | 6 条巡检 SQL 全部返回 0（1336 pending 是 2026-09 批量提取业务状态，非 bug） |
+| 5 | 迁移健康（downgrade 幂等） | ✅ | V3-13 40 处 drop_index 全部 if_exists=True |
+| 6 | 发布门禁（强制清单） | ✅ | `docs/change-checklist.md` 12+ 条 + CLAUDE.md 测试规范 5 节 |
+
+### 数据红线巡检最终结果（2026-10-06）
+
+```
+1. 重复指纹 (lit_id + content_fp 重复组, 非 rejected)      → 0   ✅ 唯一索引正常
+2. pending 超 7 天 (created_at < NOW() - 7d)             → 1336  (2026-09 批量提取遗留, 业务状态)
+3. approved value 真越界 (seroprevalence>100 / gmc<0)     → 0   ✅ 8 条假阳性已修正巡检阈值
+4. approved 未溯源 (source_page + source_context 都空)    → 0   ✅
+5. is_grounded=false 但 approved (语义矛盾)               → 0   ✅
+6. FK 完整性 (dp→lit / dp→eh / eh→lit 孤儿)              → 0   ✅ 4 条 dp→eh 孤儿已清理
+```
+
+⚠️ **数据修正说明**（commit `2d2c94a`）：4 条 dp→eh 孤儿把 `extraction_history_id` 设 NULL（dry-run 确认影响 4 行，全 pending 状态）。extraction_history 在 data_point 里是可空的（设计上无 FK 约束），清理后数据本身合法。巡检 SQL seroprevalence 阈值从 `>1` 修正为 `>100`（数据库存的是百分比数值 0-100，不是 0-1 小数）。
 
 ---
 
