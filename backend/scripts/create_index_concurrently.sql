@@ -18,9 +18,10 @@
 -- 若返回行 → 必须先处理重复数据 (reject/merge) 再跑本脚本。
 --
 -- 执行后验证:
---   SELECT indexname, indisvalid, indisunique, indisconcurrent
---   FROM pg_indexes i JOIN pg_class c ON c.relname = i.indexname
---   WHERE i.indexname = 'uq_dp_lit_fingerprint';
+--   SELECT i.relname AS indexname, idx.indisvalid, idx.indisunique, idx.indisconcurrent
+--   FROM pg_index idx JOIN pg_class i ON i.oid = idx.indexrelid
+--   JOIN pg_class t ON t.oid = idx.indrelid
+--   WHERE i.relname = 'uq_dp_lit_fingerprint';
 
 -- Step 1: 幂等 DROP（若开发/测试库已经手工建过非 CONCURRENTLY 版本）
 DROP INDEX IF EXISTS uq_dp_lit_fingerprint;
@@ -32,14 +33,18 @@ CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_dp_lit_fingerprint
       AND content_fingerprint != ''
       AND review_status != 'rejected';
 
--- Step 3: 验证（CONCURRENTLY 构建可能被中断，indisvalid 为 false 时需重建）
+-- Step 3: 验证（CONCURRENTLY 构建可能被中断，indisvalid=false 时需重建）
+-- V4-03 fix: pg_indexes 没有 indexvalid 列，必须查 pg_index.indisvalid
 DO $$
+DECLARE
+    v_valid boolean;
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_indexes
-        WHERE indexname = 'uq_dp_lit_fingerprint' AND indexvalid = true
-    ) THEN
-        RAISE WARNING '[V3-05] ⚠️ 索引构建异常 — indisvalid=false，建议重建:
+    SELECT indisvalid INTO v_valid
+    FROM pg_index idx JOIN pg_class c ON c.oid = idx.indexrelid
+    WHERE c.relname = 'uq_dp_lit_fingerprint';
+
+    IF NOT FOUND OR v_valid IS DISTINCT FROM true THEN
+        RAISE WARNING '[V3-05] ⚠️ 索引构建异常 — indisvalid=false 或索引不存在，建议重建:
         DROP INDEX CONCURRENTLY IF EXISTS uq_dp_lit_fingerprint;
         -- 然后重新执行本脚本';
     ELSE
