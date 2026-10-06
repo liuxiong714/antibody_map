@@ -1,5 +1,41 @@
 ## 变更日志
 
+## v1.33.2 (2026-10-06) — V4 系列运维加固 + 静默 Bug 消除 + 测试升级
+
+> 基于 v1.33.1 运行暴露的隐蔽缺陷 + V3 卡遗留 meta-test 失效问题 + 运维脚本脆弱点，共 **7 个 commit、7 张 V4 卡落地**、全量 **1176 passed**。不触碰任何既有数据行。
+
+### 高危修复（2 张卡 — 原代码会导致数据丢失/静默吞异常）
+
+- **V4-02 — 删除 SAVEPOINT 分支多余的 Session.rollback()**（`tasks/extract_task.py`）：原 IntegrityError except 块里多写了 `await db.rollback()`。`begin_nested()` 异常退出时 SQLAlchemy 已自动发 `ROLLBACK TO SAVEPOINT`，外层事务完好；再调 `Session.rollback()` 会把本批次此前已 flush 的数据点**全部作废**（症状：冲突点之后的点保留，冲突点之前的点丢失）。修复：删一行。守护测试 `tests/test_v402_savepoint_semantics.py`（真 PG + 真唯一约束）反向验证：临时加回 rollback → 测试真 fail。
+- **V4-01 — 旧备份包 fallback 写错 + 恢复失败双重校验**（`services/db_backup_service.py`）：① `do_full_restore_sync` 里 fallback 分支写了 `pg_file = work_dir / "database.dump"` **两行一模一样**——copy-paste error，旧 `.sql` 备份永远不会被尝试。改为 `database.sql`。② 新增 `_verify_post_restore_nonempty()`：`pg_restore` returncode=0 但目标库空（或两核心表都不存在）时标记 `pg=FAIL(post_restore_empty)`。
+
+### 中优先加固（5 张卡 — 统一、升级、防御）
+
+- **V4-03 — CONCURRENTLY 索引脚本验证 SQL 修正**（`scripts/create_index_concurrently.sql`）：原 DO block 查 `pg_indexes.indexvalid` —— **pg_indexes 视图根本没有这个列**，脚本里的验证从未真正生效。改为通过 `pg_index JOIN pg_class` 查 `indisvalid`。
+- **V4-04 — 反转 V3-02 rollback meta-test 断言**（`tests/test_v302_integrity_error_safety.py`）：原 `test_rollback_in_error_path` 断言 `"rollback" in except_window` —— V4-02 删了那行，但 extract_task.py 里其他地方的 `rollback` 仍被误命中，完全没检测能力。改为精确模式 `"await db.rollback() NOT in window`。反向验证通过。
+- **V4-06 — report_service 加 _safe_get + dict/object 防御**（`services/report_service.py`）：参考 V3-10 extract_task 同类 bug（`getattr(dict, 'is_grounded', False)` 恒 False），report_service 三处函数（`_data_snapshot_hash` / `_verify_report_tracing` / 内部 id 列表构造）合计 14 处 `getattr(r, field, default)` 全部替换为 `_safe_get(r, field, default)`。dict 行输入现在能正确识别 `is_grounded=False` 为 ungrounded。
+- **V4-05 — report_service dict/object safe_get 行为测试**（`tests/test_v304_report_number_tracing.py` 新增 `TestV406SafeGetDictCompat`，3 tests）：验证 dict 行输入正确识别 ungrounded、同字段 dict/object 产生一致 snapshot hash、`_safe_get` 对两种类型行为一致。
+- **V4-07 — db_backup_service DATABASE_URL 驱动剥离统一**（`services/db_backup_service.py`）：5 处 `DATABASE_URL.replace("+asyncpg", "")` 里只有 1 处用了完整链覆盖 psycopg 驱动，4 处会在未来换 psycopg 时断。统一为 `.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")`。
+
+### Commit 链（7 个 commit）
+
+```
+1b8ad2f fix(P0-A2): V4-05 add dict/object safe_get behavioral tests for report_service
+6b71e2b fix(P0-A2): V4-06 report_service dict/object safe_get — prevent silent ungrounded miss
+da192b6 fix(P0-A2): V4-04 upgrade V3-02 guard meta-test — reverse rollback assertion
+66b0e68 fix(P0-A2): V4-07 unify DATABASE_URL driver stripping in db_backup_service
+5ab2d18 fix(P0-A1): V4-03 correct CONCURRENTLY index validation SQL
+0a32e74 fix(P0-A1): V4-01 fix legacy backup fallback + post-restore double-check
+d7cdb9c fix(P0-A1): V4-02 remove redundant Session.rollback() in SAVEPOINT error handling
+```
+
+### 测试统计
+
+- 后端测试：**1176 passed / 1 failed**（预先存在的 minio mock 问题 + 13 个 sklearn/numba 版本环境问题，与本次改动零关联）
+- 新增测试：`tests/test_v402_savepoint_semantics.py`（1 行为测试，真 PG 唯一约束）+ `TestV406SafeGetDictCompat`（3 tests）+ `test_v401_legacy_sql_fallback` / `test_v401_post_restore_empty_marked_fail`（2 unit tests）+ meta-test 升级（1）→ 共 **7 新增 + 1 升级**
+
+---
+
 ## v1.33.1 (2026-10-06) — V2 系列阻塞修复 + 高优先闭环
 
 > 基于 v1.33.0 运行一周暴露的阻塞级缺陷 + 改进实施方案 v2 第二轮审计，共 **10 个 commit、16 张 V2 卡全部落地**、新增 **23 组守护测试**（测试总量 1130 passed）、**新增唯一索引迁移 uq_dp_content_fingerprint**。
