@@ -522,3 +522,58 @@ class TestDoFullRestoreSync:
             ok, msg = svc.do_full_restore_sync(str(tar_bad), allow_nonempty=True)
         assert ok is False
         assert "sha256=FAIL" in msg or "FAIL(" in msg
+
+    # --- V4-01 ---
+
+    def test_v401_legacy_sql_fallback(self, tmp_path, _patch_backup_dir):
+        """V4-01 fix: 旧备份包只有 database.sql 时，fallback 不能重复 database.dump 路径。
+
+        修复前：第 590 行 `pg_file = work_dir / "database.dump"` —— 和上一行一样，
+        database.sql 永远不会被尝试。本测试构造只有 .sql 的备份，验证 psql -f database.sql 被调用。
+        """
+        import hashlib
+
+        work = tmp_path / "_work"
+        work.mkdir()
+        # 只有 database.sql，没有 database.dump
+        sql_content = b"-- legacy sql backup\nSELECT 1;\n"
+        (work / "database.sql").write_bytes(sql_content)
+        h = hashlib.sha256(sql_content).hexdigest()
+        (work / "SHA256SUMS").write_text(f"{h}  database.sql\n")
+
+        tar_path = tmp_path / "legacy.tar.gz"
+        with tarfile.open(str(tar_path), "w:gz") as tf:
+            for f in work.iterdir():
+                tf.add(str(f), arcname=f.name)
+
+        # 捕获 subprocess.run 的调用
+        captured_args = []
+        def _fake_run(cmd, **kw):
+            captured_args.append(cmd)
+            return _fake_completed(rc=0)
+
+        with patch("shutil.rmtree"), \
+             patch("subprocess.run", side_effect=_fake_run), \
+             patch("app.services.db_backup_service._verify_post_restore_nonempty", return_value=True):
+            ok, msg = svc.do_full_restore_sync(str(tar_path), allow_nonempty=True)
+
+        assert ok is True, f"restore 应成功: {msg}"
+        assert len(captured_args) == 1
+        cmd = captured_args[0]
+        assert cmd[0] == "psql", f"应调用 psql (纯文本 SQL), 实际 {cmd[0]}"
+        assert any("database.sql" in str(arg) for arg in cmd), f"psql -f 应指向 database.sql, 实际 {cmd}"
+
+    def test_v401_post_restore_empty_marked_fail(self, tmp_path, _patch_backup_dir):
+        """V4-01 fix: pg_restore returncode=0 但目标库空 → 必须标记失败。
+
+        修复前只看 returncode；现在额外查核心表行数。
+        """
+        tar_path = _BackupFixture.build(tmp_path)
+        fake_pg = _fake_completed(rc=0)
+        with patch("shutil.rmtree"), \
+             patch("subprocess.run", return_value=fake_pg), \
+             patch("app.services.db_backup_service._verify_post_restore_nonempty", return_value=False):
+            ok, msg = svc.do_full_restore_sync(str(tar_path), allow_nonempty=True)
+
+        assert ok is False, f"restore 应标记为空库失败: {msg}"
+        assert "pg=FAIL(post_restore_empty)" in msg

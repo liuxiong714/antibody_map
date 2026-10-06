@@ -587,7 +587,7 @@ def do_full_restore_sync(
     # 纯文本 SQL 走 psql（旧备份包 / 向后兼容）
     pg_file = work_dir / "database.dump"
     if not pg_file.exists():
-        pg_file = work_dir / "database.dump"
+        pg_file = work_dir / "database.sql"  # V4-01 fix: fallback 到旧 .sql 格式（之前重复了 .dump）
 
     if pg_file.exists():
         db_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")
@@ -608,7 +608,13 @@ def do_full_restore_sync(
         try:
             env = os.environ.copy()
             result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=settings.BACKUP_TIMEOUT)
-            results.append("pg=✓" if result.returncode == 0 else f"pg=FAIL({result.stderr.strip()[:200]})")
+            if result.returncode == 0:
+                # V4-01 双重校验：pg_restore returncode=0 但可能恢复空文件/结构损坏
+                # 查核心表行数，若 data_point + literature 都为 0 则视为恢复失败
+                restored_ok = _verify_post_restore_nonempty()
+                results.append("pg=✓" if restored_ok else "pg=FAIL(post_restore_empty)")
+            else:
+                results.append(f"pg=FAIL({result.stderr.strip()[:200]})")
         except FileNotFoundError as e:
             results.append(f"pg=FAIL(binary_not_found:{cmd[0]})")
         except Exception as e:
@@ -669,3 +675,45 @@ def _check_target_nonempty() -> tuple[bool, list[str]]:
 
     nonempty = [name for name, cnt in tables if cnt > 0]
     return (len(nonempty) > 0, nonempty)
+
+
+def _verify_post_restore_nonempty() -> bool:
+    """V4-01: pg_restore/psql 成功后验证目标库确实有数据。
+
+    pg_restore 对空 archive / 结构错误文件也可能 returncode=0，
+    必须额外查核心表行数。data_point + literature 至少一张有数据才算成功。
+    """
+    import asyncio as _asyncio
+
+    try:
+        import asyncpg
+    except ImportError:
+        return True  # 拿不到驱动就不额外卡
+
+    async def _query():
+        c = await asyncpg.connect(settings.DATABASE_URL.replace("+asyncpg", ""))
+        try:
+            cnts = {}
+            for tbl in ("data_point", "literature"):
+                try:
+                    cnt = await c.fetchval(f"SELECT COUNT(*) FROM {tbl}")
+                    cnts[tbl] = int(cnt or 0)
+                except Exception:
+                    cnts[tbl] = -1  # 表不存在
+            return cnts
+        finally:
+            await c.close()
+
+    try:
+        cnts = _asyncio.run(_query())
+    except Exception:
+        return True  # 查询异常不要卡恢复，returncode=0 已经过了一道门
+
+    # 至少一张核心表有 > 0 行；两表都是 0 才视为空库
+    if cnts.get("data_point", 0) > 0 or cnts.get("literature", 0) > 0:
+        return True
+    if cnts.get("data_point", -1) == -1 and cnts.get("literature", -1) == -1:
+        # 两表都不存在 → 恢复完全失败
+        return False
+    # 两表都存在但都是 0 行
+    return False
