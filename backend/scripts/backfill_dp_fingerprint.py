@@ -23,7 +23,6 @@
 """
 import argparse
 import asyncio
-import hashlib
 import logging
 import sys
 from pathlib import Path
@@ -38,25 +37,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.base import get_async_session
 from app.models.data_point import DataPoint
 
+# V3-07: 直接 import 生产函数,消除脚本内算法重复
+from app.tasks.extract_task import _compute_dp_fingerprint as compute_fingerprint
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("backfill_fingerprint")
-
-
-def compute_fingerprint(dp: DataPoint) -> str:
-    """与 extract_task.py:1282 完全一致的指纹算法。"""
-    val = round(dp.value, 6) if dp.value is not None else None
-    parts = [
-        str(dp.disease or "NULL"),
-        str(dp.province or "NULL"),
-        str(dp.city or "NULL"),
-        str(dp.data_type or "NULL"),
-        str(dp.age_min if dp.age_min is not None else "NULL"),
-        str(dp.age_max if dp.age_max is not None else "NULL"),
-        str(dp.collection_year if dp.collection_year is not None else "NULL"),
-        str(val if val is not None else "NULL"),
-    ]
-    raw = "|".join(parts)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 async def audit_duplicates(session: AsyncSession) -> dict:

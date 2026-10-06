@@ -1949,15 +1949,16 @@ def _compute_dp_fingerprint(dp) -> str:
     ���Ϊģ�鼶���� (���෽��/�Ǳհ�) �Ա� backfill �ű���
     ֱ�� import ����, �����㷨Ư�ơ�
     """
-    v = round(dp.value, 6) if dp.value is not None else None
+    v_raw = _safe_get(dp, "value")
+    v = round(v_raw, 6) if v_raw is not None else None
     parts = [
-        str(dp.disease or "NULL"),
-        str(dp.province or "NULL"),
-        str(dp.city or "NULL"),
-        str(dp.data_type or "NULL"),
-        str(dp.age_min if dp.age_min is not None else "NULL"),
-        str(dp.age_max if dp.age_max is not None else "NULL"),
-        str(dp.collection_year if dp.collection_year is not None else "NULL"),
+        str(_safe_get(dp, "disease") or "NULL"),
+        str(_safe_get(dp, "province") or "NULL"),
+        str(_safe_get(dp, "city") or "NULL"),
+        str(_safe_get(dp, "data_type") or "NULL"),
+        str(_safe_get(dp, "age_min", "NULL") if _safe_get(dp, "age_min") is not None else "NULL"),
+        str(_safe_get(dp, "age_max", "NULL") if _safe_get(dp, "age_max") is not None else "NULL"),
+        str(_safe_get(dp, "collection_year", "NULL") if _safe_get(dp, "collection_year") is not None else "NULL"),
         str(v if v is not None else "NULL"),
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()

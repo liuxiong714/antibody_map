@@ -8,27 +8,13 @@
 """
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-# =======================================================
-# 纯单元：测试 fingerprint 算法与写库前计算（V2-05 复用）
-# =======================================================
-def compute_fp(dp: dict) -> str:
-    parts = [
-        str(dp.get("disease") or "NULL"),
-        str(dp.get("province") or "NULL"),
-        str(dp.get("city") or "NULL"),
-        str(dp.get("data_type") or "NULL"),
-        str(dp.get("age_min") if dp.get("age_min") is not None else "NULL"),
-        str(dp.get("age_max") if dp.get("age_max") is not None else "NULL"),
-        str(dp.get("collection_year") if dp.get("collection_year") is not None else "NULL"),
-        str(round(dp["value"], 6) if dp.get("value") is not None else "NULL"),
-    ]
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+# V3-07: 直接 import 生产函数,禁止测试内复制算法
+from app.tasks.extract_task import _compute_dp_fingerprint as compute_fp
 
 
 class TestFingerprintAlgorithm:
