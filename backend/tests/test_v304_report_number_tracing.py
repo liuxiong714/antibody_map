@@ -150,3 +150,59 @@ class TestV304InReports:
             "immune_barrier 未调用 _collect_expected_numbers"
         assert "_verify_report_numbers" in src, \
             "immune_barrier 未调用 _verify_report_numbers"
+
+
+class TestV406SafeGetDictCompat:
+    """V4-05: report_service 必须正确处理 dict 输入（V3-10 同类 bug 防护）。
+
+    历史教训: extract_task cache_hit 分支 extract_results 是 dict (json.loads),
+    getattr(dict, 'is_grounded', False) 恒 False, grounding_rate 恒 0。
+    report_service 三个函数如果收到 dict 输入也会踩同坑（getattr(dict, x, None) is False → False）。
+    """
+
+    def test_verify_tracing_dict_rows_detects_ungrounded(self):
+        """_verify_report_tracing 收到 dict 行时必须正确识别 ungrounded。"""
+        import asyncio
+        from app.services.report_service import _verify_report_tracing
+
+        # dict 行: is_grounded=False 的必须被识别
+        dict_rows = [
+            {"is_grounded": True, "source_context": "原文说 42% 阳性率", "id": "a"},
+            {"is_grounded": False, "source_context": "", "id": "b"},
+        ]
+        r = asyncio.run(_verify_report_tracing(dict_rows))
+        assert r["total"] == 2
+        assert r["ungrounded"] == 1, \
+            "V4-05: dict 行的 is_grounded=False 应被识别为 ungrounded=1, 实际 %d" % r["ungrounded"]
+
+    def test_data_snapshot_hash_dict_and_object_produce_same_hash(self):
+        """同字段 dict 和 ORM object → _safe_get 取值一致 → hash 相同。"""
+        from app.services.report_service import _data_snapshot_hash
+
+        class Fake:
+            def __init__(self, **kw):
+                for k, v in kw.items():
+                    setattr(self, k, v)
+
+        kw = dict(id="x1", literature_id="l1", province="北京", disease="麻疹",
+                  age_min=1, age_max=5, sample_size=100, value=0.42,
+                  data_type="seroprevalence", review_status="approved")
+        obj_rows = [Fake(**kw)]
+        dict_rows = [dict(kw)]
+
+        h_obj = _data_snapshot_hash(obj_rows)
+        h_dict = _data_snapshot_hash(dict_rows)
+        assert h_obj == h_dict, \
+            "V4-05: _data_snapshot_hash 对同字段 dict/object 应产生一致 hash"
+
+    def test_safe_get_dict_and_object(self):
+        """_safe_get 辅助函数本身的行为测试。"""
+        from app.services.report_service import _safe_get
+
+        class Fake:
+            x = 42
+
+        assert _safe_get(Fake(), "x") == 42
+        assert _safe_get(Fake(), "missing", "def") == "def"
+        assert _safe_get({"x": 42}, "x") == 42
+        assert _safe_get({"x": 42}, "missing", "def") == "def"
