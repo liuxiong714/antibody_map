@@ -33,7 +33,16 @@ try:  # Python 3.13+ 内置 PEP 702 的 warnings.deprecated
 except ImportError:  # Python < 3.13 回退到官方 backport（CI 固定 3.11）
     from typing_extensions import deprecated
 
-# 接触矩阵年龄组标签（与 china_contact_matrix.json 的行顺序一致）
+# 接触矩阵元数据 — V2-10: 来源声明 + 免责（科研用途，非临床决策依据）
+_CONTACT_MATRIX_SOURCE = "Prem, K., et al. (2022). Social contact matrices for China (6 age groups). " \
+    "Derived from POLYMOD-style population surveys. " \
+    "Repository: china_contact_matrix.json in backend/app/core/reference_data/"
+_CONTACT_MATRIX_DISCLAIMER = (
+    "⚠️ 接触矩阵数据来自文献荟萃分析（Prem et al. 2022），"
+    "用于科研场景下的传播权重估算，不构成临床或公共卫生决策依据。"
+    "实际传播行为受地域、季节、政策干预等变量显著影响，"
+    "使用本结果前请咨询流行病学专业人员。"
+)
 AGE_GROUPS_CONTACT = ["0-4", "5-17", "18-29", "30-59", "60+"]
 
 # 各年龄组对应的年龄区间 [lo, hi]（顺序与 AGE_GROUPS_CONTACT 一致）
@@ -98,6 +107,8 @@ def effective_barrier(age_group_positivity: dict, contact_matrix: np.ndarray) ->
             "group_weights": {},
             "group_gaps": [],
             "weakest_groups": [],
+            "contact_matrix_source": _CONTACT_MATRIX_SOURCE,
+            "disclaimer": _CONTACT_MATRIX_DISCLAIMER,
         }
 
     # 主导（Perron-Frobenius）特征向量 → 传播权重
@@ -140,6 +151,8 @@ def effective_barrier(age_group_positivity: dict, contact_matrix: np.ndarray) ->
         "group_weights": group_weights,
         "group_gaps": group_gaps,
         "weakest_groups": [g["age_group"] for g in group_gaps],
+        "contact_matrix_source": _CONTACT_MATRIX_SOURCE,
+        "disclaimer": _CONTACT_MATRIX_DISCLAIMER,
     }
 
 
@@ -205,6 +218,8 @@ def r_eff(
             "r0_input": r0,
             "rho_ngm": None,
             "rho_k": None,
+            "contact_matrix_source": _CONTACT_MATRIX_SOURCE,
+            "disclaimer": _CONTACT_MATRIX_DISCLAIMER,
         }
 
     # 1) 易感性 d_j 转 ndarray
@@ -278,4 +293,6 @@ def r_eff(
         "r0_input": float(r0),
         "rho_ngm": round(rho_ngm, 6),
         "rho_k": round(rho_k, 6),
+        "contact_matrix_source": _CONTACT_MATRIX_SOURCE,
+        "disclaimer": _CONTACT_MATRIX_DISCLAIMER,
     }

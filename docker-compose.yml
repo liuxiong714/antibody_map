@@ -197,6 +197,11 @@ services:
       # MinerU 模型缓存持久化：挂载到宿主机，容器重建后无需重新下载模型（约 2.2G）
       # C6：镜像 USER app 后 HOME=/home/app，modelscope 缓存落在其下
       - ./backend/data/mineru_cache:/home/app/.cache/modelscope
+      # V2-14: HuggingFace + PyTorch 模型缓存持久化（read_only + tmpfs 下 /home/app 默认不可写）
+      # 这些缓存体积大（ollama 镜像外再 +5~10G），重建容器会触发重新下载
+      - ./backend/data/hf_cache:/home/app/.cache/huggingface
+      - ./backend/data/torch_cache:/home/app/.cache/torch
+      - ./backend/data/pip_cache:/home/app/.cache/pip
       # 文件夹监控目录（宿主机路径在 .env 中 MONITORED_REF_HOST_PATH 配置）
       - ${MONITORED_REF_HOST_PATH:-/mnt/e/01-liuxiong/antibody_map_ref/ref}:/app/monitor/ref
     # 内存上限 8g：MinerU + torch 推理 + 2 并发 Celery worker 峰值内存可达数 GB
