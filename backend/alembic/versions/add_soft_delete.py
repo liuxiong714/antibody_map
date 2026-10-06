@@ -26,5 +26,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS deleted_by")
-    op.drop_index('ix_lit_deleted_at')
+    op.drop_index('ix_lit_deleted_at', if_exists=True)
     op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS deleted_at")

@@ -30,5 +30,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Drop owner_id column and its index."""
-    op.drop_index('ix_literature_owner_id', table_name='literature')
+    op.drop_index('ix_literature_owner_id', table_name='literature', if_exists=True)
     op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS owner_id")

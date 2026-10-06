@@ -25,8 +25,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_audit_log_entity_id", table_name="audit_log")
-    op.drop_index("ix_audit_log_entity_type", table_name="audit_log")
+    op.drop_index("ix_audit_log_entity_id", table_name="audit_log", if_exists=True)
+    op.drop_index("ix_audit_log_entity_type", table_name="audit_log", if_exists=True)
     op.execute("ALTER TABLE audit_log DROP COLUMN IF EXISTS new_value")
     op.execute("ALTER TABLE audit_log DROP COLUMN IF EXISTS old_value")
     op.execute("ALTER TABLE audit_log DROP COLUMN IF EXISTS entity_id")

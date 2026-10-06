@@ -25,5 +25,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove data_snapshot_hash column."""
-    op.drop_index('ix_report_data_snapshot_hash', table_name='report')
+    op.drop_index('ix_report_data_snapshot_hash', table_name='report', if_exists=True)
     op.execute("ALTER TABLE report DROP COLUMN IF EXISTS data_snapshot_hash")

@@ -25,5 +25,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove pdf_hash column."""
-    op.drop_index('idx_lit_pdf_hash', table_name='literature')
+    op.drop_index('idx_lit_pdf_hash', table_name='literature', if_exists=True)
     op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS pdf_hash")

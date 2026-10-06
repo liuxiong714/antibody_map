@@ -91,6 +91,6 @@ def downgrade() -> None:
     """)
 
     # 2. 删除 extraction_history 表
-    op.drop_index(op.f('ix_extraction_history_status'), table_name='extraction_history')
-    op.drop_index(op.f('ix_extraction_history_literature_id'), table_name='extraction_history')
+    op.drop_index(op.f('ix_extraction_history_status'), table_name='extraction_history', if_exists=True)
+    op.drop_index(op.f('ix_extraction_history_literature_id'), table_name='extraction_history', if_exists=True)
     op.drop_table('extraction_history')

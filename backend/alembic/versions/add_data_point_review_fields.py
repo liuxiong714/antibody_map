@@ -34,9 +34,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index('ix_dp_reviewed_at', table_name='data_point')
+    op.drop_index('ix_dp_reviewed_at', table_name='data_point', if_exists=True)
     op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS reviewed_at")
-    op.drop_index('ix_dp_reviewer_id', table_name='data_point')
+    op.drop_index('ix_dp_reviewer_id', table_name='data_point', if_exists=True)
     op.drop_constraint('fk_data_point_reviewer_user', 'data_point', type_='foreignkey')
     op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS reviewer_id")
     op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS review_comment")

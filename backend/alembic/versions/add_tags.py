@@ -44,5 +44,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table('literature_tag')
-    op.drop_index('ix_tag_name', table_name='tag')
+    op.drop_index('ix_tag_name', table_name='tag', if_exists=True)
     op.drop_table('tag')

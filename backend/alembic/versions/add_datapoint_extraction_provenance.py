@@ -77,7 +77,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_constraint('fk_dp_extraction_history', 'data_point', type_='foreignkey')
-    op.drop_index(op.f('ix_data_point_extraction_history_id'), table_name='data_point')
-    op.drop_index(op.f('ix_data_point_model_used'), table_name='data_point')
+    op.drop_index(op.f('ix_data_point_extraction_history_id'), table_name='data_point', if_exists=True)
+    op.drop_index(op.f('ix_data_point_model_used'), table_name='data_point', if_exists=True)
     op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS extraction_history_id")
     op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS model_used")

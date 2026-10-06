@@ -54,5 +54,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index('ix_pm_review_disease', table_name='pathogen_monitoring')
+    op.drop_index('ix_pm_review_disease', table_name='pathogen_monitoring', if_exists=True)
     op.drop_table('pathogen_monitoring')

@@ -146,7 +146,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     # ===== literature 回退 =====
     if _index_exists("ix_lit_literature_type"):
-        op.drop_index("ix_lit_literature_type", table_name="literature")
+        op.drop_index("ix_lit_literature_type", table_name="literature", if_exists=True)
     if _col_exists("literature", "data_domain_tags"):
         op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS data_domain_tags")
     if _col_exists("literature", "literature_type"):
@@ -178,7 +178,7 @@ def downgrade() -> None:
     # ===== data_point 索引回退 =====
     for idx in ["ix_dp_genotype_new", "ix_dp_pathogen", "ix_dp_indicator", "ix_dp_data_domain"]:
         if _index_exists(idx):
-            op.drop_index(idx, table_name="data_point")
+            op.drop_index(idx, table_name="data_point", if_exists=True)
 
     # ===== data_point 字段回退 =====
     for col in [

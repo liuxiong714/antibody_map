@@ -29,8 +29,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index('ix_dp_quality_score', table_name='data_point')
-    op.drop_index('ix_dp_quality_grade', table_name='data_point')
+    op.drop_index('ix_dp_quality_score', table_name='data_point', if_exists=True)
+    op.drop_index('ix_dp_quality_grade', table_name='data_point', if_exists=True)
     op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS estimate_grade")
     op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS quality_grade")
     op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS quality_score")

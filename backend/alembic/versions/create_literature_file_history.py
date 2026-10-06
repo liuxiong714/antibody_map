@@ -41,7 +41,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index('ix_literature_file_history_operated_at', table_name='literature_file_history')
-    op.drop_index('ix_literature_file_history_action', table_name='literature_file_history')
-    op.drop_index('ix_literature_file_history_pdf_hash', table_name='literature_file_history')
+    op.drop_index('ix_literature_file_history_operated_at', table_name='literature_file_history', if_exists=True)
+    op.drop_index('ix_literature_file_history_action', table_name='literature_file_history', if_exists=True)
+    op.drop_index('ix_literature_file_history_pdf_hash', table_name='literature_file_history', if_exists=True)
     op.drop_table('literature_file_history')

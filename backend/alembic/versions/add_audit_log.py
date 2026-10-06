@@ -39,7 +39,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_audit_log_created_at", table_name="audit_log")
-    op.drop_index("ix_audit_log_action", table_name="audit_log")
-    op.drop_index("ix_audit_log_user_id", table_name="audit_log")
+    op.drop_index("ix_audit_log_created_at", table_name="audit_log", if_exists=True)
+    op.drop_index("ix_audit_log_action", table_name="audit_log", if_exists=True)
+    op.drop_index("ix_audit_log_user_id", table_name="audit_log", if_exists=True)
     op.drop_table("audit_log")

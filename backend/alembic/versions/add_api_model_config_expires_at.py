@@ -33,5 +33,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Drop expires_at column and its index."""
-    op.drop_index('ix_api_model_config_expires_at', table_name='api_model_config')
+    op.drop_index('ix_api_model_config_expires_at', table_name='api_model_config', if_exists=True)
     op.execute("ALTER TABLE api_model_config DROP COLUMN IF EXISTS expires_at")

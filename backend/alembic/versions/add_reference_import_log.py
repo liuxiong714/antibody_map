@@ -37,6 +37,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index('ix_ref_import_log_file_name')
-    op.drop_index('ix_ref_import_log_imported_at')
+    op.drop_index('ix_ref_import_log_file_name', if_exists=True)
+    op.drop_index('ix_ref_import_log_imported_at', if_exists=True)
     op.drop_table('reference_import_log')

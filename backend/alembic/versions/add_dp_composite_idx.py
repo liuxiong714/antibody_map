@@ -31,5 +31,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index('ix_dp_lit_review', table_name='data_point')
-    op.drop_index('ix_dp_review_disease_type', table_name='data_point')
+    op.drop_index('ix_dp_lit_review', table_name='data_point', if_exists=True)
+    op.drop_index('ix_dp_review_disease_type', table_name='data_point', if_exists=True)

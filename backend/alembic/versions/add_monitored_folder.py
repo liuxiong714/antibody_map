@@ -72,8 +72,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Drop monitored_file and monitored_folder tables."""
-    op.drop_index('ix_monitored_file_literature_id', table_name='monitored_file')
-    op.drop_index('ix_monitored_file_file_hash', table_name='monitored_file')
-    op.drop_index('ix_monitored_file_folder_id', table_name='monitored_file')
+    op.drop_index('ix_monitored_file_literature_id', table_name='monitored_file', if_exists=True)
+    op.drop_index('ix_monitored_file_file_hash', table_name='monitored_file', if_exists=True)
+    op.drop_index('ix_monitored_file_folder_id', table_name='monitored_file', if_exists=True)
     op.drop_table('monitored_file')
     op.drop_table('monitored_folder')

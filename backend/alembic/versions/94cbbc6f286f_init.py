@@ -33,10 +33,10 @@ def upgrade() -> None:
                existing_type=postgresql.TIMESTAMP(timezone=True),
                nullable=False,
                existing_server_default=sa.text('now()'))
-    op.drop_index(op.f('idx_dp_collection_year'), table_name='data_point')
-    op.drop_index(op.f('idx_dp_disease'), table_name='data_point')
-    op.drop_index(op.f('idx_dp_province'), table_name='data_point')
-    op.drop_index(op.f('idx_dp_review_status'), table_name='data_point')
+    op.drop_index(op.f('idx_dp_collection_year'), table_name='data_point', if_exists=True)
+    op.drop_index(op.f('idx_dp_disease'), table_name='data_point', if_exists=True)
+    op.drop_index(op.f('idx_dp_province'), table_name='data_point', if_exists=True)
+    op.drop_index(op.f('idx_dp_review_status'), table_name='data_point', if_exists=True)
     op.alter_column('literature', 'has_fulltext',
                existing_type=sa.BOOLEAN(),
                nullable=False,
@@ -61,7 +61,7 @@ def upgrade() -> None:
                existing_type=postgresql.TIMESTAMP(timezone=True),
                nullable=False,
                existing_server_default=sa.text('now()'))
-    op.drop_index(op.f('idx_lit_extraction_status'), table_name='literature')
+    op.drop_index(op.f('idx_lit_extraction_status'), table_name='literature', if_exists=True)
     op.alter_column('report', 'report_type',
                existing_type=sa.VARCHAR(length=30),
                nullable=False,
