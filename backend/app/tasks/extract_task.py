@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.core.audit import log_audit
@@ -1295,27 +1296,35 @@ async def _process_literature_async(
         all_data_points = _deduped_vs_db
 
         # 6. 写库：持久化本批次数据点（每个 DataPoint 写 F21 溯源字段）
+        # V3-02: 用 savepoint 隔离单点冲突 + IntegrityError 捕获，
+        #        避免唯一约束触发时整篇事务回滚、所有数据点全丢。
+        #        指纹计算抽为模块级函数 _compute_dp_fingerprint（供 backfill 复用）。
+        _skipped_by_constraint = 0
+        _written_count = 0
         for dp in all_data_points:
             dp.model_used = _history_model
             dp.extraction_history_id = _history_id
-            # V2-05: 写前计算 content_fingerprint（与回填脚本算法一致）
-            # 多 worker 并发时 DB 唯一约束会拦截重复；应用层提前算好可减少重复插入尝试
             try:
-                _v = round(dp.value, 6) if dp.value is not None else None
-                _fp_parts = [
-                    str(dp.disease or "NULL"),
-                    str(dp.province or "NULL"),
-                    str(dp.city or "NULL"),
-                    str(dp.data_type or "NULL"),
-                    str(dp.age_min if dp.age_min is not None else "NULL"),
-                    str(dp.age_max if dp.age_max is not None else "NULL"),
-                    str(dp.collection_year if dp.collection_year is not None else "NULL"),
-                    str(_v if _v is not None else "NULL"),
-                ]
-                dp.content_fingerprint = hashlib.sha256("|".join(_fp_parts).encode("utf-8")).hexdigest()
+                dp.content_fingerprint = _compute_dp_fingerprint(dp)
             except Exception as _fe:
                 logger.warning(f"V2-05 fingerprint 计算失败（不阻塞写库）: {_fe}")
-            db.add(dp)
+
+            try:
+                async with db.begin_nested():  # SAVEPOINT: 只回滚冲突的那一条
+                    db.add(dp)
+                    await db.flush()
+                _written_count += 1
+            except IntegrityError as _ie:
+                # 唯一约束冲突 (uq_dp_lit_fingerprint) — 来自并发写入或应用层前置查重窗口不一致
+                _skipped_by_constraint += 1
+                logger.warning(
+                    f"[V3-02] 唯一约束拦截重复点，已跳过: "
+                    f"disease={dp.disease} province={dp.province} city={dp.city} "
+                    f"type={dp.data_type} year={dp.collection_year} "
+                    f"fingerprint={dp.content_fingerprint[:16]}"
+                )
+                await db.rollback()  # 确保 savepoint 回滚干净
+                continue
 
         # 5c. P2-tt 试点：持久化 LLM 提取到的滴度矩阵（TiterTable）
         # 缓存命中时 titer_tables 直接取自缓存，无需再读 extractor
@@ -1926,3 +1935,28 @@ def process_literature(
             run_async(_mark_failed())
         retry_in = 60 * (2 ** self.request.retries)
         raise self.retry(exc=e, countdown=retry_in) from e
+
+
+def _compute_dp_fingerprint(dp) -> str:
+    """V3-02: ģ�鼶 DataPoint fingerprint ���㡣
+
+    �㷨�� scripts/backfill_dp_fingerprint.py ��ȫһ��:
+      sha256(disease|province|city|data_type|age_min|age_max|
+             collection_year|round(value,6))
+    ���� None ֵͳһ�� "NULL" �ַ�����
+
+    ���Ϊģ�鼶���� (���෽��/�Ǳհ�) �Ա� backfill �ű���
+    ֱ�� import ����, �����㷨Ư�ơ�
+    """
+    v = round(dp.value, 6) if dp.value is not None else None
+    parts = [
+        str(dp.disease or "NULL"),
+        str(dp.province or "NULL"),
+        str(dp.city or "NULL"),
+        str(dp.data_type or "NULL"),
+        str(dp.age_min if dp.age_min is not None else "NULL"),
+        str(dp.age_max if dp.age_max is not None else "NULL"),
+        str(dp.collection_year if dp.collection_year is not None else "NULL"),
+        str(v if v is not None else "NULL"),
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
