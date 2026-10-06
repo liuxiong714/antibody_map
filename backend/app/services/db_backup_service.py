@@ -27,6 +27,23 @@ from app.config import settings
 logger = logging.getLogger("uvicorn")
 
 
+def safe_extract(tar, dst: str) -> None:
+    """V3-09: tarfile.extractall 的路径穿越安全替代。
+
+    拒绝任何用 ``..`` 或绝对路径越权写出目标目录的成员。
+    接受普通成员（含符号链接），但符号链接解析后也不得越界。
+    """
+    dst_path = Path(dst).resolve()
+    dst_str = str(dst_path)
+    for member in tar.getmembers():
+        # 用 resolve() 消掉 ".." 和符号链接；判断是否仍在 dst 下
+        member_path = (dst_path / member.name).resolve()
+        if not str(member_path).startswith(dst_str + os.sep) and str(member_path) != dst_str:
+            logger.warning(f"[safe_extract] 跳过越权成员: {member.name}")
+            continue
+        tar.extract(member, dst)
+
+
 def _pg_dump() -> tuple[bool, str]:
     """执行一次 pg_dump，返回 (成功标志, 备份文件路径或错误信息)。
 
@@ -276,7 +293,8 @@ def _data_dir_restore(data_tar: Path) -> bool:
 
     try:
         with tarfile.open(str(data_tar), "r:gz") as tf:
-            tf.extractall(str(data_dst))
+            # V3-09: 路径穿越防护 — 拒绝 .. 越权成员
+            safe_extract(tf, str(data_dst))
         logger.info("[B4] data 目录恢复完成")
         return True
     except Exception as e:
@@ -522,7 +540,7 @@ def do_full_restore_sync(
     # --- 解压 ---
     try:
         with _tarfile.open(str(backup_file), "r:gz") as tar:
-            tar.extractall(str(work_dir))
+            safe_extract(tar, str(work_dir))
     except Exception as e:
         _shutil.rmtree(str(work_dir), ignore_errors=True)
         return False, f"解压备份失败: {e}"
@@ -564,15 +582,35 @@ def do_full_restore_sync(
     # --- 执行恢复 ---
     results: list[str] = []
 
-    # pg_restore (psql single-transaction)
-    pg_sql = work_dir / "database.sql"
-    if pg_sql.exists():
+    # V3-01: 按文件魔数自动选择 pg_restore / psql
+    # -Fc 二进制归档前 5 字节为 "PGDMP"，用 pg_restore;
+    # 纯文本 SQL 走 psql（旧备份包 / 向后兼容）
+    pg_file = work_dir / "database.sql"
+    if not pg_file.exists():
+        pg_file = work_dir / "database.dump"  # 兼容 Option B 的产物名
+
+    if pg_file.exists():
         db_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")
-        cmd = ["psql", db_url, "-f", str(pg_sql), "--single-transaction"]
+        try:
+            head = pg_file.open("rb").read(5)
+        except Exception as e:
+            results.append(f"pg=FAIL(read_head:{e})")
+            head = b""
+
+        if head.startswith(b"PGDMP"):
+            # pg_dump -Fc 二进制归档 → pg_restore
+            cmd = ["pg_restore", "--no-owner", "--no-acl", "--clean", "--if-exists",
+                   "-d", db_url, str(pg_file)]
+        else:
+            # 纯文本 SQL → psql
+            cmd = ["psql", db_url, "-v", "ON_ERROR_STOP=1", "-f", str(pg_file)]
+
         try:
             env = os.environ.copy()
             result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=settings.BACKUP_TIMEOUT)
             results.append("pg=✓" if result.returncode == 0 else f"pg=FAIL({result.stderr.strip()[:200]})")
+        except FileNotFoundError as e:
+            results.append(f"pg=FAIL(binary_not_found:{cmd[0]})")
         except Exception as e:
             results.append(f"pg=FAIL({e})")
     else:
