@@ -1317,14 +1317,16 @@ async def _process_literature_async(
                 _written_count += 1
             except IntegrityError as _ie:
                 # 唯一约束冲突 (uq_dp_lit_fingerprint) — 来自并发写入或应用层前置查重窗口不一致
+                # V4-02: 不再 Session.rollback() — begin_nested() 异常退出时 SQLAlchemy
+                #        已自动发 ROLLBACK TO SAVEPOINT；外层事务完好，Session 级回滚
+                #        反而会把本批次此前已 flush 的数据点全部作废
                 _skipped_by_constraint += 1
                 logger.warning(
-                    f"[V3-02] 唯一约束拦截重复点，已跳过: "
+                    f"[V4-02] 唯一约束拦截重复点，已跳过（SAVEPOINT 已自动回滚，无需 Session.rollback）: "
                     f"disease={dp.disease} province={dp.province} city={dp.city} "
                     f"type={dp.data_type} year={dp.collection_year} "
                     f"fingerprint={dp.content_fingerprint[:16]}"
                 )
-                await db.rollback()  # 确保 savepoint 回滚干净
                 continue
 
         # 5c. P2-tt 试点：持久化 LLM 提取到的滴度矩阵（TiterTable）
