@@ -505,6 +505,9 @@ async def _extract_result_to_datapoints(
         "llm_raw_snapshot": extract_result,
         # P1-1：主估计/子估计层级
         "estimate_type": cleaned.get("estimate_type", "primary"),
+        # V2-04：Prompt/Schema v2 分母语义标签 + 数值说明（落库闭环）
+        "denominator_type": cleaned.get("denominator_type"),
+        "value_note": cleaned.get("value_note"),
     }
 
     # P1-1：记录 parent_group 标识，供主流程归并子估计的 parent_id

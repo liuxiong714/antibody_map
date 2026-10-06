@@ -346,15 +346,15 @@ async def merge_literatures(
             moved += 1
         elif dp_conflict_strategy == "prefer_target":
             # P1-B3: 物理删除 → 软标记 rejected（保留数据，可后续审核恢复）
+            # V2-06: review_reason 列已落库，直接标记原因（合并冲突 vs 人工驳回）
             s_dp.review_status = "rejected"
-            s_dp.review_reason = "merged_conflict_prefer_target" if hasattr(s_dp, 'review_reason') else None
+            s_dp.review_reason = "merged_conflict_prefer_target"
             soft_rejected += 1
         elif dp_conflict_strategy == "prefer_source":
             for t in conflict_tgts:
-                # P1-B3: 物理删除 → 软标记 rejected
+                # P1-B3 + V2-06: 直接标记 review_reason，区分合并冲突与人工驳回
                 t.review_status = "rejected"
-                if hasattr(t, 'review_reason'):
-                    t.review_reason = "merged_conflict_prefer_source"
+                t.review_reason = "merged_conflict_prefer_source"
                 t_dps.remove(t)
             s_dp.literature_id = target_id
             moved += 1

@@ -115,6 +115,16 @@ class DataPoint(Base):
     # numerator/denominator: 分子分母（epi/pathogen 常用）
     numerator: Mapped[float | None] = mapped_column(Numeric(14, 4))
     denominator: Mapped[float | None] = mapped_column(Numeric(14, 4))
+    # V2-04: denominator_type — 分母口径语义标签（与数值 denominator 解耦）
+    # 取值: serum_samples/population/cases/specimens/animals/unknown
+    # 来源: Prompt/Schema v2 要求 LLM 显式标注分母类型
+    denominator_type: Mapped[str | None] = mapped_column(String(20))
+    # V2-04: value_note — 数值说明（如 "range" 区间取中值、"<10" 检出限）
+    # 来源: Prompt/Schema v2 硬约束要求越界值填 null + value_note
+    value_note: Mapped[str | None] = mapped_column(String(100))
+    # V2-06: review_reason — rejected 原因（区分合并冲突/人工驳回）
+    # 取值: merged_conflict_prefer_target / merged_conflict_prefer_source / None
+    review_reason: Mapped[str | None] = mapped_column(String(64))
     # period_type/period_month: 时间粒度（epi 周/月/季数据）
     period_type: Mapped[str] = mapped_column(
         String(20), default="year",
