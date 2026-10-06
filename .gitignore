@@ -79,6 +79,7 @@ backend/scripts/*.py
 !backend/scripts/fix_folder_import_titles.py
 # 例外：fix_stuck_processing.py 是 V2-01 阻塞修复的配套存量数据修复脚本，需入库
 !backend/scripts/fix_stuck_processing.py
+!backend/scripts/backfill_dp_fingerprint.py
 # 下划线前缀的临时调试脚本
 backend/data/_*.py
 backend/data/_*.sh

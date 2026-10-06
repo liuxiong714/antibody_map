@@ -125,6 +125,10 @@ class DataPoint(Base):
     # V2-06: review_reason — rejected 原因（区分合并冲突/人工驳回）
     # 取值: merged_conflict_prefer_target / merged_conflict_prefer_source / None
     review_reason: Mapped[str | None] = mapped_column(String(64))
+    # V2-05: content_fingerprint — 7 字段去重 key 的 SHA256 指纹
+    # 用于 DB 层唯一约束，防止多 worker 并发写入重复点（TOCTOU 竞态）
+    # 算法: sha256(f"{disease}|{province}|{city}|{data_type}|{age_min}|{age_max}|{collection_year}|{round(value,6)}")
+    content_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     # period_type/period_month: 时间粒度（epi 周/月/季数据）
     period_type: Mapped[str] = mapped_column(
         String(20), default="year",

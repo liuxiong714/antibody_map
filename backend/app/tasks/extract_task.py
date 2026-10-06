@@ -1298,6 +1298,23 @@ async def _process_literature_async(
         for dp in all_data_points:
             dp.model_used = _history_model
             dp.extraction_history_id = _history_id
+            # V2-05: 写前计算 content_fingerprint（与回填脚本算法一致）
+            # 多 worker 并发时 DB 唯一约束会拦截重复；应用层提前算好可减少重复插入尝试
+            try:
+                _v = round(dp.value, 6) if dp.value is not None else None
+                _fp_parts = [
+                    str(dp.disease or "NULL"),
+                    str(dp.province or "NULL"),
+                    str(dp.city or "NULL"),
+                    str(dp.data_type or "NULL"),
+                    str(dp.age_min if dp.age_min is not None else "NULL"),
+                    str(dp.age_max if dp.age_max is not None else "NULL"),
+                    str(dp.collection_year if dp.collection_year is not None else "NULL"),
+                    str(_v if _v is not None else "NULL"),
+                ]
+                dp.content_fingerprint = hashlib.sha256("|".join(_fp_parts).encode("utf-8")).hexdigest()
+            except Exception as _fe:
+                logger.warning(f"V2-05 fingerprint 计算失败（不阻塞写库）: {_fe}")
             db.add(dp)
 
         # 5c. P2-tt 试点：持久化 LLM 提取到的滴度矩阵（TiterTable）
