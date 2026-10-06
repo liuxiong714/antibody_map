@@ -65,18 +65,25 @@ class TestIntegrityErrorSafetyNet:
         assert "except IntegrityError" in src or "except IntegrityError as" in src, \
             "IntegrityError 未在写库循环捕获"
 
-    def test_rollback_in_error_path(self):
-        """IntegrityError 分支里必须显式 rollback。"""
+    def test_no_session_rollback_in_integrity_error_branch(self):
+        """V4-04 升级: IntegrityError 分支里**不应**有 Session.rollback()。
+
+        历史: V3-02 原始设计要求 rollback，但 V4-02 证明 begin_nested() 异常退出时
+        SQLAlchemy 已自动 ROLLBACK TO SAVEPOINT；外层事务完好。再 Session.rollback()
+        会把本批次此前已 flush 的数据点全部作废。
+        本断言**反转** V3-02 的旧要求 —— 检查 IntegrityError 分支里没有 await db.rollback()。
+        """
         from app.tasks import extract_task
         src = inspect.getsource(extract_task)
-        # 找 "except IntegrityError" 分支位置 (而非 import 行)
+        # 定位 IntegrityError except 块
         idx = src.find("except IntegrityError")
         if idx == -1:
             idx = src.find("except IntegrityError as")
         assert idx != -1, "IntegrityError 分支未找到"
-        window = src[idx:idx + 800]  # 后 800 字足以覆盖整个 except 块
-        assert "rollback" in window, \
-            "IntegrityError 分支里无 rollback (savepoint 回滚)"
+        window = src[idx:idx + 1500]  # 覆盖整个 except 块 + 后续 break/continue
+        # V4-02 修复后：except 块里不应出现 Session 级 rollback
+        assert "await db.rollback()" not in window, \
+            "IntegrityError 分支里不应该有 Session.rollback() —— begin_nested() 已自动 ROLLBACK TO SAVEPOINT"
 
     def test_skipped_counter_exists(self):
         """_skipped_by_constraint 计数器必须存在。"""
