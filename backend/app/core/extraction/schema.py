@@ -196,6 +196,10 @@ EXTRACTION_JSON_SCHEMA = {
                 "authors": {"type": ["string", "null"]},
                 "author_affiliations": {"type": ["string", "null"]},
                 "pub_year": {"type": ["integer", "null"]},
+                # V2-07: Prompt 硬约束要求空结果合法化 → article.notes(≤30字)说明原因
+                # 原来 JSON Schema article.properties 缺 notes + additionalProperties: False
+                # 导致 LLM 输出 notes 时校验失败被丢弃
+                "notes": {"type": ["string", "null"], "maxLength": 30},
             },
         },
         "data_points": {

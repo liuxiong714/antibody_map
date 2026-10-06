@@ -44,6 +44,42 @@ def _data_snapshot_hash(rows) -> str | None:
     return hashlib.sha256(payload).hexdigest()
 
 
+async def _verify_report_tracing(rows: list[DataPoint]) -> dict:
+    """V2-08: 报告数值可溯源校验 — 统计审核通过但未溯源的数据点。
+
+    核心意图: 报告应该只基于 is_grounded=True 的数据点生成，
+    否则输出的分析结论可能基于幻觉数值。
+    本函数返回校验摘要（不会阻断报告生成，只返回警告供前端/调用方展示）。
+
+    返回: {"total": int, "ungrounded": int, "ungrounded_ids": list[str],
+           "missing_context": int, "missing_ids": list[str], "warnings": list[str]}
+    """
+    total = len(rows)
+    ungrounded = [r for r in rows if getattr(r, "is_grounded", None) is False]
+    missing_ctx = [r for r in rows
+                   if (not getattr(r, "source_context", None) or
+                       len((r.source_context or "").strip()) < 10)]
+    warnings: list[str] = []
+    if ungrounded:
+        warnings.append(
+            f"⚠️ 报告数据源包含 {len(ungrounded)}/{total} 个未溯源数据点"
+            f"（is_grounded=False），建议排除后再生成正式报告"
+        )
+    if missing_ctx:
+        warnings.append(
+            f"⚠️ {len(missing_ctx)}/{total} 个数据点缺少 source_context 溯源文本（<10字），"
+            f"数值可追溯性不足"
+        )
+    return {
+        "total": total,
+        "ungrounded": len(ungrounded),
+        "ungrounded_ids": [str(getattr(r, "id", f"idx_{i}")) for i, r in enumerate(ungrounded[:50])],
+        "missing_context": len(missing_ctx),
+        "missing_ids": [str(getattr(r, "id", f"idx_{i}")) for i, r in enumerate(missing_ctx[:50])],
+        "warnings": warnings,
+    }
+
+
 async def _fetch_source_literatures(
     db: AsyncSession, rows: list[DataPoint]
 ) -> list[dict]:
@@ -1157,6 +1193,14 @@ async def generate_report(
 
     if not rows:
         raise ValueError("没有找到审核通过的数据，无法生成报告")
+
+    # V2-08: 报告数值可溯源校验（收集警告不阻断生成）
+    tracing_verify = await _verify_report_tracing(rows)
+    if tracing_verify["warnings"]:
+        import logging as _rl
+        _rl.getLogger("report_service").warning(
+            f"V2-08 报告溯源校验发现警告: {tracing_verify['warnings']}"
+        )
 
     # B5: 在释放事务连接前，先拉取数据来源文献元数据（Literature 查询仍需要活的 session）
     source_literatures = await _fetch_source_literatures(db, rows)

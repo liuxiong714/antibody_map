@@ -1404,6 +1404,19 @@ async def compute_multi_assessment(db: AsyncSession, task_id: uuid.UUID) -> dict
         "by_literature": multi_bl,
         "stability": stability,
     }
+    # V2-13: 评测去自证检测 — 如果被测模型恰好就是生成 GT 的 reference_model
+    # 且来源是 existing（GT 由 LLM 提取生成，非 implanted 真值），
+    # 则评测存在自证偏差（模型用自己的提取结果当答案对自己打分），
+    # 必须在报告顶部标红 warning，提示科研人员排除该模型
+    _self_ref_models = [m for m in labels if m == task.reference_model
+                        and task.literature_source == "existing"]
+    if _self_ref_models:
+        multi["warnings"] = [
+            f"自证偏差检测: 模型 {_self_ref_models} 同时是 GT 生成模型，"
+            f"评测结果存在自证偏差，请排除后再做最终结论"
+        ]
+    else:
+        multi["warnings"] = []
     report = dict(first)
     report["multi_model"] = multi
     task.report_json = report

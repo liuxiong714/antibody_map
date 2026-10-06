@@ -47,8 +47,11 @@ def _pg_dump() -> tuple[bool, str]:
 
     cmd = [
         "pg_dump",
+        # V2-09: -Fc 自定义压缩格式（支持并行恢复 + 更低存储占用）
+        # 原代码纯 SQL 明文，大库场景恢复慢且占用大
         "--no-owner",
         "--no-privileges",
+        "-Fc",
         "--file", str(dump_file),
         libpq_url,
     ]
