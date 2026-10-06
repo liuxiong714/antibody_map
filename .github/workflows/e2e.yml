@@ -1,0 +1,91 @@
+# V5-02 / V5-06: E2E 端到端测试（备份恢复 / 提取落库 / 幂等 / 报告溯源）
+#
+# 触发方式:
+#   - workflow_dispatch: 在 GitHub Actions 页面手动点 "Run workflow"
+#   - schedule: 每周一 06:00 UTC（nightly）
+#   - 不自动触发 push/PR —— 避免拖慢每次 commit 的反馈循环
+#
+# 依赖: postgres:15-alpine（自带 pg_dump/pg_restore/psql）
+
+name: E2E Tests
+
+on:
+  workflow_dispatch:          # 手动触发
+  schedule:
+    - cron: "0 6 * * 1"        # 每周一 06:00 UTC = 北京时间 14:00
+
+jobs:
+  e2e:
+    name: Backup restore + Extract conflict + Idempotent + Report tracing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      DATABASE_URL: "postgresql+asyncpg://antibody:antibody_test_pw@localhost:5432/antibody_map_e2e"
+      SECRET_KEY: "e2e-only-non-prod-secret-key-0123456789abcdef"
+      APP_ENV: "development"
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: antibody_map_e2e
+          POSTGRES_USER: antibody
+          POSTGRES_PASSWORD: antibody_test_pw
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        command: redis-server --requirepass antibody_test_pw
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli -a antibody_test_pw ping | grep -q PONG"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt -r requirements-dev.txt
+          # 确认 pg_dump/psql 在 CI 上可用（postgres 镜像自带）
+          apt-get update -qq && apt-get install -y -qq postgresql-client > /dev/null
+          which pg_dump pg_restore psql
+
+      - name: Run Alembic migrations
+        run: |
+          cd backend
+          alembic upgrade head
+
+      - name: Run E2E tests (all 6 suites)
+        run: |
+          cd backend
+          pytest tests/e2e/ -v --run-e2e --tb=short 2>&1 | tee /tmp/e2e.log
+        # 所有 E2E 必须全绿才通过
+
+      - name: Upload E2E log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-log
+          path: /tmp/e2e.log
