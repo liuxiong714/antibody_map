@@ -2,7 +2,7 @@
 
 ## v1.33.1 (2026-10-06) — V2 系列阻塞修复 + 高优先闭环
 
-> 基于 v1.33.0 运行一周暴露的阻塞级缺陷 + 改进实施方案 v2 第二轮审计，共 **8 个 commit、14 张 V2 卡落地**、新增 **23 组守护测试**（测试总量 1129 passed）。
+> 基于 v1.33.0 运行一周暴露的阻塞级缺陷 + 改进实施方案 v2 第二轮审计，共 **10 个 commit、16 张 V2 卡全部落地**、新增 **23 组守护测试**（测试总量 1130 passed）、**新增唯一索引迁移 uq_dp_content_fingerprint**。
 
 ### 阻塞级修复（2 张卡 — 原先会导致系统无法启动 / 状态永久滞留）
 
@@ -13,7 +13,7 @@
 
 - **V2-03 — KG_QA_INCLUDE_UNREVIEWED 默认值 True→False**（`app/config.py` + `.env.example`）：原代码 `getattr(settings, "KG_QA_INCLUDE_UNREVIEWED", False)` 因 Settings 上该属性存在且默认 True 导致实际仍纳入未审核数据。
 - **V2-04 — denominator_type / value_note 落库闭环**（`models/data_point.py` + `tasks/extract_task.py` + 新迁移）：Prompt v2 新增的分母语义标签与数值说明原先只在校验瞬间使用、校验完丢失；现已落库，前端可展示、二次审计。
-- **V2-05 — content_fingerprint 7 字段 SHA256 指纹 + 回填脚本**（`models/data_point.py` + `tasks/extract_task.py` + `scripts/backfill_dp_fingerprint.py`）：原跨批次查重只有应用层前置查询，多 Celery worker 并发时 TOCTOU 竞态仍可能写入重复点；现已写库前自动算指纹 + 迁移建列，回填脚本支持 `--dry-run` 审计存量重复。**唯一索引 Step 3 需审计通过后手动执行**。
+- **V2-05 — content_fingerprint 7 字段 SHA256 指纹 + 回填 + 唯一索引**（`models/data_point.py` + `tasks/extract_task.py` + `scripts/backfill_dp_fingerprint.py` + 新迁移 `uq_dp_content_fingerprint`）：原跨批次查重只有应用层前置查询，多 Celery worker 并发时 TOCTOU 竞态仍可能写入重复点。三步闭环：Step1 建列 + 写库前自动算指纹；Step2 回填 1361 行（100%）并标记 4 组历史真重复为 `review_status='rejected'`（同文献 42ca44e8，指纹相同的非 rejected 行唯一保留最早写入的）；Step3 建 partial 唯一索引 `uq_dp_lit_fingerprint(literature_id, content_fingerprint) WHERE review_status!='rejected'`，幂等 DO $$ DROP IF EXISTS $$ + 正式迁移可重入。backfill 脚本修正了两处遗留 bug（import 路径 `app.models.base.get_async_session` 而非 `app.core.database`、`async for` generator 用法）。
 - **V2-06 — review_reason 列 + 合并语义修正**（`models/data_point.py` + `services/literature/duplicates.py`）：原 `duplicates.py` 用 `hasattr(s_dp, 'review_reason')` 保护但 DataPoint 无此列 → hasattr 恒 False → 合并产生的 rejected 点与人工驳回语义无法区分。
 - **V2-11 — not_grounded 单独存在时 confidence 降级为 low**（`tasks/extract_task.py`）：原代码把 not_grounded 留在 medium 导致未溯源点无法进入人工重点审核队列。
 - **V2-12 — batch_confirm 拦截从 `except: pass` 改为保守拦截**（`api/v1/extraction.py`）：任何查询异常都会静默吞掉拦截导致未溯源点可批量通过；现改为 raise HTTPException(500, ...) 保护数据质量。
@@ -40,12 +40,14 @@
 
 ### 已知遗留
 
-- V2-05 Step 3（`CREATE UNIQUE INDEX CONCURRENTLY uq_dp_lit_fingerprint`）：**必须先跑 `backfill_dp_fingerprint.py --apply` 审计存量重复，无重复后才能执行**，否则会直接失败
-- V2-16 `.env.example` 79 个缺失变量：建议分批按需补充（避免单次追加撑爆文档）
+- **生产环境零停机建索引**：开发库用的是普通 `CREATE UNIQUE INDEX`（事务内），生产库建议 `CREATE UNIQUE INDEX CONCURRENTLY`（脚本注释里已写），因 CONCURRENTLY 不能在事务内执行故走独立 psql shell
+- **.env.example 79 个 Settings 字段未文档化**：建议分批按需补充，避免一次性撑爆文件
 
-### Commit 链
+### Commit 链（共 10 个 commit，全部落地）
 
 ```
+d9a28bb fix(V2-05 Step 3): backfill script fix + 唯一索引迁移 + reject 4 行历史重复
+0a81a5a docs: changelog v1.33.1 追加 V2 系列 8 commit / 14 卡 / 23 守护测试
 df156ce fix(V2-10,V2-14,V2-16): contact matrix source+disclaimer + HOME cache mounts + env diff script
 3306b42 test(V2-15): +23 guard tests covering ALL V2 series changes
 0b2b211 fix(V2-07,V2-08,V2-09,V2-13): schema对齐+报告溯源校验+备份格式+评测去自证
