@@ -448,16 +448,17 @@ async def _extract_result_to_datapoints(
     reasons = flags.schema_issues
     if not grounding.is_grounded:
         reasons = [*reasons, "not_grounded"]
+    # V2-11 修复：not_grounded 单独存在时也降为 low
+    # 原代码 (456-459) 把 not_grounded 单独情况留在 medium，
+    # 导致未溯源点无法进入人工重点审核队列
     if "province_not_in_enum" in reasons:
         confidence = "low"
     if "value_out_of_range" in reasons:
         confidence = "low"
     if "suspected_fraction" in reasons:
         confidence = "low"
-    if "not_grounded" in reasons and confidence != "low":
-        # 非 grounding 单独仅降为 medium（保留人工判断空间），如果还有其他问题 -> low
-        # 这里保持默认 medium，不做更严降级
-        pass
+    if "not_grounded" in reasons:
+        confidence = "low"
     if len(reasons) >= 2:
         confidence = "low"
 

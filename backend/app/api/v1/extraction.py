@@ -866,7 +866,8 @@ async def batch_confirm(
     current_user: User = Depends(get_current_user),
 ):
     """批量审核通过"""
-    # 5.4: 拦截 is_grounded=False 的点 —— 默认不允许批量通过未溯源的数据点
+    # V2-12 修复：拦截 is_grounded=False 的点 —— 默认不允许批量通过未溯源的数据点
+    # 原先 except Exception: pass 会让查询异常静默吞掉，拦截彻底失效
     ungrounded_ids: list[uuid.UUID] = []
     try:
         _ug_res = await db.execute(
@@ -876,8 +877,19 @@ async def batch_confirm(
             )
         )
         ungrounded_ids = list(_ug_res.scalars().all())
-    except Exception:
-        pass  # is_grounded 列不存在时兜底跳过
+    except Exception as _ug_err:
+        # V2-12 修复：异常时按保守策略处理 — 拒绝放行（宁可慢也不静默通过未溯源点）
+        import logging as _logging
+        _logging.getLogger("api.v1.extraction").warning(
+            f"V2-12: batch_confirm 溯源查询异常，保守拦截全部请求: {_ug_err}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "溯源校验查询异常，为保护数据质量已保守拦截本次批量审核。"
+                f"错误: {type(_ug_err).__name__}: {_ug_err}"
+            ),
+        ) from _ug_err
 
     if ungrounded_ids:
         raise HTTPException(
