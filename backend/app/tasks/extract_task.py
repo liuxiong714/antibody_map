@@ -1142,7 +1142,8 @@ async def _process_literature_async(
 
             # (a) 写一条 cache_hit 的 history（token/cost/duration = 0，便于审计与成本统计）
             # 缓存命中意味着 LLM 没被调用，所有与 LLM 相关的指标都为 0
-            _hit_grounded = sum(1 for r in extract_results if getattr(r, "is_grounded", False))
+            # V3-10: 缓存元素是 dict (json.loads 产物), 必须用 _safe_get 兼容 dict/object
+            _hit_grounded = sum(1 for r in extract_results if _safe_get(r, "is_grounded", False))
             _hit_grounding_rate = (_hit_grounded / _hit_count) if _hit_count else None
             try:
                 _hit_hist = ExtractionHistory(
@@ -1960,3 +1961,15 @@ def _compute_dp_fingerprint(dp) -> str:
         str(v if v is not None else "NULL"),
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _safe_get(obj, key: str, default=None):
+    """V3-10: ͬʱ���� dict �� object (Pydantic model) �����Զ�ȡ��
+
+    �������г����� extract_results Ԫ���� dict (json.loads ����),
+    ���� LLM ·�����ܷ��� Pydantic model �� dict��
+    ͳһ������������� getattr(dict, key, default) �㷵�� default��
+    """
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
