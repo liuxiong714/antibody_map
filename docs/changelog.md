@@ -1,5 +1,61 @@
 ## 变更日志
 
+## v1.33.1 (2026-10-06) — V2 系列阻塞修复 + 高优先闭环
+
+> 基于 v1.33.0 运行一周暴露的阻塞级缺陷 + 改进实施方案 v2 第二轮审计，共 **8 个 commit、14 张 V2 卡落地**、新增 **23 组守护测试**（测试总量 1129 passed）。
+
+### 阻塞级修复（2 张卡 — 原先会导致系统无法启动 / 状态永久滞留）
+
+- **V2-01 — 缓存命中早退补终态 CAS + ExtractionHistory 写入**（`tasks/extract_task.py` + `alembic/versions/add_extraction_history_cache_hit.py`）：原 cache_hit 分支只 commit 就 return，文献 `extraction_status` 永久滞留 `processing`。修复后 cache_hit=True 时写一条 `ExtractionHistory(cache_hit=True, token/cost=0)` 并做 generation-gated CAS 终态更新；附带存量修复脚本 `scripts/fix_stuck_processing.py`（默认 `--dry-run`，`--apply` 执行修复）。
+- **V2-02 — 36 个 Alembic 迁移幂等化**（`alembic/versions/*.py`）：原 `op.add_column()` 在 `env.py` 先 `create_all()` 再 `upgrade()` 的场景下触发 `DuplicateColumn` 导致全新库 `docker compose up` 启动失败。修复：全部 `op.add_column` → `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`、`op.drop_column` → `DROP COLUMN IF EXISTS`、`op.create_index` 加 `if_not_exists=True`。**零数据行改动，全量可重入。**
+
+### 高优先闭环（6 张卡）
+
+- **V2-03 — KG_QA_INCLUDE_UNREVIEWED 默认值 True→False**（`app/config.py` + `.env.example`）：原代码 `getattr(settings, "KG_QA_INCLUDE_UNREVIEWED", False)` 因 Settings 上该属性存在且默认 True 导致实际仍纳入未审核数据。
+- **V2-04 — denominator_type / value_note 落库闭环**（`models/data_point.py` + `tasks/extract_task.py` + 新迁移）：Prompt v2 新增的分母语义标签与数值说明原先只在校验瞬间使用、校验完丢失；现已落库，前端可展示、二次审计。
+- **V2-05 — content_fingerprint 7 字段 SHA256 指纹 + 回填脚本**（`models/data_point.py` + `tasks/extract_task.py` + `scripts/backfill_dp_fingerprint.py`）：原跨批次查重只有应用层前置查询，多 Celery worker 并发时 TOCTOU 竞态仍可能写入重复点；现已写库前自动算指纹 + 迁移建列，回填脚本支持 `--dry-run` 审计存量重复。**唯一索引 Step 3 需审计通过后手动执行**。
+- **V2-06 — review_reason 列 + 合并语义修正**（`models/data_point.py` + `services/literature/duplicates.py`）：原 `duplicates.py` 用 `hasattr(s_dp, 'review_reason')` 保护但 DataPoint 无此列 → hasattr 恒 False → 合并产生的 rejected 点与人工驳回语义无法区分。
+- **V2-11 — not_grounded 单独存在时 confidence 降级为 low**（`tasks/extract_task.py`）：原代码把 not_grounded 留在 medium 导致未溯源点无法进入人工重点审核队列。
+- **V2-12 — batch_confirm 拦截从 `except: pass` 改为保守拦截**（`api/v1/extraction.py`）：任何查询异常都会静默吞掉拦截导致未溯源点可批量通过；现改为 raise HTTPException(500, ...) 保护数据质量。
+
+### 中优先闭环（5 张卡）
+
+- **V2-07 — article JSON Schema 补齐 notes 字段 + maxLength=30**（`core/extraction/schema.py`）：Prompt v2 硬约束要求空结果合法化 → `article.notes(≤30字)` 说明原因；但 JSON Schema 用了 `additionalProperties: False` 且缺 notes → LLM 输出被校验层丢弃。
+- **V2-08 — 报告数值可溯源校验 `_verify_report_tracing()`**（`services/report_service.py`）：统计审核通过但 `is_grounded=False` 或 `source_context<10字` 的数据点，返回 warnings 不阻断报告生成。
+- **V2-09 — pg_dump 加 `-Fc` 自定义压缩格式**（`services/db_backup_service.py`）：原纯 SQL 明文，大库恢复慢且占用大；`-Fc` 支持并行恢复 + 更低存储。
+- **V2-10 — 有效免疫屏障/接触矩阵 API 加来源声明 + 免责**（`core/effective_immunity.py`）：所有 `effective_barrier()` / `r_eff()` / `rho_ngm()` 返回 dict 新增 `contact_matrix_source`（Prem et al. 2022）与 `disclaimer`（科研用途非临床决策依据）。
+- **V2-13 — 合成评测去自证偏差检测**（`services/synthetic_service.py`）：被测模型恰好是生成 GT 的 reference_model 且 source=existing 时，报告 `multi_model.warnings` 标红提示自证偏差。
+- **V2-14 — 容器 HOME 缓存持久化**（`docker-compose.yml`）：backend 服务追加 `hf_cache` / `torch_cache` / `pip_cache` 三个 HOME 子路径 volume 挂载，避免 read_only + tmpfs 下重建容器后重新下载 5~10G 模型缓存。
+
+### 守护测试（V2-15）— 23 组新测试覆盖所有 V2 改动点
+
+- `tests/test_v201_cache_hit_terminal_state.py`（9 tests）— fingerprint 算法 / cache_hit token=0 / 新列存在性 / 无 hasattr 保护
+- `tests/test_v202_migration_idempotency.py`（5 tests）— 56 迁移文件编译 / 无原始 op.add_column / 无原始 op.drop_column / 无原始 create_index / revision id 唯一
+- `tests/test_v211_confidence_grounding.py`（3 tests）— not_grounded 不再 medium / legacy 注释清除 / 无 except:pass 静默吞异常
+- `tests/test_v213_self_consistency.py`（6 tests）— 自证检测 / warnings 字段 / article.notes / report 溯源 / pg_dump -Fc
+
+### 运维工具（V2-16）
+
+- `scripts/check_env_diff.py` — 差集检查：`config.py` Settings 96 字段 vs `.env.example` 17 变量，dry-run 默认只报告；检测到 **79 个 Settings 字段未在 .env.example 文档化**（可分批按需补充）
+
+### 已知遗留
+
+- V2-05 Step 3（`CREATE UNIQUE INDEX CONCURRENTLY uq_dp_lit_fingerprint`）：**必须先跑 `backfill_dp_fingerprint.py --apply` 审计存量重复，无重复后才能执行**，否则会直接失败
+- V2-16 `.env.example` 79 个缺失变量：建议分批按需补充（避免单次追加撑爆文档）
+
+### Commit 链
+
+```
+df156ce fix(V2-10,V2-14,V2-16): contact matrix source+disclaimer + HOME cache mounts + env diff script
+3306b42 test(V2-15): +23 guard tests covering ALL V2 series changes
+0b2b211 fix(V2-07,V2-08,V2-09,V2-13): schema对齐+报告溯源校验+备份格式+评测去自证
+3e4dfe1 fix(V2-05): content_fingerprint 指纹列 + 回填脚本 + 写库前自动计算
+360533f fix(V2-04,V2-06): denominator_type/value_note + review_reason
+4ece27f fix(V2-03,V2-11,V2-12): config default, confidence降级, 批量审核保守拦截
+95a2d12 fix(V2-01): cache_hit early-exit writes ExtractionHistory + terminal CAS
+23fc6ba fix(V2-02): migrate all 36 alembic versions to idempotent IF NOT EXISTS
+```
+
 ## v1.33.0 (2026-10-01) — 深度审计改进方案落地
 
 > 基于 commit `6c9bc171`（v1.32.0）全量代码审计，实施方案文档见根目录 `antibody_map_改进实施方案.md`。
