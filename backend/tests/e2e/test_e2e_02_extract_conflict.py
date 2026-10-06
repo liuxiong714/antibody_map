@@ -64,22 +64,18 @@ async def test_extract_with_conflict_resolved():
         )
         new2.content_fingerprint = _compute_dp_fingerprint(new2)
 
-        # 4. begin_nested 写库循环（V4-02 核心场景）
-        inserted = []; skipped = 0
-        for dp in [conflict, new1, new2]:
-            async with db.begin_nested():
-                try:
-                    db.add(dp)
-                    await db.flush()
-                    inserted.append(dp)
-                except _IE:
-                    skipped += 1
-                    continue  # V4-02: 这里不应再 rollback
+        # 4. V5-01: 直接调生产函数 persist_data_points — 消除影子循环
+        from app.tasks.extract_task import persist_data_points
+        written, skipped = await persist_data_points(
+            db, [conflict, new1, new2],
+            history_model="e2e",
+            history_id=str(uuid.uuid4()),
+        )
         await db.commit()
 
         # 5. 断言
         assert skipped == 1, f"应有 1 冲突被 skip, 实际 {skipped}"
-        assert len(inserted) == 2, f"应有 2 新点插入, 实际 {len(inserted)}"
+        assert written == 2, f"应有 2 新点插入, 实际 {written}"
 
         # 6. 最终行数: 1 existing + 2 new = 3
         cnt = (await db.execute(sa.text(

@@ -1,16 +1,17 @@
-﻿"""V4-02 行为级守护测试：SAVEPOINT + IntegrityError 分支 **不能** 再调 Session.rollback()
+﻿"""V4-02 + V5-01 行为级守护测试 — 直接调生产函数 persist_data_points()
 
-背景：V3-02 修复唯一约束冲突时，except 分支里多写了 `await db.rollback()` ——
-begin_nested() 异常退出时 SQLAlchemy 已自动发 ROLLBACK TO SAVEPOINT，外层事务完好。
-此时再调 Session.rollback() 会把外层事务里本批次此前已 flush 的数据点全部作废。
-症状：冲突点之后的点保留，冲突点之前的点丢失。
+V4-02 背景：except 分支里多写了 `await db.rollback()` ——
+  begin_nested() 异常退出时 SQLAlchemy 已自动发 ROLLBACK TO SAVEPOINT，外层事务完好。
+  此时再调 Session.rollback() 会把外层事务里本批次此前已 flush 的数据点全部作废。
 
-本测试：真实 PostgreSQL + 真实唯一约束 + 真实 Session。
-       预置冲突点 → 跑写库循环 → 断言冲突点前后的点都能保住。
+V5-01 改动（本次）：
+  之前测试里有一个 `_write_batch_with_savepoint` —— 复刻生产循环，**不调用生产代码**，
+  生产回归时测试仍全绿（"影子测试"）。V5-01 把生产循环抽为模块级函数
+  `persist_data_points()`，本测试改成直接调用它。
 
 反向验证（commit 前必须做一次）：
-  临时把 extract_task.py 里删掉的 `await db.rollback()` 加回去 → 本测试应 **失败**
-  再删掉 → 恢复通过（证明测试真能抓到 V4-02 这类语义错误）
+  临时在 persist_data_points() 的 IntegrityError handler 加 `await db.rollback()`
+  → 本测试应 **失败**；再删掉 → 恢复通过（证明测试真能抓到 V4-02 这类语义错误）。
 """
 from __future__ import annotations
 
@@ -59,24 +60,14 @@ def _mk_dp(literature_id, fingerprint_variant: str) -> DataPoint:
     return dp
 
 
-async def _write_batch_with_savepoint(db: AsyncSession, dps: list[DataPoint]) -> tuple[int, int]:
-    """等价于 extract_task.py 的写库循环 —— V4-02 修复后版本（**无** Session.rollback()）。"""
-    from app.tasks.extract_task import _compute_dp_fingerprint
-    _skipped = 0
-    _written = 0
-    for dp in dps:
-        dp.content_fingerprint = _compute_dp_fingerprint(dp)
-        try:
-            async with db.begin_nested():
-                db.add(dp)
-                await db.flush()
-            _written += 1
-        except IntegrityError:
-            # begin_nested() 异常退出时 SQLAlchemy 已自动 ROLLBACK TO SAVEPOINT
-            # V4-02: 此处**不再** await db.rollback()（Session 级回滚会把外层事务全部作废）
-            _skipped += 1
-            continue
-    return _written, _skipped
+async def _test_fixture_function_placeholder(db: AsyncSession, dps: list[DataPoint]) -> tuple[int, int]:
+    """占位：V5-01 前这里是复刻生产循环的 _write_batch_with_savepoint。
+    
+    现在生产循环已抽为模块级 persist_data_points()，测试直接调用它。
+    保留此占位是为了向后兼容 import；生产代码**永不调用**此函数。
+    """
+    from app.tasks.extract_task import persist_data_points
+    raise NotImplementedError("V5-01: 请直接 import persist_data_points 并调用 — 不再使用影子循环")
 
 
 class TestV402SavepointSemantics:
@@ -138,8 +129,13 @@ class TestV402SavepointSemantics:
                 assert _compute_dp_fingerprint(dp1) != existing.content_fingerprint
                 assert _compute_dp_fingerprint(dp3) != existing.content_fingerprint
 
-                # 4) 跑修复后的写库循环
-                written, skipped = await _write_batch_with_savepoint(db, [dp1, dp2, dp3])
+                # 4) V5-01: 直接调生产函数 persist_data_points —— 消除影子测试
+                from app.tasks.extract_task import persist_data_points
+                written, skipped = await persist_data_points(
+                    db, [dp1, dp2, dp3],
+                    history_model="test-model",
+                    history_id=str(hist.id),
+                )
                 await db.commit()
 
                 # 5) 关键断言

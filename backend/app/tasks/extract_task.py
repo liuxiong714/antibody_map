@@ -1300,34 +1300,14 @@ async def _process_literature_async(
         # V3-02: 用 savepoint 隔离单点冲突 + IntegrityError 捕获，
         #        避免唯一约束触发时整篇事务回滚、所有数据点全丢。
         #        指纹计算抽为模块级函数 _compute_dp_fingerprint（供 backfill 复用）。
-        _skipped_by_constraint = 0
-        _written_count = 0
-        for dp in all_data_points:
-            dp.model_used = _history_model
-            dp.extraction_history_id = _history_id
-            try:
-                dp.content_fingerprint = _compute_dp_fingerprint(dp)
-            except Exception as _fe:
-                logger.warning(f"V2-05 fingerprint 计算失败（不阻塞写库）: {_fe}")
-
-            try:
-                async with db.begin_nested():  # SAVEPOINT: 只回滚冲突的那一条
-                    db.add(dp)
-                    await db.flush()
-                _written_count += 1
-            except IntegrityError as _ie:
-                # 唯一约束冲突 (uq_dp_lit_fingerprint) — 来自并发写入或应用层前置查重窗口不一致
-                # V4-02: 不再 Session.rollback() — begin_nested() 异常退出时 SQLAlchemy
-                #        已自动发 ROLLBACK TO SAVEPOINT；外层事务完好，Session 级回滚
-                #        反而会把本批次此前已 flush 的数据点全部作废
-                _skipped_by_constraint += 1
-                logger.warning(
-                    f"[V4-02] 唯一约束拦截重复点，已跳过（SAVEPOINT 已自动回滚，无需 Session.rollback）: "
-                    f"disease={dp.disease} province={dp.province} city={dp.city} "
-                    f"type={dp.data_type} year={dp.collection_year} "
-                    f"fingerprint={dp.content_fingerprint[:16]}"
-                )
-                continue
+        # V5-01: 写库循环抽为模块级生产函数 persist_data_points()
+        #         — 消除"影子测试"（之前循环和测试里的 _write_batch_with_savepoint
+        #           各写一份，生产回归时测试仍全绿）。
+        _written_count, _skipped_by_constraint = await persist_data_points(
+            db, all_data_points,
+            history_model=_history_model,
+            history_id=_history_id,
+        )
 
         # 5c. P2-tt 试点：持久化 LLM 提取到的滴度矩阵（TiterTable）
         # 缓存命中时 titer_tables 直接取自缓存，无需再读 extractor
@@ -1938,6 +1918,66 @@ def process_literature(
             run_async(_mark_failed())
         retry_in = 60 * (2 ** self.request.retries)
         raise self.retry(exc=e, countdown=retry_in) from e
+
+
+async def persist_data_points(
+    db,
+    data_points: list,
+    *,
+    history_model: str,
+    history_id: str,
+) -> tuple[int, int]:
+    """生产级写库函数 — V5-01 从 _process_literature_async 的 for 循环中抽出。
+
+    契约（与调用方和测试三方对齐）:
+      1. 遍历 data_points，逐条设置 model_used / extraction_history_id
+      2. 对每条调 _compute_dp_fingerprint 计算 content_fingerprint
+         （Exception 吞掉 + 打 warning，不阻塞写库）
+      3. 用 db.begin_nested() SAVEPOINT 隔离单点唯一约束冲突
+         （uq_dp_lit_fingerprint 来自并发写入或前置查重窗口不一致）
+      4. IntegrityError → skipped_by_constraint += 1 + continue
+         **绝不**调 Session.rollback()（V4-02: begin_nested() 异常退出时
+         SQLAlchemy 已自动发 ROLLBACK TO SAVEPOINT；外层事务完好，
+         再调 Session.rollback() 会把本批次此前已 flush 的点全部作废）
+
+    返回: (written_count, skipped_by_constraint_count)
+      - written_count: 成功 flush 的 DataPoint 数
+      - skipped_by_constraint_count: 被唯一约束拦截的 DataPoint 数
+
+    为什么存在:
+      之前 _write_batch_with_savepoint 逻辑在生产循环和测试中各写一份（"影子测试"），
+      生产回归时测试仍全绿。V5-01 修复：生产代码和测试**必须**共用这个函数。
+    """
+    written = 0
+    skipped = 0
+    for dp in data_points:
+        dp.model_used = history_model
+        dp.extraction_history_id = history_id
+        try:
+            dp.content_fingerprint = _compute_dp_fingerprint(dp)
+        except Exception as _fe:
+            logger.warning(f"V2-05 fingerprint 计算失败（不阻塞写库）: {_fe}")
+
+        try:
+            async with db.begin_nested():  # SAVEPOINT: 只回滚冲突的那一条
+                db.add(dp)
+                await db.flush()
+            written += 1
+        except IntegrityError as _ie:
+            # 唯一约束冲突 — 来自并发写入或应用层前置查重窗口不一致
+            # V4-02: 不再 Session.rollback() — begin_nested() 异常退出时 SQLAlchemy
+            #        已自动发 ROLLBACK TO SAVEPOINT；外层事务完好，Session 级回滚
+            #        反而会把本批次此前已 flush 的数据点全部作废
+            skipped += 1
+            _fp = getattr(dp, 'content_fingerprint', None) or ''
+            logger.warning(
+                f"[V4-02] 唯一约束拦截重复点，已跳过（SAVEPOINT 已自动回滚，无需 Session.rollback）: "
+                f"disease={dp.disease} province={dp.province} city={dp.city} "
+                f"type={dp.data_type} year={dp.collection_year} "
+                f"fingerprint={_fp[:16]}"
+            )
+            continue
+    return written, skipped
 
 
 def _compute_dp_fingerprint(dp) -> str:
