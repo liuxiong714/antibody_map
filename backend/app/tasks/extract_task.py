@@ -1121,18 +1121,84 @@ async def _process_literature_async(
                     logger.warning(f"文献 {literature_id} superseded 后重置 queued 失败（不影响返回）: {_e}")
             return {"literature_id": str(literature_id), "status": "superseded", "data_point_count": 0}
 
-        # A5: 缓存命中 — 跳过整个落库流程（ExtractionHistory 创建、DataPoint 写库、KG 抽取、审计等）
+        # V2-01 完整方案：缓存命中也写 history + 终态 CAS，避免状态滞留 processing
         # 同一文献同一 Prompt/Schema 版本已经提取过，没必要重复落库造成 DataPoint 重复。
-        # 缓存已经包含完整 extract_results + 元数据，直接返回。
+        # 但必须：① 写一条 cache_hit=True 的 ExtractionHistory（token/cost=0）
+        #       ② 做终态 CAS 把 literature.extraction_status 落定为 done
         if cache_hit:
             _hit_count = len(extract_results)
             _cache_model = effective_model
+            _final_status = "done" if _hit_count else "done_no_data"
             logger.info(
                 f"文献 {literature_id} 缓存命中，跳过落库避免重复 DataPoint"
-                f"（data_points={_hit_count}, model={_cache_model}）"
+                f"（data_points={_hit_count}, model={_cache_model}）。"
+                f"V2-01: 写 cache_hit history + 终态 CAS"
             )
+
+            # (a) 写一条 cache_hit 的 history（token/cost/duration = 0，便于审计与成本统计）
+            # 缓存命中意味着 LLM 没被调用，所有与 LLM 相关的指标都为 0
+            _hit_grounded = sum(1 for r in extract_results if getattr(r, "is_grounded", False))
+            _hit_grounding_rate = (_hit_grounded / _hit_count) if _hit_count else None
+            try:
+                _hit_hist = ExtractionHistory(
+                    literature_id=literature_id,
+                    model=f"{_cache_model} (cached)",
+                    cache_hit=True,
+                    status="success" if _hit_count else "no_data",
+                    data_point_count=_hit_count,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    total_tokens=0,
+                    llm_cost_usd=0,
+                    duration_seconds=0,
+                    grounding_rate=_hit_grounding_rate,
+                    ungrounded_count=_hit_count - _hit_grounded if _hit_count else 0,
+                    llm_call_count=0,
+                )
+                db.add(_hit_hist)
+                await db.flush()
+                logger.info(
+                    f"V2-01 文献 {literature_id} cache_hit history 已写入 "
+                    f"(id={_hit_hist.id}, grounding_rate={_hit_grounding_rate})"
+                )
+            except Exception as _he:
+                logger.warning(f"V2-01 cache_hit history 写入失败（不阻塞终态 CAS）: {_he}")
+                await db.rollback()
+
+            # (b) 终态 CAS：仅当代数未变且仍为 processing 时落定状态
+            # 若 CAS 未命中（generation 变化），说明新任务已接管，放弃更新
             await _stop_heartbeat()
+            _cas_hit = await db.execute(
+                update(Literature)
+                .where(Literature.id == literature_id)
+                .where(Literature.extraction_generation == my_generation)
+                .where(Literature.extraction_status == "processing")
+                .values(
+                    extraction_status=_final_status,
+                    extracted_count=_hit_count,
+                    extraction_started_at=None,
+                    worker_heartbeat=None,
+                    llm_model_used=_cache_model,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            if _cas_hit.rowcount == 0:
+                await db.rollback()
+                logger.warning(
+                    f"V2-01 cache_hit 终态 CAS 未命中（literature={literature_id}, "
+                    f"generation={my_generation}），已被新任务接管或回收"
+                )
+                return {
+                    "literature_id": str(literature_id),
+                    "status": "superseded",
+                    "data_point_count": 0,
+                }
+
             await db.commit()
+            logger.info(
+                f"V2-01 文献 {literature_id} cache_hit 终态落定: "
+                f"status={_final_status}, extracted_count={_hit_count}"
+            )
             return {
                 "literature_id": str(literature_id),
                 "status": "done_cache_hit",

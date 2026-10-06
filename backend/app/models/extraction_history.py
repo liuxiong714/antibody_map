@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,6 +23,8 @@ class ExtractionHistory(Base):
     )
     # 本次提取使用的模型
     model: Mapped[str | None] = mapped_column(String(100))
+    # V2-01: 是否缓存命中（True=跳过 LLM 调用，token/cost=0）
+    cache_hit: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # 状态: success=提取到数据点, no_data=成功但无数据, failed=提取失败,
     #        processing=任务进行中的临时占位（F21 预创建，最终状态在流程尾部回填，提交前必被覆盖）
     status: Mapped[str] = mapped_column(String(20), default="failed", index=True)
