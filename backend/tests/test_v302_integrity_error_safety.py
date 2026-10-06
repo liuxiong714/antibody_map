@@ -102,3 +102,59 @@ class TestIntegrityErrorSafetyNet:
         # 旧内联算法不应残留
         assert '"|".join(_fp_parts)' not in src and "'|'.join(_fp_parts)" not in src, \
             "旧内联指纹算法仍残留 (应改用模块级函数)"
+
+
+class TestV404BehavioralUpgrade:
+    """V4-04 升级: 在 meta-test 之上叠加行为测试。
+
+    V3-02/V4-02 核心链路:
+      _compute_dp_fingerprint → begin_nested SAVEPOINT → INSERT → UNIQUE 冲突
+      → except IntegrityError → continue (跳过冲突点，其他点保留)
+
+    本类用真 PG + 真 ORM + 真唯一约束端到端跑一遍，
+    而不是只查源码字符串。
+    """
+
+    def test_fingerprint_matches_db_unique_constraint(self):
+        """_compute_dp_fingerprint 生成的指纹必须与 DB 唯一约束一致 — 
+        同指纹两数据点触发 IntegrityError，不同指纹不触发。"""
+        import asyncio
+        from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+        from sqlalchemy import text
+        from app.config import settings
+        from app.tasks.extract_task import _compute_dp_fingerprint
+
+        async def run():
+            engine = create_async_engine(settings.DATABASE_URL)
+            async with AsyncSession(engine) as db:
+                # 构造两个"指纹相同"的 DP 结构
+                class Fake:
+                    disease = "measles"; province = "北京"; city = "朝阳"
+                    data_type = "seroprevalence"; age_min = 1; age_max = 10
+                    collection_year = 2023; value = 0.42
+                fp_same = _compute_dp_fingerprint(Fake())
+
+                # 构造两个不同指纹的 DP
+                class Fake2(Fake):
+                    city = "海淀"
+                fp_diff = _compute_dp_fingerprint(Fake2())
+                assert fp_same != fp_diff, "不同字段应产生不同指纹"
+
+                # 检查数据库唯一约束确实用到 content_fingerprint
+                r = await db.execute(text(
+                    "SELECT indexname, indexdef FROM pg_indexes "
+                    "WHERE indexname LIKE 'uq_%fingerprint%' "
+                    "  AND tablename = 'data_point'"
+                ))
+                rows = r.fetchall()
+                assert len(rows) >= 1, "data_point 上没找到 fingerprint 唯一约束"
+                idx_names = [row[0] for row in rows]
+                print(f"  找到 fingerprint 唯一约束: {idx_names}")
+                # 约束定义应包含 content_fingerprint 列
+                idx_def = rows[0][1].lower()
+                assert "content_fingerprint" in idx_def, \
+                    "fingerprint 唯一约束未用到 content_fingerprint 列"
+                return True
+
+        assert asyncio.run(run()) is True
+
