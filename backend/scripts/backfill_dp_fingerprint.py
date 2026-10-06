@@ -35,7 +35,7 @@ if str(_backend_dir) not in sys.path:
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_async_session
+from app.models.base import get_async_session
 from app.models.data_point import DataPoint
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -133,7 +133,7 @@ async def main(apply: bool, show_dup_ids: bool):
     logger.info("模式: %s", "APPLY" if apply else "DRY-RUN")
 
     # Step 1: 审计
-    async with get_async_session() as session:
+    async for session in get_async_session():
         counts = await count_total_and_null(session)
         dup_info = await audit_duplicates(session)
 
@@ -154,7 +154,7 @@ async def main(apply: bool, show_dup_ids: bool):
 
     # Step 2: 回填
     if counts["null_fp"] > 0:
-        async with get_async_session() as session:
+        async for session in get_async_session():
             filled = await backfill(session, apply=apply)
         logger.info("fingerprint 回填: %d 行 (%s)", filled, "已写入" if apply else "预计")
 
