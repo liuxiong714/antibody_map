@@ -20,8 +20,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # 驳回计数：用于区分「已驳回」与「未审核」，仅记录数量不改动存量 approved_count/extracted_count
-    op.add_column('literature', sa.Column('rejected_count', sa.Integer(), nullable=False, server_default='0'))
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS rejected_count INTEGER DEFAULT 0 NOT NULL")
 
 
 def downgrade() -> None:
-    op.drop_column('literature', 'rejected_count')
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS rejected_count")

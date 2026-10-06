@@ -32,60 +32,27 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Add LLM token usage columns to literature table."""
     # 主模型名（调用次数最多的模型）
-    op.add_column('literature', sa.Column(
-        'llm_model_used',
-        sa.String(length=100),
-        nullable=True,
-    ))
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS llm_model_used VARCHAR(100)")
     # 累计输入 token 数
-    op.add_column('literature', sa.Column(
-        'prompt_tokens',
-        sa.Integer(),
-        nullable=False,
-        server_default='0',
-    ))
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS prompt_tokens INTEGER DEFAULT 0 NOT NULL")
     # 累计输出 token 数
-    op.add_column('literature', sa.Column(
-        'completion_tokens',
-        sa.Integer(),
-        nullable=False,
-        server_default='0',
-    ))
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS completion_tokens INTEGER DEFAULT 0 NOT NULL")
     # 累计总 token 数
-    op.add_column('literature', sa.Column(
-        'total_tokens',
-        sa.Integer(),
-        nullable=False,
-        server_default='0',
-    ))
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS total_tokens INTEGER DEFAULT 0 NOT NULL")
     # 估算费用（美元，6 位小数）
-    op.add_column('literature', sa.Column(
-        'llm_cost_usd',
-        sa.Numeric(precision=10, scale=6),
-        nullable=False,
-        server_default='0',
-    ))
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS llm_cost_usd NUMERIC(10,6) DEFAULT 0 NOT NULL")
     # LLM 调用次数
-    op.add_column('literature', sa.Column(
-        'llm_call_count',
-        sa.Integer(),
-        nullable=False,
-        server_default='0',
-    ))
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS llm_call_count INTEGER DEFAULT 0 NOT NULL")
     # 按模型分项明细（JSON）
-    op.add_column('literature', sa.Column(
-        'llm_usage_detail',
-        postgresql.JSON(astext_type=sa.Text()),
-        nullable=True,
-    ))
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS llm_usage_detail JSONB")
 
 
 def downgrade() -> None:
     """Remove LLM token usage columns from literature table."""
-    op.drop_column('literature', 'llm_usage_detail')
-    op.drop_column('literature', 'llm_call_count')
-    op.drop_column('literature', 'llm_cost_usd')
-    op.drop_column('literature', 'total_tokens')
-    op.drop_column('literature', 'completion_tokens')
-    op.drop_column('literature', 'prompt_tokens')
-    op.drop_column('literature', 'llm_model_used')
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS llm_usage_detail")
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS llm_call_count")
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS llm_cost_usd")
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS total_tokens")
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS completion_tokens")
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS prompt_tokens")
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS llm_model_used")

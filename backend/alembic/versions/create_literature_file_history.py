@@ -35,9 +35,9 @@ def upgrade() -> None:
             name='lit_file_history_action_check',
         ),
     )
-    op.create_index('ix_literature_file_history_pdf_hash', 'literature_file_history', ['pdf_hash'])
-    op.create_index('ix_literature_file_history_action', 'literature_file_history', ['action'])
-    op.create_index('ix_literature_file_history_operated_at', 'literature_file_history', ['operated_at'])
+    op.create_index('ix_literature_file_history_pdf_hash', 'literature_file_history', ['pdf_hash'], if_not_exists=True)
+    op.create_index('ix_literature_file_history_action', 'literature_file_history', ['action'], if_not_exists=True)
+    op.create_index('ix_literature_file_history_operated_at', 'literature_file_history', ['operated_at'], if_not_exists=True)
 
 
 def downgrade() -> None:

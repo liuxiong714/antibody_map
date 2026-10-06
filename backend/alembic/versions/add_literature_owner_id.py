@@ -24,14 +24,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add owner_id (nullable) to literature."""
-    op.add_column(
-        'literature',
-        sa.Column('owner_id', postgresql.UUID(as_uuid=True), nullable=True),
-    )
-    op.create_index('ix_literature_owner_id', 'literature', ['owner_id'])
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS owner_id UUID")
+    op.create_index('ix_literature_owner_id', 'literature', ['owner_id'], if_not_exists=True)
 
 
 def downgrade() -> None:
     """Drop owner_id column and its index."""
     op.drop_index('ix_literature_owner_id', table_name='literature')
-    op.drop_column('literature', 'owner_id')
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS owner_id")

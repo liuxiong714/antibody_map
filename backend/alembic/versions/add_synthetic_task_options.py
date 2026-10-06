@@ -20,10 +20,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('synthetic_task', sa.Column('output_format', sa.String(10), server_default='text'))
-    op.add_column('synthetic_task', sa.Column('include_table', sa.Boolean(), server_default=sa.text('true')))
+    op.execute("ALTER TABLE synthetic_task ADD COLUMN IF NOT EXISTS output_format VARCHAR(255) DEFAULT text")
+    op.execute("ALTER TABLE synthetic_task ADD COLUMN IF NOT EXISTS include_table BOOLEAN")
 
 
 def downgrade() -> None:
-    op.drop_column('synthetic_task', 'include_table')
-    op.drop_column('synthetic_task', 'output_format')
+    op.execute("ALTER TABLE synthetic_task DROP COLUMN IF EXISTS include_table")
+    op.execute("ALTER TABLE synthetic_task DROP COLUMN IF EXISTS output_format")

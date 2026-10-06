@@ -20,13 +20,13 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Add source_page and source_context fields for data provenance tracking."""
     # Add source_page column (页码)
-    op.add_column('data_point', sa.Column('source_page', sa.Integer(), nullable=True))
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS source_page INTEGER")
     
     # Add source_context column (原文片段)
-    op.add_column('data_point', sa.Column('source_context', sa.Text(), nullable=True))
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS source_context TEXT")
 
 
 def downgrade() -> None:
     """Remove source tracking fields."""
-    op.drop_column('data_point', 'source_context')
-    op.drop_column('data_point', 'source_page')
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS source_context")
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS source_page")

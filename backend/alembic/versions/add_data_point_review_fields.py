@@ -20,23 +20,23 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # 审核意见（可空）
-    op.add_column('data_point', sa.Column('review_comment', sa.Text(), nullable=True))
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS review_comment TEXT")
     # 审核人（可空，外键到 user.id；用户被删除时置空而非级联删除数据点）
-    op.add_column('data_point', sa.Column('reviewer_id', sa.Uuid(), nullable=True))
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS reviewer_id sa.Uuid()")
     op.create_foreign_key(
         'fk_data_point_reviewer_user', 'data_point', 'user',
         ['reviewer_id'], ['id'], ondelete='SET NULL',
     )
-    op.create_index('ix_dp_reviewer_id', 'data_point', ['reviewer_id'])
+    op.create_index('ix_dp_reviewer_id', 'data_point', ['reviewer_id'], if_not_exists=True)
     # 审核时间（可空）
-    op.add_column('data_point', sa.Column('reviewed_at', sa.DateTime(timezone=True), nullable=True))
-    op.create_index('ix_dp_reviewed_at', 'data_point', ['reviewed_at'])
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP WITH TIME ZONE")
+    op.create_index('ix_dp_reviewed_at', 'data_point', ['reviewed_at'], if_not_exists=True)
 
 
 def downgrade() -> None:
     op.drop_index('ix_dp_reviewed_at', table_name='data_point')
-    op.drop_column('data_point', 'reviewed_at')
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS reviewed_at")
     op.drop_index('ix_dp_reviewer_id', table_name='data_point')
     op.drop_constraint('fk_data_point_reviewer_user', 'data_point', type_='foreignkey')
-    op.drop_column('data_point', 'reviewer_id')
-    op.drop_column('data_point', 'review_comment')
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS reviewer_id")
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS review_comment")

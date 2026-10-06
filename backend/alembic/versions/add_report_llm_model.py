@@ -19,9 +19,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add llm_model column to report table."""
-    op.add_column('report', sa.Column('llm_model', sa.String(length=100), nullable=True))
+    op.execute("ALTER TABLE report ADD COLUMN IF NOT EXISTS llm_model VARCHAR(100)")
 
 
 def downgrade() -> None:
     """Remove llm_model column."""
-    op.drop_column('report', 'llm_model')
+    op.execute("ALTER TABLE report DROP COLUMN IF EXISTS llm_model")

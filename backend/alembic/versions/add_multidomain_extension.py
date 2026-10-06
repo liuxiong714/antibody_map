@@ -148,9 +148,9 @@ def downgrade() -> None:
     if _index_exists("ix_lit_literature_type"):
         op.drop_index("ix_lit_literature_type", table_name="literature")
     if _col_exists("literature", "data_domain_tags"):
-        op.drop_column("literature", "data_domain_tags")
+        op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS data_domain_tags")
     if _col_exists("literature", "literature_type"):
-        op.drop_column("literature", "literature_type")
+        op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS literature_type")
 
     # ===== data_point CheckConstraint 回退 =====
     new_check = (

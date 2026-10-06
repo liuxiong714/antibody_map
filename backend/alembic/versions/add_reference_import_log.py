@@ -32,8 +32,8 @@ def upgrade() -> None:
         sa.Column('operator_id', sa.String(50), nullable=True),
         sa.PrimaryKeyConstraint('id'),
     )
-    op.create_index('ix_ref_import_log_imported_at', 'reference_import_log', ['imported_at'])
-    op.create_index('ix_ref_import_log_file_name', 'reference_import_log', ['file_name'])
+    op.create_index('ix_ref_import_log_imported_at', 'reference_import_log', ['imported_at'], if_not_exists=True)
+    op.create_index('ix_ref_import_log_file_name', 'reference_import_log', ['file_name'], if_not_exists=True)
 
 
 def downgrade() -> None:

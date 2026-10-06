@@ -19,12 +19,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add author_affiliations (nullable) to literature."""
-    op.add_column(
-        'literature',
-        sa.Column('author_affiliations', sa.Text(), nullable=True),
-    )
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS author_affiliations TEXT")
 
 
 def downgrade() -> None:
     """Drop author_affiliations column."""
-    op.drop_column('literature', 'author_affiliations')
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS author_affiliations")

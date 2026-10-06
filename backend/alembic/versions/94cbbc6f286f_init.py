@@ -76,7 +76,7 @@ def downgrade() -> None:
                existing_type=sa.VARCHAR(length=30),
                nullable=True,
                existing_server_default=sa.text("'antibody_analysis'::character varying"))
-    op.create_index(op.f('idx_lit_extraction_status'), 'literature', ['extraction_status'], unique=False)
+    op.create_index(op.f('idx_lit_extraction_status'), 'literature', ['extraction_status'], unique=False, if_not_exists=True)
     op.alter_column('literature', 'updated_at',
                existing_type=postgresql.TIMESTAMP(timezone=True),
                nullable=True,
@@ -101,10 +101,10 @@ def downgrade() -> None:
                existing_type=sa.BOOLEAN(),
                nullable=True,
                existing_server_default=sa.text('false'))
-    op.create_index(op.f('idx_dp_review_status'), 'data_point', ['review_status'], unique=False)
-    op.create_index(op.f('idx_dp_province'), 'data_point', ['province'], unique=False)
-    op.create_index(op.f('idx_dp_disease'), 'data_point', ['disease'], unique=False)
-    op.create_index(op.f('idx_dp_collection_year'), 'data_point', ['collection_year'], unique=False)
+    op.create_index(op.f('idx_dp_review_status'), 'data_point', ['review_status'], unique=False, if_not_exists=True)
+    op.create_index(op.f('idx_dp_province'), 'data_point', ['province'], unique=False, if_not_exists=True)
+    op.create_index(op.f('idx_dp_disease'), 'data_point', ['disease'], unique=False, if_not_exists=True)
+    op.create_index(op.f('idx_dp_collection_year'), 'data_point', ['collection_year'], unique=False, if_not_exists=True)
     op.alter_column('data_point', 'created_at',
                existing_type=postgresql.TIMESTAMP(timezone=True),
                nullable=True,

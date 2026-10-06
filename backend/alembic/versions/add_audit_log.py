@@ -33,9 +33,9 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_audit_log_user_id", "audit_log", ["user_id"])
-    op.create_index("ix_audit_log_action", "audit_log", ["action"])
-    op.create_index("ix_audit_log_created_at", "audit_log", ["created_at"])
+    op.create_index("ix_audit_log_user_id", "audit_log", ["user_id"], if_not_exists=True)
+    op.create_index("ix_audit_log_action", "audit_log", ["action"], if_not_exists=True)
+    op.create_index("ix_audit_log_created_at", "audit_log", ["created_at"], if_not_exists=True)
 
 
 def downgrade() -> None:

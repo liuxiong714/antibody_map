@@ -24,18 +24,9 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Add estimate_type and parent_id columns to data_point."""
     # estimate_type: 默认 primary，保证向后兼容（已有数据全部视为主估计）
-    op.add_column('data_point', sa.Column(
-        'estimate_type',
-        sa.String(length=20),
-        nullable=False,
-        server_default='primary',
-    ))
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS estimate_type VARCHAR(20) DEFAULT primary NOT NULL")
     # parent_id: 自引用外键，子估计指向主估计；主估计为 NULL
-    op.add_column('data_point', sa.Column(
-        'parent_id',
-        sa.dialects.postgresql.UUID(as_uuid=True),
-        nullable=True,
-    ))
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS parent_id UUID")
     op.create_foreign_key(
         'fk_data_point_parent_id',
         'data_point',
@@ -56,5 +47,5 @@ def downgrade() -> None:
     """Remove estimate hierarchy columns."""
     op.drop_constraint('dp_estimate_type_check', 'data_point', type_='check')
     op.drop_constraint('fk_data_point_parent_id', 'data_point', type_='foreignkey')
-    op.drop_column('data_point', 'parent_id')
-    op.drop_column('data_point', 'estimate_type')
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS parent_id")
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS estimate_type")

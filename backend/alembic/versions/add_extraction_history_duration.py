@@ -22,17 +22,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add duration_seconds column to extraction_history table."""
-    op.add_column(
-        "extraction_history",
-        sa.Column(
-            "duration_seconds",
-            sa.Numeric(precision=12, scale=3),
-            nullable=False,
-            server_default="0",
-        ),
-    )
+    op.execute("ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS duration_seconds NUMERIC(12,3) DEFAULT 0 NOT NULL")
 
 
 def downgrade() -> None:
     """Remove duration_seconds column from extraction_history table."""
-    op.drop_column("extraction_history", "duration_seconds")
+    op.execute("ALTER TABLE extraction_history DROP COLUMN IF EXISTS duration_seconds")

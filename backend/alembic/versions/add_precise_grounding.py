@@ -21,22 +21,17 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Add precise character-level grounding and schema enforcement fields."""
     # Character-level source interval in full document text
-    op.add_column('data_point', sa.Column('source_char_start', sa.Integer(), nullable=True))
-    op.add_column('data_point', sa.Column('source_char_end', sa.Integer(), nullable=True))
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS source_char_start INTEGER")
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS source_char_end INTEGER")
     # Whether the extraction was successfully grounded back to the original text
-    op.add_column('data_point', sa.Column('is_grounded', sa.Boolean(), nullable=False, server_default=sa.false()))
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS is_grounded BOOLEAN DEFAULT FALSE NOT NULL")
     # Timestamp for last update
-    op.add_column('data_point', sa.Column(
-        'updated_at',
-        sa.DateTime(timezone=True),
-        nullable=False,
-        server_default=sa.text('(CURRENT_TIMESTAMP)')
-    ))
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL")
 
 
 def downgrade() -> None:
     """Remove grounding enhancement columns."""
-    op.drop_column('data_point', 'updated_at')
-    op.drop_column('data_point', 'is_grounded')
-    op.drop_column('data_point', 'source_char_end')
-    op.drop_column('data_point', 'source_char_start')
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS updated_at")
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS is_grounded")
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS source_char_end")
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS source_char_start")

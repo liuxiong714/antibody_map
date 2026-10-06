@@ -28,23 +28,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # --- 1. 加列 ---
-    op.add_column(
-        'data_point',
-        sa.Column('model_used', sa.String(length=100), nullable=True),
-    )
-    op.add_column(
-        'data_point',
-        sa.Column('extraction_history_id', sa.UUID(as_uuid=True), nullable=True),
-    )
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS model_used VARCHAR(100)")
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS extraction_history_id UUID")
 
     op.create_index(
         op.f('ix_data_point_model_used'),
-        'data_point', ['model_used'], unique=False,
-    )
+        'data_point', ['model_used'], unique=False, if_not_exists=True)
     op.create_index(
         op.f('ix_data_point_extraction_history_id'),
-        'data_point', ['extraction_history_id'], unique=False,
-    )
+        'data_point', ['extraction_history_id'], unique=False, if_not_exists=True)
     op.create_foreign_key(
         'fk_dp_extraction_history',
         'data_point', 'extraction_history',
@@ -87,5 +79,5 @@ def downgrade() -> None:
     op.drop_constraint('fk_dp_extraction_history', 'data_point', type_='foreignkey')
     op.drop_index(op.f('ix_data_point_extraction_history_id'), table_name='data_point')
     op.drop_index(op.f('ix_data_point_model_used'), table_name='data_point')
-    op.drop_column('data_point', 'extraction_history_id')
-    op.drop_column('data_point', 'model_used')
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS extraction_history_id")
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS model_used")

@@ -19,12 +19,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('literature', sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True))
-    op.create_index('ix_lit_deleted_at', 'literature', ['deleted_at'])
-    op.add_column('literature', sa.Column('deleted_by', sa.Uuid(), nullable=True))
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE")
+    op.create_index('ix_lit_deleted_at', 'literature', ['deleted_at'], if_not_exists=True)
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS deleted_by sa.Uuid()")
 
 
 def downgrade() -> None:
-    op.drop_column('literature', 'deleted_by')
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS deleted_by")
     op.drop_index('ix_lit_deleted_at')
-    op.drop_column('literature', 'deleted_at')
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS deleted_at")

@@ -22,14 +22,12 @@ def upgrade() -> None:
     op.create_index(
         'ix_dp_review_disease_type',
         'data_point',
-        ['review_status', 'disease', 'data_type'],
-    )
+        ['review_status', 'disease', 'data_type'], if_not_exists=True)
     # 复合索引：按文献提取/删除数据点时加速
     op.create_index(
         'ix_dp_lit_review',
         'data_point',
-        ['literature_id', 'review_status'],
-    )
+        ['literature_id', 'review_status'], if_not_exists=True)
 
 
 def downgrade() -> None:

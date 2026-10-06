@@ -19,11 +19,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add pdf_hash column to literature table for duplicate detection."""
-    op.add_column('literature', sa.Column('pdf_hash', sa.String(length=64), nullable=True))
-    op.create_index('idx_lit_pdf_hash', 'literature', ['pdf_hash'], unique=False)
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS pdf_hash VARCHAR(64)")
+    op.create_index('idx_lit_pdf_hash', 'literature', ['pdf_hash'], unique=False, if_not_exists=True)
 
 
 def downgrade() -> None:
     """Remove pdf_hash column."""
     op.drop_index('idx_lit_pdf_hash', table_name='literature')
-    op.drop_column('literature', 'pdf_hash')
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS pdf_hash")

@@ -50,7 +50,7 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(timezone=True)),
         sa.Column('updated_at', sa.DateTime(timezone=True)),
     )
-    op.create_index('ix_pm_review_disease', 'pathogen_monitoring', ['review_status', 'disease'])
+    op.create_index('ix_pm_review_disease', 'pathogen_monitoring', ['review_status', 'disease'], if_not_exists=True)
 
 
 def downgrade() -> None:

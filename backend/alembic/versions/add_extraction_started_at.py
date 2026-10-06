@@ -15,11 +15,8 @@ down_revision: Union[str, None] = "create_literature_file_history"
 
 
 def upgrade() -> None:
-    op.add_column(
-        "literature",
-        sa.Column("extraction_started_at", sa.DateTime(timezone=True), nullable=True),
-    )
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS extraction_started_at TIMESTAMP WITH TIME ZONE")
 
 
 def downgrade() -> None:
-    op.drop_column("literature", "extraction_started_at")
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS extraction_started_at")

@@ -65,9 +65,9 @@ def upgrade() -> None:
             name='mf_file_status_check',
         ),
     )
-    op.create_index('ix_monitored_file_folder_id', 'monitored_file', ['folder_id'])
-    op.create_index('ix_monitored_file_file_hash', 'monitored_file', ['file_hash'])
-    op.create_index('ix_monitored_file_literature_id', 'monitored_file', ['literature_id'])
+    op.create_index('ix_monitored_file_folder_id', 'monitored_file', ['folder_id'], if_not_exists=True)
+    op.create_index('ix_monitored_file_file_hash', 'monitored_file', ['file_hash'], if_not_exists=True)
+    op.create_index('ix_monitored_file_literature_id', 'monitored_file', ['literature_id'], if_not_exists=True)
 
 
 def downgrade() -> None:

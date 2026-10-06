@@ -24,14 +24,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "extraction_history",
-        sa.Column("grounding_rate", sa.Numeric(5, 4), nullable=True),
-    )
-    op.add_column(
-        "extraction_history",
-        sa.Column("ungrounded_count", sa.Integer(), nullable=True),
-    )
+    op.execute("ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS grounding_rate NUMERIC(5,4)")
+    op.execute("ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS ungrounded_count INTEGER")
     # NOTE: CREATE INDEX CONCURRENTLY cannot run inside a transaction block
     # (env.py wraps all migrations in one asyncpg connection).
     # Use plain CREATE INDEX IF NOT EXISTS — safe here because no concurrent writers.
@@ -49,5 +43,5 @@ def downgrade() -> None:
         table_name="extraction_history",
         if_exists=True,
     )
-    op.drop_column("extraction_history", "ungrounded_count")
-    op.drop_column("extraction_history", "grounding_rate")
+    op.execute("ALTER TABLE extraction_history DROP COLUMN IF EXISTS ungrounded_count")
+    op.execute("ALTER TABLE extraction_history DROP COLUMN IF EXISTS grounding_rate")

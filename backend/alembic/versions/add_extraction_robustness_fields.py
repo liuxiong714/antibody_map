@@ -26,34 +26,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     # ---- literature：F13 提取代数 + F14 worker 心跳 ----
-    op.add_column(
-        'literature',
-        sa.Column('extraction_generation', sa.Integer(), nullable=False, server_default='0'),
-    )
-    op.add_column(
-        'literature',
-        sa.Column('worker_heartbeat', sa.DateTime(timezone=True), nullable=True),
-    )
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS extraction_generation INTEGER DEFAULT 0 NOT NULL")
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS worker_heartbeat TIMESTAMP WITH TIME ZONE")
     op.create_index(
         op.f('ix_lit_worker_heartbeat'), 'literature', ['worker_heartbeat'],
         if_not_exists=True,
     )
 
     # ---- data_point：F17 LLM 原始快照 + F19 截断标记 ----
-    op.add_column(
-        'data_point',
-        sa.Column('llm_raw_snapshot', JSON, nullable=True),
-    )
-    op.add_column(
-        'data_point',
-        sa.Column('truncation', sa.String(length=10), nullable=True),
-    )
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS llm_raw_snapshot JSONB")
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS truncation VARCHAR(10)")
 
 
 def downgrade() -> None:
-    op.drop_column('data_point', 'truncation')
-    op.drop_column('data_point', 'llm_raw_snapshot')
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS truncation")
+    op.execute("ALTER TABLE data_point DROP COLUMN IF EXISTS llm_raw_snapshot")
 
     op.drop_index(op.f('ix_lit_worker_heartbeat'), table_name='literature', if_exists=True)
-    op.drop_column('literature', 'worker_heartbeat')
-    op.drop_column('literature', 'extraction_generation')
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS worker_heartbeat")
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS extraction_generation")

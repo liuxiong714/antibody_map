@@ -16,18 +16,18 @@ down_revision: Union[str, None] = "add_audit_log"
 
 def upgrade() -> None:
     # 为数据点等自定义实体的变更审计补充结构列（便于按实体过滤/回滚）
-    op.add_column("audit_log", sa.Column("entity_type", sa.String(length=50), nullable=True))
-    op.add_column("audit_log", sa.Column("entity_id", sa.String(length=100), nullable=True))
-    op.add_column("audit_log", sa.Column("old_value", sa.Text(), nullable=True))
-    op.add_column("audit_log", sa.Column("new_value", sa.Text(), nullable=True))
-    op.create_index("ix_audit_log_entity_type", "audit_log", ["entity_type"])
-    op.create_index("ix_audit_log_entity_id", "audit_log", ["entity_id"])
+    op.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS entity_type VARCHAR(50)")
+    op.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS entity_id VARCHAR(100)")
+    op.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS old_value TEXT")
+    op.execute("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS new_value TEXT")
+    op.create_index("ix_audit_log_entity_type", "audit_log", ["entity_type"], if_not_exists=True)
+    op.create_index("ix_audit_log_entity_id", "audit_log", ["entity_id"], if_not_exists=True)
 
 
 def downgrade() -> None:
     op.drop_index("ix_audit_log_entity_id", table_name="audit_log")
     op.drop_index("ix_audit_log_entity_type", table_name="audit_log")
-    op.drop_column("audit_log", "new_value")
-    op.drop_column("audit_log", "old_value")
-    op.drop_column("audit_log", "entity_id")
-    op.drop_column("audit_log", "entity_type")
+    op.execute("ALTER TABLE audit_log DROP COLUMN IF EXISTS new_value")
+    op.execute("ALTER TABLE audit_log DROP COLUMN IF EXISTS old_value")
+    op.execute("ALTER TABLE audit_log DROP COLUMN IF EXISTS entity_id")
+    op.execute("ALTER TABLE audit_log DROP COLUMN IF EXISTS entity_type")

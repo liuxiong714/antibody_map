@@ -29,7 +29,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('name', name='uq_tag_name'),
     )
-    op.create_index('ix_tag_name', 'tag', ['name'])
+    op.create_index('ix_tag_name', 'tag', ['name'], if_not_exists=True)
 
     # 创建 literature_tag 关联表
     op.create_table(

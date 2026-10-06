@@ -29,16 +29,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add timing_detail JSON column to extraction_history table."""
-    op.add_column(
-        "extraction_history",
-        sa.Column(
-            "timing_detail",
-            sa.JSON(),
-            nullable=True,
-        ),
-    )
+    op.execute("ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS timing_detail JSONB")
 
 
 def downgrade() -> None:
     """Remove timing_detail column from extraction_history table."""
-    op.drop_column("extraction_history", "timing_detail")
+    op.execute("ALTER TABLE extraction_history DROP COLUMN IF EXISTS timing_detail")

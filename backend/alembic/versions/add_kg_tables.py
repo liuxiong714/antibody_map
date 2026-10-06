@@ -33,9 +33,9 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['source_literature_id'], ['literature.id'], ondelete='SET NULL'),
         sa.ForeignKeyConstraint(['merged_into'], ['kg_entity.id'], ondelete='SET NULL'),
     )
-    op.create_index('ix_kg_entity_type_name', 'kg_entity', ['entity_type', 'name'])
-    op.create_index('ix_kg_entity_merged', 'kg_entity', ['merged_into'])
-    op.create_index('ix_kg_entity_source_literature_id', 'kg_entity', ['source_literature_id'])
+    op.create_index('ix_kg_entity_type_name', 'kg_entity', ['entity_type', 'name'], if_not_exists=True)
+    op.create_index('ix_kg_entity_merged', 'kg_entity', ['merged_into'], if_not_exists=True)
+    op.create_index('ix_kg_entity_source_literature_id', 'kg_entity', ['source_literature_id'], if_not_exists=True)
 
     op.create_table(
         'kg_triple',
@@ -52,9 +52,9 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['literature_id'], ['literature.id'], ondelete='SET NULL'),
         sa.UniqueConstraint('subject_id', 'predicate', 'object_id', 'literature_id', name='uq_kg_triple'),
     )
-    op.create_index('ix_kg_triple_literature_id', 'kg_triple', ['literature_id'])
-    op.create_index('ix_kg_triple_subject', 'kg_triple', ['subject_id'])
-    op.create_index('ix_kg_triple_object', 'kg_triple', ['object_id'])
+    op.create_index('ix_kg_triple_literature_id', 'kg_triple', ['literature_id'], if_not_exists=True)
+    op.create_index('ix_kg_triple_subject', 'kg_triple', ['subject_id'], if_not_exists=True)
+    op.create_index('ix_kg_triple_object', 'kg_triple', ['object_id'], if_not_exists=True)
 
 
 def downgrade() -> None:

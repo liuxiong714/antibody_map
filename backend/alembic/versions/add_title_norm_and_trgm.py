@@ -38,15 +38,7 @@ def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
 
     # ---- F21：title_norm 生成列（STORED）+ 索引 ----
-    op.add_column(
-        "literature",
-        sa.Column(
-            "title_norm",
-            sa.String(500),
-            sa.Computed(TITLE_NORM_EXPR, persisted=True),
-            nullable=True,
-        ),
-    )
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS title_norm VARCHAR(255)")
     op.create_index(
         op.f("idx_lit_title_norm"), "literature", ["title_norm"],
         if_not_exists=True,
@@ -80,5 +72,5 @@ def downgrade() -> None:
     op.drop_index(op.f("idx_lit_journal_trgm"), table_name="literature", if_exists=True)
     op.drop_index(op.f("idx_lit_authors_trgm"), table_name="literature", if_exists=True)
     op.drop_index(op.f("idx_lit_title_trgm"), table_name="literature", if_exists=True)
-    op.drop_column("literature", "title_norm")
+    op.execute("ALTER TABLE literature DROP COLUMN IF EXISTS title_norm")
     # 保留 pg_trgm 扩展不删除（可能被其他对象使用，删除成本高）

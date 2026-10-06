@@ -24,18 +24,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add expires_at column (nullable, indexed) to api_model_config."""
-    op.add_column(
-        'api_model_config',
-        sa.Column('expires_at', postgresql.TIMESTAMP(timezone=True), nullable=True),
-    )
+    op.execute("ALTER TABLE api_model_config ADD COLUMN IF NOT EXISTS expires_at postgresql.TIMESTAMP(timezone=True)")
     op.create_index(
         'ix_api_model_config_expires_at',
         'api_model_config',
-        ['expires_at'],
-    )
+        ['expires_at'], if_not_exists=True)
 
 
 def downgrade() -> None:
     """Drop expires_at column and its index."""
     op.drop_index('ix_api_model_config_expires_at', table_name='api_model_config')
-    op.drop_column('api_model_config', 'expires_at')
+    op.execute("ALTER TABLE api_model_config DROP COLUMN IF EXISTS expires_at")

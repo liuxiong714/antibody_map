@@ -19,14 +19,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add data_snapshot_hash column to report table (F38 可复现性)."""
-    op.add_column(
-        'report',
-        sa.Column('data_snapshot_hash', sa.String(length=64), nullable=True),
-    )
-    op.create_index('ix_report_data_snapshot_hash', 'report', ['data_snapshot_hash'])
+    op.execute("ALTER TABLE report ADD COLUMN IF NOT EXISTS data_snapshot_hash VARCHAR(64)")
+    op.create_index('ix_report_data_snapshot_hash', 'report', ['data_snapshot_hash'], if_not_exists=True)
 
 
 def downgrade() -> None:
     """Remove data_snapshot_hash column."""
     op.drop_index('ix_report_data_snapshot_hash', table_name='report')
-    op.drop_column('report', 'data_snapshot_hash')
+    op.execute("ALTER TABLE report DROP COLUMN IF EXISTS data_snapshot_hash")

@@ -39,7 +39,7 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()')),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()')),
     )
-    op.create_index('ix_synthetic_task_status', 'synthetic_task', ['status'])
+    op.create_index('ix_synthetic_task_status', 'synthetic_task', ['status'], if_not_exists=True)
 
 
 def downgrade() -> None:

@@ -39,8 +39,8 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['literature_id'], ['literature.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_index(op.f('ix_extraction_history_literature_id'), 'extraction_history', ['literature_id'], unique=False)
-    op.create_index(op.f('ix_extraction_history_status'), 'extraction_history', ['status'], unique=False)
+    op.create_index(op.f('ix_extraction_history_literature_id'), 'extraction_history', ['literature_id'], unique=False, if_not_exists=True)
+    op.create_index(op.f('ix_extraction_history_status'), 'extraction_history', ['status'], unique=False, if_not_exists=True)
 
     # 2. 更新 literature 表的 extraction_status 检查约束，添加 done_no_data
     # 约束名可能为 lit_extraction_status_check（SQLAlchemy 生成）或
