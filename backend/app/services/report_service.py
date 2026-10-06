@@ -3,6 +3,8 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
+import statistics
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -77,6 +79,155 @@ async def _verify_report_tracing(rows: list[DataPoint]) -> dict:
         "missing_context": len(missing_ctx),
         "missing_ids": [str(getattr(r, "id", f"idx_{i}")) for i, r in enumerate(missing_ctx[:50])],
         "warnings": warnings,
+    }
+
+
+def _collect_expected_numbers(rows: list, lit_count: int = 0) -> dict:
+    """V3-04: 从 DataPoint 行里算出可预期的统计指标，用作报告正文数值校验基准。
+
+    返回 dict，包含 KPI 名称 → 数值（float 或 int）。
+    LLM 报告正文里的每个数值都应该能在这个集合里找到匹配。
+    （允许 ±0.5% 相对误差）。
+    """
+    numbers: dict[str, float | int] = {}
+
+    # 基础量级指标（报告一定会提到）
+    numbers["data_point_count"] = len(rows)
+    if lit_count:
+        numbers["literature_count"] = lit_count
+    sample_sizes = [r.sample_size or 0 for r in rows]
+    total_sample = sum(sample_sizes)
+    if total_sample > 0:
+        numbers["total_sample_size"] = total_sample
+
+    # 抗体水平类指标 (seroprevalence 百分比)
+    sp_values = [r.value for r in rows
+                 if r.data_type == "seroprevalence" and r.value is not None]
+    if sp_values:
+        numbers["sp_mean"] = round(statistics.mean(sp_values), 4)
+        numbers["sp_median"] = round(statistics.median(sp_values), 4)
+        numbers["sp_min"] = round(min(sp_values), 4)
+        numbers["sp_max"] = round(max(sp_values), 4)
+
+    # GMC 类指标
+    gmc_values = [r.value for r in rows
+                  if r.data_type == "gmc" and r.value is not None]
+    if gmc_values:
+        numbers["gmc_mean"] = round(statistics.mean(gmc_values), 4)
+        numbers["gmc_min"] = round(min(gmc_values), 4)
+        numbers["gmc_max"] = round(max(gmc_values), 4)
+
+    return numbers
+
+
+# 正文数值提取正则: 匹配 12.34 / 0.5 / 98% / 1,234
+# 排除: [1] 参考文献编号、1990-2020 年份段、ISO 日期 YYYY-MM-DD
+_NUMBER_RE = re.compile(
+    r"""(?<![\[\d\-])
+        (?<!\d{4})
+        (?<!\d{2}-\d{2}-)
+        ((?:\d{1,3}(?:,\d{3})*(?:\.\d+)?|\.\d+)\s*%?)
+    """,
+    re.VERBOSE,
+)
+
+
+def _verify_report_numbers(report_md: str, expected: dict) -> dict:
+    """V3-04: 检查报告正文中的数值是否都能在预期指标集合里找到。
+
+    流程:
+      1. 正则提取正文（不含引用块、代码块、表格头）的所有数值;
+      2. 与 expected dict 的数值逐个比对（±0.5% 相对误差）;
+      3. 未命中的返回 warnings + 未匹配数值列表。
+
+    返回: {"checked": int, "matched": int, "unmatched": list[str], "warnings": list[str]}
+    """
+    body = report_md
+    body = re.sub(r"```[\s\S]*?```", "", body)  # 剥离代码块
+    body = re.sub(r"\[\d+\]", "", body)          # 剥离 [1] 参考文献编号
+    body = re.sub(r"\|\s*:?-+:?\s*\|[^\n]*", "", body)  # 剥离 markdown 表格行
+    body = re.sub(r"\b(\d{4})-(\d{4})\b", r"\1 \2", body)  # 年份段拆分
+
+    raw_nums = _NUMBER_RE.findall(body)
+
+    if not raw_nums:
+        return {"checked": 0, "matched": 0, "unmatched": [],
+                "warnings": ["V3-04: 报告正文未检测到数值，校验跳过"]}
+
+    extracted: list[tuple[float, bool]] = []
+    for raw in raw_nums:
+        s = raw.strip().replace(",", "")
+        pct = False
+        if s.endswith("%"):
+            pct = True
+            s = s[:-1]
+        try:
+            v = float(s)
+        except ValueError:
+            continue
+        extracted.append((v, pct))
+
+    expected_values: list[tuple[float, str]] = []
+    for k, v in expected.items():
+        if isinstance(v, (int, float)):
+            expected_values.append((float(v), k))
+
+    TOL = 0.005  # ±0.5% 相对误差
+
+    unmatched: list[str] = []
+    matched = 0
+    matched_keys: set[str] = set()
+
+    for val, pct in extracted:
+        candidates = [val]
+        if pct:
+            candidates.append(val / 100.0)
+        else:
+            if val <= 1.0:
+                candidates.append(val * 100)
+
+        found = False
+        for cand in candidates:
+            for exp_val, exp_key in expected_values:
+                if exp_val == 0 and cand == 0:
+                    found = True; matched_keys.add(exp_key); break
+                if exp_val == 0:
+                    continue
+                rel = abs(cand - exp_val) / abs(exp_val)
+                if rel <= TOL:
+                    found = True; matched_keys.add(exp_key); break
+            if found:
+                break
+
+        if found:
+            matched += 1
+        else:
+            original = f"{val:.3f}{'%' if pct else ''}"
+            if not unmatched or unmatched[-1] != original:
+                unmatched.append(original)
+
+    warnings: list[str] = []
+    if unmatched:
+        top5 = unmatched[:5]
+        warnings.append(
+            f"V3-04 报告数值校验: {matched}/{len(extracted)} 个数值可自动匹配"
+            f"，{len(unmatched)} 个未找到对应指标（可能是 LLM 自主计算结果或幻觉）。"
+            f" 未匹配: {', '.join(top5)}{'...' if len(unmatched) > 5 else ''}"
+        )
+
+    unused = [k for _v, k in expected_values if k not in matched_keys]
+    if unused:
+        warnings.append(
+            f"V3-04 预期指标未在报告中出现: {', '.join(unused[:5])}"
+            f"{'...' if len(unused) > 5 else ''}（LLM 可能未用到这些 KPI）"
+        )
+
+    return {
+        "checked": len(extracted),
+        "matched": matched,
+        "unmatched": unmatched[:10],
+        "warnings": warnings,
+        "used_keys": sorted(matched_keys),
     }
 
 
@@ -1313,6 +1464,33 @@ async def generate_report(
     # 解析模型显示名称
     llm_model_name = await _resolve_model_name(db, model)
 
+    # V3-04: 报告正文数值可溯源校验（保留现有 _verify_report_tracing 作输入质量检查）
+    try:
+        _expected = _collect_expected_numbers(rows, lit_count=len(lit_ids))
+        _num_verify = _verify_report_numbers(content, _expected)
+        if _num_verify["warnings"]:
+            for _w in _num_verify["warnings"]:
+                logger.warning(f"V3-04 {_w}")
+            # 把校验结果追加到报告末尾（可在前端展示）
+            _verification_block = [
+                "",
+                "---",
+                "",
+                "### V3-04 报告数值自动校验",
+                "",
+                f"- 检测到数值数: {_num_verify['checked']}",
+                f"- 成功匹配预期指标: {_num_verify['matched']}",
+                f"- 未匹配数值: {len(_num_verify['unmatched'])}",
+                f"- 预期指标使用: {', '.join(_num_verify['used_keys']) or '(无)'}",
+            ]
+            if _num_verify["unmatched"]:
+                _verification_block.append(
+                    f"- 未匹配数值列表: {', '.join(_num_verify['unmatched'])}"
+                )
+            content += "\n".join(_verification_block)
+    except Exception as _ve:
+        logger.warning(f"V3-04 报告数值校验失败（不阻断生成）: {_ve}")
+
     # 9. Save to database
     try:
         report = Report(
@@ -1495,6 +1673,29 @@ async def generate_immune_barrier_report(
         )
 
     llm_model_name = await _resolve_model_name(db, model)
+
+    # V3-04: 报告正文数值可溯源校验
+    try:
+        _expected = _collect_expected_numbers(rows, lit_count=len(lit_ids))
+        _num_verify = _verify_report_numbers(content, _expected)
+        if _num_verify["warnings"]:
+            for _w in _num_verify["warnings"]:
+                logger.warning(f"V3-04 {_w}")
+            _verification_block = [
+                "", "---", "",
+                "### V3-04 报告数值自动校验", "",
+                f"- 检测到数值数: {_num_verify['checked']}",
+                f"- 成功匹配预期指标: {_num_verify['matched']}",
+                f"- 未匹配数值: {len(_num_verify['unmatched'])}",
+                f"- 预期指标使用: {', '.join(_num_verify['used_keys']) or '(无)'}",
+            ]
+            if _num_verify["unmatched"]:
+                _verification_block.append(
+                    f"- 未匹配数值列表: {', '.join(_num_verify['unmatched'])}"
+                )
+            content += "\n".join(_verification_block)
+    except Exception as _ve:
+        logger.warning(f"V3-04 报告数值校验失败（不阻断生成）: {_ve}")
 
     try:
         report = Report(
