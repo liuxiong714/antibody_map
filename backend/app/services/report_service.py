@@ -24,6 +24,18 @@ from app.models.report_template import ReportTemplate
 logger = logging.getLogger("uvicorn")
 
 
+def _safe_get(obj, key: str, default=None):
+    """V4-06: 同时兼容 dict 和 object —— 统一 getter。
+
+    参考 extract_task._safe_get (V3-10 修复): rows 列表元素通常是 ORM DataPoint，
+    但报告链路中可能出现 dict（来自 JSON/缓存/测试 mock）。getattr(dict, ...) 恒返回 default，
+    导致 is_grounded 等关键字段被静默吞掉。
+    """
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
 def _data_snapshot_hash(rows) -> str | None:
     """对报告所依据的审核通过数据点生成稳定指纹。
 
@@ -34,11 +46,11 @@ def _data_snapshot_hash(rows) -> str | None:
         return None
     canonical = sorted(
         (
-            str(getattr(r, "id", "")), str(getattr(r, "literature_id", "")),
-            str(getattr(r, "province", "") or ""), str(getattr(r, "disease", "") or ""),
-            getattr(r, "age_min", None), getattr(r, "age_max", None),
-            getattr(r, "sample_size", None), getattr(r, "value", None),
-            str(getattr(r, "data_type", "") or ""), str(getattr(r, "review_status", "") or ""),
+            str(_safe_get(r, "id", "")), str(_safe_get(r, "literature_id", "")),
+            str(_safe_get(r, "province", "") or ""), str(_safe_get(r, "disease", "") or ""),
+            _safe_get(r, "age_min", None), _safe_get(r, "age_max", None),
+            _safe_get(r, "sample_size", None), _safe_get(r, "value", None),
+            str(_safe_get(r, "data_type", "") or ""), str(_safe_get(r, "review_status", "") or ""),
         )
         for r in rows
     )
@@ -57,10 +69,10 @@ async def _verify_report_tracing(rows: list[DataPoint]) -> dict:
            "missing_context": int, "missing_ids": list[str], "warnings": list[str]}
     """
     total = len(rows)
-    ungrounded = [r for r in rows if getattr(r, "is_grounded", None) is False]
+    ungrounded = [r for r in rows if _safe_get(r, "is_grounded", None) is False]
     missing_ctx = [r for r in rows
-                   if (not getattr(r, "source_context", None) or
-                       len((r.source_context or "").strip()) < 10)]
+                   if (not _safe_get(r, "source_context", None) or
+                       len((_safe_get(r, "source_context", "") or "").strip()) < 10)]
     warnings: list[str] = []
     if ungrounded:
         warnings.append(
@@ -75,9 +87,9 @@ async def _verify_report_tracing(rows: list[DataPoint]) -> dict:
     return {
         "total": total,
         "ungrounded": len(ungrounded),
-        "ungrounded_ids": [str(getattr(r, "id", f"idx_{i}")) for i, r in enumerate(ungrounded[:50])],
+        "ungrounded_ids": [str(_safe_get(r, "id", f"idx_{i}")) for i, r in enumerate(ungrounded[:50])],
         "missing_context": len(missing_ctx),
-        "missing_ids": [str(getattr(r, "id", f"idx_{i}")) for i, r in enumerate(missing_ctx[:50])],
+        "missing_ids": [str(_safe_get(r, "id", f"idx_{i}")) for i, r in enumerate(missing_ctx[:50])],
         "warnings": warnings,
     }
 
