@@ -64,7 +64,7 @@ Windows 下需在 WSL2 中安装 NVIDIA Container Toolkit 后重启 Docker。
 .\scripts\backup_db.ps1
 
 # macOS/Linux
-docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d antibody_map --no-owner --no-privileges > backups/latest_backup.sql
+docker exec -e PGPASSWORD=antibody123 antibody-postgres pg_dump -U antibody -d antibody_map --no-owner --no-privileges > backups/latest_backup.dump
 ```
 
 PDF 文件如果存在本地 `backend/data/pdfs/` 目录，需手动复制该文件夹到新电脑。
@@ -77,7 +77,7 @@ PDF 文件如果存在本地 `backend/data/pdfs/` 目录，需手动复制该文
 
 ```powershell
 # Windows
-.\scripts\restore_db.ps1 -BackupFile backups\latest_backup.sql
+.\scripts\restore_db.ps1 -BackupFile backups\latest_backup.dump
 ```
 
 > ⚠️ 恢复会**覆盖**当前数据库所有数据，请谨慎操作。

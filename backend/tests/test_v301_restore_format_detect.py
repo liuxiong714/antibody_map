@@ -22,7 +22,7 @@ class TestRestoreFormatDetect:
 
     def test_pgdmp_header_selects_pg_restore(self, tmp_path):
         """pg_dump -Fc 产物前 5 字节是 PGDMP → 必须用 pg_restore。"""
-        dump = tmp_path / "database.sql"  # 文件名暂还是 .sql (Option A)
+        dump = tmp_path / "database.dump"  # 文件名暂还是 .sql (Option A)
         dump.write_bytes(b"PGDMP\x00binary archive here")
 
         # 模拟恢复端的魔数检测逻辑（从 db_backup_service.py 直接导入）
@@ -37,7 +37,7 @@ class TestRestoreFormatDetect:
 
     def test_plain_sql_header_selects_psql(self, tmp_path):
         """纯文本 SQL (-- comment 开头) → 必须用 psql。"""
-        sql = tmp_path / "database.sql"
+        sql = tmp_path / "database.dump"
         sql.write_text("-- PostgreSQL database dump\nSELECT 1;\n")
 
         head = sql.open("rb").read(5)

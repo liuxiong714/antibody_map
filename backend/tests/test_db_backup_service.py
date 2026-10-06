@@ -63,15 +63,15 @@ class TestPgDump:
     def test_success_creates_dump_and_latest(self, _patch_backup_dir):
         backup_dir = _patch_backup_dir
         with patch("subprocess.run", side_effect=_make_fake_run_ok(
-            backup_dir / "auto_backup_20260930_120000.sql"
+            backup_dir / "auto_backup_20260930_120000.dump"
         )), patch("app.services.db_backup_service.datetime") as m_dt:
             m_dt.now.return_value = _fixed_now()
             ok, msg = svc._pg_dump()
 
         assert ok is True
-        assert "auto_backup_20260930_120000.sql" in msg
-        assert (backup_dir / "auto_backup_20260930_120000.sql").exists()
-        assert (backup_dir / "latest_backup.sql").exists()
+        assert "auto_backup_20260930_120000.dump" in msg
+        assert (backup_dir / "auto_backup_20260930_120000.dump").exists()
+        assert (backup_dir / "latest_backup.dump").exists()
 
     def test_timeout(self, _patch_backup_dir):
         with patch("subprocess.run",
@@ -106,7 +106,7 @@ class TestPgDump:
         assert ok is False
         assert "FATAL" in msg
         # 小文件应该被删掉
-        dump = backup_dir / "auto_backup_20260930_120000.sql"
+        dump = backup_dir / "auto_backup_20260930_120000.dump"
         assert not dump.exists(), "小半截文件应被清理"
 
     def test_pg_dump_nonzero_keeps_large_failure(self, _patch_backup_dir):
@@ -127,7 +127,7 @@ class TestPgDump:
             ok, msg = svc._pg_dump()
 
         assert ok is False
-        dump = backup_dir / "auto_backup_20260930_120000.sql"
+        dump = backup_dir / "auto_backup_20260930_120000.dump"
         assert dump.exists(), "较大的半截备份应保留"
 
 
@@ -141,17 +141,17 @@ class TestCleanupOldBackups:
         import os
         files = []
         for i in range(5):
-            p = tmp_path / f"auto_backup_20260930_{i:06d}.sql"
+            p = tmp_path / f"auto_backup_20260930_{i:06d}.dump"
             p.write_text(f"-- dump {i}\n")
             os.utime(p, (i, i))
             files.append(p)
 
         svc._cleanup_old_backups(tmp_path, keep=2)
-        remain = sorted(glob.glob(str(tmp_path / "auto_backup_*.sql")))
+        remain = sorted(glob.glob(str(tmp_path / "auto_backup_*.dump")))
         assert len(remain) == 2
 
     def test_oserror_swallows(self, tmp_path, monkeypatch):
-        p = tmp_path / "auto_backup_x.sql"
+        p = tmp_path / "auto_backup_x.dump"
         p.write_text("x")
 
         def broken_unlink(self, *a, **kw):
@@ -172,9 +172,9 @@ class TestCleanupOldBackups:
 class TestDoBackupSync:
 
     def test_delegates_to_pg_dump(self, _patch_backup_dir):
-        with patch("app.services.db_backup_service._pg_dump", return_value=(True, "ok.sql")) as m:
+        with patch("app.services.db_backup_service._pg_dump", return_value=(True, "ok.dump")) as m:
             res = svc.do_backup_sync()
-        assert res == (True, "ok.sql")
+        assert res == (True, "ok.dump")
         m.assert_called_once()
 
 
@@ -421,7 +421,7 @@ class TestDoFullBackupSync:
 
     def test_success_pipeline(self, _patch_backup_dir):
         backup_dir = _patch_backup_dir
-        fake_pg = backup_dir / "auto_backup_20260930_120000.sql"
+        fake_pg = backup_dir / "auto_backup_20260930_120000.dump"
         fake_pg.parent.mkdir(parents=True, exist_ok=True)
         fake_pg.write_text("-- pg dump\n")
 
@@ -449,9 +449,9 @@ class _BackupFixture:
         import hashlib
         work = tmp_path / "_work"
         work.mkdir()
-        (work / "database.sql").write_bytes(content)
+        (work / "database.dump").write_bytes(content)
         h = hashlib.sha256(content).hexdigest()
-        (work / "SHA256SUMS").write_text(f"{h}  database.sql\n")
+        (work / "SHA256SUMS").write_text(f"{h}  database.dump\n")
 
         tar_path = tmp_path / "backup.tar.gz"
         with tarfile.open(str(tar_path), "w:gz") as tf:
@@ -480,8 +480,8 @@ class TestDoFullRestoreSync:
         # 简单方式：重新造一个 SHA256 不匹配的备份
         work2 = tmp_path / "_work2"
         work2.mkdir()
-        (work2 / "database.sql").write_text("hi")
-        (work2 / "SHA256SUMS").write_text("deadbeef  database.sql\n")
+        (work2 / "database.dump").write_text("hi")
+        (work2 / "SHA256SUMS").write_text("deadbeef  database.dump\n")
         tar_bad = tmp_path / "bad.tar.gz"
         with _tf.open(str(tar_bad), "w:gz") as tf:
             for f in work2.iterdir():
@@ -511,8 +511,8 @@ class TestDoFullRestoreSync:
         # SHA256 不匹配 → 应 abort，不调 psql
         work = tmp_path / "_w"
         work.mkdir()
-        (work / "database.sql").write_text("hi")
-        (work / "SHA256SUMS").write_text("deadbeef  database.sql\n")
+        (work / "database.dump").write_text("hi")
+        (work / "SHA256SUMS").write_text("deadbeef  database.dump\n")
         tar_bad = tmp_path / "bad.tar.gz"
         with tarfile.open(str(tar_bad), "w:gz") as tf:
             for f in work.iterdir():

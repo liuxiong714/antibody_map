@@ -3,7 +3,7 @@
 策略：
 - 每 AUTO_BACKUP_INTERVAL_MINUTES（默认 60 分钟）在 backend 容器内执行一次 pg_dump，
   输出到 BACKUP_DIR（映射到宿主机项目根 backups/ 目录）。
-- 备份完成后立即同步更新 latest_backup.sql 软链/副本，方便一键恢复。
+- 备份完成后立即同步更新 latest_backup.dump 软链/副本，方便一键恢复。
 - 自动清理超过 AUTO_BACKUP_KEEP_LAST（默认 48）份的旧备份，避免磁盘无限增长。
 - 关闭浏览器、退出 backend 进程等场景不会触发问题：备份文件已在宿主机磁盘。
 - 即便容器被强制终止，最近 1 小时内的数据也有 SQL 快照可恢复；加上 Postgres
@@ -53,8 +53,8 @@ def _pg_dump() -> tuple[bool, str]:
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dump_file = backup_dir / f"auto_backup_{ts}.sql"
-    latest_file = backup_dir / "latest_backup.sql"
+    dump_file = backup_dir / f"auto_backup_{ts}.dump"
+    latest_file = backup_dir / "latest_backup.dump"
 
     # 从 DATABASE_URL 解析连接参数
     # DATABASE_URL=postgresql+asyncpg://antibody:xxx@postgres:5432/antibody_map
@@ -114,9 +114,9 @@ def _pg_dump() -> tuple[bool, str]:
 
 
 def _cleanup_old_backups(backup_dir: Path, keep: int) -> None:
-    """删除旧的 auto_backup_*.sql 文件，只保留最近 keep 份。"""
+    """删除旧的 auto_backup_*.dump 文件，只保留最近 keep 份。"""
     files = sorted(
-        glob.glob(str(backup_dir / "auto_backup_*.sql")),
+        glob.glob(str(backup_dir / "auto_backup_*.dump")),
         key=lambda p: Path(p).stat().st_mtime,
         reverse=True,
     )
@@ -306,7 +306,7 @@ def do_full_backup_sync() -> tuple[bool, str]:
     """完整备份：pg_dump + rowcounts 清单 + MinIO + data + SHA256 校验 → 单个 .tar.gz。
 
     符合 Batch 0 D1 验收标准：
-      pg_dump -Fc → database.sql
+      pg_dump -Fc → database.dump
       psql rowcounts → rowcounts.csv  （事后可对比恢复前后行数一致）
       _minio_export → minio/
       _data_dir_export → data.tar.gz
@@ -329,7 +329,7 @@ def do_full_backup_sync() -> tuple[bool, str]:
     work_dir.mkdir(parents=True, exist_ok=True)
 
     # --- 1. pg_dump ---
-    _shutil.copyfile(str(Path(pg_result)), str(work_dir / "database.sql"))
+    _shutil.copyfile(str(Path(pg_result)), str(work_dir / "database.dump"))
 
     # --- 2. rowcounts 清单（Batch 0 D1 必需）---
     rowcounts_path = work_dir / "rowcounts.csv"
@@ -585,9 +585,9 @@ def do_full_restore_sync(
     # V3-01: 按文件魔数自动选择 pg_restore / psql
     # -Fc 二进制归档前 5 字节为 "PGDMP"，用 pg_restore;
     # 纯文本 SQL 走 psql（旧备份包 / 向后兼容）
-    pg_file = work_dir / "database.sql"
+    pg_file = work_dir / "database.dump"
     if not pg_file.exists():
-        pg_file = work_dir / "database.dump"  # 兼容 Option B 的产物名
+        pg_file = work_dir / "database.dump"
 
     if pg_file.exists():
         db_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")
