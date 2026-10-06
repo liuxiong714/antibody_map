@@ -588,6 +588,10 @@ def do_full_restore_sync(
     pg_file = work_dir / "database.dump"
     if not pg_file.exists():
         pg_file = work_dir / "database.sql"  # V4-01 fix: fallback 到旧 .sql 格式（之前重复了 .dump）
+    if not pg_file.exists():
+        # V4-01 第三层兜底: 两个候选都不存在 → 明确报错
+        # 之前这里是 pg=skip，静默跳过导致"恢复成功但数据库是空的"
+        results.append("pg=FAIL(no database.dump / database.sql in archive)")
 
     if pg_file.exists():
         db_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")
