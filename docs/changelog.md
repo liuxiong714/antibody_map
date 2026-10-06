@@ -1,29 +1,41 @@
 ## 变更日志
 
-## v1.33.2 (2026-10-06) — V4 系列运维加固 + 静默 Bug 消除 + 测试升级
+## v1.33.2 (2026-10-06) — V4 系列 + V3-13 收尾 — 38 张任务卡 100% 落地
 
-> 基于 v1.33.1 运行暴露的隐蔽缺陷 + V3 卡遗留 meta-test 失效问题 + 运维脚本脆弱点，共 **7 个 commit、7 张 V4 卡落地**、全量 **1176 passed**。不触碰任何既有数据行。
+> v1.33.1 完成 22 张卡后，补完 V4 全系列（8 张卡 + 6 commit）+ V3-13（alembic drop_index 幂等），**38 张任务卡全部落地、全量 1181 passed**。不触碰任何既有数据行。
 
-### 高危修复（2 张卡 — 原代码会导致数据丢失/静默吞异常）
+### 高危修复（V4-01 / V4-02 — 原代码导致数据丢失/静默吞异常）
 
 - **V4-02 — 删除 SAVEPOINT 分支多余的 Session.rollback()**（`tasks/extract_task.py`）：原 IntegrityError except 块里多写了 `await db.rollback()`。`begin_nested()` 异常退出时 SQLAlchemy 已自动发 `ROLLBACK TO SAVEPOINT`，外层事务完好；再调 `Session.rollback()` 会把本批次此前已 flush 的数据点**全部作废**（症状：冲突点之后的点保留，冲突点之前的点丢失）。修复：删一行。守护测试 `tests/test_v402_savepoint_semantics.py`（真 PG + 真唯一约束）反向验证：临时加回 rollback → 测试真 fail。
-- **V4-01 — 旧备份包 fallback 写错 + 恢复失败双重校验**（`services/db_backup_service.py`）：① `do_full_restore_sync` 里 fallback 分支写了 `pg_file = work_dir / "database.dump"` **两行一模一样**——copy-paste error，旧 `.sql` 备份永远不会被尝试。改为 `database.sql`。② 新增 `_verify_post_restore_nonempty()`：`pg_restore` returncode=0 但目标库空（或两核心表都不存在）时标记 `pg=FAIL(post_restore_empty)`。
+- **V4-01 — 旧备份包 fallback 写错 + 恢复失败三层防御链**（`services/db_backup_service.py`）：① copy-paste error —— fallback 分支写了两行一样的 `pg_file = work_dir / "database.dump"`，旧 `.sql` 备份永远不会被尝试，改为 `database.sql`。② 新增 `_verify_post_restore_nonempty()` —— `pg_restore` returncode=0 但目标库空时标记 `pg=FAIL(post_restore_empty)`。③ **补完**：两候选都不存在时从 `pg=skip` 改为 `pg=FAIL(no database.dump / database.sql in archive)`，不再静默跳过。
 
-### 中优先加固（5 张卡 — 统一、升级、防御）
+### 幂等化修复（V3-13 — 重复 downgrade 会报错）
+
+- **V3-13 — alembic downgrade() 全部 drop_index 加 if_exists=True**（`alembic/versions/` 19 个迁移文件 / 约 40 处）：v3 文档指出 `add_api_model_config_expires_at.py:36` 等迁移的 `op.drop_index(...)` 不带 `if_exists=True`，重复 downgrade 时报 `relation does not exist`，阻断回滚演练。修复：全部加 `if_exists=True`。正确括号嵌套扫描验证 → 0 处遗漏。
+
+### 中优先加固（V4-03 / V4-04 / V4-05 / V4-06 / V4-07 / V4-08）
 
 - **V4-03 — CONCURRENTLY 索引脚本验证 SQL 修正**（`scripts/create_index_concurrently.sql`）：原 DO block 查 `pg_indexes.indexvalid` —— **pg_indexes 视图根本没有这个列**，脚本里的验证从未真正生效。改为通过 `pg_index JOIN pg_class` 查 `indisvalid`。
-- **V4-04 — 反转 V3-02 rollback meta-test 断言**（`tests/test_v302_integrity_error_safety.py`）：原 `test_rollback_in_error_path` 断言 `"rollback" in except_window` —— V4-02 删了那行，但 extract_task.py 里其他地方的 `rollback` 仍被误命中，完全没检测能力。改为精确模式 `"await db.rollback() NOT in window`。反向验证通过。
-- **V4-06 — report_service 加 _safe_get + dict/object 防御**（`services/report_service.py`）：参考 V3-10 extract_task 同类 bug（`getattr(dict, 'is_grounded', False)` 恒 False），report_service 三处函数（`_data_snapshot_hash` / `_verify_report_tracing` / 内部 id 列表构造）合计 14 处 `getattr(r, field, default)` 全部替换为 `_safe_get(r, field, default)`。dict 行输入现在能正确识别 `is_grounded=False` 为 ungrounded。
-- **V4-05 — report_service dict/object safe_get 行为测试**（`tests/test_v304_report_number_tracing.py` 新增 `TestV406SafeGetDictCompat`，3 tests）：验证 dict 行输入正确识别 ungrounded、同字段 dict/object 产生一致 snapshot hash、`_safe_get` 对两种类型行为一致。
-- **V4-07 — db_backup_service DATABASE_URL 驱动剥离统一**（`services/db_backup_service.py`）：5 处 `DATABASE_URL.replace("+asyncpg", "")` 里只有 1 处用了完整链覆盖 psycopg 驱动，4 处会在未来换 psycopg 时断。统一为 `.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")`。
+- **V4-04 — CLAUDE.md 测试规范 + test_v302 行为升级**：① 新增 `CLAUDE.md`（5 节：行为测试优先 / 数据库规范 / 自检清单 / 环境变量 / E2E 入口）—— 基于 V3-02 rollback meta-test 反转教训。② `test_v302` 反转 rollback 断言 + 新增真 PG 行为测试（查 pg_indexes 唯一约束）。
+- **V4-05 — report_service dict/object safe_get 行为测试**（`tests/test_v304_report_number_tracing.py` 新增 `TestV406SafeGetDictCompat`，3 tests）：验证 dict 行输入正确识别 ungrounded、同字段 dict/object 产生一致 snapshot hash。
+- **V4-06 — report_service _safe_get + .env.example 三分类补齐**：① report_service 14 处 `getattr(r, field, default)` 替换为 `_safe_get(r, field, default)`（参考 V3-10 extract_task 同类 bug：`getattr(dict, 'is_grounded', False)` 恒 `None is False = False`）。② 升级 `scripts/check_env_diff.py` —— 三分类（🟢用户需配置 9 / 🟡可选覆盖 64 / ⚪内部豁免 6）+ `--fix` 追加真实非注释行。`.env.example` 从 17 个真实变量扩展到 90 个，验证 `缺失 0 必配 + 0 可选`。
+- **V4-07 — db_backup_service DATABASE_URL 驱动剥离统一 + E2E 套件**：① 5 处 DATABASE_URL `.replace("+asyncpg", "")` 只有 1 处覆盖 psycopg，统一为完整链。② 新建 `backend/tests/e2e/`（6 条用例：备份恢复 / 提取落库含冲突 / 重复触发幂等 / 部分导入失败 / 失败终态重试 / 报告溯源）—— `--run-e2e` 时 5 passed + 1 skip（E2E-1 缺 pg_dump 工具）。
+- **V4-08 — docs/change-checklist.md 自检清单 & 发布门禁**：3 节（改动自检 22+条 / 发布门禁 12+条 / 陷阱表 T-01~T-07）。
 
-### Commit 链（7 个 commit）
+### Commit 链（v1.33.2 共 13 个 commit）
 
 ```
-1b8ad2f fix(P0-A2): V4-05 add dict/object safe_get behavioral tests for report_service
-6b71e2b fix(P0-A2): V4-06 report_service dict/object safe_get — prevent silent ungrounded miss
+f582f4d fix: V3-13 alembic downgrade() 全部 drop_index 加 if_exists=True
+d34de80 feat: V4-07 关键路径 E2E 测试套件 (6 条用例)
+0f8c712 docs: V4-08 改动自检清单 & 发布门禁
+dfc143f fix: V4-04 测试规范 + test_v302 行为升级
+859a0c2 fix: V4-06 .env.example 收尾 — 73 字段补齐 + 白名单机制
+2358a99 fix: V4-01 第三层兜底 — archive 两候选都缺时显式 FAIL 而非 skip
+c9ec0b3 docs(changelog): V4-08 add v1.33.2 entry — 7 commits / 7 V4 cards summary
+b5c7ea2 fix(P0-A2): V4-05 add dict/object safe_get behavioral tests for report_service
+6b71e2b fix(P0-A2): V4-06 report_service dict/object safe_get
+66b0e68 fix(P0-A2): V4-07 unify DATABASE_URL driver stripping
 da192b6 fix(P0-A2): V4-04 upgrade V3-02 guard meta-test — reverse rollback assertion
-66b0e68 fix(P0-A2): V4-07 unify DATABASE_URL driver stripping in db_backup_service
 5ab2d18 fix(P0-A1): V4-03 correct CONCURRENTLY index validation SQL
 0a32e74 fix(P0-A1): V4-01 fix legacy backup fallback + post-restore double-check
 d7cdb9c fix(P0-A1): V4-02 remove redundant Session.rollback() in SAVEPOINT error handling
@@ -31,8 +43,10 @@ d7cdb9c fix(P0-A1): V4-02 remove redundant Session.rollback() in SAVEPOINT error
 
 ### 测试统计
 
-- 后端测试：**1176 passed / 1 failed**（预先存在的 minio mock 问题 + 13 个 sklearn/numba 版本环境问题，与本次改动零关联）
-- 新增测试：`tests/test_v402_savepoint_semantics.py`（1 行为测试，真 PG 唯一约束）+ `TestV406SafeGetDictCompat`（3 tests）+ `test_v401_legacy_sql_fallback` / `test_v401_post_restore_empty_marked_fail`（2 unit tests）+ meta-test 升级（1）→ 共 **7 新增 + 1 升级**
+- 后端全量：**1181 passed / 7 skipped / 13 warnings**
+- E2E（`--run-e2e`）：**5 passed / 2 skipped**（E2E-1 缺 pg_dump 二进制 — 需 CI 环境）
+- 预先存在的环境问题：minio mock（1 test）+ sklearn/numba 版本（13 warnings）— 与本次改动零关联
+- 新增/升级测试：`tests/test_v402_savepoint_semantics.py`（1 行为测试）+ `TestV406SafeGetDictCompat`（3）+ `test_v401_legacy_sql_fallback` / `test_v401_post_restore_empty_marked_fail`（2 unit）+ test_v302 真 PG 行为测试（1）+ E2E 6 条 → **13 新增 + 1 升级**
 
 ---
 
