@@ -391,7 +391,7 @@ def _write_rowcounts(out_path: Path) -> None:
 
     async def _query():
         c = await asyncpg.connect(
-            settings.DATABASE_URL.replace("+asyncpg", "")
+            settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")
         )
         try:
             rows = await c.fetch(
@@ -474,7 +474,7 @@ def _compare_rowcounts(work_dir: Path) -> str:
                 pass
 
     async def _query_current():
-        c = await asyncpg.connect(settings.DATABASE_URL.replace("+asyncpg", ""))
+        c = await asyncpg.connect(settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://"))
         try:
             rows = await c.fetch(
                 "SELECT relname, n_live_tup AS approx_rows "
@@ -659,7 +659,7 @@ def _check_target_nonempty() -> tuple[bool, list[str]]:
         return True, ["(asyncpg missing — conservative refuse)"]
 
     async def _query():
-        c = await asyncpg.connect(settings.DATABASE_URL.replace("+asyncpg", ""))
+        c = await asyncpg.connect(settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://"))
         try:
             rows = await c.fetch(
                 "SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY relname"
@@ -691,7 +691,7 @@ def _verify_post_restore_nonempty() -> bool:
         return True  # 拿不到驱动就不额外卡
 
     async def _query():
-        c = await asyncpg.connect(settings.DATABASE_URL.replace("+asyncpg", ""))
+        c = await asyncpg.connect(settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://"))
         try:
             cnts = {}
             for tbl in ("data_point", "literature"):
