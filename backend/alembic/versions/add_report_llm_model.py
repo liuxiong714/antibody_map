@@ -18,10 +18,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Add llm_model column to report table."""
-    op.add_column('report', sa.Column('llm_model', sa.String(100), nullable=True))
+    """Add llm_model column to report table (幂等)."""
+    op.execute("ALTER TABLE report ADD COLUMN IF NOT EXISTS llm_model VARCHAR(100)")
 
 
 def downgrade() -> None:
-    """Remove llm_model column."""
-    op.drop_column('report', 'llm_model')
+    """Remove llm_model column (幂等)."""
+    op.execute("ALTER TABLE report DROP COLUMN IF EXISTS llm_model")

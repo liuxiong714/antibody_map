@@ -23,8 +23,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Add expires_at column (nullable, indexed) to api_model_config."""
-    op.add_column('api_model_config', sa.Column('expires_at', sa.DateTime(timezone=True), nullable=True))
+    """Add expires_at column (nullable, indexed) to api_model_config (幂等)."""
+    op.execute("ALTER TABLE api_model_config ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
     op.create_index(
         'ix_api_model_config_expires_at',
         'api_model_config',
