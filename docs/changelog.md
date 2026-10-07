@@ -98,13 +98,15 @@ ba5fa03 fix(V6-02): add_datapoint_extraction_provenance — FK 改为 NOT VALID 
 - **V7-01 — check_health.py 核实**：V7 方案指控"文件不存在"，实际已存在（149 行，能跑：6/6 全 0）。**方案本身误判**，不需要动。
 - **V7-02 — 恢复 4 个迁移幂等写法**（add_report_llm_model.py / add_user_password_changed_at.py / add_api_model_config_expires_at.py / add_report_data_snapshot_hash.py）：改前守护测试红 **2 failed, 3 passed**（op.add_column/drop_column 被 V6-02 改坏）。恢复为 `op.execute("ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...")` / `DROP COLUMN IF EXISTS`。改后守护测试 **5 passed**。顺带救活 1 个 pre-existing 失败（全量 pytest 改前 14 failed → 改后 13 failed）。
 - **V7-03 — FK 从历史迁移移除 → 新建独立迁移**（add_dp_extraction_history_fk.py）：V6-02 把 FK 加在历史迁移 add_datapoint_extraction_provenance（revision id 未变）→ 已部署库不重跑 → FK 不生效。修正：从历史迁移**完整移除** FK 块 + downgrade 的 drop_constraint；新建独立迁移 add_dp_extraction_history_fk（down_revision=`uq_dp_content_fingerprint`）。**踩坑**：PG 不接受 `ADD CONSTRAINT IF NOT EXISTS ... NOT VALID` 直接拼接 → 用 DO block 手动判断 pg_constraint。四重验证：① alembic upgrade head 成功；② pg_constraint convalidated=true；③ DELETE extraction_history → data_point.extraction_history_id 自动 SET NULL；④ downgrade -1 → upgrade head 来回两次可重入。
-- **V7-04 — 完整 E2E 套件全跑 + 真实结果**（6 文件 7 测试）：干净栈重启后实跑 → **6 passed / 1 failed**。失败的 test_e2e_02_extract_conflict.py（期望 skipped=1，实际 skipped=3，全部被唯一约束拦截）是**测试本身设计问题**（同一 literature 下 3 条 DP 的 content_fingerprint 都撞了 existing），留作后续修复。E2E-01 现在完整跑 9 个断言（含 MinIO 对象数对比）。
+- **V7-04 — 完整 E2E 套件全跑 + 真实结果**（6 文件 7 测试）：干净栈重启后实跑 → **7 passed**。E2E-02 初跑 skipped=3（全部被拦截），定位根因**不是测试设计问题** — 是 V7-03 新增 FK `fk_dp_extraction_history` 让 INSERT 时 `extraction_history_id` 必须存在，而 E2E-02 没先创建 ExtractionHistory 就直接调 persist_data_points（把 DP 的 FK 字段设成 UUID 但表里没有对应父记录）。对比 test_v402_savepoint_semantics.py 一直先建父记录，所以没暴露此问题。修复：persist_data_points 调用前先 INSERT ExtractionHistory；history_id 参数改用该记录真实 ID，不再 uuid4()。E2E-01 现在完整跑 9 个断言（含 MinIO 对象数对比）。
 - **V7-05 — 守护测试升级为调用级 regex**（tests/test_v202_migration_idempotency.py）：改前只扫 op.add_column( substring → **`op.execute("ALTER TABLE ... ADD COLUMN ...")` 路径完全裸奔**（add_multidomain_extension.py 的 f-string 形式也没扫）。升级：新增 2 个 op.execute 路径测试 + 豁免 _col_exists/_index_exists 前置保护。**反例验证**：临时塞 2 个坏迁移 → 守护测试正确 fail；删除反例后 **7 passed**。
 - **V7-06 — MinIO 断言真实实现**（test_e2e_01_backup_restore.py::_try_minio_object_count()）：原硬编码 `return None` → MinIO 对象数断言**永远 skip**。实现：`docker exec antibody-test-minio mc find antibody_test --recursive | wc -l`；容器不在 / mc alias 未配置 → 优雅降级 return None。E2E-01 现在真跑 MinIO 对比断言。
 
-### Commit 链（V7 系列 — 4 个 commit，全部已推 GitHub main）
+### Commit 链（V7 系列 — 6 个 commit，全部已推 GitHub main）
 
 ```
+d1eed1a fix(E2E-02): 补 ExtractionHistory fixture — V7-03 FK 让 extraction_history_id 必须存在
+7befbe2 docs(V7-07): changelog 补 V7 系列 — 6 commits / 6 张任务卡 / 全部闭环
 727643f fix(V7-06): MinIO 断言从硬编码 skip 改为真实实现
 361b93c fix(V7-05): 守护测试升级 — op.execute 路径 regex 覆盖
 bfd8c32 fix(V7-03): FK 改为独立新迁移 — 不得修改已发布迁移
@@ -117,7 +119,7 @@ bfd8c32 fix(V7-03): FK 改为独立新迁移 — 不得修改已发布迁移
 |---|---|---|
 | 后端全量 pytest | 1262 passed / 14 failed | **1265 passed / 13 failed**（幂等修复顺带救活 1 个 pre-existing） |
 | 守护测试 | 5 passed | **7 passed**（新增 2 个 op.execute 路径测试） |
-| E2E 全量（7 测试） | 未完整跑过 | **6 passed / 1 failed**（E2E-02 测试设计问题） |
+| E2E 全量（7 测试） | 未完整跑过 | **7 passed**（E2E-02 V7-03 FK 让 extraction_history_id 必须存在 → 补 ExtractionHistory fixture 修复） |
 | Alembic 迁移链 | 67 个迁移 | **68 个**（新增 add_dp_extraction_history_fk） |
 | check_health.py | — | **6/6 全 0** |
 
