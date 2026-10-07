@@ -380,11 +380,40 @@ async def test_backup_restore_roundtrip_six_tables():
 
 
 def _try_minio_object_count() -> int | None:
-    """尝试用 mc (MinIO client) 统计对象数；不可用返回 None。"""
+    """尝试统计 MinIO 对象数；不可用返回 None。
+
+    实现: 用 docker exec 在 MinIO 测试容器里跑 mc find。
+    回退: 容器不在 / mc alias 未配置 / 任何异常 → None（调用方会 skip 该断言）。
+    """
+    import subprocess
     try:
-        # docker exec antibody-test-minio mc ls /... 太复杂；简单 skip
-        # 如果 minio test 容器不在，就跳过
-        return None  # 当前不做 — V5-02 验收允许 skip（并在 changelog 写明）
+        # 1. 容器是否活着
+        r = subprocess.run(
+            ["wsl", "--", "docker", "inspect", "-f", "{{.State.Health.Status}}",
+             "antibody-test-minio"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0 or "healthy" not in r.stdout.lower():
+            return None
+
+        # 2. 确保 mc alias 已配置（幂等）
+        subprocess.run(
+            ["wsl", "--", "docker", "exec", "antibody-test-minio",
+             "mc", "alias", "set", "antibody_test",
+             "http://localhost:9000", "antibody_test", "antibody_test_pw"],
+            capture_output=True, timeout=5,
+        )
+
+        # 3. 统计所有 bucket 下的对象数
+        r = subprocess.run(
+            ["wsl", "--", "docker", "exec", "antibody-test-minio",
+             "bash", "-c", "mc find antibody_test --recursive 2>/dev/null | wc -l"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode == 0:
+            n = int(r.stdout.strip())
+            return n
+        return None
     except Exception:
         return None
 
