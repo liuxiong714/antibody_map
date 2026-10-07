@@ -27,7 +27,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # --- 1. 加列 ---
+    # --- 1. 加列（幂等） ---
     op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS model_used VARCHAR(100)")
     op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS extraction_history_id UUID")
 
@@ -37,12 +37,18 @@ def upgrade() -> None:
     op.create_index(
         op.f('ix_data_point_extraction_history_id'),
         'data_point', ['extraction_history_id'], unique=False, if_not_exists=True)
-    op.create_foreign_key(
-        'fk_dp_extraction_history',
-        'data_point', 'extraction_history',
-        ['extraction_history_id'], ['id'],
-        ondelete='SET NULL',
-    )
+
+    # --- 2. FK: NOT VALID 两步走（避免长事务锁表，项目规则 #3） ---
+    # 已存在则跳过（幂等）；新约束先 NOT VALID，事务结束后再 VALIDATE
+    op.execute("""
+        ALTER TABLE data_point
+        ADD CONSTRAINT IF NOT EXISTS fk_dp_extraction_history
+        FOREIGN KEY (extraction_history_id) REFERENCES extraction_history(id)
+        ON DELETE SET NULL NOT VALID;
+    """)
+    # 低峰期补齐 VALIDATE（当前 upgrade 在迁移链头部，数据量小；
+    #   线上大表部署场景：运维手动 ALTER TABLE data_point VALIDATE CONSTRAINT fk_dp_extraction_history;）
+    op.execute("ALTER TABLE data_point VALIDATE CONSTRAINT fk_dp_extraction_history")
 
     # --- 2. 回填：用窗口函数按 literature_id 分组，取 created_at 时间邻近的 ExtractionHistory ---
     # 思路：先把每个 DataPoint 关联到同一 literature 下、extracted_at <= dp.created_at 且最接近的那条 history
