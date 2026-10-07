@@ -1,8 +1,8 @@
 """E2E-1: 备份 → 恢复全链路（含旧格式 .sql 包）
 
-V5-02 补全: pg_dump/psql 通过 docker exec antibody-postgres 调用，
-不依赖宿主有没有 pg_dump。在生产 DB 上安全运行（只清/只恢复测试 literature_id 的行，
-别人的数据不碰）。
+V6-01 改动: pg_dump/psql 统一走 DSN 直连（环境变量 E2E_PG_HOST/PORT/USER/DB/PASSWORD），
+不再依赖 wsl / docker exec；默认指向测试栈 127.0.0.1:15432 / antibody_map_test；
+并在模块级断言 E2E_PG_DB != "antibody_map"（防误连生产安全门）。
 
 六项断言（文档要求，缺一不可）:
   1. 6 张核心表行数恢复前后一致
@@ -29,58 +29,191 @@ import sqlalchemy as sa
 from tests.e2e.common import e2e_engine_session
 
 
-# ======== pg_dump/psql 调用层 ========
-# 通过 wsl -- docker exec antibody-postgres 调容器内的 postgresql-client
-# （postgres:15-alpine 镜像自带 pg_dump/pg_restore/psql）
-_PG_TOOLS_OK = True  # docker exec via WSL 方案始终可用
+# ======== pg_dump/psql 调用层（V6-01: DSN 直连 + docker exec fallback + 安全门） ========
+PG = dict(
+    host=os.getenv("E2E_PG_HOST", "127.0.0.1"),
+    port=os.getenv("E2E_PG_PORT", "15432"),
+    user=os.getenv("E2E_PG_USER", "antibody"),
+    db=os.getenv("E2E_PG_DB", "antibody_map_test"),
+    pw=os.getenv("E2E_PG_PASSWORD", "antibody_test_pw"),
+)
+# V6-01 安全门：E2E 严禁指向生产库 antibody_map
+assert PG["db"] != "antibody_map", \
+    f"E2E 禁止指向生产库 antibody_map（当前 E2E_PG_DB={PG['db']}）"
+
+# docker 测试栈 postgres 容器名 — 只允许对这个容器做 docker exec
+_DOCKER_TEST_PG_CONTAINER = "antibody-test-postgres"
 
 
-def _pg_exec(cmd: list[str], *, check: bool = True, timeout: int = 60) -> subprocess.CompletedProcess:
-    """通过 wsl -- docker exec 调 antibody-postgres 容器里的 pg_dump/psql。"""
-    full = ["wsl", "--", "docker", "exec", "antibody-postgres"] + cmd
-    r = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
-    if check and r.returncode != 0:
-        raise AssertionError(f"{' '.join(cmd)} rc={r.returncode}: {r.stderr[:300]}")
-    return r
+def _resolve_pg_invocation() -> tuple[list[str], dict, str]:
+    """返回 (cmd_prefix, pg_config, source) 三元组。
+
+    cmd_prefix: pg_dump/psql 命令前缀（本机 PATH 或 docker exec）
+    pg_config:  实际要传给工具的 host/port/user/db/pw（docker exec 时 host=localhost）
+    source:     "native"（本机 PATH）或 "docker"（容器 fallback）
+
+    优先级：
+      1. 本机 PATH 有 pg_dump/psql → DSN 直连 E2E_PG_* 配置
+      2. docker 有 antibody-test-postgres 容器 → docker exec 进容器
+      3. 都没有 → raise RuntimeError
+    """
+    # 1. 本机 PATH 查找
+    if shutil.which("pg_dump") and shutil.which("psql"):
+        return [], PG, "native"
+
+    # 2. docker fallback（只针对测试栈容器！）
+    docker_bin = shutil.which("docker") or shutil.which("wsl")
+    _base = os.path.basename(docker_bin).lower() if docker_bin else ""
+    is_wsl = _base.startswith("wsl")
+    if docker_bin:
+        # 先确认容器存在且在跑
+        if is_wsl:
+            check_cmd = ["wsl", "--", "docker", "inspect",
+                        "--format", "{{.State.Running}}",
+                        _DOCKER_TEST_PG_CONTAINER]
+        else:
+            check_cmd = ["docker", "inspect",
+                        "--format", "{{.State.Running}}",
+                        _DOCKER_TEST_PG_CONTAINER]
+        try:
+            r = subprocess.run(
+                check_cmd, capture_output=True, text=True, timeout=10
+            )
+            if r.returncode == 0 and r.stdout.strip() == "true":
+                # docker exec: 在容器内 pg_dump 用 localhost:5432
+                exec_prefix = (
+                    ["wsl", "--", "docker", "exec"]
+                    if is_wsl
+                    else ["docker", "exec"]
+                )
+                # -e PGPASSWORD + -i (stdin pipe) + 容器名
+                exec_prefix.extend(["-e", f"PGPASSWORD={PG['pw']}", "-i",
+                                    _DOCKER_TEST_PG_CONTAINER])
+                return exec_prefix, {
+                    **PG,
+                    "host": "localhost",   # 容器内部回环
+                    "port": "5432",        # postgres 默认
+                }, "docker"
+        except Exception:
+            pass
+
+    # 3. 都没找到
+    raise RuntimeError(
+        f"pg_dump/psql not on PATH and docker container "
+        f"'{_DOCKER_TEST_PG_CONTAINER}' not running. "
+        f"Install postgresql-client (apt install / brew install / winget) "
+        f"or start the test stack: docker compose -f docker-compose.test.yml up -d"
+    )
 
 
-def _wsl_path(win_path: str) -> str:
-    """Windows 路径 → WSL 路径（E:\\... → /mnt/e/...）。"""
-    p = Path(win_path).resolve()
-    drive = p.drive[0].lower()
-    rel = p.relative_to(p.anchor).as_posix()
-    return f"/mnt/{drive}/{rel}"
+# 模块级一次性解析（skip/fail 判定）
+try:
+    _PG_CMD_PREFIX, _PG_CFG, _PG_SRC = _resolve_pg_invocation()
+except RuntimeError as e:
+    _PG_SRC = "none"
+    _PG_ERR = str(e)
+
+_REQUIRE = os.getenv("E2E_REQUIRE", "").strip() == "1"
+
+# pytestmark: skip 策略
+pytestmark = [pytest.mark.e2e]
+if _PG_SRC == "none":
+    if _REQUIRE:
+        raise RuntimeError(
+            f"E2E_REQUIRE=1 但 PG 客户端工具不可用: {_PG_ERR}"
+        )
+    pytestmark.append(pytest.mark.skip(reason=f"pg tools unavailable: {_PG_ERR}"))
 
 
-def _pg_dump_all_tables(sql_path: Path, *, db: str = "antibody_map") -> None:
-    """dump 6 张核心表为 INSERT .sql（直接写到宿主路径，不走 docker cp）。"""
+def _pg_env() -> dict[str, str]:
+    """subprocess 环境（仅 native 模式需要 PGPASSWORD 注入）。"""
+    env = dict(os.environ)
+    if _PG_SRC == "native":
+        env["PGPASSWORD"] = _PG_CFG["pw"]
+    return env
+
+
+def _pg_base_args() -> list[str]:
+    """pg_dump / psql 共用的连接参数（host/port 已按调用源适配）。"""
+    return [
+        "-h", _PG_CFG["host"],
+        "-p", str(_PG_CFG["port"]),
+        "-U", _PG_CFG["user"],
+        "-d", _PG_CFG["db"],
+    ]
+
+
+def _pg_dump_all_tables(sql_path: Path) -> None:
+    """dump 6 张核心表为 INSERT .sql。
+
+    native 模式:   subprocess.run(["pg_dump", ...]) 直接输出到 stdout
+    docker 模式:   subprocess.run(["wsl", "--", "docker", "exec", ..., "pg_dump", ...])
+    """
     tables = ["data_point", "extraction_history", "literature",
               "titer_table", "pathogen_monitoring", "kg_triple"]
     sql_path.parent.mkdir(parents=True, exist_ok=True)
-    host_out = _wsl_path(str(sql_path))
-    # pg_dump -t 每个表要单独写，不能逗号分隔
-    table_flags = " ".join(f"-t {t}" for t in tables)
-    bash_cmd = (
-        f"docker exec antibody-postgres pg_dump -U antibody -d {db} "
-        f"--inserts --no-owner --no-acl --data-only "
-        f"{table_flags} > {host_out}"
+    table_flags = []
+    for t in tables:
+        table_flags.extend(["-t", t])
+
+    cmd = (
+        _PG_CMD_PREFIX
+        + ["pg_dump"]
+        + _pg_base_args()
+        + ["--inserts", "--no-owner", "--no-acl", "--data-only"]
+        + table_flags
     )
-    r = subprocess.run(["wsl", "--", "bash", "-c", bash_cmd],
-                       capture_output=True, text=True, timeout=60)
-    assert r.returncode == 0, f"pg_dump failed: {r.stderr[:300]}"
-    assert sql_path.exists() and sql_path.stat().st_size > 100, "pg_dump 产出异常"
+
+    if _PG_SRC == "docker":
+        # docker exec 场景需要多一次转义：把整个 cmd 作为 shell 命令传入容器
+        # 但更简单的做法是先 dump 到容器内临时文件，再 docker cp 出来
+        # —— 不过 pg_dump 直接 stdout 也能拿到，只要 PGPASSWORD 设对
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=60, env=_pg_env()
+        )
+    else:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=60, env=_pg_env()
+        )
+
+    assert r.returncode == 0, f"pg_dump [{_PG_SRC}] failed rc={r.returncode}: {r.stderr[:500]}"
+    sql_path.write_text(r.stdout, encoding="utf-8")
+    assert sql_path.stat().st_size > 100, "pg_dump 产出异常（太小）"
 
 
-def _pg_restore_psql(sql_path: Path, *, db: str = "antibody_map") -> int:
-    """用 psql 执行 .sql 文件（wsl docker exec 读宿主路径）。"""
-    host_in = _wsl_path(str(sql_path))
-    bash_cmd = (
-        f"docker exec -i antibody-postgres psql -U antibody -d {db} "
-        f"-v ON_ERROR_STOP=0 -f - < {host_in}"
+def _pg_restore_psql(sql_path: Path) -> int:
+    """用 psql 执行 .sql 文件。
+
+    native 模式:   直接 subprocess.run(["psql", "-f", str(sql_path)])
+    docker 模式:   用 stdin pipe 把 sql 内容送进容器内 psql
+    
+    循环外键问题 → 前面注入 SET session_replication_role='replica' 禁触发器。
+    """
+    sql_content = "SET session_replication_role = 'replica';\n" + sql_path.read_text(encoding="utf-8")
+
+    if _PG_SRC == "docker":
+        # stdin pipe 进容器内 psql（无需 docker cp / 无路径兼容问题）
+        cmd = (
+            _PG_CMD_PREFIX  # 已经包含 wsl -- docker exec -e PGPASSWORD -i container_name
+            + ["psql"]
+            + ["-h", "localhost", "-U", _PG_CFG["user"], "-d", _PG_CFG["db"]]
+            + ["-v", "ON_ERROR_STOP=0"]
+        )
+        r = subprocess.run(
+            cmd, input=sql_content, capture_output=True, text=True, timeout=120
+        )
+        return r.returncode
+
+    # native 模式
+    cmd = (
+        _PG_CMD_PREFIX
+        + ["psql"]
+        + _pg_base_args()
+        + ["-v", "ON_ERROR_STOP=0", "-f", str(sql_path)]
     )
-    r = subprocess.run(["wsl", "--", "bash", "-c", bash_cmd],
-                       capture_output=True, text=True, timeout=120)
-    # rc=0 成功；rc=3（psql 部分失败）也可接受
+    r = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=120, env=_pg_env()
+    )
     return r.returncode
 
 
@@ -99,57 +232,63 @@ async def _count_tables(db: AsyncSession) -> dict[str, int]:
 
 
 async def _seed_test_data(db: AsyncSession) -> str:
-    """造 deterministic 的测试数据（6 张核心表各若干条），返回 test_lit_id。"""
-    from app.models.data_point import DataPoint
-    from app.models.extraction_history import ExtractionHistory
-    from app.models.literature import Literature
-    from sqlalchemy import text as sa_text
-
+    """造 deterministic 的测试数据（6 张核心表各若干条），返回 test_lit_id。
+    
+    用纯 SQL（sa.text）避免 ORM 初始化开销 + 绕过模型 schema 不匹配问题。
+    所有列名/类型/CHECK 约束严格按实际表结构。
+    """
     lit_id = uuid.uuid4().hex
 
-    await db.execute(sa.insert(Literature).values(
-        id=lit_id, title="E2E-1 备份恢复测试文献",
-        authors="e2e author", journal="E2E Test Journal",
-        pub_year=2024, doi="10.0000/e2e1-test",
-        abstract="test abstract for backup restore", pmid="99999999",
-    ))
+    def _u() -> str:
+        return uuid.uuid4().hex
 
-    # extraction_history (1 条)
-    await db.execute(sa.insert(ExtractionHistory).values(
-        id=uuid.uuid4(), literature_id=lit_id,
-        model="test-model-v1", status="success", cache_hit=False,
-    ))
+    # 先禁 FK 检查（确保能按任意顺序插入）
+    await db.execute(sa.text("SET session_replication_role = 'replica'"))
 
-    # data_point (3 条)
-    for i, disease in enumerate(["measles", "rubella", "mumps"]):
-        await db.execute(sa.insert(DataPoint).values(
-            id=uuid.uuid4(), literature_id=lit_id,
-            disease=disease, province="北京", city="朝阳",
-            data_type="seroprevalence", value=round(0.3 + i * 0.1, 2),
-            collection_year=2024, age_min=1, age_max=10,
-            confidence="high", review_status="approved",
-            estimate_type="primary", source_page=1,
-            source_context=f"e2e-test-{disease}", is_grounded=True,
-            model_used="test-model-v1",
-        ))
-
-    # titer_table / pathogen_monitoring / kg_triple 各 1 条（用 raw SQL 避免 ORM 初始化开销）
-    kg_id = uuid.uuid4().hex[:40]  # 存成变量，保证 dump 时和实际插入一致
-    inserts = [
-        f"INSERT INTO titer_table (id, literature_id, assay_type, ref_antisera, antigens, titers, unit, quality_score) "
-        f"VALUES ('{uuid.uuid4().hex}', '{lit_id}', 'plaque', 'test-serum', 'Ag1', '1:16', 'titer', 0.9)",
-        f"INSERT INTO pathogen_monitoring (id, literature_id, pathogen, location, year, case_count) "
-        f"VALUES ('{uuid.uuid4().hex}', '{lit_id}', 'measles', '北京', 2024, 100)",
-        f"INSERT INTO kg_triple (id, literature_id, subject, predicate, object, source) "
-        f"VALUES ('{kg_id}', '{lit_id}', 'measles', 'causes', 'fever', 'e2e-test')",
+    sqls = [
+        # literature (id 有 DEFAULT uuid_generate_v4()，但显式给方便关联)
+        f"""INSERT INTO literature (id, title, authors, journal, pub_year, doi, abstract, pmid)
+            VALUES ('{lit_id}', 'E2E-1 Backup Restore Test', 'e2e author', 'E2E Test Journal',
+                    2024, '10.0000/e2e1-test', 'test abstract for backup restore', '99999999')""",
+        # extraction_history（所有 NOT NULL 列显式给值）
+        f"""INSERT INTO extraction_history (id, literature_id, extracted_at, model, status,
+             data_point_count, prompt_tokens, completion_tokens, total_tokens,
+             llm_cost_usd, llm_call_count, duration_seconds, cache_hit)
+            VALUES ('{_u()}', '{lit_id}', NOW(), 'test-model-v1', 'success',
+                    3, 100, 50, 150, 0.001, 1, 1.5, false)""",
+        # data_point x3（所有 NOT NULL 列有 DEFAULT，只给业务字段）
+        f"""INSERT INTO data_point (id, literature_id, disease, province, city, data_type, value,
+             collection_year, age_min, age_max, source_page, source_context, is_grounded, model_used)
+            VALUES ('{_u()}', '{lit_id}', 'measles', 'Beijing', 'Chaoyang', 'seroprevalence', 0.30,
+                    2024, 1, 10, 1, 'e2e-test-measles', true, 'test-model-v1')""",
+        f"""INSERT INTO data_point (id, literature_id, disease, province, city, data_type, value,
+             collection_year, age_min, age_max, source_page, source_context, is_grounded, model_used)
+            VALUES ('{_u()}', '{lit_id}', 'rubella', 'Beijing', 'Chaoyang', 'seroprevalence', 0.40,
+                    2024, 1, 10, 1, 'e2e-test-rubella', true, 'test-model-v1')""",
+        f"""INSERT INTO data_point (id, literature_id, disease, province, city, data_type, value,
+             collection_year, age_min, age_max, source_page, source_context, is_grounded, model_used)
+            VALUES ('{_u()}', '{lit_id}', 'mumps', 'Beijing', 'Chaoyang', 'seroprevalence', 0.50,
+                    2024, 1, 10, 1, 'e2e-test-mumps', true, 'test-model-v1')""",
+        # titer_table: ref_antisera/antigens/titers 是 JSON，assay_type CHECK (hi|vnt|elisa)，quality_score 是 int
+        f"""INSERT INTO titer_table (id, literature_id, assay_type, ref_antisera, antigens, titers, unit, quality_score, confidence, review_status)
+            VALUES ('{_u()}', '{lit_id}', 'hi', '["test-serum"]', '["Ag1"]', '["1:16"]', 'titer', 90, 'high', 'approved')""",
+        # pathogen_monitoring (实际列: disease/pathogen_name/region/province/city/collection_year 等)
+        f"""INSERT INTO pathogen_monitoring (id, literature_id, disease, pathogen_name, province, city, collection_year, isolation_count, review_status)
+            VALUES ('{_u()}', '{lit_id}', 'measles', 'Measles virus', 'Beijing', 'Chaoyang', 2024, 100, 'approved')""",
+        # kg_triple (subject_id/object_id FK -> kg_entity，禁 FK 时可绕开；review_status CHECK)
+        f"""INSERT INTO kg_triple (id, subject_id, predicate, object_id, literature_id, confidence, source, review_status)
+            VALUES ('e2e1kg001subjp001objp0010010', 'e2e_subj', 'causes', 'e2e_obj', '{lit_id}', 1.0, 'e2e-test', 'approved')""",
     ]
-    for sql in inserts:
-        try:
-            await db.execute(sa_text(sql))
-        except Exception:
-            pass  # 如果表字段不完全匹配，跳过（不影响核心备份恢复验证）
-
+    for sql in sqls:
+        await db.execute(sa.text(sql))
+    await db.execute(sa.text("SET session_replication_role = 'origin'"))
     await db.commit()
+
+    # 验证 data_point 确实插入了
+    r = await db.execute(sa.text("SELECT COUNT(*) FROM data_point WHERE literature_id = :lid"), {"lid": lit_id})
+    cnt = r.scalar()
+    if cnt == 0:
+        raise RuntimeError(f"seed 失败! data_point cnt=0 for lit_id={lit_id}")
     return lit_id
 
 
@@ -187,10 +326,7 @@ async def _sample_data_point_hash(db: AsyncSession, lit_id: str) -> str:
 
 
 # ======== 测试 ========
-pytestmark = [pytest.mark.e2e]
-
-if not _PG_TOOLS_OK:
-    pytestmark.append(pytest.mark.skip(reason='pg_dump/psql via docker exec not available'))
+# pytestmark 已在顶部定义（含 skipif 逻辑）
 
 
 @pytest.mark.asyncio

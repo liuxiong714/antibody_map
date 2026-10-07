@@ -21,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE")
     op.create_index('ix_lit_deleted_at', 'literature', ['deleted_at'], if_not_exists=True)
-    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS deleted_by sa.Uuid()")
+    op.execute("ALTER TABLE literature ADD COLUMN IF NOT EXISTS deleted_by UUID")
 
 
 def downgrade() -> None:

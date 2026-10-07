@@ -1,11 +1,16 @@
-# V5-02: E2E 测试依赖 — 独立于生产 docker-compose.yml（不同端口/网络/卷名）
+# V5-02 / V6-01: E2E 测试依赖 — 独立于生产 docker-compose.yml（不同端口/网络/卷名）
 #
 # 设计原则:
-#   1. postgres:15-alpine 镜像**自带** postgresql-client（pg_dump/pg_restore/psql），
-#      所以 E2E 测试脚本可以直接 `docker exec antibody-test-postgres pg_dump ...`
+#   1. postgres:15-alpine 镜像**自带** postgresql-client（pg_dump/pg_restore/psql）；
+#      V6-01 后 E2E 脚本不再用 docker exec/WSL，改用 **DSN 直连**：
+#         E2E_PG_HOST=127.0.0.1  E2E_PG_PORT=15432  E2E_PG_DB=antibody_map_test
+#      pg_dump/psql 直接 `subprocess.run(["pg_dump", ...])` 调本机 PATH 上的二进制
+#      （Windows 上需手动安装 postgresql-client，CI 上 apt-get install postgresql-client）。
 #   2. 用独立卷（antibody_test_postgres_data 等），不碰生产数据
 #   3. 用端口 15432/16379/19000 避开生产默认端口，防止误连
+#   4. V6-01 安全门: E2E_PG_DB 必须 != "antibody_map"（测试代码模块级 assert 强制）
 #
+# 一键:  make e2e   （或手动:）
 # 启动:  docker compose -f docker-compose.test.yml up -d --wait
 # 停止:  docker compose -f docker-compose.test.yml down -v   （带 -v 清卷，保证干净）
 # 健康:  docker compose -f docker-compose.test.yml ps

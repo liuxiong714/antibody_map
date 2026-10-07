@@ -22,7 +22,7 @@ def upgrade() -> None:
     # 审核意见（可空）
     op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS review_comment TEXT")
     # 审核人（可空，外键到 user.id；用户被删除时置空而非级联删除数据点）
-    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS reviewer_id sa.Uuid()")
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS reviewer_id UUID")
     op.create_foreign_key(
         'fk_data_point_reviewer_user', 'data_point', 'user',
         ['reviewer_id'], ['id'], ondelete='SET NULL',

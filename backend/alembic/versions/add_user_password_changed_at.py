@@ -15,8 +15,8 @@ down_revision: Union[str, None] = "add_audit_log_entity_columns"
 
 
 def upgrade() -> None:
-    op.execute("ALTER TABLE user ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP WITH TIME ZONE")
+    op.add_column('user', sa.Column('password_changed_at', sa.DateTime(timezone=True), nullable=True))
 
 
 def downgrade() -> None:
-    op.execute("ALTER TABLE user DROP COLUMN IF EXISTS password_changed_at")
+    op.drop_column('user', 'password_changed_at')

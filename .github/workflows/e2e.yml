@@ -1,11 +1,14 @@
-# V5-02 / V5-06: E2E 端到端测试（备份恢复 / 提取落库 / 幂等 / 报告溯源）
+# V5-02 → V6-01 E2E 端到端测试（备份恢复 / 提取落库 / 幂等 / 报告溯源）
 #
 # 触发方式:
 #   - workflow_dispatch: 在 GitHub Actions 页面手动点 "Run workflow"
 #   - schedule: 每周一 06:00 UTC（nightly）
 #   - 不自动触发 push/PR —— 避免拖慢每次 commit 的反馈循环
 #
-# 依赖: postgres:15-alpine（自带 pg_dump/pg_restore/psql）
+# V6-01 改动:
+#   - pg_dump/psql 不再用 docker exec / WSL；统一走 DSN 直连 E2E_PG_HOST/PORT/USER/DB/PASSWORD
+#   - E2E_REQUIRE=1: CI 环境下缺失 pg_dump/psql 必须 fail 而非 skip（防止静默跳过）
+#   - CI postgres service 的 host=127.0.0.1 / port=5432 / db=antibody_map_e2e 与 E2E_PG_* 对齐
 
 name: E2E Tests
 
@@ -21,7 +24,16 @@ jobs:
     timeout-minutes: 30
 
     env:
+      # ===== DATABASE_URL: async engine（common.py e2e_engine_session 读这个）=====
       DATABASE_URL: "postgresql+asyncpg://antibody:antibody_test_pw@localhost:5432/antibody_map_e2e"
+      # ===== V6-01: E2E_PG_* — pg_dump/psql subprocess 连接参数（DSN 直连）=====
+      E2E_PG_HOST: "127.0.0.1"
+      E2E_PG_PORT: "5432"
+      E2E_PG_USER: "antibody"
+      E2E_PG_DB: "antibody_map_e2e"
+      E2E_PG_PASSWORD: "antibody_test_pw"
+      E2E_REQUIRE: "1"         # CI 严格模式：缺失 pg 工具必须 fail 而非 skip
+      # ===== 其他 =====
       SECRET_KEY: "e2e-only-non-prod-secret-key-0123456789abcdef"
       APP_ENV: "development"
 
@@ -64,15 +76,15 @@ jobs:
             backend/requirements.txt
             backend/requirements-dev.txt
 
-      - name: Install backend dependencies
+      - name: Install backend dependencies + pg client tools
         run: |
           cd backend
           pip install -r requirements.txt -r requirements-dev.txt
-          # 确认 pg_dump/psql 在 CI 上可用（postgres 镜像自带）
+          # V6-01: pg_dump/pg_restore/psql 必须在 PATH 上（DSN 直连方案需要）
           apt-get update -qq && apt-get install -y -qq postgresql-client > /dev/null
           which pg_dump pg_restore psql
 
-      - name: Run Alembic migrations
+      - name: Run Alembic migrations against E2E DB
         run: |
           cd backend
           alembic upgrade head

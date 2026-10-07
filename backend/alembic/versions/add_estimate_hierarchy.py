@@ -24,7 +24,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Add estimate_type and parent_id columns to data_point."""
     # estimate_type: 默认 primary，保证向后兼容（已有数据全部视为主估计）
-    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS estimate_type VARCHAR(20) DEFAULT primary NOT NULL")
+    op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS estimate_type VARCHAR(20) DEFAULT 'primary' NOT NULL")
     # parent_id: 自引用外键，子估计指向主估计；主估计为 NULL
     op.execute("ALTER TABLE data_point ADD COLUMN IF NOT EXISTS parent_id UUID")
     op.create_foreign_key(

@@ -20,7 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("ALTER TABLE synthetic_task ADD COLUMN IF NOT EXISTS output_format VARCHAR(255) DEFAULT text")
+    op.execute("ALTER TABLE synthetic_task ADD COLUMN IF NOT EXISTS output_format VARCHAR(255) DEFAULT 'text'")
     op.execute("ALTER TABLE synthetic_task ADD COLUMN IF NOT EXISTS include_table BOOLEAN")
 
 
