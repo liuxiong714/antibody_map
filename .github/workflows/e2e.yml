@@ -95,6 +95,16 @@ jobs:
           pytest tests/e2e/ -v --run-e2e --tb=short 2>&1 | tee /tmp/e2e.log
         # 所有 E2E 必须全绿才通过
 
+      - name: Run data health check (nightly gate)
+        if: github.event_name == 'schedule'
+        run: |
+          cd backend
+          # V6-04: 6 条数据红线巡检脚本化，nightly 自动跑
+          # error 类非 0 即 exit 1 → 让 job 失败并在 Slack/邮件告警
+          # warning 类（pending_older_than_7d）为业务豁免，不计入失败
+          python scripts/check_health.py --db-url "${DATABASE_URL}" 2>&1 | tee /tmp/health.log
+        # nightly 专属门禁：数据红线 0 条失败
+
       - name: Upload E2E log on failure
         if: failure()
         uses: actions/upload-artifact@v4
