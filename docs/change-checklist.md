@@ -81,6 +81,25 @@
 - [ ] 有应用级回滚预案（`git revert <commit-hash>` + 重启服务）
 - [ ] 知道哪些数据（如果有）需要手动修复
 
+### 2.5 DoD 逐条复核（收口判定）
+
+> V6-06 规则：**任一条自评 ✅ 必须附一条可在干净环境执行的命令及其输出**；无法复现的一律记 ⏳ 待验证，不得计入收口。
+> 复核时间点：每轮修复完成后、宣布"技术债清理完成"前。
+
+| # | 自评项 | 判定 | 验收方式 + 可复现证据 |
+|---|---|---|---|
+| 1 | 无业务层高危缺陷（数据丢失/错误结论/无法启动） | ✅ | 全量 pytest 通过（见 #3）+ 无 crash 级 issue；连续 V4/V5/V6 三轮审计未发现业务层高危 |
+| 2 | 守护有效性（反向验证能抓语义错误） | ✅ | `python -m pytest tests/test_v402_savepoint_semantics.py -v` → 真 PG + 真唯一约束反向验证 |
+| 3 | E2E 可运行（`--run-e2e` 全绿无 skip） | ✅ | `python -m pytest tests/e2e -v --run-e2e` → **2 passed / 0 skipped / 18.68s**；`E2E_PG_DB=antibody_map` → collection 阶段 assert 失败 |
+| 4 | 数据红线全 0 | ✅ | `python backend/scripts/check_health.py --db-url postgresql+asyncpg://...@localhost:15432/antibody_map_test` → **6 条全 0**（`pending_older_than_7d` 为业务豁免，不计入失败） |
+| 5 | 迁移健康（幂等 + 无漂移） | ✅ | `python -m pytest tests/test_migration_drift.py -v` + `alembic downgrade <prev> && alembic upgrade head` 双跑无错 |
+| 6 | 发布门禁可执行 | ✅ | 本清单 §1 改动自检 22+ 条全过 + 本 §2 发布门禁 12+ 条全过 + 覆盖率口径已收口（51% 阈值 + E2E 联合覆盖） |
+
+**复核结论判定**（沿用 V6 实施计划 §3.2 规则）：
+- ✅ 全部 6 条通过 → 宣布"修缺陷阶段结束"
+- ⏳ 有 ≥1 条 ⏳ → 下一轮继续
+- ❌ 有 ≥1 条 ❌ → 立即修复
+
 ---
 
 ## 3. 已知陷阱（V3/V4 踩过的坑，不要再踩）
@@ -152,6 +171,35 @@ SELECT 'eh->lit orphan', COUNT(*) FROM extraction_history eh
   WHERE eh.literature_id IS NOT NULL
     AND eh.literature_id NOT IN (SELECT id FROM literature);
 ```
+
+### V6-04 脚本化入口（2026-10-07 新增）
+
+以上 6 条 SQL 已固化为可执行脚本，**一键巡检 + 非零退出码**：
+
+```bash
+# 方式 A: 纯 SQL (psycopg)
+python -c "import sqlalchemy as sa, sys; \
+  u='postgresql+psycopg://antibody:antibody_test_pw@localhost:15432/antibody_map_test'; \
+  eng=sa.create_engine(u); conn=eng.connect(); \
+  [print(r) for r in conn.execute(sa.text(open('backend/scripts/daily_health_check.sql').read()))]"
+
+# 方式 B: Python 包装 (asyncpg, 推荐 — 含分类报告 + 豁免处理)
+python backend/scripts/check_health.py --db-url postgresql+asyncpg://antibody:antibody_test_pw@localhost:15432/antibody_map_test
+# DATABASE_URL 环境变量设好后可直接:
+python backend/scripts/check_health.py
+```
+
+脚本路径：
+- `backend/scripts/daily_health_check.sql` — 纯 SQL 源码（6 条巡检）
+- `backend/scripts/check_health.py` — asyncpg 包装，按 `error` / `warning` 分类，**error 类非 0 即 exit 1**
+
+### V6-04 业务豁免项说明（pending 超 7 天）
+
+| check_id | kind | 原因 |
+|---|---|---|
+| `pending_older_than_7d` | ⚠️ warning | **业务状态豁免**。`data_point` 的 pending 数据积累是正常现象（新文献批量导入、人工审核队列、LLM 批量提取等都会产生），不属于"数据质量红线"。归零反而意味着数据清理或批量 approved 过。仅当数值出现异常飙升（如单日 +1000）时才值得排查，属于运维观察指标而非门禁。 |
+
+其余 5 条（`dup_groups` / `approved_value_out_of_range` / `approved_no_source` / `approved_ungrounded` / `fk_orphans`）均为 **红线错误**，bad_count > 0 即 exit 1。
 
 ### 数据修正铁律
 

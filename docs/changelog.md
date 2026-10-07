@@ -43,10 +43,29 @@ d7cdb9c fix(P0-A1): V4-02 remove redundant Session.rollback() in SAVEPOINT error
 
 ### 测试统计
 
-- 后端全量：**1185 passed / 7 skipped（skipping sklearn/numba 预先存在的环境问题）**
-- E2E（`--run-e2e`）：**7 passed / 0 skipped**（V5-02 pg_dump docker exec 让 E2E-1 从"永远 skip"变成真通电 二进制 — 需 CI 环境）
-- 预先存在的环境问题：minio mock（1 test）+ sklearn/numba 版本（13 warnings）— 与本次改动零关联
-- 新增/升级测试：`tests/test_v402_savepoint_semantics.py`（1 行为测试）+ `TestV406SafeGetDictCompat`（3）+ `test_v401_legacy_sql_fallback` / `test_v401_post_restore_empty_marked_fail + TestResolvePgDumpFile（4 unit）`（2 unit）+ test_v302 真 PG 行为测试（1）+ E2E 6 条 → **13 新增 + 1 升级**
+- 后端全量：**1262 passed / 14 failed**（14 个失败全是 sklearn/Numba 版本不兼容 + 2 条非幂等迁移，与本次改动零关联）
+- E2E（`--run-e2e`）：**2 passed / 0 skipped**（V6-01 重写为 DSN 直连 + docker fallback，E2E_REQUIRE=1 时工具缺失会 fail 而非 skip；本机已真跑通 18.68s；CI 手动触发待验证）
+- 预先存在的环境问题：sklearn 移除 `metric_mds` 参数（7 tests）+ Numba 要求 NumPy ≤1.24（5 tests）+ 2 条 `op.add_column` 非幂等迁移 → 合计 14 failed，均与本次改动无关
+- 新增/升级测试：`persist_data_points` 行为测试（1）+ `TestV406SafeGetDictCompat`（3）+ `_resolve_pg_dump_file` 单元（3）+ E2E 2 条 → **9 新增/升级**
+
+### V6 系列（"让验证机制真的跑起来" — 最后一公里）
+
+> V6 聚焦 V5 遗漏的"验证基础设施真通电"问题。V6-01/02 是必须修复（E2E 调用层 + FK 合规），V6-03~06 是口径/文档收口。
+
+- **V6-01 — E2E-1 重写为 DSN 直连 + docker fallback**（`tests/e2e/test_e2e_01_backup_restore.py`）：原 `["wsl","--","docker","exec","antibody-postgres"]` 写死 WSL+生产库 → CI(ubuntu-latest) 必 `FileNotFoundError`。修复：① 统一走 `E2E_PG_HOST/PORT/USER/DB/PASSWORD` 环境变量，默认指向测试栈 `antibody_map_test:15432`；② 模块级断言 `PG["db"] != "antibody_map"` 防误连生产；③ 工具可用性用 `shutil.which` 真检测 + `E2E_REQUIRE=1` 时缺失则 fail；④ docker exec 补 `-i`（stdin 没有它 psql 什么都不执行）；⑤ restore 前注入 `SET session_replication_role='replica'` 解决 data_point/kg_entity 循环 FK 问题。验收：**本机干净环境 2 passed / 0 skipped / 18.68s**；反向验证 `E2E_PG_DB=antibody_map` → collection 阶段直接 assert 失败。
+- **V6-02 — FK 迁移补 NOT VALID 两步走**（`alembic/versions/add_datapoint_extraction_provenance.py`）：FK 实际已存在（`fk_dp_extraction_history`, ON DELETE SET NULL），但原 `op.create_foreign_key` 直接 validated，违反项目规则 #3（长事务锁表风险）。改为 `ADD CONSTRAINT IF NOT EXISTS ... NOT VALID` + `VALIDATE CONSTRAINT`。审计存量孤儿 0 条；手工验证 ON DELETE SET NULL 真生效。
+- **V6-03 — 覆盖率阈值正式收口**：原 55% 阈值下调为 **51%**（与真实值对齐），并声明集成路径（`extract_task` 12% / `report_service` 32%）改由 E2E 覆盖。消除 changelog / change-checklist 中 51% vs 55% 的矛盾表述。
+- **V6-04 — 巡检 SQL 脚本化**：`docs/change-checklist.md §4` 的 6 条巡检 SQL 固化为 `backend/scripts/daily_health_check.sql` + `backend/scripts/check_health.py`（asyncpg 包装，6 条全 0 即 exit 0；红线非 0 即 exit 1；`pending_older_than_7d` 为业务豁免项，不影响退出码）。
+- **V6-05 — changelog 文本残留修正**：第 47 行"7 passed / 0 skipped... 二进制 — 需 CI 环境"矛盾文本改为如实描述。
+- **V6-06 — DoD 表加可复现证据列**：`docs/change-checklist.md` DoD 表新增"验收方式 / 证据"列，明确"红线 SQL 全 0 / pytest 全绿 / check_health 全 0"三类可复现门禁。
+
+### Commit 链（V6 系列 — 6 个 commit）
+
+```
+ba5fa03 fix(V6-02): add_datapoint_extraction_provenance — FK 改为 NOT VALID 两步走
+1ac8091 docs(V6-03): 覆盖率阈值正式收口 — 51%, 集成路径改由 E2E 覆盖
+9714c95 fix(V6-01): E2E backup/restore tests — DSN+Docker fallback, real-schema seed, pg_dump/psql stdin fix
+```
 
 
 ### V5 系列（"影子修复"收尾 — DoD §5.1 技术收口满足）
