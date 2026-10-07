@@ -19,8 +19,20 @@ async def test_extract_with_conflict_resolved():
             id=lit_id, title="E2E-2", authors="test", journal="E2E", pub_year=2023,
             doi="10.0000/e2e2", abstract="abstract", pmid="00000001"
         ))
+        await db.commit()
 
-        # 2. 造一个已有 DP（带 content_fingerprint）
+        # 2. 造 ExtractionHistory（V7-03 新增 FK: extraction_history_id 必须存在）
+        eh_id = str(uuid.uuid4())
+        await db.execute(sa.text("""
+            INSERT INTO extraction_history
+            (id, literature_id, extracted_at, model, status,
+             data_point_count, prompt_tokens, completion_tokens, total_tokens,
+             llm_cost_usd, llm_call_count, duration_seconds, cache_hit)
+            VALUES (:id, :lid, NOW(), 'e2e', 'success', 1, 10, 10, 20, 0, 1, 1, false)
+        """), {"id": eh_id, "lid": lit_id})
+        await db.commit()
+
+        # 3. 造一个已有 DP（带 content_fingerprint）
         existing = DataPoint(
             id=uuid.uuid4(), literature_id=lit_id,
             disease="measles", province="北京", city="朝阳",
@@ -69,7 +81,7 @@ async def test_extract_with_conflict_resolved():
         written, skipped = await persist_data_points(
             db, [conflict, new1, new2],
             history_model="e2e",
-            history_id=str(uuid.uuid4()),
+            history_id=eh_id,
         )
         await db.commit()
 
