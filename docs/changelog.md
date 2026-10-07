@@ -1,5 +1,26 @@
 ## 变更日志
 
+## v1.33.3 (2026-10-07) — V6 系列 — 6 张任务卡 + 8/8 审计全过 → **修缺陷阶段结束**
+
+> 继 V4/V5 修复业务层正确性缺陷 + 验证机制之后，V6 聚焦"让验证基础设施在任何环境（含 CI）都真的跑得起来"。V6-01/02 是必须修复，V6-03~06 是口径/文档收口。全部完成后按 V6 实施计划 §3.2 判定规则（"新问题 ≤ 2 项且无高危 → 宣布收口"）：**修缺陷阶段结束**。
+>
+> **8 项验收审计**（2026-10-07 逐 卡 Read + 命令验证）：
+>
+> | # | 验收项 | 证据 | 状态 |
+> |---|---|---|---|
+> | 1 | `make e2e` 干净环境跑通 | Makefile 完整三步；E2E-01 2 passed / 8.69s | ✅ |
+> | 2 | CI e2e.yml env var 对齐 | E2E_PG_HOST/PORT/USER/DB/PASSWORD + E2E_REQUIRE=1 | ✅ |
+> | 3 | 反向验证（E2E_PG_DB=antibody_map） | collection 阶段 assert 立即 fail | ✅ |
+> | 4 | FK fk_dp_extraction_history 存在 + convalidated=t + ON DELETE SET NULL | pg_constraint 核实；手工删 eh → dp 自动置 NULL | ✅ |
+> | 5 | 覆盖率口径唯一（51%） | 全仓库 grep 只剩历史说明 | ✅ |
+> | 6 | check_health 纳入 nightly | e2e.yml `if: schedule` + check_health.py 步骤（commit `5a24dfc`） | ✅ |
+> | 7 | changelog E2E 描述如实 | 2 passed / 0 skipped；CI 手动触发待验证 | ✅ |
+> | 8 | DoD 表带可复现证据列 | change-checklist §2.5 完整 6 条 + 命令+输出 | ✅ |
+
+### V6-01 ~ V6-06
+
+
+
 ## v1.33.2 (2026-10-06) — V4 系列 + V3-13 收尾 — 38 张任务卡 100% 落地
 
 > v1.33.1 完成 22 张卡后，补完 V4 全系列（8 张卡 + 6 commit）+ V3-13（alembic drop_index 幂等），**38 张任务卡全部落地、全量 1181 passed**。不触碰任何既有数据行。
@@ -55,13 +76,15 @@ d7cdb9c fix(P0-A1): V4-02 remove redundant Session.rollback() in SAVEPOINT error
 - **V6-01 — E2E-1 重写为 DSN 直连 + docker fallback**（`tests/e2e/test_e2e_01_backup_restore.py`）：原 `["wsl","--","docker","exec","antibody-postgres"]` 写死 WSL+生产库 → CI(ubuntu-latest) 必 `FileNotFoundError`。修复：① 统一走 `E2E_PG_HOST/PORT/USER/DB/PASSWORD` 环境变量，默认指向测试栈 `antibody_map_test:15432`；② 模块级断言 `PG["db"] != "antibody_map"` 防误连生产；③ 工具可用性用 `shutil.which` 真检测 + `E2E_REQUIRE=1` 时缺失则 fail；④ docker exec 补 `-i`（stdin 没有它 psql 什么都不执行）；⑤ restore 前注入 `SET session_replication_role='replica'` 解决 data_point/kg_entity 循环 FK 问题。验收：**本机干净环境 2 passed / 0 skipped / 18.68s**；反向验证 `E2E_PG_DB=antibody_map` → collection 阶段直接 assert 失败。
 - **V6-02 — FK 迁移补 NOT VALID 两步走**（`alembic/versions/add_datapoint_extraction_provenance.py`）：FK 实际已存在（`fk_dp_extraction_history`, ON DELETE SET NULL），但原 `op.create_foreign_key` 直接 validated，违反项目规则 #3（长事务锁表风险）。改为 `ADD CONSTRAINT IF NOT EXISTS ... NOT VALID` + `VALIDATE CONSTRAINT`。审计存量孤儿 0 条；手工验证 ON DELETE SET NULL 真生效。
 - **V6-03 — 覆盖率阈值正式收口**：原 55% 阈值下调为 **51%**（与真实值对齐），并声明集成路径（`extract_task` 12% / `report_service` 32%）改由 E2E 覆盖。消除 changelog / change-checklist 中 51% vs 55% 的矛盾表述。
-- **V6-04 — 巡检 SQL 脚本化**：`docs/change-checklist.md §4` 的 6 条巡检 SQL 固化为 `backend/scripts/daily_health_check.sql` + `backend/scripts/check_health.py`（asyncpg 包装，6 条全 0 即 exit 0；红线非 0 即 exit 1；`pending_older_than_7d` 为业务豁免项，不影响退出码）。
+- **V6-04 — 巡检 SQL 脚本化 + CI nightly 接线**：`docs/change-checklist.md §4` 的 6 条巡检 SQL 固化为 `backend/scripts/daily_health_check.sql` + `backend/scripts/check_health.py`（asyncpg 包装，6 条全 0 即 exit 0；红线非 0 即 exit 1；`pending_older_than_7d` 为业务豁免项，不影响退出码）。**CI 接线**：`e2e.yml` 新增 `Run data health check (nightly gate)` 步骤，`if: github.event_name == 'schedule'`（仅每周一晚跑，手动触发跳过，见 commit `5a24dfc`）。
 - **V6-05 — changelog 文本残留修正**：第 47 行"7 passed / 0 skipped... 二进制 — 需 CI 环境"矛盾文本改为如实描述。
 - **V6-06 — DoD 表加可复现证据列**：`docs/change-checklist.md` DoD 表新增"验收方式 / 证据"列，明确"红线 SQL 全 0 / pytest 全绿 / check_health 全 0"三类可复现门禁。
 
-### Commit 链（V6 系列 — 6 个 commit）
+### Commit 链（V6 系列 — 5 个 commit，全部已推 GitHub main）
 
 ```
+5a24dfc fix(V6-04): e2e.yml nightly 补 check_health.py 步骤
+ffcaf81 docs(V6-04/05/06): 巡检 SQL 脚本化 + changelog 文本修正 + DoD 可复现证据列
 ba5fa03 fix(V6-02): add_datapoint_extraction_provenance — FK 改为 NOT VALID 两步走
 1ac8091 docs(V6-03): 覆盖率阈值正式收口 — 51%, 集成路径改由 E2E 覆盖
 9714c95 fix(V6-01): E2E backup/restore tests — DSN+Docker fallback, real-schema seed, pg_dump/psql stdin fix
