@@ -90,6 +90,16 @@ CHECKS = [
         "error",
         "FK 完整性: 数据点不能脱离 literature / extraction_history 存在",
     ),
+    # V8-05: 幻觉率红线（已审核但未溯源的点，正常应为 0）
+    (
+        "hallucination_unapproved",
+        "SELECT COUNT(*) FROM data_point"
+        " WHERE review_status = 'approved'"
+        "   AND is_grounded = FALSE"
+        "   AND (source_context IS NULL OR btrim(source_context) = '')",
+        "error",
+        "V8-05 幻觉率红线: approved 但未溯源 (is_grounded=False 且 source_context 空)",
+    ),
 ]
 
 

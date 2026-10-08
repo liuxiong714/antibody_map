@@ -44,3 +44,24 @@ UNION ALL
 SELECT 'eh->lit orphan', COUNT(*) FROM extraction_history eh
   WHERE eh.literature_id IS NOT NULL
     AND eh.literature_id NOT IN (SELECT id FROM literature);
+
+-- 7. V8-05 幻觉率红线: is_grounded=false 且 review_status='approved' (应为 0)
+-- 与 #5 不同: #5 统计"矛盾点总数", 本条只算"已审核但未溯源"的精准幻觉
+SELECT COUNT(*) AS hallucination_count FROM data_point
+WHERE review_status = 'approved'
+  AND is_grounded = FALSE
+  AND (source_context IS NULL OR btrim(source_context) = '');
+
+-- 8. V8-05 幻觉率月度趋势 (监控, 非红线): 按月+模型分组
+SELECT date_trunc('month', created_at) AS month,
+       model_used,
+       COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE is_grounded = FALSE) AS ungrouned,
+       ROUND(
+         COUNT(*) FILTER (WHERE is_grounded = FALSE)::numeric
+         / GREATEST(COUNT(*), 1), 4
+       ) AS hallucination_rate
+FROM data_point
+WHERE created_at > NOW() - INTERVAL '6 months'
+GROUP BY 1, 2
+ORDER BY 1 DESC NULLS LAST;
