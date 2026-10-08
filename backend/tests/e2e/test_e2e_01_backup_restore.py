@@ -382,38 +382,35 @@ async def test_backup_restore_roundtrip_six_tables():
 def _try_minio_object_count() -> int | None:
     """尝试统计 MinIO 对象数；不可用返回 None。
 
-    实现: 用 docker exec 在 MinIO 测试容器里跑 mc find。
-    回退: 容器不在 / mc alias 未配置 / 任何异常 → None（调用方会 skip 该断言）。
+    实现: 用 minio Python SDK 直连测试栈暴露的 127.0.0.1:19000。
+    环境变量覆盖: E2E_MINIO_ENDPOINT / E2E_MINIO_ACCESS_KEY / E2E_MINIO_SECRET_KEY。
+    回退: SDK 不可用 / 端点不可达 / 任何异常 → None（调用方会 skip 该断言）。
+    CI 上 E2E_REQUIRE=1 时不允许静默 skip，需先确保测试栈 MinIO 启动。
     """
-    import subprocess
+    import os
     try:
-        # 1. 容器是否活着
-        r = subprocess.run(
-            ["wsl", "--", "docker", "inspect", "-f", "{{.State.Health.Status}}",
-             "antibody-test-minio"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if r.returncode != 0 or "healthy" not in r.stdout.lower():
-            return None
-
-        # 2. 确保 mc alias 已配置（幂等）
-        subprocess.run(
-            ["wsl", "--", "docker", "exec", "antibody-test-minio",
-             "mc", "alias", "set", "antibody_test",
-             "http://localhost:9000", "antibody_test", "antibody_test_pw"],
-            capture_output=True, timeout=5,
-        )
-
-        # 3. 统计所有 bucket 下的对象数
-        r = subprocess.run(
-            ["wsl", "--", "docker", "exec", "antibody-test-minio",
-             "bash", "-c", "mc find antibody_test --recursive 2>/dev/null | wc -l"],
-            capture_output=True, text=True, timeout=15,
-        )
-        if r.returncode == 0:
-            n = int(r.stdout.strip())
-            return n
+        from minio import Minio
+    except ImportError:
         return None
+
+    endpoint = os.getenv("E2E_MINIO_ENDPOINT", "127.0.0.1:19000")
+    access_key = os.getenv("E2E_MINIO_ACCESS_KEY", "antibody_test")
+    secret_key = os.getenv("E2E_MINIO_SECRET_KEY", "antibody_test_pw")
+
+    try:
+        client = Minio(
+            endpoint,
+            access_key=access_key,
+            secret_key=secret_key,
+            secure=False,
+        )
+        # 探测连通性
+        buckets = client.list_buckets()
+        total = 0
+        for bucket in buckets:
+            for _ in client.list_objects(bucket.name, recursive=True):
+                total += 1
+        return total
     except Exception:
         return None
 
