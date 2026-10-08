@@ -83,6 +83,8 @@ backend/scripts/*.py
 !backend/scripts/dedup_historical_points.py
 # 例外：check_health.py 被 .github/workflows/e2e.yml nightly 巡检引用，需入库
 !backend/scripts/check_health.py
+# 例外：V8-05 Golden Set 导出脚本，需入库
+!backend/scripts/export_golden_candidates.py
 # 下划线前缀的临时调试脚本
 backend/data/_*.py
 backend/data/_*.sh
