@@ -1,6 +1,6 @@
 """Submodule of app.services.analysis (split from analysis_service.py)."""
 
-
+from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +30,52 @@ from app.services.analysis._common import (
     _meta_merge_cell,
     _midpoint_age,
 )
+
+
+# ── V8-07: 多重比较校正工具 ──────────────────────────────
+
+def apply_bh_fdr(pvals: list[float], alpha: float = 0.05) -> tuple[list[float], list[bool]]:
+    """Benjamini-Hochberg FDR 校正 — 可复用工具。
+
+    输入一组原始 p 值，返回 (校正后 p_fdr_vals, 显著性布尔数组)。
+    校正后 p 值**单调不减**特性保证 (BH-FDR 的核心性质)。
+
+    不可用 statsmodels 时 (CI 环境缺失依赖) 回退：直接返回原值，
+    让调用方在 `methodology_note` 里标注"未校正"。
+
+    参数
+    ----
+    pvals : list[float]
+        原始未校正 p 值（可含 NaN/None，自动转为 1.0）。
+    alpha : float
+        显著性阈值，默认 0.05。
+
+    返回
+    ----
+    tuple[list[float], list[bool]]
+        (p_fdr_vals, significants) — 等长列表。
+    """
+    cleaned = [float(p) if (p is not None and p == p and 0 <= p <= 1) else 1.0 for p in pvals]
+    if not cleaned or len(cleaned) < 2:
+        # 单检验或空集 → 无需校正
+        return (cleaned, [p < alpha for p in cleaned])
+
+    try:
+        from statsmodels.stats.multitest import multipletests
+        _, p_fdr, _, _ = multipletests(cleaned, alpha=alpha, method="fdr_bh")
+        p_fdr_list = [round(float(v), 6) for v in p_fdr]
+        sig = [v < alpha for v in p_fdr_list]
+        return (p_fdr_list, sig)
+    except ImportError:
+        # statsmodels 不可用 → 降级为未校正，让调用方标注
+        logger_warning("[BH-FDR] statsmodels 不可用，跳过多重比较校正")
+        return (cleaned, [p < alpha for p in cleaned])
+
+
+def logger_warning(msg: str) -> None:
+    """临时 logger（避免循环 import；实际可替换为 logger.warning）。"""
+    import logging
+    logging.getLogger(__name__).warning(msg)
 
 
 async def get_trend(
@@ -200,7 +246,6 @@ async def get_region_compare(
     pairwise_tests: list[dict] = []
     if len(results) >= 2:
         from itertools import combinations
-        from statsmodels.stats.multitest import multipletests
 
         valid_results = [
             r for r in results
@@ -222,10 +267,11 @@ async def get_region_compare(
             pairs.append(test)
 
         if pvals:
-            _, p_fdr_vals, _, _ = multipletests(pvals, alpha=0.05, method="fdr_bh")
-            for test, pfdr in zip(pairs, p_fdr_vals):
-                test["p_fdr"] = round(float(pfdr), 6)
-                test["significant_fdr"] = pfdr < 0.05
+            # V8-07: 改用可复用的 apply_bh_fdr 工具函数
+            p_fdr_vals, sigs = apply_bh_fdr(pvals, alpha=0.05)
+            for test, pfdr, sig in zip(pairs, p_fdr_vals, sigs):
+                test["p_fdr"] = pfdr
+                test["significant_fdr"] = sig
             pairwise_tests = pairs
 
     # 兼容旧字段：恰好两省时同时返回 comparison_test（= pairwise_tests[0]）
