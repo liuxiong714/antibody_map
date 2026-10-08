@@ -1980,39 +1980,7 @@ async def persist_data_points(
     return written, skipped
 
 
-def _compute_dp_fingerprint(dp) -> str:
-    """V3-02: ģ�鼶 DataPoint fingerprint ���㡣
 
-    �㷨�� scripts/backfill_dp_fingerprint.py ��ȫһ��:
-      sha256(disease|province|city|data_type|age_min|age_max|
-             collection_year|round(value,6))
-    ���� None ֵͳһ�� "NULL" �ַ�����
-
-    ���Ϊģ�鼶���� (���෽��/�Ǳհ�) �Ա� backfill �ű���
-    ֱ�� import ����, �����㷨Ư�ơ�
-    """
-    v_raw = _safe_get(dp, "value")
-    v = round(v_raw, 6) if v_raw is not None else None
-    parts = [
-        str(_safe_get(dp, "disease") or "NULL"),
-        str(_safe_get(dp, "province") or "NULL"),
-        str(_safe_get(dp, "city") or "NULL"),
-        str(_safe_get(dp, "data_type") or "NULL"),
-        str(_safe_get(dp, "age_min", "NULL") if _safe_get(dp, "age_min") is not None else "NULL"),
-        str(_safe_get(dp, "age_max", "NULL") if _safe_get(dp, "age_max") is not None else "NULL"),
-        str(_safe_get(dp, "collection_year", "NULL") if _safe_get(dp, "collection_year") is not None else "NULL"),
-        str(v if v is not None else "NULL"),
-    ]
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
-
-
-def _safe_get(obj, key: str, default=None):
-    """V3-10: ͬʱ���� dict �� object (Pydantic model) �����Զ�ȡ��
-
-    �������г����� extract_results Ԫ���� dict (json.loads ����),
-    ���� LLM ·�����ܷ��� Pydantic model �� dict��
-    ͳһ������������� getattr(dict, key, default) �㷵�� default��
-    """
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
+# V8-09: dedup_utils 模块提供 compute_dp_fingerprint / safe_get —
+# 见 app/tasks/dedup_utils.py（从本文件拆分出的纯工具函数）
+from app.tasks.dedup_utils import compute_dp_fingerprint as _compute_dp_fingerprint, safe_get as _safe_get  # noqa: F401
