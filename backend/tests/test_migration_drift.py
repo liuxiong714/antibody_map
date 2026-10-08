@@ -16,6 +16,11 @@ from pathlib import Path
 
 import pytest
 
+try:
+    from tests.conftest import _db_up
+except ImportError:
+    _db_up = lambda: False
+
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -65,6 +70,7 @@ def _parse_current(output: str) -> set[str]:
     return currents
 
 
+@pytest.mark.skipif(not _db_up(), reason="需要真实 PostgreSQL")
 @pytest.mark.migration
 @pytest.mark.integration
 def test_alembic_current_equals_heads():

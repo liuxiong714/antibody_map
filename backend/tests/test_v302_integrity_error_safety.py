@@ -9,6 +9,13 @@ from __future__ import annotations
 
 import inspect
 
+import pytest
+
+try:
+    from tests.conftest import _db_up
+except ImportError:
+    _db_up = lambda: False
+
 
 class TestComputeDpFingerprintImportable:
     """V3-02: 指纹函数必须是模块级 (backfill 可 import)。"""
@@ -104,6 +111,7 @@ class TestIntegrityErrorSafetyNet:
             "旧内联指纹算法仍残留 (应改用模块级函数)"
 
 
+@pytest.mark.skipif(not _db_up(), reason="需要真实 PostgreSQL")
 class TestV404BehavioralUpgrade:
     """V4-04 升级: 在 meta-test 之上叠加行为测试。
 

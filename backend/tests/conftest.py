@@ -6,7 +6,11 @@
 
 说明：httpx.ASGITransport 默认不触发 lifespan（不会跑 Alembic 迁移 / 后台任务），
 且 SQLAlchemy 引擎为惰性创建，因此 import app.main 不会真的连接数据库。
+
+DB 连通性探测：纯 TCP 握手，不依赖 asyncpg/app 启动。
 """
+import os
+import socket
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -62,3 +66,27 @@ def _mock_external_dependencies():
     app.dependency_overrides[deps.get_current_user] = _override_get_current_user
     yield
     app.dependency_overrides.clear()
+
+
+def _db_up() -> bool:
+    """纯 TCP 握手探测 PostgreSQL 可达性（不依赖 asyncpg/app 启动）。
+
+    从 DATABASE_URL 解析 host:port 后发起 1s 超时的 connect_ex。
+    无 DATABASE_URL → False；解析/连接异常 → False。
+    被 DB 依赖的集成测试用 ``@pytest.mark.skipif(not _db_up())`` 跳过。
+    """
+    url = os.getenv("DATABASE_URL", "")
+    if not url:
+        return False
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 5432
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        result = s.connect_ex((host, port))
+        s.close()
+        return result == 0
+    except Exception:
+        return False

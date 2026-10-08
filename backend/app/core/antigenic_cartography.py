@@ -155,9 +155,7 @@ def compute_mds(
     """
     mds = MDS(
         n_components=n_components,
-        metric_mds=True,
-        metric="precomputed",
-        init="random",
+        dissimilarity="precomputed",
         n_init=n_init,
         max_iter=max_iter,
         random_state=random_state,

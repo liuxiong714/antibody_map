@@ -1,4 +1,4 @@
-﻿"""V4-02 + V5-01 行为级守护测试 — 直接调生产函数 persist_data_points()
+"""V4-02 + V5-01 行为级守护测试 — 直接调生产函数 persist_data_points()
 
 V4-02 背景：except 分支里多写了 `await db.rollback()` ——
   begin_nested() 异常退出时 SQLAlchemy 已自动发 ROLLBACK TO SAVEPOINT，外层事务完好。
@@ -21,6 +21,11 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.exc import IntegrityError
+
+try:
+    from tests.conftest import _db_up
+except ImportError:
+    _db_up = lambda: False
 
 from app.config import settings
 from app.models.literature import Literature
@@ -70,6 +75,7 @@ async def _test_fixture_function_placeholder(db: AsyncSession, dps: list[DataPoi
     raise NotImplementedError("V5-01: 请直接 import persist_data_points 并调用 — 不再使用影子循环")
 
 
+@pytest.mark.skipif(not _db_up(), reason="需要真实 PostgreSQL")
 class TestV402SavepointSemantics:
     """真 PG + 真唯一约束下，SAVEPOINT 冲突前后点都保住。"""
 
