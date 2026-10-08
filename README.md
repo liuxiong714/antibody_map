@@ -8,6 +8,20 @@
 
 抗体地图是一个面向公共卫生和流行病学领域的**血清抗体水平数据管理、可视化与分析平台**。支持上传流行病学文献，通过 LLM 自动提取结构化的血清抗体数据点，经人工审核后在交互式中国地图上可视化展示，并支持多维度数据分析、空间统计和 AI 报告生成。
 
+
+
+### v1.34.0 亮点：科研级可信度 + CI 门禁（2026-10-08）
+
+- ✅ CI 门禁：.github/workflows/ci.yml on push/PR，守护测试必过
+- ✅ pytest **1270 passed / 0 failed**（13 个长期挂起失败已收口）
+- ✅ 方法学声明显式化：屏障/R_eff/疫苗 API 的 meta.methodology_note 自动注入"抗体阳性率≠保护性免疫"假设声明
+- ✅ BH-FDR 多重比较校正工具化：pply_bh_fdr() 可复用，原 inline multipletests() 已移除
+- ✅ 幻觉率巡检 SQL 纳入 daily_health_check.sql + check_health.py
+- ✅ goal_thresholds 阈值迁移至 
+eference_data/immune_barrier_constants.json（改 JSON 即生效）
+- ✅ 中英 Prompt 字段集合对齐（60 == 60）+ 运行期一致性断言
+
+详见 [变更日志](docs/changelog.md) 与 [V8 实施方案](docs/v8_improvement_plan.md)。
 ## 核心功能
 
 ### 端到端工作流

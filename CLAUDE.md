@@ -1,6 +1,16 @@
 # CLAUDE.md — antibody_map 项目协作规范
 
-> V4-04 引入：基于 V3/V4 卡实施过程中发现的"meta-test 完全失效"教训（如 test_v302
+> V4-04 引入：基于 V3/V4 卡实施过程中发现的"meta-test 完全失效"教训
+
+## 0. 当前执行上下文（V8 / 2026-10-08）
+
+- 最新版本: **v1.34.0** — V8 全面审计与跃迁路线，11 张任务卡 **9/11 完整达标**
+- pytest: **1270 passed / 0 failed**（5 xfail / 11 skipped 为已知版本兼容项）
+- CI: .github/workflows/ci.yml 已加 on: [push, pull_request] 门禁
+- **V8 审计基线文档**: docs/v8_improvement_plan.md（本版实施方案，含 11 张卡验收标准与实测对照表）
+- **V8 增量改动范围**（10 commits）: check_health.py / pytest 13→0 / MinIO SDK / Golden Set export / 方法学声明 / BH-FDR 工具化 / goal_thresholds JSON / dedup_utils 拆分 / Prompt 对齐 / CI push 门禁
+- 剩余缺口: V8-05 import_golden_set.py（需人工标注）、V8-09 Step 2/3（persistence/state 层拆分）
+（如 test_v302
 > 反转 rollback 断言、test_v213 仅断言 flag 存在不测真实 subprocess 路径）。
 
 ## 1. 测试编写：优先行为测试，谨慎 meta-test

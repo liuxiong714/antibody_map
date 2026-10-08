@@ -113,6 +113,7 @@
 | T-05 | `.replace("+asyncpg", "")` 剥离驱动 | psycopg 驱动 URL 会漏 | 用完整链：`.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")` |
 | T-06 | 测试只搜源码字符串 `"X" in src` | 其他地方同名符号会误命中，测试完全失效 | 精确到函数内窗口 + 配行为测试 |
 | T-07 | SQLite 替代 PG 测 IntegrityError/SAVEPOINT | SQLite 的 SAVEPOINT/唯一约束行为与 PG 有差异 | 必须用真 PG |
+| T-08 | 实施方案附件未入库 | 实施任务依赖的审计基线 md 文档不能只留在本地 workspace — 必须 git add docs/ 入库，否则后续复盘/交接无法溯源 | V8 教训已补 docs/v8_improvement_plan.md |
 
 ---
 
