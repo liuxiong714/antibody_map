@@ -413,7 +413,9 @@ If a value only describes a positivity/negativity judgment cutoff, ignore it and
       "mortality_unit": "mortality unit (e.g., /100k, %, ‰)",
       "death_count": death count (integer; null if none),
       "source_page": source page number (integer, null if undeterminable),
-      "source_context": "original text snippet containing key data (20-50 chars)"
+      "source_context": "original text snippet containing key data (20-50 chars)",
+      "estimate_type": "estimate type: primary (overall/total population) or subgroup (stratified/by-group)",
+      "parent_group": "parent group identifier for subgroup estimates (e.g., 'Guangdong overall' or '0-14yo group primary'). null for primary"
     }}
   ],
   "titer_tables": [
@@ -471,6 +473,13 @@ If a value only describes a positivity/negativity judgment cutoff, ignore it and
   - ⚠️ **Ambiguous "positive rate"**: If the denominator is "cases" not "serum samples" (e.g., "detection rate among cases"), use pathogen_monitoring.detection_rate instead of data_point.positivity_rate
 - **⚠️ Serology field handling for pure epidemiology papers (CRITICAL)**: If the paper contains **NO serological assays** (no ELISA, neutralization, HI titer, serum testing keywords), or no mentions of "antibody", "seropositive", "GMC"/"GMT", **positivity_rate / gmc_value / antibody_type / detection_method must ALL be null**. Fill incidence_rate for incidence, case_count for cases. **DO NOT fabricate** nonexistent serology data (e.g., "IgM" antibody, "ELISA" method, "100%" positivity)
 - **⚠️ MUST output epidemiology data when present (CRITICAL)**: For pure epidemiology papers, **do NOT return an empty data_points array** just because there's no serology data. If the text contains ANY of incidence_rate, case_count, mortality_rate, death_count, you MUST output data_points with those fields. Only return empty [] when truly no numeric epidemiology or serology data exists
+- **【P1-1 Primary vs Subgroup Estimates】** (CRITICAL for multi-group papers):
+  - If a study contains BOTH an overall/total-population estimate AND stratified/subgroup estimates (by age, region, immunity history, etc.):
+    - Overall/total-population → estimate_type="primary", parent_group=null
+    - Stratified/subgroup → estimate_type="subgroup", parent_group = concise label of the primary it belongs to (e.g., "Guangdong overall", "0-14yo group primary")
+  - How to decide primary vs subgroup: primary usually has larger sample size, broader coverage (e.g., "whole province" vs "one city"), wider age range (e.g., "0-14" vs "0-5")
+  - If a paper has a single data point only (no overall vs subgroup relationship), always mark estimate_type="primary"
+  - Keep parent_group to a short descriptive label — backend will auto-group all subgroup data_points under the correct primary estimate
 - **【v2 Hard Rule · Values grounded】**: Every numeric field MUST appear verbatim in source_context. Range → midpoint + value_note "range"
 - **【v2 Hard Rule · Unit consistency · CI prohibited】**: If CI given, must match original. If no CI → null, NEVER calculate
 - **【v2 Hard Rule · Denominator type mandatory】**: Each data_point MUST fill denominator_type enum (serum_samples/population/cases/specimens/animals/unknown)
@@ -682,3 +691,26 @@ SYSTEM_PROMPT_ZH = f"""你是一位专业的流行病学文献信息提取专家
 {PATHOGEN_EXTRACTION_RULES_ZH}
 
 - **仅输出JSON**：不要包含任何解释性文字或markdown代码块标记"""
+
+
+# ── V8-11 一致性断言（防中英 Prompt 字段集合漂移）─────────────────────────
+# 自动校验 PROMPT_ZH 和 PROMPT_EN 中 data_points 的 JSON 字段名集合相同。
+# 运行期只 import 时检查一次；漂移会在启动时 AssertionError 暴露。
+import re as _re  # noqa: E402  延迟到模块底部避免污染 Prompt 字符串
+
+
+def _extract_json_field_names(prompt: str) -> set[str]:
+    """从 Prompt 的 JSON schema 示例中提取所有 "field_name": 形式的字段名。"""
+    return set(_re.findall(r'["\'](\w+)["\']\s*:', prompt))
+
+
+_ZH_FIELDS = _extract_json_field_names(PROMPT_ZH)
+_EN_FIELDS = _extract_json_field_names(PROMPT_EN)
+
+assert _ZH_FIELDS == _EN_FIELDS, (
+    f"PROMPT_ZH / PROMPT_EN 字段集合不一致！\n"
+    f"  仅中文有: {sorted(_ZH_FIELDS - _EN_FIELDS)}\n"
+    f"  仅英文有: {sorted(_EN_FIELDS - _ZH_FIELDS)}"
+)
+
+SCHEMA_VERSION_FIELDS = sorted(_ZH_FIELDS)  # 暴露给外部元数据（可用于 API / health check）
