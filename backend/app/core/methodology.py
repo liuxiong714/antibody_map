@@ -72,6 +72,36 @@ TEST_NAMES = {
     "two_proportion": "两率差异检验",
 }
 
+# V8-06: 核心方法学假设声明 — 在 build_methodology_note 末尾自动追加。
+# 触发模块: 涉及"血清阳性率 → 保护性免疫/传播潜力"推断的场景。
+# 关键假设: 阳性率只是 correlate of protection 的替代指标，非直接测量。
+CORE_ASSUMPTION_NOTES = {
+    "immune_barrier": (
+        "本结论基于血清抗体阳性率作为保护性免疫的替代指标（correlate of protection），"
+        "该假设在缺乏保护相关性与抗体衰减数据时可能高估群体免疫水平；"
+        "有效免疫屏障计算所用的社会接触矩阵为 Prem et al. 2022 合成投影矩阵，"
+        "非中国本土实测接触调查数据。"
+    ),
+    "simulate": (
+        "模拟基于血清抗体阳性率作为保护性免疫替代指标，"
+        "补种策略效果受接触模式、病毒变异、抗体衰减等未建模因素影响；"
+        "接触矩阵采用 Prem et al. 2022 合成投影，非实测。"
+    ),
+    "foi": (
+        "FOI 估计假设血清阳性率可近似反映既往感染率，"
+        "该假设在窗口期、重复感染、检测灵敏度等因素干扰下可能引入偏倚。"
+    ),
+    "vaccine": (
+        "疫苗效果分析中的「保护率」基于血清抗体阳性率替代，"
+        "实际保护需结合中和抗体滴度、毒株匹配、 waning kinetics 等数据。"
+    ),
+    "report": (
+        "本报告涉及的免疫屏障评估与传播模拟均基于血清抗体阳性率作为保护性免疫替代指标，"
+        "该假设在缺乏保护相关性与抗体衰减数据时可能高估群体免疫水平；"
+        "社会接触矩阵数据来自 Prem et al. 2022 合成投影，非中国本土实测接触调查。"
+    ),
+}
+
 
 def _today() -> str:
     return date.today().isoformat()
@@ -191,4 +221,12 @@ def build_methodology_note(module: str, params: dict, meta: dict) -> str:
             scope.append(f"省份={prov}")
         scope_txt = f"（{'、'.join(scope)}）" if scope else ""
         text = f"基于已审核血清学估计进行{module_name}{scope_txt}"
-    return text + f"；{snap} 数据快照。"
+
+    note = text + f"；{snap} 数据快照。"
+
+    # V8-06: 追加核心方法学假设声明（仅对涉及免疫推断的模块）
+    core_note = CORE_ASSUMPTION_NOTES.get(module)
+    if core_note:
+        note += f"\n\n⚠️ 核心假设：{core_note}"
+
+    return note
